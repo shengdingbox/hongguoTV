@@ -5,10 +5,10 @@ val signingProperties = Properties().apply { val config = rootProject.file("keys
 fun signingValue(env: String, key: String): String? = System.getenv(env) ?: signingProperties.getProperty(key)
 
 android {
-    namespace = "com.hongguotv.nativeapp"
+    namespace = "com.huluwa.nativeapp"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.hongguotv.nativeapp"
+        applicationId = "com.huluwa.nativeapp"
         // 更新通道包默认 minSdk 26（旧客户端安装校验要求实际值与清单声明一致）；
         // Android 5-7 兼容包用 -PHONGGUOTV_MIN_SDK=21 出 android5 变体
         minSdk = findProperty("HONGGUOTV_MIN_SDK")?.toString()?.toInt() ?: 26

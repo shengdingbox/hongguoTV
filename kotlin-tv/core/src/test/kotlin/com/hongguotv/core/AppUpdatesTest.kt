@@ -11,74 +11,77 @@ import java.security.MessageDigest
 
 class AppUpdatesTest {
     private val bytes = "signed-apk-test-bytes".toByteArray()
-    private fun json() = JSONObject().put("schema", 1).put("packageName", "com.hongguotv.nativeapp")
-        .put("versionCode", 10001).put("versionName", "0.9.0+1").put("minSdk", 21).put("tag", "kotlin-v0.9.0-build.1")
-        .put("apk", JSONObject().put("name", "hongguotv-kotlin-0.9.0-build.1-android5.apk").put("size", bytes.size)
-            .put("sha256", MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }))
-    private fun update() = AppUpdate.parse(json().toString())
+    private fun sha256(value: ByteArray) = MessageDigest.getInstance("SHA-256").digest(value).joinToString("") { "%02x".format(it) }
+    private fun release() = JSONObject()
+        .put("taskId", 5).put("versionCode", 10005).put("versionName", "1.0.5").put("minSdk", 26)
+        .put("packageName", "com.huluwa.nativeapp").put("apkSize", bytes.size)
+        .put("sha256", sha256(bytes).uppercase()).put("commitSubject", "feat: 测试更新")
+    private fun envelope(available: Boolean = true) = JSONObject().put("code", 200).put("message", "ok")
+        .put("data", JSONObject().put("available", available).apply { if (available) put("release", release()) })
+    private fun update() = AppUpdate.parse(envelope().toString(), "com.huluwa.nativeapp")!!
     private fun withFile(block: (File) -> Unit) {
         val dir = Files.createTempDirectory("update-test").toFile()
         try { block(File(dir, "update.apk")) } finally { dir.deleteRecursively() }
     }
     @Test fun onlyHigherCompatibleVersionsAreUpdates() {
         val update = update()
-        assertTrue(update.newerThan(9, 26)); assertFalse(update.newerThan(10001, 36)); assertFalse(update.newerThan(10002, 36)); assertFalse(update.newerThan(9, 20))
+        assertTrue(update.newerThan(10004, 26)); assertFalse(update.newerThan(10005, 36))
+        assertFalse(update.newerThan(10006, 36)); assertFalse(update.newerThan(10004, 20))
     }
-    @Test fun acceptBothAndroid5AndAndroid8ApkNames() {
-        // 0.28.0 及更早的存量客户端只发布过 -android8.apk 清单，minSdk 下探后改用 -android5.apk；
-        // 解析必须两种后缀都收，否则总有一批存量客户端「更新信息格式不正确」
-        val old = json().put("minSdk", 26)
-        old.getJSONObject("apk").put("name", "hongguotv-kotlin-0.9.0-build.1-android8.apk")
-        assertEquals("hongguotv-kotlin-0.9.0-build.1-android8.apk", AppUpdate.parse(old.toString()).fileName)
-        assertEquals("hongguotv-kotlin-0.9.0-build.1-android5.apk", update().fileName)
-        val o = json(); o.getJSONObject("apk").put("name", "hongguotv-kotlin-0.9.0-build.1-android7.apk")
-        assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(o.toString()) }
+    @Test fun absentReleaseIsNotAnUpdateAndIsNotAnError() {
+        // available=false 表示打包服务没有正式产物，既不是「已是最新」，也不该沿用旧包
+        assertNull(AppUpdate.parse(envelope(false).toString(), "com.huluwa.nativeapp"))
     }
-    @Test fun downloadUrlUsesOnlyFixedRepositoryAndValidatedNames() {
-        assertEquals("https://github.com/jycao2/hongguoTV/releases/download/kotlin-v0.9.0-build.1/hongguotv-kotlin-0.9.0-build.1-android5.apk", update().downloadUrl)
-        for (value in listOf("../../bad.apk", "evil.apk", "https://example.com/evil.apk", "hongguotv-kotlin-1/2-android5.apk")) {
-            val o = json(); o.getJSONObject("apk").put("name", value)
-            assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(o.toString()) }
+    @Test fun uppercaseDigestIsNormalized() {
+        assertEquals(sha256(bytes), update().sha256)
+    }
+    @Test fun rejectOtherPackageAndInvalidEnvelope() {
+        assertThrows(IllegalArgumentException::class.java) {
+            AppUpdate.parse(envelope().toString(), "com.hongguotv.nativeapp")
         }
-        assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(json().put("tag", "../../other").toString()) }
-    }
-    @Test fun rejectOtherPackageAndInvalidSchema() {
-        assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(json().put("packageName", "other.app").toString()) }
-        assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(json().put("schema", 2).toString()) }
+        val failed = JSONObject().put("code", 500).put("message", "服务异常")
+        val error = assertThrows(IOException::class.java) { AppUpdate.parse(failed.toString(), "com.huluwa.nativeapp") }
+        assertTrue(error.message!!.contains("服务异常"))
     }
     @Test fun enforceVersionSizeAndChecksumBounds() {
-        for (code in listOf(0L, -1L, Int.MAX_VALUE.toLong()+1)) assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(json().put("versionCode", code).toString()) }
-        for (size in listOf(0L, -1L, AppUpdate.MAX_APK_BYTES+1)) {
-            val o = json(); o.getJSONObject("apk").put("size", size)
-            assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(o.toString()) }
+        for (code in listOf(0L, -1L, Int.MAX_VALUE.toLong() + 1)) {
+            val body = envelope(); body.getJSONObject("data").getJSONObject("release").put("versionCode", code)
+            assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(body.toString(), "com.huluwa.nativeapp") }
         }
-        val o = json(); o.getJSONObject("apk").put("sha256", "invalid")
-        assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(o.toString()) }
+        for (size in listOf(0L, -1L, AppUpdate.MAX_APK_BYTES + 1)) {
+            val body = envelope(); body.getJSONObject("data").getJSONObject("release").put("apkSize", size)
+            assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(body.toString(), "com.huluwa.nativeapp") }
+        }
+        val body = envelope(); body.getJSONObject("data").getJSONObject("release").put("sha256", "invalid")
+        assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(body.toString(), "com.huluwa.nativeapp") }
+        val name = envelope(); name.getJSONObject("data").getJSONObject("release").put("versionName", "../../evil")
+        assertThrows(IllegalArgumentException::class.java) { AppUpdate.parse(name.toString(), "com.huluwa.nativeapp") }
+        assertThrows(IllegalArgumentException::class.java) { AppUpdateRepository("not a url", "com.huluwa.nativeapp") }
     }
     @Test fun verifiedDownloadAtomicallyReplacesOldFile() = withFile { file ->
         file.writeText("previous"); val progress = mutableListOf<Int>()
         UpdateFiles.receive(ByteArrayInputStream(bytes), file, update(), progress::add)
-        assertTrue(UpdateFiles.verify(file, update())); assertEquals(100, progress.last()); assertFalse(File(file.path+".part").exists())
+        assertTrue(UpdateFiles.verify(file, update())); assertEquals(100, progress.last()); assertFalse(File(file.path + ".part").exists())
     }
     @Test fun truncatedDownloadPreservesPreviousFile() = withFile { file ->
         file.writeText("previous")
         assertThrows(IOException::class.java) { UpdateFiles.receive(ByteArrayInputStream(bytes.copyOf(4)), file, update()) }
-        assertEquals("previous", file.readText()); assertFalse(File(file.path+".part").exists())
+        assertEquals("previous", file.readText()); assertFalse(File(file.path + ".part").exists())
     }
     @Test fun oversizedDownloadIsRejectedAndRemoved() = withFile { file ->
-        assertThrows(IOException::class.java) { UpdateFiles.receive(ByteArrayInputStream(bytes+byteArrayOf(1)), file, update()) }
-        assertFalse(file.exists()); assertFalse(File(file.path+".part").exists())
+        assertThrows(IOException::class.java) { UpdateFiles.receive(ByteArrayInputStream(bytes + byteArrayOf(1)), file, update()) }
+        assertFalse(file.exists()); assertFalse(File(file.path + ".part").exists())
     }
     @Test fun checksumMismatchCannotBecomeInstallableFile() = withFile { file ->
         val corrupt = bytes.copyOf(); corrupt[0] = 0
         assertThrows(IOException::class.java) { UpdateFiles.receive(ByteArrayInputStream(corrupt), file, update()) }
-        assertFalse(file.exists()); assertFalse(File(file.path+".part").exists())
+        assertFalse(file.exists()); assertFalse(File(file.path + ".part").exists())
     }
     @Test fun interruptedDownloadCleansUpPartialFile() = withFile { file ->
         Thread.currentThread().interrupt()
         try { assertThrows(IOException::class.java) { UpdateFiles.receive(ByteArrayInputStream(bytes), file, update()) } }
         finally { Thread.interrupted() }
-        assertFalse(file.exists()); assertFalse(File(file.path+".part").exists())
+        assertFalse(file.exists()); assertFalse(File(file.path + ".part").exists())
     }
     @Test fun cacheMustStillMatchExpectedContent() = withFile { file ->
         file.writeBytes(bytes); assertTrue(UpdateFiles.verify(file, update()))

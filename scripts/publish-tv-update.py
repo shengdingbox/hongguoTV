@@ -36,7 +36,7 @@ def changelog():
 notes = os.environ.get("RELEASE_NOTES", "").strip() or changelog()
 manifest = {
     "schema": 1,
-    "packageName": "com.hongguotv.nativeapp",
+    "packageName": "com.huluwa.nativeapp",
     "versionCode": VERSION_CODE,
     "versionName": VERSION_NAME,
     "minSdk": MANIFEST_MIN_SDK,

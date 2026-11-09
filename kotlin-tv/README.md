@@ -3,7 +3,7 @@
 这是独立的 **Kotlin + Android 原生 View + Media3** 工程，最低 Android 5.0 / API 21。安装一个 APK，联网后可直接浏览和播放，无需部署 Node、Docker 或填写服务器地址。
 
 - 应用名称：红果TV
-- 包名：`com.hongguotv.nativeapp`。
+- 包名：`com.huluwa.nativeapp`。
 - 收藏和历史保存在本机，可通过「本地备份与恢复」在重装后自动恢复。
 - APK 不含 JNI 库，可由 Android 在 ARM32、ARM64、x86、x86_64 上运行；视频解码能力依赖设备。
 - 源码分支：`main`；推送不会自动发版，正式版由维护者手动触发 `.github/workflows/release.yml`。

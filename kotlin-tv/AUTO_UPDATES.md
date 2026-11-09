@@ -1,6 +1,8 @@
-# GitHub 自动发布与电视应用内更新
+# GitHub 自动发布与电视应用内更新（历史）
 
 公开渠道：本仓库（`jycao2/hongguoTV`）的 GitHub Release。首次需要手动把带更新功能的正式 APK 安装到电视，此后不用逐次传文件。
+
+> **2026-11-09 起电视端已改为直连局域网打包服务获取更新**，本文所述的 GitHub Release 路径只对存量旧客户端有效。新链路见 [../docs/ONLINE_UPDATE.md](../docs/ONLINE_UPDATE.md)。
 
 ## 电视上的行为
 

@@ -8,7 +8,7 @@ import android.content.res.Configuration
 import android.view.MotionEvent
 import android.view.View
 
-/** 手机使用触屏操作条；电视仍使用遥控器与鼠标操作。 */
+/** 沿用原有界面，只为手机补充触摸点击处理。 */
 object TouchControls {
     fun isHandheld(context: Context): Boolean {
         val features=context.packageManager

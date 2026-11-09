@@ -18,7 +18,7 @@ class EpisodePanel(
 ) {
     private val dialog=Dialog(activity)
     private val touch=TouchControls.isHandheld(activity)
-    private val columns=if(touch && activity.resources.displayMetrics.widthPixels/activity.resources.displayMetrics.density<600) 4 else 5
+    private val columns=5
     private var group=current/20
     private var focused=current
     private fun dp(n: Int)=(n*activity.resources.displayMetrics.density).toInt()
@@ -45,16 +45,16 @@ class EpisodePanel(
         TvDialog.register(dialog)
         dialog.window?.apply {
             setBackgroundDrawableResource(android.R.color.transparent)
-            setGravity(if(touch) Gravity.CENTER else Gravity.END or Gravity.CENTER_VERTICAL)
-            attributes=attributes.apply { x=if(touch) 0 else (activity.resources.displayMetrics.widthPixels*.05f).toInt() }
-            setLayout(minOf(dp(560),(activity.resources.displayMetrics.widthPixels*(if(touch) .94f else .8f)).toInt()),(activity.resources.displayMetrics.heightPixels*.9f).toInt())
+            setGravity(Gravity.END or Gravity.CENTER_VERTICAL)
+            attributes=attributes.apply { x=(activity.resources.displayMetrics.widthPixels*.05f).toInt() }
+            setLayout(minOf(dp(560),(activity.resources.displayMetrics.widthPixels*.8f).toInt()),(activity.resources.displayMetrics.heightPixels*.9f).toInt())
         }
     }
     fun dismiss()=dialog.dismiss()
     private fun render() {
         val content=LinearLayout(activity).apply {
             orientation=LinearLayout.VERTICAL
-            setPadding(dp(if(touch) 16 else 24),dp(if(touch) 12 else 20),dp(if(touch) 16 else 24),dp(if(touch) 12 else 20))
+            setPadding(dp(24),dp(20),dp(24),dp(20))
             background=GradientDrawable().apply {
                 setColor(TvStyle.surface)
                 cornerRadius=dp(24).toFloat()

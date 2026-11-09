@@ -11,6 +11,9 @@ import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Future
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.TimeUnit
 
 internal fun JSONArray.objects() = (0 until length()).mapNotNull { optJSONObject(it) }
@@ -212,7 +215,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     private data class SeasonFill(val at: Long, val items: List<Series>)
     private val seasonFills=mutableMapOf<String, SeasonFill>()
     /** 网站搜索固定只返回前 10 条，多季剧必然缺季；联想接口未被拦截，用同名季的精确标题回查网站补齐。 */
-    private fun collectSeasons(base: String, known: List<Series>, genre: String?, hints: List<String>, cacheKey: String, budget: Int = 10): List<Series> {
+    private fun collectSeasons(base: String, known: List<Series>, genre: String?, hints: List<String>, cacheKey: String, budget: Int = 10, timeoutMillis: Long = 8_000): List<Series> {
         val knownIds=known.map { it.id }.toSet()
         // 缓存存的是「该剧名已知季并集」（写缓存时的 known + 本次新发现），不是差集。
         // 各季详情页的 related 聚合范围不一致（第 1 季页常带全季、第 5 季页只带前四季）：
@@ -229,41 +232,54 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         fun absorb(page: CatalogPage?) {
             page?.items?.filter { it.id !in knownIds && baseName(it.title)==base && found.none { s -> s.id==it.id } }?.let { found+=it }
         }
-        // 基底整词、基底前 4 字与联想互不依赖，并发取回，避免串行等待
+        // 补季是辅助信息，所有搜索、联想与逐季回查共用一个总时限，不能拖住已取到的分集。
+        val deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+        val scope=RequestScope()
+        var complete=true
+        fun <T> await(task: Future<T>): T? {
+            val remaining=(deadline-System.nanoTime()).coerceAtLeast(0L)
+            return try { task.get(remaining,TimeUnit.NANOSECONDS) }
+            catch(_: TimeoutException) { complete=false; null }
+            catch(_: ExecutionException) { complete=false; null }
+        }
         val queries=hints.map { it.trim() }.filter { it.isNotBlank() }.distinct()
-        // 线程数保持与改造前一致，仅把串行的联想查询改为并发，不额外放大站点并发请求
         val pool=Executors.newFixedThreadPool(4)
         try {
-            val pages=listOf(base,base.take(4)).distinct().map { query -> pool.submit(Callable { runCatching { webSearch(query,1,genre) }.getOrNull() }) }
-            // 联想查询彼此独立，逐个并发提交，避免串行等待多轮往返
-            val suggestions=queries.map { query -> pool.submit(Callable { runCatching { suggestRaw(query) }.getOrDefault(emptyList()) }) }
-            pages.forEach { absorb(it.get()) }
-            // 多个 query 的联想结果互补，能覆盖更多季（联想每次返回的子集并不稳定）
+            // RequestScope 是 ThreadLocal，必须显式带进工作线程，才能取消真实的 HTTP 请求。
+            val pages=listOf(base,base.take(4)).distinct().map { query -> pool.submit(Callable { scope.run { webSearch(query,1,genre) } }) }
+            val suggestions=queries.map { query -> pool.submit(Callable { scope.run { suggestRaw(query) } }) }
+            pages.forEach { absorb(await(it)) }
             val knownTitles=(known.map { it.title }+found.map { it.title }).map { it.trim() }.toSet()
-            val names=suggestions.flatMap { runCatching { it.get() }.getOrDefault(emptyList()) }.map { it.trim() }
+            val names=suggestions.flatMap { await(it).orEmpty() }.map { it.trim() }
                 .filter { it.isNotBlank() && baseName(it)==base && it !in knownTitles }.distinct()
-            // 逐季回查同样互不依赖，3 路并发把最耗时的这段压到原来的三分之一
-            val lookups=names.map { name ->
-                val season=seasonNumber(name)
-                pool.submit(Callable {
-                    runCatching { webSearch(name,1,genre) }.getOrNull()
-                        ?.items?.firstOrNull { it.id !in knownIds && baseName(it.title)==base && seasonNumber(it.title)==season }
-                })
-            }
-            for(task in lookups) {
-                if(found.size>=budget) break
-                val match=runCatching { task.get() }.getOrNull()
-                if(match!=null && found.none { it.id==match.id }) found+=match
-            }
+            if(System.nanoTime()<deadline) {
+                val lookups=names.map { name ->
+                    val season=seasonNumber(name)
+                    pool.submit(Callable { scope.run {
+                        webSearch(name,1,genre).items.firstOrNull { it.id !in knownIds && baseName(it.title)==base && seasonNumber(it.title)==season }
+                    } })
+                }
+                for(task in lookups) {
+                    if(found.size>=budget) break
+                    val match=await(task)
+                    if(match!=null && found.none { it.id==match.id }) found+=match
+                }
+            } else if(names.isNotEmpty()) complete=false
+        } catch(e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw java.io.InterruptedIOException("补季请求已取消").apply { initCause(e) }
         } finally {
+            scope.cancel()
             pool.shutdownNow()
         }
         val final=found.take(budget)
-        // 写并集：本次已知（同基底）+ 新发现，供其它季页减去自己已有的季后复用。
-        val union=(known.filter { baseName(it.title)==base }+final).distinctBy { it.id }.take(40)
-        synchronized(seasonFills) {
-            seasonFills[cacheKey]=SeasonFill(clock(),union)
-            while(seasonFills.size>50) seasonFills.remove(seasonFills.keys.first())
+        // 写并集；超时或失败的部分结果只用于本次展示，不能把缺季状态缓存一整天。
+        if(complete) {
+            val union=(known.filter { baseName(it.title)==base }+final).distinctBy { it.id }.take(40)
+            synchronized(seasonFills) {
+                seasonFills[cacheKey]=SeasonFill(clock(),union)
+                while(seasonFills.size>50) seasonFills.remove(seasonFills.keys.first())
+            }
         }
         return final
     }
@@ -435,12 +451,14 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             else -> value.toString()
         }
     }
-    // The detail page has no dedicated same-name group, so other seasons are collected from its related
-    // payload and filled with the same website/suggestion pipeline used by search.
+    // 普通短剧不额外搜季；有明确季号或已知其它季时，才在有限时间内补齐系列。
     private fun sameName(current: Series, related: List<Series>): List<Series> {
         val base=baseName(current.title); if(base.isBlank()) return emptyList()
-        val siblings=related.filter { it.id!=current.id && baseName(it.title)==base }.distinctBy { it.id }
-        val extra=collectSeasons(base,listOf(current)+siblings,null,listOf(base,base.take(4)),"detail|$base",20)
+        val cacheKey="detail|$base"
+        val cached=synchronized(seasonFills) { seasonFills[cacheKey]?.takeIf { clock()-it.at<86_400_000 }?.items }.orEmpty()
+        val siblings=(related+cached).filter { it.id!=current.id && baseName(it.title)==base }.distinctBy { it.id }
+        val hasSeasons=seasonNumber(current.title)!=Int.MAX_VALUE || siblings.any { seasonNumber(it.title)!=Int.MAX_VALUE }
+        val extra=if(hasSeasons) collectSeasons(base,listOf(current)+siblings,null,listOf(base,base.take(4)),cacheKey,20,timeoutMillis=5_000) else emptyList()
         return (siblings+extra).distinctBy { it.id }.filter { it.id!=current.id }
             .sortedBy { seasonNumber(it.title).let { n -> if(n==Int.MAX_VALUE) 1 else n } }.take(20)
     }

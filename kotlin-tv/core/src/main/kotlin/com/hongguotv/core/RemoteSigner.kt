@@ -164,7 +164,7 @@ open class RemoteSigner(
     private fun body(value: String) = value.toRequestBody(JSON_TYPE.toMediaType())
 
     private fun execute(request: Request): String =
-        http.newCall(request).execute().use { response ->
+        RequestScope.execute(http.newCall(request)) { response ->
             if (!response.isSuccessful) throw SignatureException("签名服务返回 HTTP ${response.code}")
             val bytes = response.body?.bytes() ?: throw SignatureException("签名服务返回空响应")
             if (bytes.size > MAX_BODY) throw SignatureException("签名服务响应过大")

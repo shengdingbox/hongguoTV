@@ -136,8 +136,6 @@ class MainActivity: Activity() {
     private var detailAutoplay=true
     private var libraryLoadError: Throwable?=null
     private var localPermissionContinuation: (() -> Unit)?=null
-    private var clockView: TextView?=null
-    private var clockTick: Runnable?=null
     private var workScope: RequestScope?=null
     private var workJob: java.util.concurrent.Future<*>?=null
     private var playerListener: Player.Listener?=null
@@ -696,37 +694,8 @@ class MainActivity: Activity() {
         backdropView?.takeIf { backdropBitmap!=null }?.let { root.addView(it,FrameLayout.LayoutParams(-1,-1)) }
         val container=column(); val horizontal=dp(widthDp()*.05f); val vertical=(resources.displayMetrics.heightPixels*.05f).toInt()
         container.setPadding(horizontal,vertical,horizontal,vertical); root.addView(container,FrameLayout.LayoutParams(-1,-1))
-        // 本地测试包（versionName 不含 +构建号）右上角常驻 beta 标记，与正式包区分；播放页不显示
-        if(!BuildConfig.VERSION_NAME.contains('+')) {
-            root.addView(text("beta",12f,accent).apply { importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO; isFocusable=false },
-                FrameLayout.LayoutParams(-2,-2,Gravity.TOP or Gravity.END).apply { topMargin=dp(10); rightMargin=dp(14) })
-        }
         if(title!=null) { val heading=row(); addButton(heading,"‹ 返回") { goBack() }; heading.addView(text(title,22f).apply { setTypeface(null,Typeface.BOLD); gravity=Gravity.CENTER_VERTICAL },lp(0,dp(44)).apply { weight=1f }); container.addView(heading) }
-        applyClock()
         return container
-    }
-    /** Re-adds the optional top-right clock after every root rebuild; ticks on minute boundaries. */
-    private fun applyClock() {
-        clockTick?.let(main::removeCallbacks); clockTick=null
-        clockView?.let { root.removeView(it) }; clockView=null
-        if(!library.isLoaded || !library.showClock) return
-        val view=text("",15f,muted).apply {
-            importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            isFocusable=false; isClickable=false
-            setPadding(dp(8),dp(3),dp(8),dp(3))
-        }
-        // Local test builds show the beta badge in the same corner; keep both visible.
-        val topMargin=if(BuildConfig.VERSION_NAME.contains('+')) dp(10) else dp(30)
-        root.addView(view,FrameLayout.LayoutParams(-2,-2,Gravity.TOP or Gravity.END).apply { this.topMargin=topMargin; rightMargin=dp(14) })
-        clockView=view
-        val tick=object: Runnable {
-            override fun run() {
-                clockView?.text=java.text.SimpleDateFormat("HH:mm",java.util.Locale.getDefault()).format(java.util.Date())
-                main.postDelayed(this,60_000L-(System.currentTimeMillis()%60_000L)+100L)
-            }
-        }
-        clockTick=tick
-        tick.run()
     }
     private fun loadCover(view: ImageView,url: String) {
         var ancestor: View?=view
@@ -2053,7 +2022,7 @@ class MainActivity: Activity() {
 
         val categories=listOf(
             Triple("播放与观看","所有剧集共用，播放中也可调整",playback),
-            Triple("外观与界面","主题、时钟与首页导航",look),
+            Triple("外观与界面","主题与首页导航",look),
             Triple("设备与数据","本机记录、存储与快传文件",device),
             Triple("实验室功能","外部遥控、语音与自动化接口",lab),
             Triple("关于红果","版本更新、接口自检与许可",about))
@@ -2155,12 +2124,6 @@ class MainActivity: Activity() {
             },scaleButton,{ choice ->
                 if(choice!=current) { UiScale.set(this,choice); recreateKeepingPage("界面缩放") }
             },focusIndex=current)
-        }
-        lateinit var clockButton: TextView
-        clockButton=setting(look,"显示系统时间  ·  ${if(library.showClock) "开启" else "关闭"}") {
-            library.showClock=!library.showClock
-            clockButton.text="显示系统时间  ·  ${if(library.showClock) "开启" else "关闭"}"
-            applyClock()
         }
         lateinit var backdropButton: TextView
         fun backdropLabel()="自定义背景  ·  ${if(backdropFile()!=null) "已启用" else if(backdropStyle()=="forced") "强制欣赏" else "默认风格"}"
@@ -3165,7 +3128,6 @@ class MainActivity: Activity() {
             root.addView(recoverySpinner,FrameLayout.LayoutParams(dp(56),dp(56),Gravity.CENTER))
             root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled=false; addView(hud) },FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
         }
-        applyClock()
         playbackTitle.text="${data.series.title}  ·  第 ${episodeIndex+1} 集"
         playbackText.text="正在获取播放地址…"; progressBar.progress=0; progressBar.visibility=View.VISIBLE; hidePlaybackOverlay()
         controls.removeAllViews(); controls.visibility=View.GONE; recoverySpinner?.visibility=View.GONE; transportPlay=null; sleepButton=null
@@ -4864,10 +4826,9 @@ class MainActivity: Activity() {
                 recreateKeepingPage("系统风格")
                 true
             }
+            // 顶栏系统时间已下线，保留命令但不再改变界面，只回一句说明，避免旧脚本报错
             "clock.toggle" -> {
-                library.showClock=!library.showClock
-                applyClock()
-                voiceSay(if(library.showClock) "已显示系统时间" else "已隐藏系统时间")
+                voiceSay("系统时间显示已停用")
                 true
             }
             "backdrop.reset" -> {

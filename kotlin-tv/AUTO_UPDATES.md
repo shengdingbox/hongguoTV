@@ -18,7 +18,7 @@
 4. 构建成功后，先创建草稿、上传 APK、源码 ZIP、`update.json` 与 `SHA256SUMS`，确认 GitHub 附件摘要一致，再正式发布并设为 latest。构建失败不替换旧版。
 5. 电视通过公开 Release 的 `latest/download/update.json` 获取新版本，无需 GitHub 登录。
 
-同步只对原生代码、构建和同步流程相关路径触发；不因旧 React Native 服务或无关研究资料的提交发布 APK。旧的验证 workflow 继续保留。
+同步只对原生代码、构建和同步流程相关路径触发；研究资料或其他文档的提交不会发布 APK。
 
 ## 签名与同步配置
 

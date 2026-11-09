@@ -9,7 +9,6 @@ local.properties
 .kotlin/
 build/
 dist/
-node_modules/
 .venv/
 __pycache__/
 *.py[cod]
@@ -28,11 +27,4 @@ keystore.properties
 /captures/
 /downloads/
 /tmp/
-
-# Delivery artifacts, native intermediates, local runtime
 /outputs/
-/server/.local/
-.cxx/
-.externalNativeBuild/
-/ios/Pods/
-/ios/build/

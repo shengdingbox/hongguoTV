@@ -85,7 +85,7 @@
 
 正式版使用同一发布签名，可覆盖安装 0.2.0 / 0.2.1 并保留收藏、观看记录与设置。Debug APK 使用开发签名，不能覆盖不同签名的正式安装包。
 
-**红果账号同步尚未实现**：你使用抖音账号登录红果，仍需要可验证的红果授权、账号映射和收藏/进度读写接口。当前收藏与观看记录继续保存在本机。调查依据和接入条件见 [账号同步调查](../docs/ACCOUNT_SYNC.md)。应用内二维码均不是红果登录入口。
+**红果账号同步尚未实现**：你使用抖音账号登录红果，仍需要可验证的红果授权、账号映射和收藏/进度读写接口。当前收藏与观看记录继续保存在本机。调查依据和接入条件见 [账号同步调查](docs/ACCOUNT_SYNC.md)。应用内二维码均不是红果登录入口。
 
 本版交付与复测见 [0.3.0 交付记录](RELEASE_0.3.0.md)。
 
@@ -102,7 +102,7 @@
 
 ## 构建
 
-需要 JDK 17、Android SDK Platform 36 / Build Tools 36.0.0。Gradle 8.14.3 包装器已包含；不需要 npm、Node 或 React Native。设置 `ANDROID_HOME`，或在本目录的 `local.properties` 写入 `sdk.dir=SDK绝对路径`。
+需要 JDK 17、Android SDK Platform 36 / Build Tools 36.0.0。Gradle 8.14.3 包装器已包含；不需要 npm 或 Node。设置 `ANDROID_HOME`，或在本目录的 `local.properties` 写入 `sdk.dir=SDK绝对路径`。
 
 ```sh
 # 仓库根目录：开发包直接可安装，无需发布私钥

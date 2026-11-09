@@ -10,12 +10,12 @@ def git(*args, cwd=root): return subprocess.check_output(['git', *args], cwd=cwd
 remote = git('remote', 'get-url', 'origin', cwd=target).decode().strip()
 if remote not in ('git@github.com:N3urda/hongguoTV-updates.git', 'https://github.com/N3urda/hongguoTV-updates.git'):
     raise SystemExit('Target must be the dedicated public update repository')
-paths = git('ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', 'kotlin-tv', 'LICENSE', 'scripts/build-kotlin.sh', 'server/vendor/hongguo.cjs', 'server/vendor/LICENSE.drpys').decode().split('\0')
+paths = git('ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', 'kotlin-tv', 'LICENSE', 'scripts/build-kotlin.sh', 'kotlin-tv/vendor/hongguo.cjs', 'kotlin-tv/vendor/LICENSE.drpys').decode().split('\0')
 paths = [p for p in paths if p and not p.startswith('kotlin-tv/distribution/')]
 for name in paths:
     if any(part in ('build', '.gradle', '.kotlin') for part in Path(name).parts) or name.endswith(('.jks', '.keystore', 'keystore.properties', 'local.properties')):
         raise SystemExit('Local-only material unexpectedly tracked; refusing export')
-git('rm', '-r', '--ignore-unmatch', '--', 'kotlin-tv', 'scripts', 'server', 'README.md', 'LICENSE', '.gitignore', '.github/workflows', cwd=target)
+git('rm', '-r', '--ignore-unmatch', '--', 'kotlin-tv', 'scripts', 'README.md', 'LICENSE', '.gitignore', '.github/workflows', cwd=target)
 for name in paths:
     destination = target / name; destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(git('show', 'HEAD:' + name))
@@ -46,5 +46,5 @@ Android 8.0+，Kotlin / Media3，单 APK，无需部署服务。非官方、自�
 
 Android 8 实体电视的解码、音频、遥控器和系统安装入口仍需实机确认。
 ''')
-git('add', '--', 'kotlin-tv', 'scripts', 'server', 'README.md', 'LICENSE', '.gitignore', '.github/workflows/release.yml', cwd=target)
+git('add', '--', 'kotlin-tv', 'scripts', 'README.md', 'LICENSE', '.gitignore', '.github/workflows/release.yml', cwd=target)
 print(f'Exported {len(paths)} tracked native source files; private history and untracked files excluded.')

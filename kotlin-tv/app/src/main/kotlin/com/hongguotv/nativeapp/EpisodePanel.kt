@@ -19,10 +19,10 @@ class EpisodePanel(
     private val dialog=Dialog(activity)
     private var group=current/20
     private var focused=current
-    private fun dp(n: Int)=(n*activity.resources.displayMetrics.density).toInt()
-    private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(TvStyle.text); setPadding(dp(8),dp(6),dp(8),dp(6)) }
+    private fun dp(n: Int)=UiProfile.dp(activity,n)
+    private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=UiProfile.sp(size); setTextColor(TvStyle.text); setPadding(dp(8),dp(6),dp(8),dp(6)) }
     private fun button(value: String,active: Boolean=false,action: ()->Unit)=label(value,16f).apply {
-        id=View.generateViewId(); gravity=Gravity.CENTER; minHeight=dp(46); isFocusable=true; isFocusableInTouchMode=true
+        id=View.generateViewId(); gravity=Gravity.CENTER; minHeight=maxOf(dp(46),UiProfile.touchHeight(activity)); isFocusable=true; isFocusableInTouchMode=true
         fun paint(focus: Boolean) { background=GradientDrawable().apply { setColor(if(focus) TvStyle.accent else if(active) Color.rgb(61,39,34) else TvStyle.surface); cornerRadius=dp(6).toFloat() } }
         paint(false); setOnFocusChangeListener { _,hasFocus -> paint(hasFocus) }; setOnClickListener { action() }
     }
@@ -34,7 +34,7 @@ class EpisodePanel(
             setBackgroundDrawableResource(android.R.color.transparent)
             setGravity(Gravity.END or Gravity.CENTER_VERTICAL)
             attributes=attributes.apply { x=(activity.resources.displayMetrics.widthPixels*.05f).toInt() }
-            setLayout(minOf(dp(520),(activity.resources.displayMetrics.widthPixels*.8f).toInt()),(activity.resources.displayMetrics.heightPixels*.9f).toInt())
+            setLayout(minOf(dp(520),(activity.resources.displayMetrics.widthPixels*(if(UiProfile.compact) .72f else .8f)).toInt()),(activity.resources.displayMetrics.heightPixels*(if(UiProfile.compact) .96f else .9f)).toInt())
         }
     }
     fun dismiss()=dialog.dismiss()

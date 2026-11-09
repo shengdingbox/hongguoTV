@@ -12,15 +12,14 @@ import com.hongguotv.core.Series
 
 /** Fixed text slots keep D-pad movement from resizing the content below the preview. */
 class SeriesPreview(context: Context): LinearLayout(context) {
-    private fun label(size: Float,color: Int)=TextView(context).apply { textSize=size; setTextColor(color); includeFontPadding=false }
+    private fun label(size: Float,color: Int)=TextView(context).apply { textSize=UiProfile.sp(size); setTextColor(color); includeFontPadding=false }
     private val title=label(27f,TvStyle.text).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL) }
     private val meta=label(12f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END }
     init {
         orientation=VERTICAL
-        val dp=resources.displayMetrics.density
-        setPadding(0,(7*dp).toInt(),0,(12*dp).toInt())
+        setPadding(0,UiProfile.dp(context,7),0,UiProfile.dp(context,12))
         addView(title)
-        addView(meta,LayoutParams(-1,-2).apply { topMargin=(5*dp).toInt() })
+        addView(meta,LayoutParams(-1,-2).apply { topMargin=UiProfile.dp(context,5) })
         show(null,"")
     }
     fun show(series: Series?,status: String) {
@@ -47,9 +46,10 @@ class HomeScreen(
     private data class Card(val key: String,val view: LinearLayout,val image: ImageView?,val title: TextView,val label: TextView,val progress: ProgressBar?,var entry: Entry?,var pending: Boolean=false)
     private data class Row(val key: String,val block: LinearLayout,val horizontal: HorizontalScrollView,val cards: List<Card>)
     private val accent=TvStyle.accent
-    private fun dp(n: Int)=(n*resources.displayMetrics.density).toInt()
+    private fun dp(n: Int)=UiProfile.dp(context,n)
+    private fun widthDp()=resources.displayMetrics.widthPixels/resources.displayMetrics.density
     private fun shape(focus: Boolean)=TvStyle.card(context,focus)
-    private fun label(value: String,size: Float,color: Int=TvStyle.text)=TextView(context).apply { text=value; textSize=size; setTextColor(color); includeFontPadding=false }
+    private fun label(value: String,size: Float,color: Int=TvStyle.text)=TextView(context).apply { text=value; textSize=UiProfile.sp(size); setTextColor(color); includeFontPadding=false }
     private val scroll=ScrollView(context).apply { isVerticalScrollBarEnabled=false; clipToPadding=false }
     private val contents=LinearLayout(context).apply { orientation=VERTICAL }
     private val rows=mutableListOf<Row>()
@@ -113,7 +113,7 @@ class HomeScreen(
             horizontal.addView(line); block.addView(horizontal)
             val rowCards=mutableListOf<Card>()
             fun addCard(entry: Entry?,moreAction: (() -> Unit)?=null) {
-                val width=((resources.displayMetrics.widthPixels*.9f-dp(70))/6).toInt().coerceAtLeast(dp(100))
+                val width=((resources.displayMetrics.widthPixels*UiProfile.contentFraction-dp(70))/UiProfile.columns(widthDp())).toInt().coerceAtLeast(dp(100))
                 val key=if(entry!=null) "${shelf.key}:${entry.series.id}" else "${shelf.key}:more"
                 val view=LinearLayout(context).apply { orientation=VERTICAL; id=View.generateViewId(); tag=key; isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(4),dp(4),dp(4),dp(8)); background=shape(false) }
                 val image=if(entry!=null) ImageView(context).apply { scaleType=ImageView.ScaleType.FIT_CENTER; importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO } else null

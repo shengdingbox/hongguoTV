@@ -29,8 +29,8 @@ class TvTools(private val activity: Activity) {
     private var dialog: AlertDialog?=null
     val showing: Boolean get()=dialog?.isShowing==true
     private var phone: java.io.Closeable?=null
-    private fun dp(value: Int)=(value*activity.resources.displayMetrics.density).toInt()
-    private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(Color.WHITE); setPadding(dp(8),dp(4),dp(8),dp(4)) }
+    private fun dp(value: Int)=UiProfile.dp(activity,value)
+    private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=UiProfile.sp(size); setTextColor(Color.WHITE); setPadding(dp(8),dp(4),dp(8),dp(4)) }
     private fun column()=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(4),dp(16),dp(8)) }
     private fun open(next: AlertDialog,anchor: View?) {
         dialog?.dismiss(); dialog=next
@@ -60,7 +60,7 @@ class TvTools(private val activity: Activity) {
             val row=LinearLayout(activity)
             keys.forEach { key ->
                 val button=Button(activity).apply {
-                    id=View.generateViewId(); text=key; minHeight=dp(42)
+                    id=View.generateViewId(); text=key; minHeight=maxOf(dp(42),UiProfile.touchHeight(activity))
                     backgroundTintList=android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_focused),intArrayOf()),intArrayOf(Color.rgb(255,99,76),Color.rgb(31,36,47)))
                     setOnClickListener { when(key) { "清空"->{ digits="";replace=false;value.text="—" }; "退格"->erase(); else->digit(key) } }
                 }

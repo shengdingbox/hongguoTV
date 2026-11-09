@@ -96,9 +96,9 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         if (!active) return
         anchor = from
         dialog?.dismiss()
-        val dp = activity.resources.displayMetrics.density
+        val dp = activity.resources.displayMetrics.density * UiProfile.scale
         val body = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding((24*dp).toInt(), (12*dp).toInt(), (24*dp).toInt(), 0) }
-        statusView = TextView(activity).apply { text = status; textSize = 17f; setTextColor(TvStyle.text) }
+        statusView = TextView(activity).apply { text = status; textSize = UiProfile.sp(17f); setTextColor(TvStyle.text) }
         body.addView(statusView)
         body.addView(CheckBox(activity).apply {
             text = "自动检查并下载更新"; isChecked = auto
@@ -108,7 +108,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
             }
         })
         body.addView(TextView(activity).apply {
-            text = "只在应用前台浏览时检查，播放中不打扰。下载后需确认系统安装，收藏与观看记录保留。"; textSize = 13f; setTextColor(TvStyle.muted)
+            text = "只在应用前台浏览时检查，播放中不打扰。下载后需确认系统安装，收藏与观看记录保留。"; textSize = UiProfile.sp(13f); setTextColor(TvStyle.muted)
             setPadding(0, (8*dp).toInt(), 0, (8*dp).toInt())
         })
         val next = AlertDialog.Builder(activity).setTitle("版本与更新 · ${BuildConfig.VERSION_NAME}").setView(ScrollView(activity).apply { addView(body) })

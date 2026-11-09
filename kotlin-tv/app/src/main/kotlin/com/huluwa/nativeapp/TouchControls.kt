@@ -14,12 +14,14 @@ object TouchControls {
         val features=context.packageManager
         val television=(context.resources.configuration.uiMode and Configuration.UI_MODE_TYPE_MASK)==Configuration.UI_MODE_TYPE_TELEVISION
         return !television && !features.hasSystemFeature(PackageManager.FEATURE_LEANBACK) &&
+            !features.hasSystemFeature(PackageManager.FEATURE_TELEVISION) &&
             features.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)
     }
 
-    /** 提前获取触摸焦点，避免原生 View 在抬手时只获取焦点、吞掉首次点击。点击与取消仍交给原生处理。 */
+    /** 仅在手机提前获取触摸焦点，避免吞掉首次点击；电视不安装触摸监听，保留原有焦点行为。 */
     @SuppressLint("ClickableViewAccessibility")
-    fun focusOnTouch(view: View) {
+    fun focusOnTouch(view: View,enabled: Boolean=isHandheld(view.context)) {
+        if(!enabled) return
         view.setOnTouchListener { target,event ->
             if(event.actionMasked==MotionEvent.ACTION_DOWN && target.isEnabled && target.isFocusableInTouchMode && !target.isFocused) {
                 target.requestFocus()

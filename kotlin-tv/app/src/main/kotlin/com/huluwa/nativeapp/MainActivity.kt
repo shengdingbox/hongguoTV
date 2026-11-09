@@ -473,7 +473,7 @@ class MainActivity: Activity() {
     private fun row()=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
     private fun focusStyle(view: View,selected: Boolean=false) {
         view.id=View.generateViewId(); view.isFocusable=true; view.isFocusableInTouchMode=true
-        TouchControls.focusOnTouch(view)
+        TouchControls.focusOnTouch(view,touchPlayback)
         fun paint(focused: Boolean) { view.background=rounded(if(focused) TvStyle.raised else if(selected) TvStyle.selectedSurface else surface,if(focused) accent else Color.TRANSPARENT) }
         paint(false); view.setOnFocusChangeListener { _,focused -> paint(focused) }
     }
@@ -3127,7 +3127,7 @@ class MainActivity: Activity() {
             titleRow.addView(playbackTitle,lp(0,-2).apply { weight=1f })
             val exitPlay=text("✕ 退出",13f,muted).apply {
                 isFocusable=false; isClickable=true
-                minHeight=dp(if(touchPlayback) 48 else 32); gravity=Gravity.CENTER
+                if(touchPlayback) { minHeight=dp(48); gravity=Gravity.CENTER }
                 setPadding(dp(12),dp(5),dp(12),dp(5))
                 background=rounded(Color.argb(96,0,0,0),TvStyle.outline)
                 setOnClickListener { returnToDetail() }
@@ -3588,13 +3588,18 @@ class MainActivity: Activity() {
         keyHints?.text=keyHintText()
     }
 
-    private fun canAutoHideHud(): Boolean = (!panel || (touchPlayback && transportPlay?.isAttachedToWindow==true)) &&
-        !progressBar.scrubbing && TvDialog.topmostDialog()==null
+    private fun canAutoHideHud(): Boolean {
+        // 电视沿用原来的控制条显隐条件，触屏拖动与弹窗保护仅作用于手机。
+        if(!touchPlayback) return !panel
+        return (!panel || transportPlay?.isAttachedToWindow==true) && !progressBar.scrubbing && TvDialog.topmostDialog()==null
+    }
     private fun scheduleHideHud() {
         main.removeCallbacks(hideHud)
-        if(screen=="player" && canAutoHideHud() && !ffActive && player?.isPlaying==true && !playError) main.postDelayed(hideHud,4500)
+        val allow=if(touchPlayback) canAutoHideHud() && !playError else !panel
+        if(screen=="player" && allow && !ffActive && player?.isPlaying==true) main.postDelayed(hideHud,4500)
     }
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if(!touchPlayback) return super.dispatchTouchEvent(event)
         if(screen=="player" && event.actionMasked==MotionEvent.ACTION_DOWN) main.removeCallbacks(hideHud)
         val handled=super.dispatchTouchEvent(event)
         if(screen=="player" && hud.visibility==View.VISIBLE && (event.actionMasked==MotionEvent.ACTION_UP || event.actionMasked==MotionEvent.ACTION_CANCEL)) scheduleHideHud()
@@ -3607,10 +3612,14 @@ class MainActivity: Activity() {
         refreshPointerUi()
         hud.visibility=View.VISIBLE; updatePlaybackText(); scheduleHideHud()
     }
+    private fun playButtonLabel(): String {
+        val playing=if(touchPlayback && !playbackReady) requestedAutoplay else player?.playWhenReady==true
+        return if(playing) "暂停" else "播放"
+    }
     private fun updatePlaybackText() {
         remotePublish()
-        transportPlay?.text=if(if(playbackReady) player?.playWhenReady==true else requestedAutoplay) "暂停" else "播放"
-        controls.findViewWithTag<TextView>("playback-speed")?.text="倍速 ${PlaybackSpeed.label(effectiveSpeed())}"
+        transportPlay?.text=playButtonLabel()
+        if(touchPlayback) controls.findViewWithTag<TextView>("playback-speed")?.text="倍速 ${PlaybackSpeed.label(effectiveSpeed())}"
         sleepButton?.text="定时 ${sleepTimer.label()}"
         if(screen!="player" || playError) return
         // 拖动进度条时别用播放位置盖掉「定位到 12:34」：手指还按着，文字每秒跳回去像坏了
@@ -3989,7 +3998,7 @@ class MainActivity: Activity() {
         if(playError) return
         panel=true; showHud(); controls.visibility=View.VISIBLE; controls.removeAllViews()
         val transport=row(); controls.addView(transport)
-        val play=addPlaybackButton(transport,if(if(playbackReady) player?.playWhenReady==true else requestedAutoplay) "暂停" else "播放") { togglePlayback() }.also { transportPlay=it }
+        val play=addPlaybackButton(transport,playButtonLabel()) { togglePlayback() }.also { transportPlay=it }
         addPlaybackButton(transport,"上一集") { if(episodeIndex>0) playEpisode(episodeIndex-1,savedPosition(episodeIndex-1)) }.apply { isEnabled=episodeIndex>0; isFocusable=episodeIndex>0; alpha=if(episodeIndex>0) 1f else .4f }
         addPlaybackButton(transport,"下一集") { if(episodeIndex<(detail?.episodes?.lastIndex ?: 0)) playEpisode(episodeIndex+1,savedPosition(episodeIndex+1)) }.apply { val enabled=episodeIndex<(detail?.episodes?.lastIndex ?: 0); isEnabled=enabled; isFocusable=enabled; alpha=if(enabled) 1f else .4f }
         val options=if(touchPlayback) row().also { controls.addView(it,lp(-1,-2).apply { topMargin=dp(6) }) } else transport

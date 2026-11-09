@@ -79,7 +79,7 @@ private val BRANCH0_TT = intArrayOf(
 // 参考实现里有 984304912 等十进制字面量，这里统一写成十六进制避免负数歧义。
 private val BRANCH0_INIT = intArrayOf(
     0x7aba4fc8, 0x67166507, 0x6403fa00, 0x340f512f,
-    984304912, 3005047866.toInt(), 2874125293.toInt(), 2152413264,
+    984304912, 3005047866.toInt(), 2874125293.toInt(), 2152413264.toInt(),
 )
 
 private val BRANCH0_ROUNDS = arrayOf(
@@ -414,7 +414,7 @@ internal fun drawEntropy(nowMillis: Long, random: java.util.Random = java.util.R
     val n = buf.i64Le(0)
     return SignEntropy(
         envLaunch = 100 + (n % 21),
-        envPid = 10001 + ((buf[8].u() or (buf[9].u() shl 8)) % 2000),
+        envPid = (10001 + ((buf[8].u() or (buf[9].u() shl 8)) % 2000)).toLong(),
         nowSecs = nowMillis / 1000,
         messageRandom = buf.i32Le(0),
         random = buf.i32Le(4),

@@ -25,10 +25,11 @@ class RemoteVideo(
     private lateinit var prepared: MediaCrypto.Prepared
     private val lock=Object()
     private val cache=HashMap<Long,ByteArray>()
-    private var fetchingRead=-1L
+    private val fetchingReads=mutableSetOf<Long>()
     private var fetchingAhead=-1L
     private var lastRead=0L
     private var aheadThread: Thread?=null
+    private var readAheadEnabled=false
     private var hitChunks=0
     private var missChunks=0
     private var readerChunks=0
@@ -65,7 +66,7 @@ class RemoteVideo(
         val end=if(total>0) minOf(total,start+chunkBytes)-1 else start+chunkBytes-1L
         return range(start,end)
     }
-    private fun inFlightLocked(start: Long)=fetchingRead==start || fetchingAhead==start
+    private fun inFlightLocked(start: Long)=start in fetchingReads || fetchingAhead==start
     /** Fetch one chunk into the cache from the reader path; waits out an in-flight duplicate. */
     private fun readChunk(start: Long) {
         synchronized(lock) {
@@ -74,13 +75,13 @@ class RemoteVideo(
             catch(e: InterruptedException) { throw IOException("播放请求已取消") }
             if(closed) throw IOException("播放请求已取消")
             if(cache.containsKey(start)) return
-            fetchingRead=start
+            fetchingReads+=start
         }
         try {
             val chunk=fetchChunk(start)
-            synchronized(lock) { if(total==0L) total=chunk.total; if(!closed) cache[start]=chunk.bytes; fetchingRead=-1L; readerChunks++; fetchedBytes+=chunk.bytes.size; lock.notifyAll() }
+            synchronized(lock) { if(total==0L) total=chunk.total; if(!closed) cache[start]=chunk.bytes; fetchingReads.remove(start); readerChunks++; fetchedBytes+=chunk.bytes.size; lock.notifyAll() }
         } catch(e: Throwable) {
-            synchronized(lock) { fetchingRead=-1L; lock.notifyAll() }
+            synchronized(lock) { fetchingReads.remove(start); lock.notifyAll() }
             throw e
         }
     }
@@ -102,11 +103,24 @@ class RemoteVideo(
         if(prepared.samples.any { it.end>total }) throw IOException("视频样本超出资源大小")
         return this
     }
+    /** 相邻集只准备索引和媒体开头的一个分块，不启动持续预读。 */
+    @Synchronized fun preload(): RemoteVideo {
+        prepare()
+        val mediaStart=prepared.header.size.toLong()
+        if(mediaStart<total) readChunk(mediaStart-mediaStart%chunkBytes)
+        return this
+    }
     /** Bounded warm-up: parses the header, keeps the first chunk resident, starts read-ahead. */
     @Synchronized fun warm(): RemoteVideo {
         prepare()
-        synchronized(lock) { lastRead=0; ensureAheadLocked(); lock.notifyAll() }
+        synchronized(lock) { lastRead=0; readAheadEnabled=true; ensureAheadLocked(); lock.notifyAll() }
         return this
+    }
+    /** 暂存上一集时停止后台预读，只留开头与最后读取的分块，继续观看时由 read 自动恢复。 */
+    fun pauseReadAhead(cancelReads: Boolean=false) {
+        synchronized(lock) { readAheadEnabled=false; evictLocked(); lock.notifyAll() }
+        // 旧媒体源已移除时中断它尚未返回的读取，缓存及索引继续供新的媒体源使用。
+        if(cancelReads) synchronized(calls) { calls.toList().forEach { it.cancel() } }
     }
     private fun ensureAheadLocked() {
         if(aheadBytes<=0 || aheadThread!=null || closed || total<=chunkBytes) return
@@ -114,7 +128,7 @@ class RemoteVideo(
         thread.isDaemon=true; aheadThread=thread; thread.start()
     }
     private fun nextMissingLocked(): Long {
-        if(total<=0) return -1
+        if(!readAheadEnabled || total<=0) return -1
         val target=minOf(total,lastRead+aheadBytes)
         var at=lastRead-lastRead%chunkBytes
         while(at<target) { if(!cache.containsKey(at) && !inFlightLocked(at)) return at; at+=chunkBytes }
@@ -122,7 +136,7 @@ class RemoteVideo(
     }
     private fun evictLocked() {
         val floor=lastRead-lastRead%chunkBytes
-        cache.keys.filter { it!=0L && it<floor }.forEach { cache.remove(it) }
+        cache.keys.filter { it!=0L && (if(readAheadEnabled) it<floor else it!=floor) }.forEach { cache.remove(it) }
     }
     private fun aheadLoop() {
         while(true) {
@@ -156,7 +170,7 @@ class RemoteVideo(
         val end=minOf(total,start+length)
         synchronized(lock) {
             if(closed) throw IOException("播放请求已取消")
-            lastRead=start; ensureAheadLocked(); lock.notifyAll()
+            lastRead=start; readAheadEnabled=true; ensureAheadLocked(); lock.notifyAll()
         }
         var at=start
         while(at<end) {

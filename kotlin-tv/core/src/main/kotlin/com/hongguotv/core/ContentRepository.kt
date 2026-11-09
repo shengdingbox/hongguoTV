@@ -3,6 +3,7 @@ package com.hongguotv.core
 
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MediaType.Companion.toMediaType
 import org.json.JSONObject
@@ -54,7 +55,7 @@ data class ComicRanking(val positions: Map<String,RankPosition>, val totalPages:
 data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val ranking: ComicRanking? = null)
 /** One website genre selector entry; the slug selects the category path, ids echo back for validation. */
 data class Genre(val slug: String, val name: String, val ids: List<String>)
-data class StreamInfo(val url: String, val key: ByteArray?, val quality: String)
+data class StreamInfo(val url: String, val key: ByteArray?, val quality: String, val expiresAt: Long = 0L)
 /** 一次窗口取址的结果：[requested] 请求集数、[cached] 取址后可播放的集数、[batch] 本次批量新增、[route] 命中的路由。 */
 data class WarmReport(val requested: Int, val cached: Int, val batch: Int, val route: String?)
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
@@ -488,6 +489,9 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
     }
     private fun decodeEntities(value: String) = value.replace("&quot;","\"").replace("&lt;","<").replace("&gt;",">").replace("&#39;","'").replace("&amp;","&")
+    /** 重试、缓存过期或播放会话重建时，移除可能含有失效地址的旧模型。 */
+    fun invalidatePlayback(id: String) { modelCache.evict(id) }
+
     /** Fetch a direct MP4 URL for one episode.
      *  播放接口只答注册过的匿名设备：设备档案与签名头统一取自 [RemoteSigner]，本机不再注册身份。 */
     fun stream(id: String, maxQuality: Int = 1080): StreamInfo {
@@ -536,7 +540,12 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         if(!url.startsWith("https://") && !url.startsWith("http://")) throw IOException("播放地址无效")
         val key=item.str("spade_a").takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
         val quality=if(selected.first>0) "${selected.first}P"+(if(selected.first>maxQuality) "（兼容资源）" else "") else "自动"
-        return StreamInfo(url,key,quality)
+        // 时间戳兼容秒/毫秒；同时采用模型与 CDN 签名中最早的截止时间。
+        val parsed=url.toHttpUrlOrNull()
+        val expires=(listOf(model.optLong("expire_time"),model.optLong("url_expire"),info.optLong("expire_time"),info.optLong("url_expire"))+
+            listOf("x-expires","expires","expire","expire_time").mapNotNull { parsed?.queryParameter(it)?.toLongOrNull() })
+            .filter { it>0 }.map { if(it<1_000_000_000_000L) it*1000 else it }.minOrNull() ?: 0L
+        return StreamInfo(url,key,quality,expires)
     }
     /** 诊断用：每条清晰度给 `key:codec:高度:main_url形态/backup形态` 的紧凑摘要，条目间用分号，不再整段截断。 */
     private fun compactVideoList(videoList: JSONObject): String = videoList.keys().asSequence().mapNotNull { k ->

@@ -176,7 +176,6 @@ class MainActivity: Activity() {
     private val sleepTimer=SleepTimer { android.os.SystemClock.elapsedRealtime() }
     private var sleepStopped=false
     private var playerView: PlayerView?=null
-    private var keyHints: TextView?=null
     private var danmakuView: DanmakuView?=null
     private var danmakuLoader: DanmakuLoader?=null
     private lateinit var favoriteMonitor: FavoriteMonitor
@@ -3119,8 +3118,7 @@ class MainActivity: Activity() {
             }
             progressBar.onScrollStep={ delta -> seekTo(currentPosition()+delta) }
             hud.addView(progressBar,lp(-1,dp(if(touchPlayback) 48 else 26)))
-            keyHints=text(keyHintText(),if(touchPlayback) 11f else 13f,muted).apply { setPadding(0,dp(if(touchPlayback) 2 else 12),0,0) }; hud.addView(keyHints)
-            // 鼠标一动就把退出按钮与鼠标手势提示放出来；遥控一按（见 dispatchKeyEvent）再收回去
+            // 鼠标一动就显示退出按钮；遥控一按（见 dispatchKeyEvent）再收回去
             TvPointer.onHover(root) { if(!mouseSeen) { mouseSeen=true; refreshPointerUi() } }
             controls=column().apply { setPadding(0,dp(if(touchPlayback) 8 else 12),0,0); visibility=View.GONE }; hud.addView(controls)
             // 转圈单独挂在根布局正中央，不占底部 HUD 空间；播放失败自动重试时才可见。
@@ -3517,7 +3515,7 @@ class MainActivity: Activity() {
         val detector=GestureDetector(this,gestures)
         root.setOnTouchListener { _,e ->
             if(screen!="player") return@setOnTouchListener false
-            // 鼠标点一下就记住：控制条上的退出按钮与鼠标手势提示跟着出现
+            // 鼠标点一下就记住：控制条上的退出按钮跟着出现
             if(TvPointer.isPointer(e) && !mouseSeen) { mouseSeen=true; refreshPointerUi() }
             // 鼠标右键退出播放。TV 上很多遥控器把右键映射成 BACK（那条走 dispatchKeyEvent），
             // 这里接的是真正的鼠标次级键：插着鼠标的人下意识右键，不该什么反应都没有。
@@ -3533,21 +3531,9 @@ class MainActivity: Activity() {
         }
     }
 
-    /** 播放 hud 底部按键提示：跟随「遥控上下键」设置变化。 */
-    private fun keyHintText(): String {
-        if(touchPlayback) return "轻点画面显示/收起按钮 · 双击暂停/播放 · 拖动进度条定位 · 上下滑动换集"
-        val upDown=if(extras.dpadUpDownAction==PlaybackExtras.UPDOWN_SWITCH) "↓ 下一集    ↑ 上一集" else "↓ 选集    ↑ 更多"
-        val parts=mutableListOf("确认 暂停/播放","左右 快退/快进","长按右键 3× 快进",upDown,"长按菜单 快捷面板")
-        // 没在用鼠标就不提鼠标手势：屏幕上写着「拖进度条」，人伸手去摸遥控器只会更迷糊
-        if(mouseSeen) parts+="鼠标 拖进度条定位 · 条上滚轮 ±10 秒 · 上下滑换集 · 右键或右上角退出"
-        parts+="返回 收起 / 退出"
-        return parts.joinToString("    ")
-    }
-
-    /** 根据手机触屏、电视鼠标或遥控器更新退出入口与操作提示。 */
+    /** 根据手机触屏、电视鼠标或遥控器更新退出入口。 */
     private fun refreshPointerUi() {
         playerExit?.visibility=if(touchPlayback || mouseSeen) View.VISIBLE else View.GONE
-        keyHints?.text=keyHintText()
     }
 
     private fun canAutoHideHud(): Boolean {
@@ -3918,7 +3904,7 @@ class MainActivity: Activity() {
         lateinit var upDown: TextView
         upDown=button("遥控上下键  ·  ${upDownLabel()}") {
             extras.dpadUpDownAction=if(extras.dpadUpDownAction==PlaybackExtras.UPDOWN_SWITCH) PlaybackExtras.UPDOWN_PANEL else PlaybackExtras.UPDOWN_SWITCH
-            upDown.text="遥控上下键  ·  ${upDownLabel()}"; keyHints?.text=keyHintText()
+            upDown.text="遥控上下键  ·  ${upDownLabel()}"
         }
         listOf(step,speed,menu,upDown).forEachIndexed { index,view ->
             view.gravity=Gravity.START or Gravity.CENTER_VERTICAL // 弹窗选项一律左对齐，Button 默认居中
@@ -4469,7 +4455,7 @@ class MainActivity: Activity() {
         main.removeCallbacks(hideHud); main.removeCallbacks(seekRunnable); pendingSeek=null
         playerListener?.let { player?.removeListener(it) }; playerListener=null
         video?.let { android.util.Log.w("HongguoTV","Prefetch end ${it.stats()}") }
-        video?.close(); video=null; playerView?.player=null; playerView=null; keyHints=null; player?.release(); player=null; playbackReady=false; transportPlay=null; sleepButton=null
+        video?.close(); video=null; playerView?.player=null; playerView=null; player?.release(); player=null; playbackReady=false; transportPlay=null; sleepButton=null
         stopDanmaku(); danmakuView=null
         closeTransport(playbackHttp); playbackHttp=null
         playerScreenOn=false; refreshScreenOn()

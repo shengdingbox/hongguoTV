@@ -153,6 +153,22 @@ class ContentRepositoryTest {
         assertTrue(error.message!!.contains("密钥"))
     }
 
+    @Test fun `huluwa search drops rows the upstream repeats across pages`() {
+        // 上游按 offset 返回的是累积结果：第 2 页仍包含第 1 页那 3 条。
+        val pageOne = JSONArray().put(tvSeries("1","一")).put(tvSeries("2","二")).put(tvSeries("3","三"))
+        val pageTwo = JSONArray().put(tvSeries("1","一")).put(tvSeries("2","二")).put(tvSeries("3","三"))
+            .put(tvSeries("4","四")).put(tvSeries("5","五"))
+        val repo = ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
+            val offset = chain.request().url.queryParameter("offset")
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(JSONObject().put("code",200).put("message","ok").put("data",JSONObject()
+                    .put("items",if(offset=="0") pageOne else pageTwo).put("hasMore",true))
+                    .toString().toResponseBody()).build()
+        }.build(), serverUrl=SERVER, accessKey=KEY)
+        assertEquals(listOf("1","2","3"),repo.search("闪婚",1).items.map { it.id })
+        assertEquals(listOf("4","5"),repo.search("闪婚",2).items.map { it.id })
+    }
+
     @Test fun `huluwa home uses discover for short dramas`() {
         val repo = huluwa { request ->
             assertEquals("/api/tv/discover",request.url.encodedPath)

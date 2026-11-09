@@ -47,6 +47,8 @@ class ContentRepository(
     private val searchCursors=linkedMapOf<Triple<ContentType,String,Int>,SearchCursor>()
     /** 葫芦娃榜单游标：同一内容分类+子榜+页码对应后端下发的不透明游标。 */
     private val huluwaCursors=linkedMapOf<Triple<ContentType,String,Int>,HuluwaCursor>()
+    /** 葫芦娃搜索去重：内容类型+关键词+页码 → 截至该页已出现过的剧集 id。 */
+    private val searchSeen=linkedMapOf<Triple<ContentType,String,Int>,MutableSet<String>>()
     private fun text(url: String, signed: Signer.Request? = null): String {
         val request = Request.Builder().url(url).header("User-Agent",VendorConstants.VIDEO_UA).header("Accept-Language","zh-CN,zh;q=0.9")
         signed?.headers?.forEach { (k,v) -> request.header(k,v) }
@@ -93,7 +95,7 @@ class ContentRepository(
     }
     fun search(keyword: String, page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
         require(keyword.isNotBlank() && keyword.length<=80 && page in 1..100)
-        if(viaHuluwa) return huluwa.search(keyword,(page-1)*20)
+        if(viaHuluwa) return huluwaSearch(keyword,page,type)
         // The website search does not constrain content type. Never use it for comics.
         if(type==ContentType.COMIC) return appSearch(keyword,page,type)
         try { val result=appSearch(keyword,page,type); if(result.items.isNotEmpty() || !result.hasMore) return result } catch (e: Exception) { if(e is SearchSessionExpiredException) throw e; /* Website fallback for short dramas only. */ }
@@ -102,6 +104,27 @@ class ContentRepository(
         val rows=section.optJSONArray("searchList") ?: throw IOException("搜索数据结构已变化")
         val items=valid(rows.objects().map(::card))
         return CatalogPage(items,items.isNotEmpty() && page<100)
+    }
+    /**
+     * 葫芦娃搜索。上游按 offset 返回的是「从头开始的累积结果」，翻页会重复前面的条目，
+     * 因此按关键词累积记录已经出现过的剧集并过滤掉，只返回新增部分。
+     */
+    private fun huluwaSearch(keyword: String, page: Int, type: ContentType): CatalogPage {
+        val result=huluwa.search(keyword,(page-1)*20)
+        synchronized(searchSeen) {
+            // 序号 0 表示「本关键词已见集合」，与页码无关；重新从第 1 页搜时重置。
+            val key=Triple(type,keyword,0)
+            if(page<=1) {
+                searchSeen[key]=result.items.map { it.id }.toMutableSet()
+                return CatalogPage(result.items,result.hasMore && page<100)
+            }
+            val seen=searchSeen.getOrPut(key) { mutableSetOf() }
+            val items=result.items.filterNot { it.id in seen }
+            seen.addAll(items.map { it.id })
+            // 只保留最近几组查询，避免长期占用内存。
+            while(searchSeen.size>40) searchSeen.remove(searchSeen.keys.first())
+            return CatalogPage(items,result.hasMore && items.isNotEmpty() && page<100)
+        }
     }
     /** 葫芦娃首页：短剧取推荐（一条精选流），漫剧取漫剧热播榜。 */
     private fun huluwaHome(page: Int, type: ContentType): CatalogPage {

@@ -52,13 +52,13 @@ class LocalSignerTest {
     }
 
     @Test fun medusaKeyHashAndSeedMatchReference() {
-        val (hash, seed) = medusaKeyHashForTest(2_378_451_149)
+        val (hash, seed) = medusaKeyHashForTest(2_378_451_149.toInt())
         assertEquals("1b35023431b99a949ab7b70fc50a30216076492a6229d102a7a33fa3a1104170", hash.hex())
         assertEquals("b0dff9ff", seed.hex())
     }
 
     @Test fun xmxorMatchesReference() {
-        val (hash, _) = medusaKeyHashForTest(2_378_451_149)
+        val (hash, _) = medusaKeyHashForTest(2_378_451_149.toInt())
         assertEquals(
             "5c69c37694106e8cbdb2e074619a1dda6c5a5a65",
             xmxorForTest("0123456789abcdefghij".toByteArray(), hash).hex(),
@@ -67,12 +67,12 @@ class LocalSignerTest {
 
     @Test fun medusaMatchesReference() {
         val entropy = SignEntropy(
-            envLaunch = 103,
-            envPid = 11691,
-            nowSecs = 1_700_000_000,
+            envLaunch = 103L,
+            envPid = 11691L,
+            nowSecs = 1_700_000_000L,
             messageRandom = 1_273_073_252,
-            random = 2_378_451_149,
-            packedRandom = 2_253_366_658,
+            random = 2_378_451_149.toInt(),
+            packedRandom = 2_253_366_658.toInt(),
             gorgonRandom = 0,
             heliosRandom = 0,
         )

@@ -2258,7 +2258,7 @@ class MainActivity: Activity() {
         lateinit var checkButton: TextView
         checkButton=setting(about,"接口自检  ·  首页 / 搜索 / 播放") { showInterfaceCheck(checkButton) }
         val license=setting(about,"开源许可") {
-            TvDialog.info(this,"开源许可","本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\nBouncy Castle：MIT\n完整源码和许可证见 GitHub：jycao2/hongguoTV。").show()
+            TvDialog.info(this,"开源许可","本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\n请求签名由局域网签名服务生成，App 内不含签名算法。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\n完整源码和许可证见 GitHub：jycao2/hongguoTV。").show()
         }
         // 页脚固定在滚动区之外（屏幕底部居中）：始终可见，因此不再需要抢焦点
         val settingsFooter=text("红果TV  /  ${BuildConfig.VERSION_NAME}    ·    收藏与本机记录保存在设备 · 登录后可同步到红果账号",12f,muted).apply {

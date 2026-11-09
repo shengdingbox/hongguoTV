@@ -24,8 +24,8 @@ class DanmakuRepository(
     private val clock: () -> Long = System::currentTimeMillis,
     private val sleep: (Long) -> Unit = { Thread.sleep(it) },
     private val random: () -> Double = Math::random,
+    private val signer: RemoteSigner = RemoteSigner(),
 ) {
-    private val signer = Signer()
     // Negative means "no request yet": the first call must not sleep. Starting at 0 or
     // Long.MIN_VALUE breaks that — the former throttles a non-existent previous request,
     // the latter overflows the subtraction and sleeps effectively forever.
@@ -100,10 +100,10 @@ class DanmakuRepository(
 
     private fun post(vid: String, body: ByteArray): String {
         throttle()
-        VendorConstants.regenerate()
-        val signed = signer.sign("https://api5-normal-sinfonlinea.fqnovel.com/novel/commentapi/comment/list/$vid/v1/", VendorConstants.device, body)
+        // 设备身份与签名头都取自局域网签名服务，UA 与服务下发的档案保持一致。
+        val signed = signer.sign("https://api5-normal-sinfonlinea.fqnovel.com/novel/commentapi/comment/list/$vid/v1/", emptyMap(), body)
         val request = Request.Builder().url(signed.url)
-            .header("User-Agent", VendorConstants.VIDEO_UA)
+            .header("User-Agent", signer.profile().userAgent)
             .header("comment-source", "601")
             .header("server-channel", "1000")
             .apply { signed.headers.forEach { (key, value) -> header(key, value) } }

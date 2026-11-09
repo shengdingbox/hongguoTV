@@ -87,17 +87,17 @@ data class CloudReservation(
     val publishText: String = "",
 )
 
-class CloudAccountClient(private val http: OkHttpClient) {
+/**
+ * 账号相关请求。
+ *
+ * 登录态本身与设备无关，但请求仍需设备身份与签名：这些统一取自局域网签名服务
+ * （[RemoteSigner]），不再由本机注册或计算。
+ */
+class CloudAccountClient(private val http: OkHttpClient, private val signer: RemoteSigner = RemoteSigner()) {
+    /** 账号初始化用的匿名设备档案；注册由签名服务负责，这里只取它当前的身份。 */
     fun registerDevice(): DeviceRegister.Registered? {
-        val body = DeviceRegister.payload(VendorConstants.device)
-        val request = Request.Builder().url(DeviceRegister.url())
-        DeviceRegister.headers(body, VendorConstants.device).forEach { (k, v) ->
-            request.header(k, v)
-        }
-        request.post(body.toRequestBody("application/octet-stream".toMediaType()))
-        return http.newCall(request.build()).execute().use {
-            DeviceRegister.parse(cloudResponse(it), it.headers("Set-Cookie"))
-        }
+        val profile = runCatching { signer.profile() }.getOrNull() ?: return null
+        return DeviceRegister.Registered(profile.deviceId, profile.installId)
     }
 
     private fun json(
@@ -107,19 +107,12 @@ class CloudAccountClient(private val http: OkHttpClient) {
         body: ByteArray? = null,
         gzip: Boolean = false,
     ): JSONObject {
+        // 设备身份由签名服务下发，credentials 里的旧字段只在签名服务不可用时作兜底。
         val device =
-            VendorConstants.device.toMutableMap().apply {
+            linkedMapOf<String, String>().apply {
                 putAll(credentials.device)
-                put("device_id", credentials.deviceId)
-                put("iid", credentials.installId)
-                for (key in
-                    listOf(
-                        "version_code",
-                        "manifest_version_code",
-                        "update_version_code",
-                        "pv_player",
-                    )) put(key, if (body != null) "73932" else "72232")
-                put("version_name", if (body != null) "7.3.9.32" else "7.2.2.32")
+                if (credentials.deviceId.isNotBlank()) put("device_id", credentials.deviceId)
+                if (credentials.installId.isNotBlank()) put("iid", credentials.installId)
             }
         val wireBody =
             if (gzip && body != null)
@@ -129,9 +122,9 @@ class CloudAccountClient(private val http: OkHttpClient) {
                     .toByteArray()
             else body
         val signed =
-            Signer()
-                .sign("https://api5-normal-sinfonlinea.fqnovel.com$path", device + params, wireBody)
+            signer.sign("https://api5-normal-sinfonlinea.fqnovel.com$path", device + params, wireBody)
         val request = Request.Builder().url(signed.url).header("Cookie", credentials.cookie)
+            .header("User-Agent", signer.profile().userAgent)
         signed.headers.forEach { (k, v) -> request.header(k, v) }
         if (wireBody != null)
             request.post(wireBody.toRequestBody("application/json; charset=utf-8".toMediaType()))

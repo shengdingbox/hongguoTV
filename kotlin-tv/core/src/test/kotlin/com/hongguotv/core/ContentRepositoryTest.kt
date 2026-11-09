@@ -176,8 +176,8 @@ class ContentRepositoryTest {
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
                 .code(200).message("OK").body(respond(chain.request()).toResponseBody()).build()
         }.build(),clock,
-        // 播放身份固定，测试不真的去注册设备。
-        PlaybackDeviceSession { DeviceRegister.Registered("1905892595382586","1905892595378490") }
+        // 签名服务用进程内替身，测试不连局域网服务，身份保持固定。
+        FakeSigner()
     )
 
     private fun rankPayload(page: Int = 1, totalPages: Int = 2) = JSONObject()

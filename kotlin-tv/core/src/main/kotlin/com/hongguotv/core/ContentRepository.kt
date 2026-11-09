@@ -77,10 +77,9 @@ class MemoryCookies : okhttp3.CookieJar {
     }
 }
 
-open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).cookieJar(MemoryCookies()).build(), private val clock: () -> Long = System::currentTimeMillis, private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession.shared, private val modelCache: PlaybackModelCache = PlaybackModelCache()) {
+open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).cookieJar(MemoryCookies()).build(), private val clock: () -> Long = System::currentTimeMillis, private val signer: RemoteSigner = RemoteSigner(), private val modelCache: PlaybackModelCache = PlaybackModelCache()) {
     /** 同一份取址缓存、另一套传输：预取需要更短的超时，但必须和正式播放看到同一个缓存。 */
-    fun childTransport(http: OkHttpClient) = ContentRepository(http, clock, playbackSession, modelCache)
-    private val signer = Signer()
+    fun childTransport(http: OkHttpClient) = ContentRepository(http, clock, signer, modelCache)
     private val site = "https://hongguoduanju.com"
     private data class SearchCursor(val searchId: String, val passback: String, val offset: Int?, val updatedAt: Long)
     private val searchCursors=linkedMapOf<Triple<ContentType,String,Int>,SearchCursor>()
@@ -90,21 +89,18 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     @Volatile private var appSearchRetryAt=0L
     // 最近一次取播放模型成功的路由，下次优先复用，减少平台按请求量限流时的无效请求
     @Volatile private var goodRoute: String?=null
-    // 分类筛选接口只在较新客户端版本开放；版本号沿用参考实现验证过的取值，平台升级时集中改这里
-    private val discoveryVersion=mapOf(
-        "version_code" to "73532",
-        "manifest_version_code" to "73532",
-        "update_version_code" to "73532",
-        "pv_player" to "73532",
-        "version_name" to "7.3.5.32",
-    )
     private fun categoryPath(type: ContentType)=when(type) {
         ContentType.COMIC -> "comic-drama"
         ContentType.SHORT -> "real-drama"
         ContentType.AI -> "ai-drama"
     }
-    private fun text(url: String, signed: Signer.Request? = null): String {
-        val request = Request.Builder().url(url).header("User-Agent",VendorConstants.VIDEO_UA).header("Accept-Language","zh-CN,zh;q=0.9")
+    /** 官方接口统一走这里：签名头来自局域网签名服务，UA 也用服务下发的设备档案。 */
+    private fun text(url: String): String = text(url, null)
+
+    /** [signed] 非空时用签名服务给出的地址、请求头与 UA；为空时按普通网页请求处理。 */
+    private fun text(url: String, signed: SignedRequest?): String {
+        val request = Request.Builder().url(signed?.url ?: url).header("Accept-Language","zh-CN,zh;q=0.9")
+        request.header("User-Agent", if (signed != null) signer.profile().userAgent else VendorConstants.VIDEO_UA)
         signed?.headers?.forEach { (k,v) -> request.header(k,v) }
         signed?.body?.let { request.post(it.toRequestBody("application/json; charset=utf-8".toMediaType())) }
         return RequestScope.execute(http.newCall(request.build())) { response ->
@@ -114,7 +110,10 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             val input=body.byteStream(); val out=java.io.ByteArrayOutputStream(); val buffer=ByteArray(8192)
             while(out.size()<=16*1024*1024) { val n=input.read(buffer); if(n<0) break; out.write(buffer,0,n) }; val bytes=out.toByteArray()
             if(bytes.size > 16*1024*1024) throw IOException("内容响应过大")
-            if(bytes.isEmpty()) throw IOException("接口响应为空，请稍后重试")
+            // 受保护接口对「平台不认的设备身份」只回 HTTP 200 + 空体，这里给出可行动的提示。
+            if(bytes.isEmpty()) throw IOException(
+                if (signed != null) "接口返回空响应，签名服务设备可能已被限制，请稍后重试或执行签名服务恢复"
+                else "接口响应为空，请稍后重试")
             String(bytes,Charsets.UTF_8)
         }
     }
@@ -185,19 +184,19 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     }
     /** 高级搜索：按服务端下发的条件筛选剧集；条件变化后必须重取第 1 页才能拿到新的选项面板。 */
     fun filteredDiscovery(selection: DiscoverySelection, cursor: DiscoveryCursor? = null): FilteredDiscoveryPage {
-        val values=VendorConstants.device.toMutableMap().apply { putAll(discoveryVersion) }
+        // 客户端版本号由签名服务的设备档案统一提供，这里只传业务参数。
         val body=selection.request(cursor)
-        val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/reading/distribution/category/landpage/v/",values,body.toByteArray(Charsets.UTF_8))
+        val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/reading/distribution/category/landpage/v/",emptyMap(),body.toByteArray(Charsets.UTF_8))
         // 该接口与搜索接口同源，偶发空体或 5xx 时重试一次再判定失败
-        val raw=runCatching { text(signed.url,signed) }.getOrElse { first ->
+        val raw=runCatching { text(signed.url, signed) }.getOrElse { first ->
             Thread.sleep(300)
-            runCatching { text(signed.url,signed) }.getOrElse { throw first }
+            runCatching { text(signed.url, signed) }.getOrElse { throw first }
         }
         return DiscoveryParser.parse(raw,cursor==null)
     }
     // 站点搜索页已改为 SPA，数据由 /api/search/result/ 下发（返回 searchList/totalPages/hasMore，10 条一页）。
     private fun webSearch(keyword: String, page: Int, genre: String?): CatalogPage {
-        val url="$site/api/search/result/?query=${Signer.encode(keyword)}&page=$page"
+        val url="$site/api/search/result/?query=${encodePart(keyword)}&page=$page"
         // 该接口偶发 502，重试一次再判定失败，避免搜索页直接报错
         val body=runCatching { text(url) }.getOrElse { first ->
             Thread.sleep(300)
@@ -329,25 +328,16 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
         return found
     }
-    /** App 搜索/联想接口和播放接口一样按注册设备放行：未注册的随机身份只会拿到 HTTP 200 空体。 */
-    private fun searchValues(): MutableMap<String,String> {
-        val values=VendorConstants.device.toMutableMap()
-        for(k in listOf("version_code","manifest_version_code","update_version_code","pv_player")) values[k]="72232"
-        values["version_name"]="7.2.2.32"
-        runCatching { playbackSession.profile(http) }.getOrNull()?.values?.let { identity ->
-            for(k in listOf("device_id","iid","cdid")) identity[k]?.let { values[k]=it }
-        }
-        return values
-    }
+    /** App 搜索/联想接口和播放接口一样按注册设备放行，身份与版本号统一由签名服务档案决定。 */
+    private fun searchValues(): MutableMap<String,String> = linkedMapOf()
     private fun suggestRaw(query: String): List<String> {
         synchronized(suggestCache) { suggestCache[query]?.takeIf { clock()-it.first<300_000 }?.let { return it.second } }
         val result=runCatching {
             if(query.isBlank() || query.length>40) return emptyList()
-            VendorConstants.regenerate()
             val values=searchValues()
             values["query"]=query
             val signed=signer.sign("https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/suggest/v",values)
-            val data=JSONObject(text(signed.url,signed))
+            val data=JSONObject(text(signed.url, signed))
             if(data.optInt("code",-1)!=0) return emptyList()
             val rows=data.optJSONObject("data")?.optJSONArray("query_result") ?: return emptyList()
             (0 until rows.length()).map { rows.optString(it).trim() }.filter { it.isNotEmpty() }.distinct().take(20)
@@ -361,7 +351,6 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     private fun appSearch(keyword: String, page: Int, type: ContentType): CatalogPage {
         if(clock()<appSearchRetryAt) throw IOException("搜索接口暂不可用")
         val tabType=type.searchTab ?: throw IOException("${type.label}暂不支持搜索")
-        VendorConstants.regenerate()
         val values=searchValues()
         values.putAll(linkedMapOf("query" to keyword,"count" to "20","offset" to ((page-1)*20).toString(),"tab_type" to tabType.toString(),"bookshelf_search_plan" to "4","use_correct" to "true","user_is_login" to "0"))
         val cursor=synchronized(searchCursors) {
@@ -379,7 +368,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         var data: JSONObject? = null
         for(host in listOf("https://api5-normal-sinfonlinea.fqnovel.com","https://reading.snssdk.com")) {
             val signed=signer.sign("$host/reading/bookapi/search/tab/v",values)
-            val candidate=runCatching { JSONObject(text(signed.url,signed)) }.getOrNull() ?: continue
+            val candidate=runCatching { JSONObject(text(signed.url, signed)) }.getOrNull() ?: continue
             if(candidate.optInt("code",-1)==0) { data=candidate; break }
         }
         if(data==null) {
@@ -482,10 +471,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     }
     private fun decodeEntities(value: String) = value.replace("&quot;","\"").replace("&lt;","<").replace("&gt;",">").replace("&#39;","'").replace("&amp;","&")
     /** Fetch a direct MP4 URL for one episode.
-     *  The player API only answers registered anonymous devices: an unregistered `device_id`/`install_id`
-     *  pair gets `HTTP 200` with a zero-byte body. So the identity from [PlaybackDeviceSession] is written
-     *  into the query together with `_rticket`, and the response's `Set-Cookie` values ride along as a
-     *  `Cookie` header. No signature headers are involved in this call. */
+     *  播放接口只答注册过的匿名设备：设备档案与签名头统一取自 [RemoteSigner]，本机不再注册身份。 */
     fun stream(id: String, maxQuality: Int = 1080): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
         try {
@@ -499,7 +485,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             for(round in 1 until PLAYBACK_RETRY_ROUNDS) {
                 if(Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
                 modelCache.evict(id)
-                playbackSession.renew(http)
+                signer.recover()
                 if(round>1) Thread.sleep(RETRY_BACKOFF_MS*(round-1))
                 try {
                     val (level,preferAlt)=RETRY_PLANS[round-1]
@@ -560,16 +546,17 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return WarmReport(ids.size,cached+batch.filled,batch.filled,batch.route)
     }
     private data class Batch(val filled: Int, val route: String?)
-    /** 一次签名请求问一整窗；空体或全失败时换一台匿名设备再问一轮，仍失败就交给按需取址。 */
+    /** 一次签名请求问一整窗；空体或全失败时请签名服务换一台匿名设备再问一轮，仍失败就交给按需取址。 */
     private fun batchModels(ids: List<String>): Batch {
         val payload=batchPayload(ids)
-        sweepBatch(payload,ids,playbackSession.profile(http)).takeIf { it.filled>0 }?.let { return it }
-        return sweepBatch(payload,ids,playbackSession.renew(http))
+        sweepBatch(payload,ids).takeIf { it.filled>0 }?.let { return it }
+        signer.recover()
+        return sweepBatch(payload,ids)
     }
-    private fun sweepBatch(payload: ByteArray, ids: List<String>, identity: PlaybackDeviceSession.Profile): Batch {
+    private fun sweepBatch(payload: ByteArray, ids: List<String>): Batch {
         for(path in BATCH_ROUTES) {
             val body=try {
-                RequestScope.execute(http.newCall(playerRequest(path,payload,identity))) { response ->
+                RequestScope.execute(http.newCall(playerRequest(path,payload))) { response ->
                     if(!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
                     response.body?.string().orEmpty()
                 }
@@ -620,31 +607,22 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             .toString()
             .toByteArray()
     }
-    /** 2026-11-05 起播放接口改用新五头签名；查询串客户端版本对齐签名内嵌的 7.3.5.32。 */
-    private fun playbackValues(identity: PlaybackDeviceSession.Profile) = identity.values + mapOf(
-        "version_code" to "73532",
-        "manifest_version_code" to "73532",
-        "update_version_code" to "73532",
-        "pv_player" to "73532",
-        "version_name" to "7.3.5.32",
-    )
-    private fun signedBuilder(signed: Signer.Request, identity: PlaybackDeviceSession.Profile): Request.Builder =
+    /** 播放请求：签名头由签名服务生成，UA 用服务下发的设备档案，身份不再由本机注册。 */
+    private fun signedBuilder(signed: SignedRequest): Request.Builder =
         Request.Builder().url(signed.url).apply {
+            header("User-Agent", signer.profile().userAgent)
             signed.headers.forEach { (key,value) -> header(key,value) }
-            if(identity.cookie.isNotBlank()) header("Cookie",identity.cookie)
         }
-    private fun playerRequest(path: String,payload: ByteArray,identity: PlaybackDeviceSession.Profile): Request {
-        val signed=signer.signPlayback("https://api5-normal-sinfonlineb.fqnovel.com$path",playbackValues(identity),payload,PLAYBACK_UA)
-        return signedBuilder(signed,identity)
+    private fun playerRequest(path: String,payload: ByteArray): Request {
+        val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com$path", linkedMapOf(), payload)
+        return signedBuilder(signed)
             .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
     }
     /** 官方 App 现行的播放模型接口：`GET /reading/bookapi/video_tab/multi_video_model/v1/`。
-     *  2026-11-02 起旧的 `/novel/player/` 接口族对所有请求返回 HTTP 200 + 0 字节（多域名、多 UA、
-     *  签名与匿名身份均如此），而这条 GET 接口同刻正常返回 `code 0` 与完整 `video_list`。
      *  参数取自官方 `GetVideoModelRequest` 的 snake_case 字段，缺任一字段会回 `100103`。
-     *  失败一律返回 null，由调用方回退旧接口，不改变旧的空响应与身份轮换语义。 */
-    private fun tabVideoModel(id: String, identity: PlaybackDeviceSession.Profile, level: Int = 1, preferAlt: Boolean = false): JSONObject? {
+     *  失败一律返回 null，由调用方回退旧接口。 */
+    private fun videoTabModel(id: String, level: Int = 1, preferAlt: Boolean = false): JSONObject? {
         val extra=linkedMapOf(
             "video_id" to id, "video_id_type" to "0", "device_level" to level.toString(),
             "need_all_video_definition" to "1", "need_mp4_align" to "0",
@@ -658,8 +636,8 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // preferAlt：重试诊断用，优先探测备用主机（两个主机可能落在不同后端集群）。
         val ordered=if(preferAlt) hosts.reversed() else hosts
         for(base in ordered) {
-            val signed=signer.signPlayback(base,playbackValues(identity)+extra,null,PLAYBACK_UA)
-            val request=signedBuilder(signed,identity).get().build()
+            val signed=signer.sign(base,extra)
+            val request=signedBuilder(signed).get().build()
             val body=try {
                 RequestScope.execute(http.newCall(request)) { response ->
                     if(!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
@@ -682,10 +660,10 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
         return null
     }
-    /** 播放模型：官方现行的 `video_tab` 接口优先，失败再走旧 `/novel/player/` 多路由兜底。
+    /** 播放模型：官方现行的 `video_tab` GET 接口优先，失败再走 `/novel/player/` 多路由兜底。
      *  旧接口按「旧路径 → 新路径 → 带场景段」依次尝试，第一个能取到 `video_model` 的用；
      *  记住上次成功的路由优先复用、其余路由各试一次，避免把请求量放大。
-     *  空响应基本是「当前匿名身份已被站方用尽」：立刻换一台匿名设备再扫一轮，仍空才算失败。 */
+     *  空响应基本是「当前匿名身份已被站方用尽」：请签名服务换一台匿名设备再扫一轮，仍空才算失败。 */
     private fun videoModel(id: String, level: Int = 1, preferAlt: Boolean = false): JSONObject {
         modelCache.get(id,clock())?.let { return it }
         val model=fetchVideoModel(id,level,preferAlt).put(LEVEL_KEY,level)
@@ -693,8 +671,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return model
     }
     private fun fetchVideoModel(id: String, level: Int = 1, preferAlt: Boolean = false): JSONObject {
-        val identity=playbackSession.profile(http)
-        tabVideoModel(id,identity,level,preferAlt)?.let { return it }
+        videoTabModel(id,level,preferAlt)?.let { return it }
         // 与 video_tab 保持同一 device_level（可诊断轮换）：部分剧集在 3 下会把 360P–720P 全发成
         // bytevc2（MP4 提取器读不出视频轨），只剩超出电视解码上限的 1080P bytevc1，降档无路可走。
         val biz="""{"detail_page_version":0,"device_level":$level,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024}"""
@@ -712,17 +689,18 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             if(good!=null && routes.containsKey(good)) add(good to routes.getValue(good))
             for((path,payload) in routes) if(path!=good) add(path to payload)
         }
-        val first=sweepRoutes(ordered,identity)
+        val first=sweepRoutes(ordered)
         first.model?.let { model -> goodRoute=first.path; return model }
-        // 空体基本都发生在「当前匿名身份已经被站方用尽」之后：立刻换一台匿名设备再扫一轮。
+        // 空体基本都发生在「当前匿名身份已经被站方用尽」之后：请签名服务换一台匿名设备再扫一轮。
         // 不把第一次失败抛给播放器——否则每次手动切集都要先走一遍可见的自动重试。
-        val healed=sweepRoutes(ordered,playbackSession.renew(http))
+        signer.recover()
+        val healed=sweepRoutes(ordered)
         healed.model?.let { model -> goodRoute=healed.path; return model }
         if(first.allBlank || healed.allBlank) throw EmptyPlaybackResponseException()
         throw healed.failure ?: IOException("播放信息为空")
     }
     /** 一轮路由扫描：首条路由原地重发一次，其余路由各发一次，尽量少的请求量覆盖所有候选。 */
-    private fun sweepRoutes(routes: List<Pair<String,ByteArray>>, identity: PlaybackDeviceSession.Profile): Sweep {
+    private fun sweepRoutes(routes: List<Pair<String,ByteArray>>): Sweep {
         var allBlank=true
         var failure: IOException?=null
         for((index,pair) in routes.withIndex()) {
@@ -731,7 +709,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             val attempts=if(index==0) BLANK_RETRIES else 1
             for(attempt in 0 until attempts) {
                 if(Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
-                val body=RequestScope.execute(http.newCall(playerRequest(path,payload,identity))) { response ->
+                val body=RequestScope.execute(http.newCall(playerRequest(path,payload))) { response ->
                     if(!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
                     response.body?.string().orEmpty()
                 }
@@ -769,8 +747,6 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // （2026-10-13 用站点自带的漫剧热播榜与短剧分类列表逐条核对确认）。
         private const val COMIC_WEB_GENRE="205"
         private const val SHORT_WEB_GENRE="203"
-        // 播放链路指纹对齐新签名算法内嵌的 7.3.5.32 客户端版本。
-        private const val PLAYBACK_UA="com.phoenix.read/73532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)"
         // 首条路由的空响应重发次数与退避：网关抖动时先原地重试，再换下一条路由。
         private const val BLANK_RETRIES=2
         private const val BLANK_BACKOFF_MS=400L

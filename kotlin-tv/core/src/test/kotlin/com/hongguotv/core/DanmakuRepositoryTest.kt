@@ -43,7 +43,7 @@ class DanmakuRepositoryTest {
             Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
                 .body(respond(start, payload.optString("cursor")).toResponseBody()).build()
         }.build()
-        return DanmakuRepository(http, { now }, { sleeps += it }, { 0.0 })
+        return DanmakuRepository(http, { now }, { sleeps += it }, { 0.0 }, FakeSigner())
     }
 
     @Test fun windowParsesAnchoredCommentsAndNextStart() {
@@ -166,7 +166,7 @@ class DanmakuLoaderTest {
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
                 .body(respond(start).toResponseBody()).build()
         }.build()
-        val repo = DanmakuRepository(http, { now }, { }, { 0.0 })
+        val repo = DanmakuRepository(http, { now }, { }, { 0.0 }, FakeSigner())
         return DanmakuLoader(repo, "123", "999", durationMs, leadMs, { now }) to requested
     }
 

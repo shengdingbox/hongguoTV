@@ -44,6 +44,8 @@ remote_port = 8901
 - **身份以档案为准**：签名服务会拒绝与档案不符的 `device_id` / `iid`。因此 `RemoteSigner.sign()` 一律用 `/info` 下发的参数拼查询串：版本号、机型、渠道等身份字段由服务决定；`query`、`offset`、`video_id` 等业务参数由客户端提供。
 - **UA 同步**：受保护接口的 `User-Agent` 必须与档案声明的一致（例如 `com.phoenix.read/73932 (...)`），`RemoteSigner.profile().userAgent` 提供该值。
 - **空响应含义**：平台对未注册或已被限制的设备只回 `HTTP 200` + 0 字节。播放链路遇到空体会调用 `/recover` 换设备再试；搜索接口空响应则回退到官网搜索。
+- **取址接口的配额差异（2026-11-09 实测）**：单集接口 `GET /reading/bookapi/video_tab/video_model/v`（参数 `video_id` / `source` / `need_all_video_definition`）对同一匿名设备可连续请求，实测 12/12 全部返回模型；多集接口 `video_tab/multi_video_model/v1/` 对匿名设备近乎一次性配额（第 1 次成功后持续空响应，换主机也只能再成功一次），首主机空时换 `api5-normal-sinfonlinea` 还能再取到一次，说明配额按「设备 + 主机」计。
+  因此单集取址优先走前者，多集接口仅作兜底；批量预热也只走单集接口，不再消耗多集配额。改动前曾因把多集接口当主路由，导致界面长时间停在「正在获取播放地址…」。
 - **设备身份不做本地持久化**：由签名服务持有；电视端每次启动重新取一次档案并缓存，`recover` 后缓存失效。
 
 ## 验证方法

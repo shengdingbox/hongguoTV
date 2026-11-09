@@ -193,6 +193,8 @@ class MainActivity: Activity() {
     private var ffActive=false
     private var ffSpeedBefore=1f
     private var retryPosition=0L
+    /** 本轮「正在获取播放地址」的起始时刻，用于在界面上显示已经等待了多久。 */
+    private var addressRequestedAt=0L
     private var requestedAutoplay=true
     private var retryAutoplay=true
     private var foreground=false
@@ -3109,8 +3111,11 @@ class MainActivity: Activity() {
             root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled=false; addView(hud) },FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
         }
         playbackTitle.text="${data.series.title}  ·  第 ${episodeIndex+1} 集"
+        addressRequestedAt=android.os.SystemClock.elapsedRealtime()
         playbackText.text="正在获取播放地址…"; progressBar.progress=0; progressBar.visibility=View.VISIBLE; hidePlaybackOverlay()
-        controls.removeAllViews(); controls.visibility=View.GONE; recoverySpinner?.visibility=View.GONE; transportPlay=null; sleepButton=null
+        // hud 默认隐藏，取址期间屏幕是全黑的：单独挂一个转圈，用户至少知道没死机。
+        recoverySpinner?.visibility=View.VISIBLE
+        controls.removeAllViews(); controls.visibility=View.GONE; transportPlay=null; sleepButton=null
         syncMediaSession()
         val requestedId=data.episodes[episodeIndex]; val maxQuality=effectiveQuality(); val ticket=generation
         // 每集最多自动降两档，换集后重新计数，避免一集失败就把整部剧拖到最低画质。
@@ -3118,6 +3123,8 @@ class MainActivity: Activity() {
         work({ playbackCache.load(requestedId,maxQuality) }, { prepared ->
             val remote=prepared.video
             video=remote; quality=remote.info.quality
+            // 取址成功，后面的「缓冲」交给 PlayerView 自己的缓冲圈。
+            recoverySpinner?.visibility=View.GONE
             val p=player ?: run {
                 val load=DefaultLoadControl.Builder().setBufferDurationsMs(20000,50000,1000,5000).setTargetBufferBytes(32*1024*1024).build()
                 val renderers=androidx.media3.exoplayer.DefaultRenderersFactory(this).setEnableDecoderFallback(true)
@@ -3519,7 +3526,20 @@ class MainActivity: Activity() {
         val danmakuOn=library.danmaku && detail?.series?.id?.let { extras.danmakuEnabled(it,true) }!=false
         playbackStatus.text=listOfNotNull(quality.ifBlank { null },PlaybackSpeed.label(player?.playbackParameters?.speed ?: effectiveSpeed()),"弹幕 "+(if(danmakuOn) "开" else "关")).joinToString("   ·   ")
         if(sleepStopped) { playbackText.text="定时停止已生效 · 观看位置已保存 · 按播放可继续"; return }
-        if(!playbackReady) { playbackText.text=(if(!requestedAutoplay) "准备后保持暂停 · " else "")+if(video==null) "正在获取播放地址…" else "正在缓冲…"; return }
+        if(!playbackReady) {
+            // 取址失败后的自动重试每轮都要重走一遍接口，界面上必须看得见「还在动」，
+            // 否则和真的卡死无法区分：带上重试次数与耗时。
+            val elapsed=if(addressRequestedAt<=0) 0L else (android.os.SystemClock.elapsedRealtime()-addressRequestedAt)/1000
+            val pauseHint=if(!requestedAutoplay) "准备后保持暂停 · " else ""
+            val fetching=when {
+                video!=null -> "正在缓冲…"
+                recovery.attempts>0 -> "正在获取播放地址…（自动重试 ${recovery.attempts}/3 · 已等 ${elapsed} 秒）"
+                elapsed>=8 -> "正在获取播放地址…（已等 ${elapsed} 秒，网络或片源较慢）"
+                else -> "正在获取播放地址…"
+            }
+            playbackText.text=pauseHint+fetching
+            return
+        }
         val p=player ?: return
         val duration=p.duration.coerceAtLeast(0); val position=pendingSeek ?: p.currentPosition
         val state=when { ffActive -> "3× 快进中"; p.playbackState==Player.STATE_BUFFERING -> "缓冲中"; p.playbackState==Player.STATE_ENDED -> "本集已结束"; !p.playWhenReady -> "已暂停"; else -> "正在播放" }

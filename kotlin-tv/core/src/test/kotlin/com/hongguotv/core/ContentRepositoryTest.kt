@@ -59,8 +59,8 @@ class ContentRepositoryTest {
             if(request.url.host=="example.com") {
                 val rows=JSONObject().put("video_0",JSONObject().put("vheight",720).put("codec_type","bytevc2").put("main_url","qAABAAAA=="))
                 JSONObject().put("video_info",JSONObject().put("data",JSONObject().put("video_list",rows))).toString()
-            } else if(request.url.encodedPath==tabPath)
-                """{"code":0,"data":{"video_model_data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}}"""
+            } else if(request.url.encodedPath==singlePath)
+                """{"code":0,"data":{"video_model":{"fallback_api":"https://example.com/stream"}}}"""
             else ""
         }
         val error=assertThrows(UnplayableVideoException::class.java) { repo.stream("123",1080) }
@@ -107,7 +107,64 @@ class ContentRepositoryTest {
 
     private fun videoInfo() =
         """{"video_info":{"data":{"video_list":{"video_0":{"vheight":1080,"codec_type":"h264","main_url":"https://example.com/a.mp4"}}}}}"""
+    // 单集取址接口：现在的主力路由。
+    private val singlePath="/reading/bookapi/video_tab/video_model/v"
+    // 多集取址接口：对匿名设备近乎一次性配额，只作兜底。
     private val tabPath="/reading/bookapi/video_tab/multi_video_model/v1/"
+
+    @Test fun singleEpisodeRouteIsPreferredOverMultiRoute() {
+        val paths=mutableListOf<String>()
+        val repo=repository { request ->
+            paths += request.url.encodedPath
+            when {
+                request.url.host=="example.com" -> videoInfo()
+                request.url.encodedPath==singlePath ->
+                    """{"code":0,"data":{"video_model":{"fallback_api":"https://example.com/stream"}}}"""
+                request.url.encodedPath==tabPath ->
+                    """{"code":0,"data":{"video_model_data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}}"""
+                else -> ""
+            }
+        }
+        assertEquals("1080P",repo.stream("123").quality)
+        assertEquals(singlePath,paths.first())
+        // 单集接口成功时不应再碰一次性配额的多集接口。
+        assertFalse(paths.contains(tabPath))
+    }
+
+    @Test fun multiRouteStillWorksWhenSingleRouteIsBlank() {
+        val paths=mutableListOf<String>()
+        val repo=repository { request ->
+            paths += request.url.encodedPath
+            when {
+                request.url.host=="example.com" -> videoInfo()
+                request.url.encodedPath==singlePath -> ""
+                request.url.encodedPath==tabPath ->
+                    """{"code":0,"data":{"video_model_data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}}"""
+                else -> ""
+            }
+        }
+        assertEquals("1080P",repo.stream("123").quality)
+        assertTrue(paths.contains(singlePath))
+        assertTrue(paths.contains(tabPath))
+    }
+
+    @Test fun nonBlankErrorWithoutRecoveryFailsFast() {
+        // 非空体表示站方明确拒绝（有错误码），换设备重扫没有意义：
+        // 应只试第一条旧 POST 路由就失败，而不是把五条路由和 recover 后的第二轮全部走完。
+        val postRoutes=mutableListOf<String>()
+        val repo=repository { request ->
+            when {
+                request.url.host=="example.com" -> videoInfo()
+                request.url.encodedPath.startsWith("/novel/player/") -> {
+                    postRoutes += request.url.encodedPath
+                    """{"code":100103,"message":"参数错误"}"""
+                }
+                else -> """{"code":100103,"message":"参数错误"}"""
+            }
+        }
+        assertThrows(IOException::class.java) { repo.stream("123") }
+        assertEquals(listOf("/novel/player/multi_video_model/v1/"),postRoutes)
+    }
 
     @Test fun videoTabRouteSuppliesPlaybackModel() {
         val paths=mutableListOf<String>()
@@ -115,13 +172,15 @@ class ContentRepositoryTest {
             paths += request.url.encodedPath
             when {
                 request.url.host=="example.com" -> videoInfo()
+                request.url.encodedPath==singlePath -> ""
                 request.url.encodedPath==tabPath ->
                     """{"code":0,"data":{"video_model_data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}}"""
                 else -> ""
             }
         }
         assertEquals("1080P",repo.stream("123").quality)
-        assertEquals(tabPath,paths.first())
+        assertTrue(paths.contains(singlePath))
+        assertTrue(paths.contains(tabPath))
     }
 
     @Test fun newRouteVideoModelCanBeStringEncodedJson() {
@@ -133,28 +192,25 @@ class ContentRepositoryTest {
         assertEquals("1080P",repo.stream("123").quality)
     }
 
-    @Test fun warmFillsAWholeWindowInOneBatchAndSubsequentLookupHitsCache() {
+    @Test fun warmPrefetchesEachEpisodeThroughTheRepeatableSingleRoute() {
         val modelRequests=mutableListOf<String>()
         val repo=repository { request ->
             when {
                 request.url.host=="example.com" -> videoInfo()
-                request.url.encodedPath.startsWith("/novel/player/multi_video_model/") -> {
+                // 预热只能走可重复请求的单集接口；一次性配额的多集接口不能碰。
+                request.url.encodedPath==singlePath -> {
                     modelRequests += request.url.encodedPath
-                    val rows=JSONObject()
-                    listOf("1","2","3").forEach { id ->
-                        rows.put(id,JSONObject().put("video_model",JSONObject().put("fallback_api","https://example.com/stream")))
-                    }
-                    JSONObject().put("code",0).put("data",rows).toString()
+                    """{"code":0,"data":{"video_model":{"fallback_api":"https://example.com/stream"}}}"""
                 }
                 else -> ""
             }
         }
         val report=repo.warm(listOf("1","2","3"))
         assertEquals(3,report.cached)
-        assertEquals(1,modelRequests.size)
+        assertEquals(3,modelRequests.size)
         assertEquals("1080P",repo.stream("3").quality)
-        // 批量取过的集不再单独问一次模型接口。
-        assertEquals(1,modelRequests.size)
+        // 预热过的集不再单独问一次模型接口。
+        assertEquals(3,modelRequests.size)
     }
 
     @Test fun blankRouteFallsBackToNextRoute() {
@@ -166,7 +222,7 @@ class ContentRepositoryTest {
             else """{"data":{"video_model":{"fallback_api":"https://example.com/stream"}}}"""
         }
         assertEquals("1080P",repo.stream("123").quality)
-        assertEquals(tabPath,paths.first())
+        assertEquals(singlePath,paths.first())
         assertTrue(paths.contains("/novel/player/multi_video_model/v1/"))
         assertTrue(paths.contains("/novel/player/video_model/v1/"))
     }

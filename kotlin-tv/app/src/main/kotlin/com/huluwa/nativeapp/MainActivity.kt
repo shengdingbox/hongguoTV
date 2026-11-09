@@ -72,6 +72,7 @@ class MainActivity: Activity() {
     private val main=Handler(Looper.getMainLooper())
     private val io=Executors.newFixedThreadPool(3)
     private val repository=ContentRepository()
+    private val touchPlayback by lazy { TouchControls.isHandheld(this) }
     private val randomRecommender by lazy {
         val raw=getSharedPreferences("random_pool", MODE_PRIVATE).getString("pool", null)
         val items=raw?.let { RandomPoolSnapshot.decode(it, System.currentTimeMillis()) } ?: emptyList()
@@ -397,7 +398,7 @@ class MainActivity: Activity() {
     private var panel=false
     private var transportPlay: TextView?=null
     private var sleepButton: TextView?=null
-    /** 播放页右上角的鼠标退出按钮：只在最近一次操作来自鼠标时出现，见 [TvPointer]。 */
+    /** 手机始终显示退出按钮；电视在使用鼠标时显示，见 [TvPointer]。 */
     private var playerExit: TextView?=null
     /** 最近一次操作是不是鼠标做的：遥控一按就翻回 false，按钮随之收起。 */
     private var mouseSeen=false
@@ -444,7 +445,7 @@ class MainActivity: Activity() {
             main.postDelayed(this,1000)
         }
     }
-    private val hideHud=Runnable { if(screen=="player" && !panel && player?.isPlaying==true && !playError) hidePlaybackOverlay() }
+    private val hideHud=Runnable { if(screen=="player" && canAutoHideHud() && player?.isPlaying==true && !playError) hidePlaybackOverlay() }
     private val seekRunnable=Runnable { pendingSeek?.let { player?.seekTo(it) }; pendingSeek=null }
     private fun dp(value: Number)=(value.toFloat()*resources.displayMetrics.density).toInt()
     private fun widthDp()=resources.displayMetrics.widthPixels/resources.displayMetrics.density
@@ -472,6 +473,7 @@ class MainActivity: Activity() {
     private fun row()=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
     private fun focusStyle(view: View,selected: Boolean=false) {
         view.id=View.generateViewId(); view.isFocusable=true; view.isFocusableInTouchMode=true
+        TouchControls.focusOnTouch(view)
         fun paint(focused: Boolean) { view.background=rounded(if(focused) TvStyle.raised else if(selected) TvStyle.selectedSurface else surface,if(focused) accent else Color.TRANSPARENT) }
         paint(false); view.setOnFocusChangeListener { _,focused -> paint(focused) }
     }
@@ -3114,14 +3116,18 @@ class MainActivity: Activity() {
             danmakuLayer.setBlockedFilter { text -> extras.blocks(text) }
             danmakuLayer.applyPrefs(library.danmakuOpacity,library.danmakuFont,library.danmakuSpeed,library.danmakuRows)
             root.addView(danmakuLayer,FrameLayout.LayoutParams(-1,(resources.displayMetrics.heightPixels*.38f).toInt(),Gravity.TOP).apply { topMargin=dp(12) })
-            hud=column().apply { setPadding(dp(widthDp()*.05f),dp(20),dp(widthDp()*.05f),(resources.displayMetrics.heightPixels*.05f).toInt()); background=GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,intArrayOf(Color.TRANSPARENT,Color.argb(240,11,15,21))) }
-            playbackTitle=text("",23f).apply { maxLines=1; ellipsize=TextUtils.TruncateAt.END; setTypeface(null,Typeface.BOLD) }
-            // 标题行右侧留一个鼠标能点的退出：遥控用户按返回键，插鼠标的用户不该只剩键盘快捷键。
-            // 默认收起，等鼠标真的动了/点了才放出来——遥控用户看到一颗点不到的按钮只会更困惑。
+            hud=column().apply {
+                val horizontal=if(touchPlayback) dp(16) else dp(widthDp()*.05f)
+                setPadding(horizontal,dp(if(touchPlayback) 8 else 20),horizontal,if(touchPlayback) dp(12) else (resources.displayMetrics.heightPixels*.05f).toInt())
+                background=GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,intArrayOf(Color.TRANSPARENT,Color.argb(240,11,15,21)))
+            }
+            playbackTitle=text("",if(touchPlayback) 17f else 23f).apply { maxLines=1; ellipsize=TextUtils.TruncateAt.END; setTypeface(null,Typeface.BOLD) }
+            // 手机始终提供可点的退出入口，电视遥控操作时仍隐藏。
             val titleRow=row().apply { gravity=Gravity.CENTER_VERTICAL }
             titleRow.addView(playbackTitle,lp(0,-2).apply { weight=1f })
             val exitPlay=text("✕ 退出",13f,muted).apply {
                 isFocusable=false; isClickable=true
+                minHeight=dp(if(touchPlayback) 48 else 32); gravity=Gravity.CENTER
                 setPadding(dp(12),dp(5),dp(12),dp(5))
                 background=rounded(Color.argb(96,0,0,0),TvStyle.outline)
                 setOnClickListener { returnToDetail() }
@@ -3130,10 +3136,10 @@ class MainActivity: Activity() {
             playerExit=exitPlay
             titleRow.addView(exitPlay,lp(-2,-2))
             hud.addView(titleRow)
-            playbackStatus=text("",14f,gold).apply { setPadding(0,dp(6),0,0); maxLines=1 }
+            playbackStatus=text("",if(touchPlayback) 12f else 14f,gold).apply { setPadding(0,dp(if(touchPlayback) 2 else 6),0,0); maxLines=1 }
             hud.addView(playbackStatus)
-            playbackText=text("",15f,muted).apply { setPadding(0,dp(7),0,dp(9)) }; hud.addView(playbackText)
-            // 进度条自己画轨道与滑块：轨道 4dp、可点区域 26dp，鼠标/手指按住就能拖
+            playbackText=text("",if(touchPlayback) 13f else 15f,muted).apply { setPadding(0,dp(if(touchPlayback) 4 else 7),0,dp(if(touchPlayback) 2 else 9)) }; hud.addView(playbackText)
+            // 进度条轨道 4dp，手机触摸区域 48dp，电视鼠标区域 26dp。
             progressBar=PlaybackSeekBar(this).apply { max=1000 }
             progressBar.onScrubPreview=preview@{ ratio ->
                 val p=player ?: return@preview
@@ -3149,11 +3155,11 @@ class MainActivity: Activity() {
                 if(final) seekTo((duration*ratio).toLong())
             }
             progressBar.onScrollStep={ delta -> seekTo(currentPosition()+delta) }
-            hud.addView(progressBar,lp(-1,dp(26)))
-            keyHints=text(keyHintText(),13f,muted).apply { setPadding(0,dp(12),0,0) }; hud.addView(keyHints)
+            hud.addView(progressBar,lp(-1,dp(if(touchPlayback) 48 else 26)))
+            keyHints=text(keyHintText(),if(touchPlayback) 11f else 13f,muted).apply { setPadding(0,dp(if(touchPlayback) 2 else 12),0,0) }; hud.addView(keyHints)
             // 鼠标一动就把退出按钮与鼠标手势提示放出来；遥控一按（见 dispatchKeyEvent）再收回去
             TvPointer.onHover(root) { if(!mouseSeen) { mouseSeen=true; refreshPointerUi() } }
-            controls=column().apply { setPadding(0,dp(12),0,0); visibility=View.GONE }; hud.addView(controls)
+            controls=column().apply { setPadding(0,dp(if(touchPlayback) 8 else 12),0,0); visibility=View.GONE }; hud.addView(controls)
             // 转圈单独挂在根布局正中央，不占底部 HUD 空间；播放失败自动重试时才可见。
             recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { indeterminateTintList=android.content.res.ColorStateList.valueOf(accent); visibility=View.GONE }
             root.addView(recoverySpinner,FrameLayout.LayoutParams(dp(56),dp(56),Gravity.CENTER))
@@ -3535,7 +3541,14 @@ class MainActivity: Activity() {
             }
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 if(screen!="player" || playError) return false
-                if(hud.visibility==View.VISIBLE && !panel) hidePlaybackOverlay() else showHud()
+                if(touchPlayback) {
+                    if(hud.visibility==View.VISIBLE) hidePlaybackOverlay() else showPanel()
+                } else if(hud.visibility==View.VISIBLE && !panel) hidePlaybackOverlay() else showHud()
+                return true
+            }
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                if(!touchPlayback || screen!="player" || playError) return false
+                togglePlayback()
                 return true
             }
         }
@@ -3560,6 +3573,7 @@ class MainActivity: Activity() {
 
     /** 播放 hud 底部按键提示：跟随「遥控上下键」设置变化。 */
     private fun keyHintText(): String {
+        if(touchPlayback) return "轻点画面显示/收起按钮 · 双击暂停/播放 · 拖动进度条定位 · 上下滑动换集"
         val upDown=if(extras.dpadUpDownAction==PlaybackExtras.UPDOWN_SWITCH) "↓ 下一集    ↑ 上一集" else "↓ 选集    ↑ 更多"
         val parts=mutableListOf("确认 暂停/播放","左右 快退/快进","长按右键 3× 快进",upDown,"长按菜单 快捷面板")
         // 没在用鼠标就不提鼠标手势：屏幕上写着「拖进度条」，人伸手去摸遥控器只会更迷糊
@@ -3568,21 +3582,35 @@ class MainActivity: Activity() {
         return parts.joinToString("    ")
     }
 
-    /** 鼠标 / 遥控切换后刷新「只属于鼠标」的那部分界面：右上角退出与手势提示。 */
+    /** 根据手机触屏、电视鼠标或遥控器更新退出入口与操作提示。 */
     private fun refreshPointerUi() {
-        playerExit?.visibility=if(mouseSeen) View.VISIBLE else View.GONE
+        playerExit?.visibility=if(touchPlayback || mouseSeen) View.VISIBLE else View.GONE
         keyHints?.text=keyHintText()
     }
 
+    private fun canAutoHideHud(): Boolean = (!panel || (touchPlayback && transportPlay?.isAttachedToWindow==true)) &&
+        !progressBar.scrubbing && TvDialog.topmostDialog()==null
+    private fun scheduleHideHud() {
+        main.removeCallbacks(hideHud)
+        if(screen=="player" && canAutoHideHud() && !ffActive && player?.isPlaying==true && !playError) main.postDelayed(hideHud,4500)
+    }
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if(screen=="player" && event.actionMasked==MotionEvent.ACTION_DOWN) main.removeCallbacks(hideHud)
+        val handled=super.dispatchTouchEvent(event)
+        if(screen=="player" && hud.visibility==View.VISIBLE && (event.actionMasked==MotionEvent.ACTION_UP || event.actionMasked==MotionEvent.ACTION_CANCEL)) scheduleHideHud()
+        return handled
+    }
     private fun showHud() {
         if(screen!="player") return
+        // 手机上展示真正可点击的操作条，不把遥控按键说明当成触摸按钮。
+        if(touchPlayback && !panel && !playError && episodePanel==null) { showPanel(); return }
         refreshPointerUi()
-        hud.visibility=View.VISIBLE; updatePlaybackText(); main.removeCallbacks(hideHud)
-        if(!panel && !ffActive && player?.isPlaying==true) main.postDelayed(hideHud,4500)
+        hud.visibility=View.VISIBLE; updatePlaybackText(); scheduleHideHud()
     }
     private fun updatePlaybackText() {
         remotePublish()
-        transportPlay?.text=if(player?.playWhenReady==true) "暂停" else "播放"
+        transportPlay?.text=if(if(playbackReady) player?.playWhenReady==true else requestedAutoplay) "暂停" else "播放"
+        controls.findViewWithTag<TextView>("playback-speed")?.text="倍速 ${PlaybackSpeed.label(effectiveSpeed())}"
         sleepButton?.text="定时 ${sleepTimer.label()}"
         if(screen!="player" || playError) return
         // 拖动进度条时别用播放位置盖掉「定位到 12:34」：手指还按着，文字每秒跳回去像坏了
@@ -3950,17 +3978,29 @@ class MainActivity: Activity() {
         ffActive=false; player?.setPlaybackSpeed(ffSpeedBefore)
         updatePlaybackText(); showHud()
     }
+    private fun addPlaybackButton(parent: LinearLayout,label: String,onClick: ()->Unit): TextView = addButton(parent,label,onClick=onClick).apply {
+        if(touchPlayback) {
+            textSize=14f; minHeight=dp(48); minWidth=0; maxLines=1; ellipsize=TextUtils.TruncateAt.END
+            setPadding(dp(6),dp(8),dp(6),dp(8))
+            layoutParams=lp(0,-2).apply { weight=1f; rightMargin=dp(6) }
+        }
+    }
     private fun showPanel() {
         if(playError) return
         panel=true; showHud(); controls.visibility=View.VISIBLE; controls.removeAllViews()
         val transport=row(); controls.addView(transport)
-        val play=addButton(transport,if(player?.playWhenReady==true) "暂停" else "播放") { togglePlayback() }.also { transportPlay=it }
-        addButton(transport,"上一集") { if(episodeIndex>0) playEpisode(episodeIndex-1,savedPosition(episodeIndex-1)) }.apply { isEnabled=episodeIndex>0; isFocusable=episodeIndex>0; alpha=if(episodeIndex>0) 1f else .4f }
-        addButton(transport,"下一集") { if(episodeIndex<(detail?.episodes?.lastIndex ?: 0)) playEpisode(episodeIndex+1,savedPosition(episodeIndex+1)) }.apply { val enabled=episodeIndex<(detail?.episodes?.lastIndex ?: 0); isEnabled=enabled; isFocusable=enabled; alpha=if(enabled) 1f else .4f }
+        val play=addPlaybackButton(transport,if(if(playbackReady) player?.playWhenReady==true else requestedAutoplay) "暂停" else "播放") { togglePlayback() }.also { transportPlay=it }
+        addPlaybackButton(transport,"上一集") { if(episodeIndex>0) playEpisode(episodeIndex-1,savedPosition(episodeIndex-1)) }.apply { isEnabled=episodeIndex>0; isFocusable=episodeIndex>0; alpha=if(episodeIndex>0) 1f else .4f }
+        addPlaybackButton(transport,"下一集") { if(episodeIndex<(detail?.episodes?.lastIndex ?: 0)) playEpisode(episodeIndex+1,savedPosition(episodeIndex+1)) }.apply { val enabled=episodeIndex<(detail?.episodes?.lastIndex ?: 0); isEnabled=enabled; isFocusable=enabled; alpha=if(enabled) 1f else .4f }
+        val options=if(touchPlayback) row().also { controls.addView(it,lp(-1,-2).apply { topMargin=dp(6) }) } else transport
         lateinit var episodes: TextView
-        episodes=addButton(transport,"选集") { showEpisodePanel(episodes) }
+        episodes=addPlaybackButton(options,"选集") { showEpisodePanel(episodes) }
+        if(touchPlayback) {
+            lateinit var speed: TextView
+            speed=addPlaybackButton(options,"倍速 ${PlaybackSpeed.label(effectiveSpeed())}") { showSpeedPicker(speed) }.apply { tag="playback-speed" }
+        }
         lateinit var more: TextView
-        more=addButton(transport,"播放设置") {
+        more=addPlaybackButton(options,"播放设置") {
             val seriesId=detail?.series?.id.orEmpty()
             val mark=library.skipMark(seriesId)
             val danmakuOn=extras.danmakuEnabled(seriesId,library.danmaku)
@@ -3989,6 +4029,7 @@ class MainActivity: Activity() {
             })
         }.apply { tag="playback-settings" }
         play.requestFocus()
+        if(touchPlayback) scheduleHideHud()
     }
     /** 播放快捷面板：长按菜单键呼出。清晰度/倍速/弹幕/更多四列，列内上下循环，改动立即生效，播放不中断。 */
     private fun showQuickPanel() {
@@ -4123,6 +4164,14 @@ class MainActivity: Activity() {
         if(speedDialog!=null) return
         val speeds=PlaybackSpeed.options
         val current=if(inPlayer) effectiveSpeed() else library.playbackSpeed
+        if(inPlayer && touchPlayback) {
+            // 手机横屏高度有限，复用可滚动的选择弹窗，确保全部倍速都能点到。
+            tvTools.choose("本剧倍速",speeds.map(PlaybackSpeed::label),anchor,{ index ->
+                sessionSpeed=speeds[index]; player?.setPlaybackSpeed(speeds[index])
+                updatePlaybackText(); showHud()
+            },focusIndex=speeds.indexOf(current))
+            return
+        }
         val content=column()
         content.addView(TvDialog.title(this,if(inPlayer) "本剧倍速" else "全局默认倍速"))
         if(inPlayer) content.addView(text("只对当前这部剧生效，不改「设置 → 播放」里的默认倍速",12f,muted).apply { setPadding(dp(8),0,dp(8),dp(8)) })
@@ -4279,7 +4328,7 @@ class MainActivity: Activity() {
             })
         episodePanel=next; next.show()
     }
-    private fun hidePanel() { if(playError) return; panel=false; controls.visibility=View.GONE; controls.clearFocus(); showHud() }
+    private fun hidePanel() { if(playError) return; if(touchPlayback) { hidePlaybackOverlay(); return }; panel=false; controls.visibility=View.GONE; controls.clearFocus(); showHud() }
     private fun formatTime(millis: Long): String { val seconds=(millis.coerceAtLeast(0)/1000); return "%02d:%02d".format(seconds/60,seconds%60) }
     private fun backdropFile()=filesDir.listFiles()?.firstOrNull { it.name.startsWith("backdrop.") }
     /** Scale [raw] to fill the screen and lay a theme-colored scrim over it so text stays readable. */

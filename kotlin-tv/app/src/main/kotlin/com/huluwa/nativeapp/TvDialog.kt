@@ -169,6 +169,7 @@ object TvDialog {
             // 弹窗在触摸模式（IR 鼠标棒点击过屏幕）里创建时，requestFocus 只对
             // focusableInTouchMode 的 view 生效——不然 showExitConfirm 的默认焦点挂不上
             isFocusableInTouchMode = true
+            TouchControls.focusOnTouch(this)
             setPadding(dp(20), 0, dp(20), 0)
             background = GradientDrawable().apply {
                 setColor(TvStyle.surface)

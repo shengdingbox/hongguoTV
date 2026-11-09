@@ -17,12 +17,15 @@ class EpisodePanel(
     private val select: (Int)->Unit,private val closed: ()->Unit
 ) {
     private val dialog=Dialog(activity)
+    private val touch=TouchControls.isHandheld(activity)
+    private val columns=if(touch && activity.resources.displayMetrics.widthPixels/activity.resources.displayMetrics.density<600) 4 else 5
     private var group=current/20
     private var focused=current
     private fun dp(n: Int)=(n*activity.resources.displayMetrics.density).toInt()
     private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(TvStyle.text); setPadding(dp(8),dp(6),dp(8),dp(6)) }
     private fun button(value: String,active: Boolean=false,action: ()->Unit)=label(value,16f).apply {
         id=View.generateViewId(); gravity=Gravity.CENTER; minHeight=dp(48); isFocusable=true; isFocusableInTouchMode=true
+        TouchControls.focusOnTouch(this)
         fun paint(focus: Boolean) {
             background=GradientDrawable().apply {
                 setColor(if(focus) TvStyle.accent else if(active) TvStyle.selectedSurface else TvStyle.surface)
@@ -42,16 +45,16 @@ class EpisodePanel(
         TvDialog.register(dialog)
         dialog.window?.apply {
             setBackgroundDrawableResource(android.R.color.transparent)
-            setGravity(Gravity.END or Gravity.CENTER_VERTICAL)
-            attributes=attributes.apply { x=(activity.resources.displayMetrics.widthPixels*.05f).toInt() }
-            setLayout(minOf(dp(560),(activity.resources.displayMetrics.widthPixels*.8f).toInt()),(activity.resources.displayMetrics.heightPixels*.9f).toInt())
+            setGravity(if(touch) Gravity.CENTER else Gravity.END or Gravity.CENTER_VERTICAL)
+            attributes=attributes.apply { x=if(touch) 0 else (activity.resources.displayMetrics.widthPixels*.05f).toInt() }
+            setLayout(minOf(dp(560),(activity.resources.displayMetrics.widthPixels*(if(touch) .94f else .8f)).toInt()),(activity.resources.displayMetrics.heightPixels*.9f).toInt())
         }
     }
     fun dismiss()=dialog.dismiss()
     private fun render() {
         val content=LinearLayout(activity).apply {
             orientation=LinearLayout.VERTICAL
-            setPadding(dp(24),dp(20),dp(24),dp(20))
+            setPadding(dp(if(touch) 16 else 24),dp(if(touch) 12 else 20),dp(if(touch) 16 else 24),dp(if(touch) 12 else 20))
             background=GradientDrawable().apply {
                 setColor(TvStyle.surface)
                 cornerRadius=dp(24).toFloat()
@@ -80,26 +83,26 @@ class EpisodePanel(
         val scroll=ScrollView(activity); val grid=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL }; scroll.addView(grid)
         content.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
         val cells=mutableListOf<TextView>()
-        (group*20 until minOf((group+1)*20,count)).toList().chunked(5).forEach { indexes ->
+        (group*20 until minOf((group+1)*20,count)).toList().chunked(columns).forEach { indexes ->
             val row=LinearLayout(activity)
             indexes.forEach { index ->
                 val cell=button("${index+1}",index==current) { select(index) }
                 cell.contentDescription="第 ${index+1} 集"+(if(index==current) "，当前播放" else "")
                 row.addView(cell,LinearLayout.LayoutParams(0,-2,1f).apply { setMargins(dp(4),dp(4),dp(4),dp(4)) }); cells+=cell
             }
-            repeat(5-indexes.size) { row.addView(Space(activity),LinearLayout.LayoutParams(0,1,1f)) }
+            repeat(columns-indexes.size) { row.addView(Space(activity),LinearLayout.LayoutParams(0,1,1f)) }
             grid.addView(row)
         }
         cells.forEachIndexed { i,cell ->
-            cell.nextFocusLeftId=cells[if(i%5==0) i else i-1].id
-            cell.nextFocusRightId=cells[if(i%5==4 || i==cells.lastIndex) i else i+1].id
-            cell.nextFocusUpId=if(i>=5) cells[i-5].id else if(i<3 && previous.isFocusable) previous.id else if(next.isFocusable) next.id else jump.id
-            cell.nextFocusDownId=cells[if(i+5<cells.size) i+5 else if(i/5<cells.lastIndex/5) cells.lastIndex else i].id
+            cell.nextFocusLeftId=cells[if(i%columns==0) i else i-1].id
+            cell.nextFocusRightId=cells[if(i%columns==columns-1 || i==cells.lastIndex) i else i+1].id
+            cell.nextFocusUpId=if(i>=columns) cells[i-columns].id else if(i<(columns+1)/2 && previous.isFocusable) previous.id else if(next.isFocusable) next.id else jump.id
+            cell.nextFocusDownId=cells[if(i+columns<cells.size) i+columns else if(i/columns<cells.lastIndex/columns) cells.lastIndex else i].id
         }
         previous.nextFocusUpId=close.id; next.nextFocusUpId=jump.id
-        previous.nextFocusDownId=cells.first().id; next.nextFocusDownId=cells[minOf(4,cells.lastIndex)].id
+        previous.nextFocusDownId=cells.first().id; next.nextFocusDownId=cells[minOf(columns-1,cells.lastIndex)].id
         close.nextFocusDownId=if(previous.isFocusable) previous.id else cells.first().id
-        jump.nextFocusDownId=if(next.isFocusable) next.id else cells[minOf(4,cells.lastIndex)].id
+        jump.nextFocusDownId=if(next.isFocusable) next.id else cells[minOf(columns-1,cells.lastIndex)].id
         close.nextFocusLeftId=close.id; close.nextFocusRightId=jump.id; jump.nextFocusLeftId=close.id; jump.nextFocusRightId=jump.id
         dialog.setContentView(content)
         cells[(focused-group*20).coerceIn(0,cells.lastIndex)].requestFocus()

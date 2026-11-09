@@ -1,6 +1,6 @@
 # 红果 TV
 
-自家电视使用的非官方红果短剧客户端，与红果官方无关联。**Kotlin 原生 APK**：最低 Android 5.0（API 21），电视遥控器操作，ARM32 / ARM64 / x86 / x86_64 通用。请求签名由局域网签名服务生成（默认 `http://192.168.3.77:8901`，与葫芦娃项目共用，见 [签名服务接入](docs/SIGN_SERVICE.md)），APK 内不再包含签名算法。
+自家电视使用的非官方红果短剧客户端，与红果官方无关联。**Kotlin 原生 APK**：最低 Android 5.0（API 21），电视遥控器操作，ARM32 / ARM64 / x86 / x86_64 通用。请求签名由自建 openhongguo 签名服务生成（默认公网入口 `http://123.57.172.104:8901`，通过 FRP 转发至飞牛容器，见 [签名服务接入](docs/SIGN_SERVICE.md)），APK 内不再包含签名算法。
 
 **[下载最新版 APK](https://github.com/jycao2/hongguoTV/releases/latest)** · [手机遥控端](https://github.com/jycao2/hongguoTV-remote) · [问题反馈 / 提交 Issue](https://github.com/jycao2/hongguoTV-updates/issues) · [版本记录与构建说明](kotlin-tv/README.md) · [自动更新机制](kotlin-tv/AUTO_UPDATES.md)
 

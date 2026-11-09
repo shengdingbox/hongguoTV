@@ -2,15 +2,31 @@
 
 更新日期：2026-11-09。
 
-红果官方接口（搜索、联想、分类筛选、播放取址、弹幕、账号）都要求请求携带签名头。本版起电视端**不再内置签名算法**，统一改为调用局域网里的签名服务；该服务与葫芦娃项目共用同一套（`huluwa/hg/portable-signer`）。
+红果官方接口（搜索、联想、分类筛选、播放取址、弹幕、账号）都要求请求携带签名头。本版起电视端**不再内置签名算法**，统一通过 FRP 公网入口调用自建签名服务。服务使用 openhongguo SDK，部署容器名为 `hongguo-signer-portable`，与葫芦娃项目共用同一套（`huluwa/hg/portable-signer`）。
 
 ## 默认地址
 
 ```text
-http://192.168.3.77:8901
+http://123.57.172.104:8901
 ```
 
 地址定义在 `core` 的 `RemoteSigner.DEFAULT_BASE_URL`。签名服务不可用时，搜索会回退到官网 `hongguoduanju.com` 的公开搜索接口，播放取址会报错（「签名服务返回 HTTP …」「未配置签名服务地址」）。剧集详情与分集读取官网公开数据：普通短剧不额外请求多季补全；有明确季号或已知其它季的系列剧，补全最多等待 5 秒，超时后保留已取得的分集与季列表。签名请求也随所属页面或补全任务一起取消，避免离开页面后继续占用网络。
+
+## FRP 映射
+
+使用飞牛上已有的 `frpc` 容器，持久配置为宿主机 `/vol1/1000/docker/frpc/frpc.ini`（容器内 `/etc/frp/frpc.ini`）。服务端地址为 `123.57.172.104:7000`，沿用已有认证配置。
+
+```ini
+[红果sign服务]
+type = tcp
+local_ip = 192.168.3.77
+local_port = 8901
+remote_port = 8901
+```
+
+公网入口转发到飞牛 `192.168.3.77:8901` 的 openhongguo 容器；原来指向 `192.168.3.83:8901` 的目标已改为 `.77`。配置变更使用 `frpc reload -c /etc/frp/frpc.ini` 热重载。
+
+客户端默认使用公网入口，因此 4G/5G 下不再要求接入家中局域网；本地部署仍可显式指定 `http://192.168.3.77:8901`。已安装的旧 APK 需更新到包含公网地址的版本，地址才会切换。
 
 ## 接口
 
@@ -37,7 +53,7 @@ http://192.168.3.77:8901
 ```bash
 cd kotlin-tv
 ./gradlew :core:installDist
-core/build/install/core/bin/core --signer=http://192.168.3.77:8901          # 搜索 / 首页 / 详情 / 播放
+core/build/install/core/bin/core --signer=http://123.57.172.104:8901          # 搜索 / 首页 / 详情 / 播放
 core/build/install/core/bin/core --stream-only --signer=http://...         # 只验证详情与播放
 core/build/install/core/bin/core --signer=http://... --comic --warm       # 漫剧 + 批量预热
 ```

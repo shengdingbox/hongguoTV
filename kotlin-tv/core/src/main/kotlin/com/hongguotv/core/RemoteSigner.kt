@@ -28,8 +28,8 @@ data class SignerProfile(val params: Map<String, String>, val userAgent: String)
 /**
  * 红果签名服务客户端。
  *
- * 电视端不再内置任何签名算法：访问红果官方接口前，先向局域网签名服务
- * （默认 `http://192.168.3.77:8901`，葫芦娃项目同款）取设备档案与签名头。
+ * 电视端不再内置任何签名算法：访问红果官方接口前，通过 FRP 公网入口访问
+ * openhongguo 签名服务（默认 `http://123.57.172.104:8901`），取设备档案与签名头。
  *
  * - `GET /info`：已注册的匿名设备档案（`deviceProfile.params` + `user_agent`）。
  *   签名服务会拒绝与档案不符的 `device_id` / `iid`，所以请求参数必须用档案里的身份。
@@ -49,8 +49,8 @@ open class RemoteSigner(
             .build(),
 ) {
     companion object {
-        /** 与葫芦娃后端使用同一台签名服务。 */
-        const val DEFAULT_BASE_URL = "http://192.168.3.77:8901"
+        /** FRP 转发至飞牛的 openhongguo 签名容器，移动网络也可访问。 */
+        const val DEFAULT_BASE_URL = "http://123.57.172.104:8901"
         private const val MAX_BODY = 1 shl 20
         private const val JSON_TYPE = "application/json; charset=utf-8"
         private val HEADER_NAMES =

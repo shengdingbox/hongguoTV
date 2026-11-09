@@ -17,6 +17,7 @@ class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = empt
     private var searchRows = data.searches.take(20)
     private var updateRows = updates.filterKeys { it in favoriteIds }
     private var updateCount = updateRows.values.count { it.added > 0 }
+    private var groupById = data.favoriteGroups.filterKeys { it in favoriteIds }
     var settings = data.settings
 
     fun favorites() = favoriteRows
@@ -32,6 +33,22 @@ class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = empt
     fun updates() = updateRows
     fun favoriteUpdate(id: String) = updateRows[id]
     fun updatedFavorites() = updateCount
+    fun groups() = favoriteRows.mapNotNull { groupById[it.id] }.distinct()
+    fun groupOf(id: String) = groupById[id]
+    fun groupsSnapshot() = groupById.toMap()
+    fun setGroup(id: String, group: String?): Boolean {
+        if (!favorite(id)) return false
+        val name = group?.trim()?.filterNot { it.isISOControl() }?.take(12).orEmpty()
+        if (name.isEmpty()) {
+            if (id !in groupById) return false
+            groupById = groupById - id
+            return true
+        }
+        if (groupById[id] == name) return false
+        if (name !in groupById.values && groupById.values.toSet().size >= 20) return false
+        groupById = groupById + (id to name)
+        return true
+    }
 
     fun toggle(series: Series): Boolean {
         val added = !favorite(series.id)
@@ -39,6 +56,7 @@ class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = empt
         favoriteIds = favoriteRows.map { it.id }.toSet()
         updateRows = updateRows.filterKeys { it in favoriteIds }
         updateCount = updateRows.values.count { it.added > 0 }
+        if (!added) groupById = groupById - series.id
         return added
     }
     fun toggleLater(series: Series): Boolean {
@@ -71,16 +89,19 @@ class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = empt
         watchedIds = watchedIds - id
     }
     fun clearHistory() { historyRows = emptyList(); progressById.clear(); watchedIds = emptySet() }
-    fun observeFavorite(id: String, count: Int, now: Long, acknowledge: Boolean): Boolean {
+    fun observeFavorite(id: String, count: Int, now: Long, acknowledge: Boolean, newSeason: Series? = null): Boolean {
         if (!favorite(id)) return false
         val previous = updateRows[id]
-        val next = previous?.observe(count, now, acknowledge) ?: FavoriteUpdate.first(count, now)
+        var next = previous?.observe(count, now, acknowledge) ?: FavoriteUpdate.first(count, now)
+        if (!acknowledge) next = next.observeNewSeason(newSeason?.id, newSeason?.title, now)
         if (previous == next) return false
         updateRows = updateRows + (id to next)
-        updateCount += (if (next.added > 0) 1 else 0) - (if ((previous?.added ?: 0) > 0) 1 else 0)
+        updateCount += (if (next.hasUpdate) 1 else 0) - (if (previous?.hasUpdate == true) 1 else 0)
         return true
     }
-    fun snapshot() = BackupData(favoriteRows, historyRows, watchedIds, searchRows, settings, laterRows, hiddenIds)
+    fun snapshot(thirdSources: List<BackupThirdSource> = emptyList(),
+                 thirdHistory: List<BackupThirdHistory> = emptyList(),
+                 thirdFavorites: List<BackupThirdFavorite> = emptyList()) = BackupData(favoriteRows, historyRows, watchedIds, searchRows, settings, laterRows, hiddenIds, groupById, thirdSources, thirdHistory, thirdFavorites)
 }
 
 /** Keeps the native-library-v1 disk keys and rich local metadata compatible with older APKs. */
@@ -101,11 +122,24 @@ object LibraryDisk {
         }
         val rawUpdates = runCatching { JSONObject(values["favoriteUpdates"] as? String ?: "{}") }.getOrDefault(JSONObject())
         val updates = rawUpdates.keys().asSequence().mapNotNull { id -> FavoriteUpdate.decode(rawUpdates.optJSONObject(id))?.let { id to it } }.toMap()
+        // 导航模块显隐单独存放在 navHidden.<key>，随备份一起迁移；本地库默认隐藏（显式置 false 才显示）
+        val navHidden = LibraryBackup.NAV_KEYS.filter { key ->
+            if(key=="nas") values["navHidden.$key"] as? Boolean != false else values["navHidden.$key"] as? Boolean == true
+        }.toSet()
         val settings = BackupSettings(PlaybackQuality.normalize((values["quality"] as? Number)?.toInt() ?: 1080),
             PlaybackSpeed.normalize((values["playbackSpeed"] as? Number)?.toFloat() ?: 1f), values["autoNext"] as? Boolean ?: true,
-            ContentType.fromStored(values["contentType"] as? String), VideoFrameMode.fromStored(values["frameMode"] as? String))
+            ContentType.fromStored(values["contentType"] as? String), VideoFrameMode.fromStored(values["frameMode"] as? String), values["autoSeason"] as? Boolean ?: true,
+            values["danmaku"] as? Boolean ?: true,
+            DanmakuPrefs.opacity((values["danmakuOpacity"] as? Number)?.toInt() ?: DanmakuPrefs.OPACITY_DEFAULT),
+            DanmakuPrefs.font((values["danmakuFont"] as? Number)?.toInt() ?: DanmakuPrefs.FONT_DEFAULT),
+            DanmakuPrefs.speed((values["danmakuSpeed"] as? Number)?.toInt() ?: DanmakuPrefs.SPEED_DEFAULT),
+            DanmakuPrefs.rows((values["danmakuRows"] as? Number)?.toInt() ?: DanmakuPrefs.ROWS_DEFAULT),
+            values["showClock"] as? Boolean ?: true,
+            values["sourceHidden"] as? Boolean ?: true, navHidden)
+        val groupMap = runCatching { JSONObject(values["favoriteGroups"] as? String ?: "{}") }.getOrDefault(JSONObject())
+            .let { o -> o.keys().asSequence().mapNotNull { k -> (o.opt(k) as? String)?.let { k to it } }.toMap() }
         return LibraryIndex(BackupData(series("favorites"), history, ids("watched"),
-            SearchHistory.decode(values["searches"] as? String ?: "[]"), settings, series("later"), ids("hidden")), updates)
+            SearchHistory.decode(values["searches"] as? String ?: "[]"), settings, series("later"), ids("hidden"), groupMap), updates)
     }
     fun series(rows: List<Series>) = JSONArray(rows.map { it.toJson() }).toString()
     fun history(rows: List<BackupProgress>) = JSONArray(rows.map { p ->
@@ -113,4 +147,5 @@ object LibraryDisk {
             .put("position", p.position).put("duration", p.duration).put("completed", p.completed).put("updatedAt", p.updatedAt)
     }).toString()
     fun updates(rows: Map<String, FavoriteUpdate>) = JSONObject().also { result -> rows.forEach { (id, update) -> result.put(id, update.json()) } }.toString()
+    fun groups(rows: Map<String, String>) = JSONObject().also { result -> rows.forEach { (id, name) -> result.put(id, name) } }.toString()
 }

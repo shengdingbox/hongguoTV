@@ -1,11 +1,7 @@
 package com.hongguotv.core
 
 fun main(args: Array<String>) {
-    // 自检可覆盖内置连接：--server http://host:8000 --key <访问密钥>
-    val server=args.getOrNull(args.indexOf("--server").takeIf { it>=0 }?.plus(1))
-    val key=args.getOrNull(args.indexOf("--key").takeIf { it>=0 }?.plus(1))
-    val repository=if(server!=null) ContentRepository(serverUrl=server,accessKey=key ?: HuluwaConfig.ACCESS_KEY) else ContentRepository()
-    println("source=${if(repository.viaHuluwa) "huluwa" else "local-sign"}")
+    val repository=ContentRepository()
     if(args.contains("--ranking")) {
         try {
             val first=repository.comicRanking()
@@ -29,21 +25,39 @@ fun main(args: Array<String>) {
         return
     }
     val type=if(args.contains("--comic")) ContentType.COMIC else ContentType.SHORT
-    val keyword=if(type==ContentType.COMIC) "修仙" else "总裁"
-    val search=repository.search(keyword,type=type); println("search=${search.items.size}; hasMore=${search.hasMore}")
-    // 两条通路都按 20 条一页翻页；漫剧第 2 页必须能拿到不同条目。
-    if(type==ContentType.COMIC && search.hasMore) {
-        val next=repository.search(keyword,2,type)
-        println("searchPage2=${next.items.size}; overlap=${search.items.map { it.id }.intersect(next.items.map { it.id }.toSet()).size}")
+    val keyword=args.getOrNull(args.indexOf("--keyword")+1) ?: if(type==ContentType.COMIC) "修仙" else "总裁"
+    val started=System.currentTimeMillis()
+    // --stream-only：只验证详情与播放链路，跳过搜索和首页，避免内容接口偶发故障挡住播放排查。
+    val streamOnly=args.contains("--stream-only")
+    val seriesArg=args.firstOrNull { it.matches(Regex("[0-9]{1,30}")) }
+    if(!streamOnly) {
+        val search=repository.search(keyword,type=type); println("searchMs=${System.currentTimeMillis()-started}; search=${search.items.size}; hasMore=${search.hasMore}")
+        if(type==ContentType.COMIC && search.hasMore) {
+            val next=repository.search(keyword,2,type)
+            println("searchPage2=${next.items.size}; overlap=${search.items.map { it.id }.intersect(next.items.map { it.id }.toSet()).size}")
+        }
+        val home=repository.home(type=type); println("type=${type.label}; home=${home.items.size}; hasMore=${home.hasMore}")
+        if(type==ContentType.COMIC) {
+            val next=repository.home(2,type)
+            println("homePage2=${next.items.size}; overlap=${home.items.map { it.id }.intersect(next.items.map { it.id }.toSet()).size}")
+        }
     }
-    val home=repository.home(type=type); println("type=${type.label}; home=${home.items.size}; hasMore=${home.hasMore}")
-    // 短剧首页在葫芦娃通路下只有一批推荐；漫剧走榜单才有第 2 页。
-    if(type==ContentType.COMIC) {
-        val next=repository.home(2,type)
-        println("homePage2=${next.items.size}; overlap=${home.items.map { it.id }.intersect(next.items.map { it.id }.toSet()).size}")
-    }
-    val detail=repository.detail(args.firstOrNull { it.matches(Regex("[0-9]{1,30}")) } ?: home.items.first().id)
+    val detail=repository.detail(seriesArg ?: repository.home(type=type).items.first().id)
     println("detail=${detail.series.title}; episodes=${detail.episodes.size}")
+    // --warm：验证「一次注册问一整窗」是否可用，以及切集是否真的命中缓存（耗时接近 0ms）。
+    if(args.contains("--warm")) {
+        val ids=detail.episodes.take(15)
+        val primary=repository.stream(ids.first())
+        println("primary quality=${primary.quality}")
+        val startedWarm=System.currentTimeMillis()
+        val report=repository.warm(ids)
+        println("warm requested=${report.requested} cached=${report.cached} batch=${report.batch} route=${report.route} ms=${System.currentTimeMillis()-startedWarm}")
+        val startedHit=System.currentTimeMillis()
+        val hit=repository.stream(ids.getOrElse(5) { ids.last() })
+        println("cacheHit quality=${hit.quality} ms=${System.currentTimeMillis()-startedHit}")
+        repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown()
+        return
+    }
     val stream=repository.stream(detail.episodes.first())
     RemoteVideo(repository.http,stream).use { remote ->
         remote.prepare(); val first=remote.read(0,1024*1024)

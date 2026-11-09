@@ -12,10 +12,6 @@ import org.junit.Test
 import java.io.IOException
 
 class ContentRepositoryTest {
-    private companion object {
-        const val SERVER = "http://huluwa.test:8000"
-        const val KEY = "test-key"
-    }
     private fun streamRepository(vararg variants: Triple<Int,String,String>) = repository { request ->
         if(request.url.host=="example.com") {
             val rows=JSONObject()
@@ -38,7 +34,70 @@ class ContentRepositoryTest {
 
     @Test fun entirelyIncompatibleSourceFailsBeforeStartingAudio() {
         val repo=streamRepository(Triple(720,"ByteVC2","https://example.com/unsupported"),Triple(480,"bvc2","https://example.com/unsupported2"))
-        assertThrows(IOException::class.java) { repo.stream("123",720) }
+        assertThrows(UnplayableVideoException::class.java) { repo.stream("123",720) }
+    }
+
+    @Test fun incompatibleSourceDiagnosticCarriesRouteAndEveryVideoListEntry() {
+        // 模拟站方降级模型：全部条目 main_url 都是加密 blob（非 http 开头），应逐条出现在诊断里且带路由。
+        // tab 接口响应缺 code:0 被 tabVideoModel 拒绝，模型实际来自第一条旧 POST 路由。
+        val repo=repository { request ->
+            if(request.url.host=="example.com") {
+                val rows=JSONObject()
+                    .put("video_1",JSONObject().put("vheight",1080).put("codec_type","bytevc2").put("main_url","qAABAGXlCAY==").put("backup_url_1","qAABAFoQKf1K=="))
+                    .put("video_5",JSONObject().put("vheight",720).put("codec_type","bytevc2").put("main_url","qAABAAAA=="))
+                JSONObject().put("video_info",JSONObject().put("data",JSONObject().put("video_list",rows))).toString()
+            } else """{"data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}"""
+        }
+        val error=assertThrows(UnplayableVideoException::class.java) { repo.stream("123",1080) }
+        // mock 的 tab 接口缺 code:0 被 tabVideoModel 拒绝，模型实际来自第一条旧 POST 路由；
+        // 最终失败轮是重试计划的最后一项 (level=3, 主机)，诊断里带 lvl=3。
+        assertEquals("route=/novel/player/multi_video_model/v1/ lvl=3 video_list=video_1:bytevc2:1080:enc/enc;video_5:bytevc2:720:enc/empty",error.diagnostic)
+    }
+
+    @Test fun tabRouteTagRidesAlongInIncompatibleDiagnostic() {
+        val repo=repository { request ->
+            if(request.url.host=="example.com") {
+                val rows=JSONObject().put("video_0",JSONObject().put("vheight",720).put("codec_type","bytevc2").put("main_url","qAABAAAA=="))
+                JSONObject().put("video_info",JSONObject().put("data",JSONObject().put("video_list",rows))).toString()
+            } else if(request.url.encodedPath==tabPath)
+                """{"code":0,"data":{"video_model_data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}}"""
+            else ""
+        }
+        val error=assertThrows(UnplayableVideoException::class.java) { repo.stream("123",1080) }
+        assertTrue(error.diagnostic.startsWith("route=video_tab|"))
+    }
+
+    @Test fun degradedModelIsEvictedAndRefetchedWithRenewedIdentity() {
+        var streamFetches=0
+        val repo=repository { request ->
+            if(request.url.host=="example.com") {
+                streamFetches++
+                val rows=JSONObject()
+                if(streamFetches==1) rows.put("video_0",JSONObject().put("vheight",720).put("codec_type","bytevc2").put("main_url","https://example.com/unsupported"))
+                else rows.put("video_0",JSONObject().put("vheight",1080).put("codec_type","h264").put("main_url","https://example.com/recovered"))
+                JSONObject().put("video_info",JSONObject().put("data",JSONObject().put("video_list",rows))).toString()
+            } else """{"data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}"""
+        }
+        // 第一次取到降级模型，剔缓存换身份重取后拿到正常片源，而不是直接报不兼容。
+        assertEquals("https://example.com/recovered",repo.stream("123",1080).url)
+        assertEquals(2,streamFetches)
+    }
+
+    @Test fun repeatedlyDegradedModelsKeepRetryingBeforeReportingIncompatible() {
+        // 站方对同一集间歇性下发降级模型（全清晰度 bytevc2），按请求随机出现：
+        // 连续两轮降级后第三轮拿到正常模型，应播放成功而不是提前报不兼容。
+        var streamFetches=0
+        val repo=repository { request ->
+            if(request.url.host=="example.com") {
+                streamFetches++
+                val rows=JSONObject()
+                if(streamFetches<3) rows.put("video_0",JSONObject().put("vheight",1080).put("codec_type","bytevc2").put("main_url","qAABAAAA=="))
+                else rows.put("video_0",JSONObject().put("vheight",1080).put("codec_type","h264").put("main_url","https://example.com/recovered"))
+                JSONObject().put("video_info",JSONObject().put("data",JSONObject().put("video_list",rows))).toString()
+            } else """{"data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}"""
+        }
+        assertEquals("https://example.com/recovered",repo.stream("123",1080).url)
+        assertEquals(3,streamFetches)
     }
 
     @Test fun legacyMissingCodecLabelKeepsQualityLimit() {
@@ -46,139 +105,80 @@ class ContentRepositoryTest {
         assertEquals("720P",repo.stream("123",720).quality)
     }
 
+    private fun videoInfo() =
+        """{"video_info":{"data":{"video_list":{"video_0":{"vheight":1080,"codec_type":"h264","main_url":"https://example.com/a.mp4"}}}}}"""
+    private val tabPath="/reading/bookapi/video_tab/multi_video_model/v1/"
+
+    @Test fun videoTabRouteSuppliesPlaybackModel() {
+        val paths=mutableListOf<String>()
+        val repo=repository { request ->
+            paths += request.url.encodedPath
+            when {
+                request.url.host=="example.com" -> videoInfo()
+                request.url.encodedPath==tabPath ->
+                    """{"code":0,"data":{"video_model_data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}}"""
+                else -> ""
+            }
+        }
+        assertEquals("1080P",repo.stream("123").quality)
+        assertEquals(tabPath,paths.first())
+    }
+
+    @Test fun newRouteVideoModelCanBeStringEncodedJson() {
+        val repo=repository { request ->
+            if(request.url.host=="example.com") videoInfo()
+            else if(request.url.encodedPath=="/novel/player/video_model/v1/") """{"data":{"video_model":"{\"fallback_api\":\"https://example.com/stream\"}"}}"""
+            else ""
+        }
+        assertEquals("1080P",repo.stream("123").quality)
+    }
+
+    @Test fun warmFillsAWholeWindowInOneBatchAndSubsequentLookupHitsCache() {
+        val modelRequests=mutableListOf<String>()
+        val repo=repository { request ->
+            when {
+                request.url.host=="example.com" -> videoInfo()
+                request.url.encodedPath.startsWith("/novel/player/multi_video_model/") -> {
+                    modelRequests += request.url.encodedPath
+                    val rows=JSONObject()
+                    listOf("1","2","3").forEach { id ->
+                        rows.put(id,JSONObject().put("video_model",JSONObject().put("fallback_api","https://example.com/stream")))
+                    }
+                    JSONObject().put("code",0).put("data",rows).toString()
+                }
+                else -> ""
+            }
+        }
+        val report=repo.warm(listOf("1","2","3"))
+        assertEquals(3,report.cached)
+        assertEquals(1,modelRequests.size)
+        assertEquals("1080P",repo.stream("3").quality)
+        // 批量取过的集不再单独问一次模型接口。
+        assertEquals(1,modelRequests.size)
+    }
+
+    @Test fun blankRouteFallsBackToNextRoute() {
+        val paths=mutableListOf<String>()
+        val repo=repository { request ->
+            paths += request.url.encodedPath
+            if(request.url.host=="example.com") videoInfo()
+            else if(request.url.encodedPath=="/novel/player/multi_video_model/v1/") ""
+            else """{"data":{"video_model":{"fallback_api":"https://example.com/stream"}}}"""
+        }
+        assertEquals("1080P",repo.stream("123").quality)
+        assertEquals(tabPath,paths.first())
+        assertTrue(paths.contains("/novel/player/multi_video_model/v1/"))
+        assertTrue(paths.contains("/novel/player/video_model/v1/"))
+    }
+
     private fun repository(clock: () -> Long = System::currentTimeMillis, respond: (Request) -> String) = ContentRepository(
         OkHttpClient.Builder().addInterceptor { chain ->
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
                 .code(200).message("OK").body(respond(chain.request()).toResponseBody()).build()
-        }.build(),clock
+        }.build(),clock,
+        // 播放身份固定，测试不真的去注册设备。
+        PlaybackDeviceSession { DeviceRegister.Registered("1905892595382586","1905892595378490") }
     )
-
-    // 以下用例覆盖葫芦娃通路：请求打到 /api/tv/**，响应信封为 {code,message,data}。
-    private fun huluwa(respond: (Request) -> JSONObject) = ContentRepository(
-        OkHttpClient.Builder().addInterceptor { chain ->
-            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
-                .body(JSONObject().put("code",200).put("message","ok").put("data",respond(chain.request()))
-                    .toString().toResponseBody()).build()
-        }.build(), serverUrl=SERVER, accessKey=KEY
-    )
-
-    private fun tvSeries(id: String, title: String, count: Int = 10) = JSONObject()
-        .put("id",id).put("title",title).put("cover","https://example.com/$id.jpg")
-        .put("intro","简介 $id").put("episodeCount",count)
-
-    @Test fun `huluwa search authenticates and maps rows to series`() {
-        var seenToken = ""; var seenPath = ""
-        val repo = ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
-            seenToken = chain.request().header("Authorization").orEmpty()
-            seenPath = chain.request().url.encodedPath + "?" + chain.request().url.query
-            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
-                .body(JSONObject().put("code",200).put("message","ok").put("data",JSONObject()
-                    .put("items",JSONArray().put(tvSeries("101","闪婚")).put(tvSeries("102","闪婚2",0)))
-                    .put("hasMore",true).put("nextOffset",20)).toString().toResponseBody()).build()
-        }.build(), serverUrl=SERVER, accessKey=KEY)
-        val page = repo.search("闪婚",1)
-        assertEquals("Bearer $KEY",seenToken)
-        assertTrue(seenPath.startsWith("/api/tv/search?"))
-        assertEquals(listOf("101","102"),page.items.map { it.id })
-        assertEquals("全 10 集",page.items.first().badge)
-        assertTrue(page.hasMore)
-    }
-
-    @Test fun `huluwa ranking keeps backend order as rank and passes cursor`() {
-        var seenPath = ""
-        val repo = ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
-            seenPath = chain.request().url.toString()
-            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
-                .body(JSONObject().put("code",200).put("message","ok").put("data",JSONObject()
-                    .put("items",JSONArray().put(tvSeries("1","第一").put("score","1000万热度"))
-                        .put(tvSeries("2","第二").put("score","900万热度")))
-                    .put("content","comic_series_rank").put("board","ranklist_hot_sc")
-                    .put("cursor","next").put("hasMore",true).put("version","v1")).toString().toResponseBody()).build()
-        }.build(), serverUrl=SERVER, accessKey=KEY)
-        val page = repo.ranking(1,ContentType.COMIC)
-        assertTrue(seenPath.contains("content=comic_series_rank"))
-        assertEquals(listOf(1,2),page.items.mapNotNull { page.ranking!!.positions[it.id]!!.rank })
-        assertEquals("1000万热度",page.ranking!!.positions["1"]!!.heat)
-        assertTrue(page.hasMore)
-    }
-
-    @Test fun `huluwa detail exposes episode ids that playback then uses`() {
-        var playbackPath = ""
-        val repo = ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
-            val path = chain.request().url.encodedPath
-            val data = when {
-                path.startsWith("/api/tv/series/") -> JSONObject().put("id","9").put("title","测试剧")
-                    .put("cover","https://example.com/9.jpg").put("intro","简介")
-                    .put("episodes",JSONArray().put(JSONObject().put("id","501")).put(JSONObject().put("id","502")))
-                else -> { playbackPath = path; JSONObject().put("streams",JSONArray()
-                    .put(JSONObject().put("url","https://cdn.example.com/540.mp4").put("height",540)
-                        .put("codec","bytevc1").put("encrypted",true).put("encryptionMethod","cenc-aes-ctr")
-                        .put("spadeA","rLwi9m6+I8NthBTDaL8h9Fu5FPRFvg/0X40j82y9PPJwhTiMjA=="))
-                    .put(JSONObject().put("url","https://cdn.example.com/bvc2.mp4").put("height",1080)
-                        .put("codec","bytevc2").put("encrypted",false))) }
-            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
-                .body(JSONObject().put("code",200).put("message","ok").put("data",data).toString().toResponseBody()).build()
-        }.build(), serverUrl=SERVER, accessKey=KEY)
-        val detail = repo.detail("9")
-        assertTrue(playbackPath.isEmpty())
-        assertEquals(listOf("501","502"),detail.episodes)
-        val stream = repo.stream(detail.episodes.first(),720)
-        assertEquals("/api/tv/episodes/501/playback",playbackPath)
-        assertEquals("https://cdn.example.com/540.mp4",stream.url)
-        assertNotNull(stream.key) // spade_a 已派生为内容密钥
-        assertEquals("540P",stream.quality)
-    }
-
-    @Test fun `huluwa vertical drama picks quality by definition not pixel height`() {
-        // 竖屏短剧 720P 的 height 是 1280（长边）；按 height 匹配会让选 720P 的用户拿到 1080P。
-        val repo = huluwa { _ ->
-            JSONObject().put("streams",JSONArray()
-                .put(JSONObject().put("url","https://cdn.example.com/720.mp4").put("definition","720p")
-                    .put("height",1280).put("codec","bytevc1").put("encrypted",false))
-                .put(JSONObject().put("url","https://cdn.example.com/1080.mp4").put("definition","1080p")
-                    .put("height",1920).put("codec","bytevc1").put("encrypted",false)))
-        }
-        val stream = repo.stream("501",720)
-        assertEquals("https://cdn.example.com/720.mp4",stream.url)
-        assertEquals("720P",stream.quality)
-    }
-
-    @Test fun `huluwa auth failure surfaces a readable message`() {
-        val repo = ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
-            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(401).message("Unauthorized")
-                .body("""{"code":401,"message":"电视访问密钥无效，请检查葫芦娃服务配置"}""".toResponseBody()).build()
-        }.build(), serverUrl=SERVER, accessKey="wrong-key")
-        val error = assertThrows(HuluwaException::class.java) { repo.search("闪婚",1) }
-        assertEquals(401,error.code)
-        assertTrue(error.message!!.contains("密钥"))
-    }
-
-    @Test fun `huluwa search drops rows the upstream repeats across pages`() {
-        // 上游按 offset 返回的是累积结果：第 2 页仍包含第 1 页那 3 条。
-        val pageOne = JSONArray().put(tvSeries("1","一")).put(tvSeries("2","二")).put(tvSeries("3","三"))
-        val pageTwo = JSONArray().put(tvSeries("1","一")).put(tvSeries("2","二")).put(tvSeries("3","三"))
-            .put(tvSeries("4","四")).put(tvSeries("5","五"))
-        val repo = ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
-            val offset = chain.request().url.queryParameter("offset")
-            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
-                .body(JSONObject().put("code",200).put("message","ok").put("data",JSONObject()
-                    .put("items",if(offset=="0") pageOne else pageTwo).put("hasMore",true))
-                    .toString().toResponseBody()).build()
-        }.build(), serverUrl=SERVER, accessKey=KEY)
-        assertEquals(listOf("1","2","3"),repo.search("闪婚",1).items.map { it.id })
-        assertEquals(listOf("4","5"),repo.search("闪婚",2).items.map { it.id })
-    }
-
-    @Test fun `huluwa home uses discover for short dramas`() {
-        val repo = huluwa { request ->
-            assertEquals("/api/tv/discover",request.url.encodedPath)
-            JSONObject().put("items",JSONArray().put(tvSeries("301","推荐剧",24)))
-        }
-        val page = repo.home(1,ContentType.SHORT)
-        assertEquals(listOf("301"),page.items.map { it.id })
-        assertEquals("全 24 集",page.items.single().badge)
-        assertFalse(page.hasMore)
-    }
 
     private fun rankPayload(page: Int = 1, totalPages: Int = 2) = JSONObject()
         .put("isSuccess",true)
@@ -211,10 +211,10 @@ class ContentRepositoryTest {
         assertFalse(result.items.single().toJson().has("rank"))
     }
 
-    @Test fun missingRankIsNotInventedAndLastPageStops() {
+    @Test fun missingRankIsDerivedFromOrderAndLastPageStops() {
         val result=repository { currentRank(rankPayload(5,5)) }.comicRanking(5)
         assertNotNull(result.ranking)
-        assertEquals(RankPosition(null,""),result.ranking!!.positions["123"])
+        assertEquals(RankPosition(5,""),result.ranking!!.positions["123"])
         assertFalse(result.hasMore)
     }
 
@@ -294,33 +294,95 @@ class ContentRepositoryTest {
         val requests=mutableListOf<Request>()
         val repo=repository { request ->
             requests+=request
-            JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(19,"999")
+            if(request.url.host.endsWith("fqnovel.com")) JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(19,"999")
                 .put("search_id","comic-session").put("passback","comic-cursor").put("next_offset",25))).toString()
+            else """{"searchList":[{"video_data":{"series_id":"333","series_name":"漫画网站结果","genre":"205"}}]}"""
         }
         repo.search("修仙",1,ContentType.COMIC)
         repo.search("修仙",2,ContentType.COMIC)
         assertEquals("comic-session",requests[1].url.queryParameter("search_id"))
         assertEquals("comic-cursor",requests[1].url.queryParameter("passback"))
         assertEquals("25",requests[1].url.queryParameter("offset"))
-        assertThrows(SearchSessionExpiredException::class.java) { repo.search("重生",2,ContentType.COMIC) }
-        assertEquals(2,requests.size)
+        repo.search("重生",2,ContentType.COMIC)
+        assertEquals("2",requests[2].url.queryParameter("page"))
+        assertEquals(3,requests.size)
     }
 
     @Test fun expiredCursorRequestsFreshSearchInsteadOfDuplicateOffsetPage() {
         var now=0L
         var requests=0
-        val repo=repository(clock={ now }) {
+        val repo=repository(clock={ now }) { request ->
             requests++
-            JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(19,"999")
+            if(request.url.host.endsWith("fqnovel.com")) JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(19,"999")
                 .put("search_id","session").put("passback","cursor"))).toString()
+            else """{"searchList":[{"video_data":{"series_id":"444","series_name":"漫画兜底","genre":"205"}}]}"""
         }
         repo.search("修仙",1,ContentType.COMIC)
         now=300001L
-        assertThrows(SearchSessionExpiredException::class.java) { repo.search("修仙",2,ContentType.COMIC) }
-        assertEquals(1,requests)
+        assertEquals("444",repo.search("修仙",2,ContentType.COMIC).items.single().id)
+        assertEquals(2,requests)
         repo.search("修仙",1,ContentType.COMIC)
         repo.search("修仙",2,ContentType.COMIC)
-        assertEquals(3,requests)
+        assertEquals(4,requests)
+    }
+
+    @Test fun comicSearchFallsBackToWebsiteAndKeepsOnlyComicGenreRows() {
+        val repo=repository { request ->
+            if(request.url.host.endsWith("fqnovel.com")) ""
+            else """{"searchList":[{"video_data":{"series_id":"111","series_name":"短剧测试","genre":"203"}},{"video_data":{"series_id":"222","series_name":"漫画测试","genre":"205"}}]}"""
+        }
+        val result=repo.search("修仙",1,ContentType.COMIC)
+        assertEquals(listOf("222"),result.items.map { it.id })
+        // 站点没有 hasMore 时不再提示翻页
+        assertFalse(result.hasMore)
+    }
+
+    @Test fun multiSeasonSearchFillsMissingSeasonsFromSuggestions() {
+        val repo=repository { request ->
+            val url=request.url
+            val keyword=url.queryParameter("query").orEmpty()
+            when {
+                url.host.endsWith("fqnovel.com") && url.encodedPath.contains("suggest") ->
+                    JSONObject().put("code",0).put("data",JSONObject().put("query_result",JSONArray().put("测试剧第二季"))).toString()
+                url.host.endsWith("fqnovel.com") -> ""
+                keyword.contains("第二季") ->
+                    """{"searchList":[{"video_data":{"series_id":"222","series_name":"测试剧第二季","genre":"205"}}]}"""
+                else ->
+                    """{"searchList":[{"video_data":{"series_id":"111","series_name":"测试剧第一季","genre":"205"}},{"video_data":{"series_id":"113","series_name":"测试剧第三季","genre":"205"}}]}"""
+            }
+        }
+        val result=repo.search("测试剧",1,ContentType.COMIC)
+        assertEquals(listOf("111","222","113"),result.items.map { it.id })
+    }
+
+    @Test fun shortSearchFallsBackToWebsiteAndKeepsOnlyShortGenreRows() {
+        val repo=repository { request ->
+            if(request.url.host.endsWith("fqnovel.com")) ""
+            else """{"searchList":[{"video_data":{"series_id":"111","series_name":"短剧测试","genre":"203"}},{"video_data":{"series_id":"222","series_name":"漫画测试","genre":"205"}}]}"""
+        }
+        val result=repo.search("总裁",1,ContentType.SHORT)
+        assertEquals(listOf("111"),result.items.map { it.id })
+    }
+
+    @Test fun websiteSearchPaginatesWithSitePageAndHasMore() {
+        val pages=mutableListOf<String>()
+        val repo=repository { request ->
+            if(request.url.host.endsWith("fqnovel.com")) ""
+            else {
+                assertEquals("/api/search/result/",request.url.encodedPath)
+                assertEquals("修仙",request.url.queryParameter("query"))
+                val page=request.url.queryParameter("page").orEmpty()
+                pages+=page
+                """{"searchList":[{"video_data":{"series_id":"90$page","series_name":"网站结果第${page}页","genre":"205"}}],"totalPages":2,"hasMore":${page=="1"}}"""
+            }
+        }
+        val first=repo.search("修仙",1,ContentType.COMIC)
+        assertEquals(listOf("901"),first.items.map { it.id })
+        assertTrue(first.hasMore)
+        val second=repo.search("修仙",2,ContentType.COMIC)
+        assertEquals(listOf("902"),second.items.map { it.id })
+        assertFalse(second.hasMore)
+        assertEquals(listOf("1","2"),pages)
     }
 
     @Test fun shortHomeStillUsesCategoryAndStopsOnLastPage() {
@@ -358,21 +420,283 @@ class ContentRepositoryTest {
         assertEquals(1,requests)
     }
 
-    @Test fun missingComicTabDoesNotFallBackToShortResults() {
+    @Test fun missingComicTabFallsBackToWebsiteWithoutShortResults() {
         var requests=0
-        val repo=repository { requests++; """{"code":0,"search_tabs":[{"tab_type":11,"data":[]}]}""" }
-        assertThrows(IOException::class.java) { repo.search("修仙",1,ContentType.COMIC) }
-        assertEquals(1,requests)
+        val repo=repository { request ->
+            requests++
+            if(request.url.host.endsWith("fqnovel.com")) """{"code":0,"search_tabs":[{"tab_type":11,"data":[]}]}"""
+            else """{"searchList":[{"video_data":{"series_id":"111","series_name":"短剧测试","genre":"203"}}]}"""
+        }
+        assertTrue(repo.search("修仙",1,ContentType.COMIC).items.isEmpty())
+        assertEquals(2,requests)
     }
 
     @Test fun shortSearchKeepsWebsiteFallback() {
         val paths=mutableListOf<String>()
         val repo=repository { request ->
             paths+=request.url.encodedPath
-            if(paths.size==1) throw IOException("offline")
-            """<script>_ROUTER_DATA={"loaderData":{"search_page":{"searchList":[{"series_id":"456","series_name":"测试短剧"}]}}}};</script>"""
+            if(paths.size<=2) throw IOException("offline")
+            """{"searchList":[{"video_data":{"series_id":"456","series_name":"测试短剧","genre":"203"}}]}"""
         }
         assertEquals("456",repo.search("短剧",1,ContentType.SHORT).items.single().id)
-        assertEquals(2,paths.size)
+        assertEquals(3,paths.size)
+    }
+
+    private fun relatedItem(id: String,name: String)=JSONObject().put("series_id",id).put("series_name",name)
+        .put("series_cover","https://example.com/$id.jpg").put("episode_cnt",10).put("episode_right_text","全 10 集")
+    private fun detailHtml(series: JSONObject,recommended: JSONArray): String {
+        val recommendations=JSONObject().put("videoList",JSONArray())
+            .put("recommendationGroups",JSONObject().put("related_list",recommended))
+        val args=JSONArray().put("detail_page").put(JSONArray().put(JSONObject().put("key","recommendations")
+            .put("routerDataFnName","p").put("routerDataFnArgs",JSONArray().put(recommendations.toString()))))
+        val attribute=args.toString().replace("&","&amp;").replace("\"","&quot;")
+        return """<script>_ROUTER_DATA={"loaderData":{"detail_page":{"seriesDetail":$series}}};</script><script data-fn-args="$attribute"></script>"""
+    }
+
+    @Test fun detailRelatedHoistsSameNameSeasonsAndSkipsCurrentSeries() {
+        val series=JSONObject().put("series_id","123").put("series_name","测试剧").put("vid_list",JSONArray().put("900").put("901"))
+        val html=detailHtml(series,JSONArray()
+            .put(relatedItem("111","别人的剧"))
+            .put(relatedItem("222","测试剧"))
+            .put(relatedItem("333","测试剧 第二季"))
+            .put(relatedItem("123","测试剧")))
+        val detail=repository { html }.detail("123")
+        assertEquals(listOf("900","901"),detail.episodes)
+        assertEquals(listOf("222","333","111"),detail.related.map { it.id })
+    }
+
+    @Test fun detailWithoutRecommendationPayloadStillLoadsEpisodes() {
+        val html="""<script>_ROUTER_DATA={"loaderData":{"detail_page":{"seriesDetail":{"series_id":"123","series_name":"测试剧","vid_list":["900","901"]}}}};</script>"""
+        val detail=repository { html }.detail("123")
+        assertEquals(listOf("900","901"),detail.episodes)
+        assertTrue(detail.related.isEmpty())
+    }
+
+    @Test fun detailCollectsSameNameSeasonsFromWebsiteSearchOrderedBySeason() {
+        val series=JSONObject().put("series_id","123").put("series_name","测试剧 第二季").put("vid_list",JSONArray().put("900"))
+        val repo=repository { request ->
+            if(request.url.encodedPath=="/detail") detailHtml(series,JSONArray())
+            else """{"searchList":[
+                {"video_data":{"series_id":"222","series_name":"测试剧 第三季","genre":"203"}},
+                {"video_data":{"series_id":"111","series_name":"别人的剧","genre":"203"}},
+                {"video_data":{"series_id":"333","series_name":"测试剧 第一季","genre":"203"}},
+                {"video_data":{"series_id":"444","series_name":"测试剧 第十季","genre":"203"}},
+                {"video_data":{"series_id":"123","series_name":"测试剧 第二季","genre":"203"}}]}"""
+        }
+        val detail=repo.detail("123")
+        assertEquals(listOf("333","222","444"),detail.sameName.map { it.id })
+    }
+
+    @Test fun detailFillsMissingSeasonsFromSuggestionsLikeSearch() {
+        val series=JSONObject().put("series_id","123").put("series_name","测试剧 第一季").put("vid_list",JSONArray().put("900"))
+        val repo=repository { request ->
+            when {
+                request.url.encodedPath=="/detail" -> detailHtml(series,JSONArray())
+                request.url.host.endsWith("fqnovel.com") -> JSONObject().put("code",0)
+                    .put("data",JSONObject().put("query_result",JSONArray().put("测试剧 第二季").put("测试剧 第三季"))).toString()
+                else -> {
+                    val keyword=request.url.queryParameter("query").orEmpty()
+                    val row=when(keyword) {
+                        "测试剧" -> """{"video_data":{"series_id":"123","series_name":"测试剧 第一季","genre":"203"}}"""
+                        "测试剧 第二季" -> """{"video_data":{"series_id":"222","series_name":"测试剧 第二季","genre":"203"}}"""
+                        "测试剧 第三季" -> """{"video_data":{"series_id":"333","series_name":"测试剧 第三季","genre":"203"}}"""
+                        else -> ""
+                    }
+                    if(row.isEmpty()) """{"searchList":[]}""" else """{"searchList":[${row}]}"""
+                }
+            }
+        }
+        // 网站只返回季 1，联想给出的季 2、季 3 需要回查补齐
+        assertEquals(listOf("222","333"),repo.detail("123").sameName.map { it.id })
+    }
+
+    @Test fun seasonFillCacheMissesRecomputeWhenAnotherSeasonPageKnowsFewerSeasons() {
+        // 2026-11-08 用户实测：第 1 季详情页 related 聚合了全季，补齐管线算出「无缺季」的空结果被缓存；
+        // 跳到其它季页（related 只带部分季）后复用这条空缓存，缺的季不再补齐。
+        // 修复：空结果只在「已知季数一致」时才可信，规模变化触发重算。
+        val s1=JSONObject().put("series_id","1").put("series_name","测试剧 第一季").put("vid_list",JSONArray().put("900"))
+        val s2=JSONObject().put("series_id","2").put("series_name","测试剧 第二季").put("vid_list",JSONArray().put("901"))
+        val repo=repository { request ->
+            when {
+                request.url.encodedPath=="/detail" ->
+                    if(request.url.queryParameter("series_id")=="1")
+                        detailHtml(s1,JSONArray().put(relatedItem("2","测试剧 第二季")).put(relatedItem("3","测试剧 第三季")))
+                    else detailHtml(s2,JSONArray().put(relatedItem("1","测试剧 第一季")))
+                request.url.encodedPath=="/api/search/result/" ->
+                    """{"searchList":[{"video_data":{"series_id":"3","series_name":"测试剧 第三季","genre":"203"}}]}"""
+                else -> """{"code":0,"data":{"query_result":[]}}"""
+            }
+        }
+        // 第 1 季页：related 自带 2、3 季，搜索结果里的第 3 季在已知集合内被过滤，补齐结果为空并被缓存。
+        assertEquals(listOf("2","3"),repo.detail("1").sameName.map { it.id })
+        // 第 2 季页：related 只带第 1 季，已知季数从 3 变 2，空缓存不可信，重算补出第 3 季。
+        assertEquals(listOf("1","3"),repo.detail("2").sameName.map { it.id })
+    }
+
+    @Test fun seasonListKeepsSeasonsDiscoveredOnAnotherSeasonPage() {
+        // 2026-11-08 用户实测（谁让这个文盲修仙的 第六季）：站方 related 已不再聚合同系列季，
+        // 「系列 N 季」完全由搜索补齐管线构建。第 6 季页补齐出 1-5 季入缓存后，
+        // 点进第 5 季页时已知集合只有第 5 季，若缓存只存差集，过滤后只剩 1-4 季，第 6 季消失。
+        // 修复：缓存存「已知季并集」，任何季页减去自己已有的季即可拿回全部。
+        fun season(id: String,title: String)=JSONObject().put("series_id",id).put("series_name",title).put("vid_list",JSONArray().put("90$id"))
+        val page=mapOf(
+            "6" to detailHtml(season("6","测试剧第六季"),JSONArray()),
+            "5" to detailHtml(season("5","测试剧第五季"),JSONArray()),
+        )
+        val repo=repository { request ->
+            when {
+                request.url.encodedPath=="/detail" -> page[request.url.queryParameter("series_id")].orEmpty()
+                request.url.host.endsWith("fqnovel.com") -> JSONObject().put("code",0).put("data",JSONObject()
+                    .put("query_result",JSONArray().put("测试剧第二季").put("测试剧第三季")
+                        .put("测试剧第四季").put("测试剧第五季"))).toString()
+                else -> {
+                    val keyword=request.url.queryParameter("query").orEmpty()
+                    val row=when(keyword) {
+                        "测试剧" -> """{"video_data":{"series_id":"1","series_name":"测试剧第一季","genre":"203"}}"""
+                        "测试剧第二季" -> """{"video_data":{"series_id":"2","series_name":"测试剧第二季","genre":"203"}}"""
+                        "测试剧第三季" -> """{"video_data":{"series_id":"3","series_name":"测试剧第三季","genre":"203"}}"""
+                        "测试剧第四季" -> """{"video_data":{"series_id":"4","series_name":"测试剧第四季","genre":"203"}}"""
+                        "测试剧第五季" -> """{"video_data":{"series_id":"5","series_name":"测试剧第五季","genre":"203"}}"""
+                        else -> ""
+                    }
+                    if(row.isEmpty()) """{"searchList":[]}""" else """{"searchList":[${row}]}"""
+                }
+            }
+        }
+        // 第 6 季页：补齐出 1-5 季，共 6 季。
+        assertEquals(listOf("1","2","3","4","5"),repo.detail("6").sameName.map { it.id })
+        // 第 5 季页：related 为空、已知只有自己，仍应拿回第 6 季而不是把缓存里减没了。
+        assertEquals(listOf("1","2","3","4","6"),repo.detail("5").sameName.map { it.id })
+    }
+
+    private fun currentRealRank(payload: JSONObject) = script("mergeLoaderData",JSONArray()
+        .put("rank_hot-real-drama/page").put(JSONArray().put(JSONObject().put("key","content")
+            .put("routerDataFnName","p").put("routerDataFnArgs",JSONArray().put(payload.toString())))))
+
+    @Test fun realRankingParsesTheShortDramaBoard() {
+        val payload=rankPayload(1,5)
+        payload.getJSONArray("rankList").getJSONObject(0).put("rank",1).put("heatText","9999万热度")
+        val repo=repository { request ->
+            assertEquals("/rank/hot-real-drama",request.url.encodedPath)
+            """<script>_ROUTER_DATA={"loaderData":{"rank_hot-real-drama/page":{"rankKey":"real","pageNum":1,"updatedText":"今日已更新"}}};</script>"""+currentRealRank(payload)
+        }
+        val result=repo.realRanking(1)
+        assertNotNull(result.ranking)
+        assertEquals(RankPosition(1,"9999万热度"),result.ranking!!.positions["123"])
+        assertEquals("今日已更新",result.ranking!!.updatedText)
+        assertTrue(result.hasMore)
+    }
+
+    @Test fun realRankingRejectsTheComicBoardPayload() {
+        val repo=repository { currentRank(rankPayload()) }
+        assertThrows(IOException::class.java) { repo.realRanking(1) }
+    }
+
+    @Test fun renderedRealRankingWorksWithoutStreamedPayload() {
+        val repo=repository {
+            """<script>_ROUTER_DATA={"loaderData":{"rank_hot-real-drama/page":{"rankKey":"real","pageNum":2,"updatedText":"今日已更新"}}};</script>
+                <article aria-labelledby="rank-title-456"><span class="pc-badge-number-example">22</span>
+                <h2 id="rank-title-456">短剧</h2><p class="pc-metrics-example"><span>100万热度</span></p></article>
+                <nav aria-label="榜单分页"><a href="/rank/hot-real-drama">1</a><span aria-current="page">2</span><a href="/rank/hot-real-drama?page=5">5</a></nav>"""
+        }
+        val result=repo.realRanking(2)
+        assertEquals(RankPosition(22,"100万热度"),result.ranking!!.positions["456"])
+        assertEquals(5,result.ranking!!.totalPages)
+        assertEquals("今日已更新",result.ranking!!.updatedText)
+    }
+
+    private fun selector(slug: String,name: String,vararg ids: String)=JSONObject().put("selector_item_id",slug).put("show_name",name)
+        .put("category_json_ids",JSONArray().apply { ids.forEach { put(it) } })
+
+    private fun categoryHtml(recommendList: JSONArray = JSONArray(),selectorList: JSONArray? = null,apiIds: JSONArray? = null,totalPages: Int = 1): String {
+        val section=JSONObject().put("recommendList",recommendList).put("pagination",JSONObject().put("totalPages",totalPages))
+        if(selectorList!=null) section.put("selectorList",selectorList)
+        if(apiIds!=null) section.put("apiQuery",JSONObject().put("category_json_ids",apiIds))
+        return """<script>_ROUTER_DATA={"loaderData":{"category_$":${section}}};</script>"""
+    }
+
+    @Test fun genresComeFromTheCategorySelectorAndAreCached() {
+        var requests=0
+        val repo=repository { request ->
+            requests++
+            assertEquals("/category/real-drama",request.url.encodedPath)
+            categoryHtml(selectorList=JSONArray().put(JSONObject().put("row_name","全部分类").put("items",JSONArray()
+                .put(selector("romance","爱情","5000")).put(selector("costume","古装","5007")))))
+        }
+        val genres=repo.genres(ContentType.SHORT)
+        assertEquals(listOf("romance","costume"),genres.map { it.slug })
+        assertEquals(listOf("爱情","古装"),genres.map { it.name })
+        assertEquals(listOf("5000"),genres.first().ids)
+        assertEquals(genres,repo.genres(ContentType.SHORT))
+        assertEquals(1,requests)
+    }
+
+    @Test fun genreHomeUsesTheSlugPathAndValidatesAppliedIds() {
+        val rows=JSONArray().put(JSONObject().put("series_id","456").put("series_name","爱情短剧"))
+        val repo=repository { request ->
+            assertEquals("/category/real-drama/romance",request.url.encodedPath)
+            assertEquals("2",request.url.queryParameter("page"))
+            categoryHtml(rows,apiIds=JSONArray().put("5000"),totalPages=9)
+        }
+        val page=repo.home(2,ContentType.SHORT,Genre("romance","爱情",listOf("5000")))
+        assertEquals("456",page.items.single().id)
+        assertTrue(page.hasMore)
+    }
+
+    @Test fun genreHomeFailsWhenTheSiteIgnoresTheFilter() {
+        val repo=repository { categoryHtml(apiIds=JSONArray()) }
+        assertThrows(IOException::class.java) { repo.home(1,ContentType.SHORT,Genre("romance","爱情",listOf("5000"))) }
+    }
+
+    @Test fun comicGenresUseTheComicCategoryPath() {
+        val rows=JSONArray().put(JSONObject().put("series_id","789").put("series_name","脑洞漫剧"))
+        val repo=repository { request ->
+            assertEquals("/category/comic-drama/creative",request.url.encodedPath)
+            categoryHtml(rows,apiIds=JSONArray().put("755"))
+        }
+        assertEquals("789",repo.home(1,ContentType.COMIC,Genre("creative","脑洞",listOf("755"))).items.single().id)
+    }
+
+    @Test fun suggestParsesQueryResultWordsAndDeduplicates() {
+        val repo=repository { request ->
+            assertEquals("/reading/bookapi/search/suggest/v",request.url.encodedPath)
+            assertEquals("jywn",request.url.queryParameter("query"))
+            """{"code":0,"data":{"query_key":"jywn","query_result":["家有五女"," 今夜为你无眠 ","家有五女",""]}}"""
+        }
+        assertEquals(listOf("家有五女","今夜为你无眠"),repo.suggest(" JYWN "))
+    }
+
+    @Test fun suggestFallsBackToEmptyOnBlankBodyErrorCodeOrNetworkFailure() {
+        var requests=0
+        val blank=repository { requests++; "" }
+        assertTrue(blank.suggest("jywn").isEmpty())
+        val rejected=repository { requests++; """{"code":-1}""" }
+        assertTrue(rejected.suggest("jywn").isEmpty())
+        val offline=repository { requests++; throw IOException("offline") }
+        assertTrue(offline.suggest("jywn").isEmpty())
+        assertEquals(3,requests)
+    }
+
+    @Test fun suggestSkipsNonAlphabetInputWithoutARequest() {
+        var requests=0
+        val repo=repository { requests++; """{"code":0,"data":{"query_result":["a"]}}""" }
+        assertTrue(repo.suggest("").isEmpty())
+        assertTrue(repo.suggest("家有").isEmpty())
+        assertTrue(repo.suggest("a".repeat(21)).isEmpty())
+        assertEquals(0,requests)
+    }
+
+    @Test fun seriesTitleKeepsOnlyTheName() {
+        // 实测：详情接口把简介拼进了 series_name，标题栏只有一行高，第二行被裁成半截字
+        assertEquals("《黄石第五季》",seriesTitle("《黄石第五季》\n蒙大拿荒野深处，达顿家族世代守护的黄石牧场迎来终极考验"))
+        assertEquals("狂飙",seriesTitle("狂飙"))
+        assertEquals("狂飙",seriesTitle("  狂飙  "))
+        // 首行是空的时候往下一行找，不能整个丢空
+        assertEquals("狂飙",seriesTitle("\n\n狂飙\n第二行"))
+        // 行内多余空白压成一个空格，免得标题栏里出现大段空隙
+        assertEquals("The Good Doctor",seriesTitle("The  Good\tDoctor"))
+        assertEquals("",seriesTitle(""))
+        // 超长标题截断，避免撑出标题栏
+        assertEquals(48,seriesTitle("剧".repeat(120)).length)
     }
 }

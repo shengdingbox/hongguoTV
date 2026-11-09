@@ -9,10 +9,12 @@ android {
     compileSdk = 36
     defaultConfig {
         applicationId = "com.hongguotv.nativeapp"
-        minSdk = 26
+        // 更新通道包默认 minSdk 26（旧客户端安装校验要求实际值与清单声明一致）；
+        // Android 5-7 兼容包用 -PHONGGUOTV_MIN_SDK=21 出 android5 变体
+        minSdk = findProperty("HONGGUOTV_MIN_SDK")?.toString()?.toInt() ?: 26
         targetSdk = 36
-        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 9
-        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.9.0"
+        versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 12
+        versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.30.10"
     }
     buildFeatures { buildConfig = true }
     signingConfigs {
@@ -23,17 +25,24 @@ android {
             keyPassword = signingValue("HONGGUOTV_KEY_PASSWORD", "keyPassword")
         }
     }
-    buildTypes { getByName("release") { signingConfig = signingConfigs.getByName("delivery"); isMinifyEnabled = true; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro") } }
+    buildTypes { getByName("release") { signingConfig = signingConfigs.getByName("delivery"); isMinifyEnabled = true; isShrinkResources = true; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro") } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17; isCoreLibraryDesugaringEnabled = true }
     kotlinOptions { jvmTarget = "17" }
-    packaging { resources.excludes += setOf("META-INF/versions/**", "META-INF/*.kotlin_module") }
+    // bcprov 只用到 SM3Digest，PQC/X509 的附属资源文件（约 1.2MB）用不到，打包时排除
+    packaging { resources.excludes += setOf("META-INF/versions/**", "META-INF/*.kotlin_module", "org/bouncycastle/pqc/**", "org/bouncycastle/x509/**") }
 }
 dependencies {
     implementation("androidx.core:core:1.8.0")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("com.google.zxing:core:3.5.3")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation(project(":core")) { exclude(group = "org.json") }
     implementation("androidx.media3:media3-exoplayer:1.8.0")
+    implementation("androidx.media3:media3-exoplayer-hls:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
+    implementation("androidx.media3:media3-datasource-okhttp:1.8.0")
+    // 本地单测：CMS 解析跑在 JVM，需要真实 org.json 实现（Android 平台 stub 未 mock）
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

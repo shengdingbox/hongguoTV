@@ -6,6 +6,9 @@ import java.io.ByteArrayOutputStream
 import java.net.URLEncoder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 internal class Signer(private val clock: () -> Long = System::currentTimeMillis, private val random: () -> Double = Math::random) {
     data class Request(val url: String, val headers: Map<String, String>, val body: ByteArray?)
@@ -88,7 +91,7 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         }
         return (hex("8404") + byteArrayOf(random.toByte(),(random shr 8).toByte(),0x40,1) + out).hex()
     }
-    private fun deviceProto() = proto(f(1,1,"sint"),f(2,2,"sint"),f(3,"8662"),f(4,VendorConstants.device.getValue("device_id")),f(5,"Ai6svO3PyrwDOUSmO6ZcResxu"),f(6,"!noperm!"),f(7,-888888,"sint"),f(8,-888888,"sint"),f(9,3,"sint"),f(10,-888888,"sint"),f(11,"!notset!"),f(12,"Asia/Shanghai,8"),f(13,"zh_CN"),f(14,4,"sint"),f(16,255.24993896484375,"float"),f(17,35.58599090576172,"float"),f(18,3.467449188232422,"float"),f(19,3.467449188232422,"float"),f(20,255.1754913330078,"float"),f(21,42.17544174194336,"float"),f(22,"16"),f(23,41,"sint"),f(24,36,"sint"),f(25,1728388016635L,"sint"),f(26,1728388016635L,"sint"),f(27,1728388016635L,"sint"),f(28,1728388016637L,"sint"),f(29,-1,"sint"),f(30,"25053RT47C"),f(31,"Redmi"),f(32,"25053RT47C"),f(33,"25053RT47C"),f(34,"Xiaomi"),f(35,"Redmi"),f(36,"Redmi"),f(38,31,"sint"))
+    private fun deviceProto() = proto(f(1,1,"sint"),f(2,2,"sint"),f(3,"8662"),f(4,VendorConstants.device.getValue("device_id")),f(5,VendorConstants.processNonce),f(6,"!noperm!"),f(7,-888888,"sint"),f(8,-888888,"sint"),f(9,3,"sint"),f(10,-888888,"sint"),f(11,"!notset!"),f(12,"Asia/Shanghai,8"),f(13,"zh_CN"),f(14,4,"sint"),f(16,255.24993896484375,"float"),f(17,35.58599090576172,"float"),f(18,3.467449188232422,"float"),f(19,3.467449188232422,"float"),f(20,255.1754913330078,"float"),f(21,42.17544174194336,"float"),f(22,"16"),f(23,41,"sint"),f(24,36,"sint"),f(25,VendorConstants.processStarted,"sint"),f(26,VendorConstants.processStarted,"sint"),f(27,VendorConstants.processStarted,"sint"),f(28,VendorConstants.processStarted+2,"sint"),f(29,-1,"sint"),f(30,"25053RT47C"),f(31,"Redmi"),f(32,"25053RT47C"),f(33,"25053RT47C"),f(34,"Xiaomi"),f(35,"Redmi"),f(36,"Redmi"),f(38,31,"sint"))
     private fun xmxor(data: ByteArray, key: ByteArray): ByteArray {
         val encoded = IntArray(data.size)
         for (i in data.indices) {
@@ -109,16 +112,15 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         encoded[0] = ((encoded[0] xor encoded[1]) + encoded.drop(1).sum()) and 255
         return encoded.map { it.toByte() }.toByteArray()
     }
-    fun medusa(url: String, body: ByteArray?, ts: Int): String {
+    fun medusa(url: String, body: ByteArray?, ts: Int, deviceId: String = VendorConstants.device.getValue("device_id"), versionName: String = VendorConstants.device.getValue("version_name")): String {
         val bodyMd5 = body?.let { digest("MD5",it) } ?: ByteArray(16)
         val query = url.substringAfter('?').toByteArray(); val querySm3 = sm3(query)
         val queryBodyTs = hashF13(querySm3,bodyMd5,ts)
         val nested = proto(f(1,111,"sint"),f(2,10,"sint"),f(3,694367,"sint"),f(5,586952199,"sint"))
         val messageRand = unsigned(rand()); val envLaunch = (random()*21).toInt()+100; val envPid = (random()*2000).toInt()+10001
-        val version = VendorConstants.device.getValue("version_name")
-        val env = proto(f(1,envLaunch,"sint"),f(2,146331399,"sint"),f(3,146331396,"sint"),f(5,7,"sint"),f(6,"v04.06.04.03-bugfix"),f(7,envPid,"sint"),f(12,deviceProto()),f(13,proto(f(1,clock()/1000,"sint"),f(2,-2,"sint"),f(4,200,"sint"))),f(14,version))
+        val env = proto(f(1,envLaunch,"sint"),f(2,146331399,"sint"),f(3,146331396,"sint"),f(5,7,"sint"),f(6,"v04.06.04.03-bugfix"),f(7,envPid,"sint"),f(12,deviceProto()),f(13,proto(f(1,clock()/1000,"sint"),f(2,-2,"sint"),f(4,200,"sint"))),f(14,versionName))
         val queryHash = sm3(query+bodyMd5+"none".toByteArray())
-        val message = proto(f(1,hex("f7e85ffad7d7dc3bd62ac87057cf6118")),f(2,3,"sint"),f(3,messageRand,"sint"),f(4,"8662"),f(5,VendorConstants.device.getValue("device_id")),f(6,"1588093228"),f(7,version),f(8,"v04.06.04-ml-android"),f(9,67503104,"sint"),f(10,hex("4001000000000000")),f(12,ts,"sint"),f(13,queryBodyTs),f(14,querySm3.copyOf(6)),f(15,nested),f(16,"AXYQOS6n2m60x1fVZHIrH3iol"),f(17,ts,"sint"),f(19,queryHash),f(20,"none"),f(21,312,"sint"),f(23,env),f(24,"""{"cmr":16777216,"cmr2":16777216,"un_h":1879194040,"vpn":0,"kd":0,"fkd":3672518972,"pd":-1872573247,"dyn":"","do":0,"tk":true}"""))
+        val message = proto(f(1,hex("f7e85ffad7d7dc3bd62ac87057cf6118")),f(2,3,"sint"),f(3,messageRand,"sint"),f(4,"8662"),f(5,deviceId),f(6,"1588093228"),f(7,versionName),f(8,"v04.06.04-ml-android"),f(9,67503104,"sint"),f(10,hex("4001000000000000")),f(12,ts,"sint"),f(13,queryBodyTs),f(14,querySm3.copyOf(6)),f(15,nested),f(16,"AXYQOS6n2m60x1fVZHIrH3iol"),f(17,ts,"sint"),f(19,queryHash),f(20,"none"),f(21,312,"sint"),f(23,env),f(24,"""{"cmr":16777216,"cmr2":16777216,"un_h":1879194040,"vpn":0,"kd":0,"fkd":3672518972,"pd":-1872573247,"dyn":"","do":0,"tk":true}"""))
         val r = rand(); val signKey = hex("8ebdfa3806ecc5cee79423e6029ed82540bc2218bb7eaef71cb691f7aa8aa2f5")
         val hash = sm3(signKey+le32(r)+signKey); val d1 = (r shr 16) and 255
         val seed = le32((((d1 shl 11) or (r ushr 24)) xor (d1 shr 5) xor d1).inv())
@@ -165,8 +167,135 @@ internal class Signer(private val clock: () -> Long = System::currentTimeMillis,
         }
         error("无法生成请求签名")
     }
+    /**
+     * 播放接口签名（2026-11-05 平台变更后的新算法，移植自 PhoenixReadApi 的 SignPlayer：
+     * https://github.com/LanZhan-Harmony/PhoenixReadApi ）。
+     * 旧六头（含 helios/medusa）已被风控废弃（一律回 110001）；新签名只保留五头：
+     * X-Khronos / X-SS-Req-Ticket / X-Gorgon / X-Argus / X-Ladon，body 非空时附 X-SS-STUB。
+     * 比 [sign] 少一个 `ts` 查询参数（播放接口不接受）；Argus/Ladon 绑定查询串里的
+     * device_id / aid，指纹固定为 7.3.5.32。
+     */
+    fun signPlayback(base: String, values: Map<String,String>, body: ByteArray?, userAgent: String): Request {
+        val now = clock(); val ts = now / 1000
+        val query = encode(values + mapOf("_rticket" to now.toString()))
+        val url = "$base?$query"
+        val nonce = ByteArray(11) { (random() * 256).toInt().toByte() }
+        val deviceId = values["device_id"] ?: VendorConstants.device.getValue("device_id")
+        val aid = values["aid"] ?: "8662"
+        val headers = linkedMapOf(
+            "User-Agent" to userAgent,
+            "Accept" to "application/json; charset=utf-8,application/x-protobuf",
+            "x-ss-req-ticket" to now.toString(),
+            "x-khronos" to ts.toString(),
+            "x-gorgon" to playerGorgon(query,body,ts),
+            "x-argus" to playerArgus(query,body,ts,deviceId,nonce),
+            "x-ladon" to playerLadon(aid,ts,nonce.copyOfRange(2,6)),
+        )
+        if (body != null && body.isNotEmpty()) {
+            headers["Content-Type"]="application/json; charset=utf-8"
+            headers["x-ss-stub"]=digest("MD5",body).hex().uppercase()
+        }
+        return Request(url,headers,body)
+    }
+    // ---- 以下为 PhoenixReadApi 新播放签名私有实现 ----
+    private fun playerGorgon(query: String, body: ByteArray?, ts: Long): String {
+        val payload = ByteArray(20)
+        digest("MD5",query.toByteArray()).copyInto(payload,0,0,4)
+        if (body != null && body.isNotEmpty()) digest("MD5",body).copyInto(payload,4,0,4)
+        payload[13] = 6; payload[14] = 11; payload[15] = 28
+        be32(ts.toInt()).copyInto(payload,16)
+        for (i in payload.indices) payload[i] = (payload[i].u() xor PLAYER_REQUEST_KEY[i].u()).toByte()
+        for (j in payload.indices) {
+            val rotated = ((payload[j].u() shl 4) or (payload[j].u() ushr 4)) and 255
+            val mixed = rotated xor payload[(j + 1) % payload.size].u()
+            payload[j] = ((Integer.reverse(mixed) ushr 24) xor 0xFF xor payload.size).toByte()
+        }
+        return (hex("8404401c0000") + payload).hex()
+    }
+    private fun playerArgus(query: String, body: ByteArray?, ts: Long, deviceId: String, nonce: ByteArray): String {
+        val bodyHash = if (body == null || body.isEmpty()) sm3(ByteArray(16)) else sm3(digest("MD5",body))
+        val queryHash = sm3(query.toByteArray())
+        val out = ByteArrayOutputStream()
+        fun pvTo(s: ByteArrayOutputStream, field: Long, value: Long) { s.write(varint(field shl 3)); s.write(varint(value)) }
+        fun pbTo(s: ByteArrayOutputStream, field: Long, value: ByteArray) { s.write(varint((field shl 3) or 2)); s.write(varint(value.size.toLong())); s.write(value) }
+        fun pv(field: Long, value: Long) = pvTo(out,field,value)
+        fun pb(field: Long, value: ByteArray) = pbTo(out,field,value)
+        fun pb(field: Long, value: String) = pb(field,value.toByteArray())
+        val counters = ByteArrayOutputStream().apply { pvTo(this,1,1); pvTo(this,2,1); pvTo(this,3,1); pvTo(this,7,3348294860L) }.toByteArray()
+        val environment = ByteArrayOutputStream().apply { pbTo(this,1,"25053RT47C".toByteArray()); pbTo(this,2,"16".toByteArray()); pbTo(this,3,"update_64".toByteArray()); pvTo(this,4,2147483648L) }.toByteArray()
+        pv(1,0x20200929L * 2); pv(2,2)
+        pv(3,(nonce.i32(6,true) and 0x7fffffff).toLong())
+        pb(4,"8662"); pb(5,deviceId); pb(6,"1611921764"); pb(7,"7.3.5.32"); pb(8,"v04.07.01-ml-android")
+        pv(9,135135744); pb(10,ByteArray(8)); pv(11,0); pv(12,ts * 2)
+        pb(13,bodyHash.copyOf(6)); pb(14,queryHash.copyOf(6))
+        pb(15,counters)
+        pb(16,ByteArray(0)); pb(20,"none"); pv(21,738)
+        pb(23,environment)
+        pv(25,2)
+        val data = pad(out.toByteArray())
+        val rounds = LongArray(72)
+        for (i in 0..3) rounds[i] = PLAYER_ARGUS_DERIVED.i64(i * 8,true)
+        for (k in 4 until 72) {
+            var mixed = java.lang.Long.rotateRight(rounds[k - 1],3) xor rounds[k - 3]
+            mixed = mixed xor java.lang.Long.rotateRight(mixed,1)
+            val bit = (0x3dc94c3a046d678bL ushr ((k - 4) % 62)) and 1L
+            rounds[k] = rounds[k - 4].inv() xor mixed xor (bit xor 3L)
+        }
+        var at = 0
+        while (at < data.size) {
+            var left = data.i64(at,true); var right = data.i64(at + 8,true)
+            for (round in rounds) {
+                val nextRight = left xor (java.lang.Long.rotateLeft(right,1) and java.lang.Long.rotateLeft(right,8)) xor java.lang.Long.rotateLeft(right,2) xor round
+                left = right; right = nextRight
+            }
+            le64(left).copyInto(data,at); le64(right).copyInto(data,at + 8)
+            at += 16
+        }
+        val mask = hex("d04ffdffd04ffdff")
+        for (n in data.indices) data[n] = (data[n].u() xor mask[n % 8].u()).toByte()
+        val combined = (mask + data).reversedArray()
+        val container = pad(hex("a6e783ee7001100918") + combined + hex("567b"))
+        val encrypted = Cipher.getInstance("AES/CBC/NoPadding").run {
+            init(Cipher.ENCRYPT_MODE,SecretKeySpec(digest("MD5",PLAYER_ARGUS_KEY.copyOfRange(0,16)),"AES"),IvParameterSpec(digest("MD5",PLAYER_ARGUS_KEY.copyOfRange(16,32))))
+            doFinal(container)
+        }
+        return (byteArrayOf(0x3c,0xcc.toByte()) + encrypted).base64()
+    }
+    private fun playerLadon(aid: String, ts: Long, prefix: ByteArray): String {
+        val ascii = digest("MD5",prefix + aid.toByteArray()).hex().toByteArray(Charsets.US_ASCII)
+        var num = ascii.i64(0,true); var value = ascii.i64(8,true)
+        val queue = ArrayDeque(listOf(ascii.i64(16,true),ascii.i64(24,true)))
+        val table = LongArray(34)
+        for (i in table.indices) {
+            table[i] = num
+            val num2 = (java.lang.Long.rotateRight(value,8) + num) xor i.toLong()
+            queue.addLast(num2)
+            num = num2 xor java.lang.Long.rotateLeft(num,3)
+            value = queue.removeFirst()
+        }
+        val data = pad("$ts-1611921764-$aid".toByteArray())
+        var at = 0
+        while (at < data.size) {
+            num = data.i64(at,true); value = data.i64(at + 8,true)
+            for (k in table) {
+                value = k xor (num + java.lang.Long.rotateRight(value,8))
+                num = value xor java.lang.Long.rotateLeft(num,3)
+            }
+            le64(num).copyInto(data,at); le64(value).copyInto(data,at + 8)
+            at += 16
+        }
+        return (prefix + data).base64()
+    }
+    private fun pad(data: ByteArray): ByteArray {
+        val n = 16 - data.size % 16
+        return data + ByteArray(n) { n.toByte() }
+    }
     companion object {
         fun encode(values: Map<String,String>) = values.entries.joinToString("&") { (k,v) -> "${encode(k)}=${encode(v)}" }
         fun encode(value: String): String = URLEncoder.encode(value,"UTF-8").replace("+","%20").replace("%7E","~")
+        // PhoenixReadApi 播放签名常量
+        private val PLAYER_REQUEST_KEY = byteArrayOf(68,185.toByte(),185.toByte(),217.toByte(),164.toByte(),174.toByte(),249.toByte(),252.toByte(),164.toByte(),147.toByte(),170.toByte(),117.toByte(),124.toByte(),163.toByte(),194.toByte(),196.toByte(),164.toByte(),150.toByte(),147.toByte(),143.toByte())
+        private val PLAYER_ARGUS_KEY = hex("ac1adaae95a7af94a5114ab3b3a97dd80050aa0a39314c40528caec95256c28c")
+        private val PLAYER_ARGUS_DERIVED = sm3(PLAYER_ARGUS_KEY + hex("3ccc567b") + PLAYER_ARGUS_KEY)
     }
 }

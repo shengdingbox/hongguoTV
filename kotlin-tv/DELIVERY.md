@@ -1,6 +1,6 @@
 # Kotlin 独立 APK · 0.2.1
 
-本分支把电视应用重构为 Kotlin 原生应用，内容接入和分段媒体处理均在 APK 内完成。安装后联网即可使用，不再要求用户部署内容服务，仓库中也不再有旧的 RN 工程和 Docker 服务。
+本分支把电视应用重构为 Kotlin 原生应用，内容接入和分段媒体处理均在 APK 内完成。安装后联网即可使用，不再要求用户部署内容服务。原 React Native 工程和 Docker 服务保留在仓库中，原生版不依赖它们。
 
 ## 交付
 
@@ -8,7 +8,7 @@
 - 发布：`kotlin-v0.2.1`
 - APK：`hongguotv-kotlin-0.2.1-android8.apk`
 - 包名：`com.hongguotv.nativeapp`；最低 API 26，目标 API 36。
-- 大小：2,497,307 字节；无 JNI、Node、JS 运行时。
+- 大小：2,497,307 字节；无 JNI、Node、JS 或 React Native 运行时。
 - 使用独立发布签名，可与旧版并存；两者本机收藏/历史不互通。
 - APK SHA-256：`b83aebc10a3e1e790c5b729d835ffa9ac7490d2bce4d07fd56605952853b0e74`
 - 发布证书 SHA-256：`3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98`

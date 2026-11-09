@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.view.View
+import android.view.ViewGroup
 import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -42,10 +43,13 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
     private var dialog: AlertDialog? = null
     val showing get() = dialog?.isShowing == true
     private var statusView: TextView? = null
+    private var statusScroll: ScrollView? = null
     private var anchor: View? = null
+    private var actionButton: android.widget.Button? = null
     private var status = "当前版本 ${BuildConfig.VERSION_NAME}"
     private var retryAfter = 0L
-    private var promptedCode = 0L
+    private var promptedThisSession = false
+    private var checkedThisSession = false
     private val auto get() = preferences.getBoolean("automatic", true)
     private val poll = object : Runnable {
         override fun run() {
@@ -55,8 +59,9 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                 val last = preferences.getLong("last_attempt", 0)
                 val update = available
                 when {
-                    ready && update != null && promptedCode != update.versionCode && !deferred(update) -> { promptedCode = update.versionCode; show(activity.currentFocus) }
-                    update != null && !ready && now >= retryAfter -> download(false)
+                    update != null && !promptedThisSession -> show(activity.currentFocus)
+                    update != null && !ready && now >= retryAfter -> download()
+                    !checkedThisSession -> checkedThisSession = check(false)
                     now < last || now - last >= 6 * 60 * 60 * 1000L -> check(false)
                 }
             }
@@ -67,8 +72,12 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         active = true; main.removeCallbacks(poll); main.postDelayed(poll, 8000)
         if (permissionRequested) {
             permissionRequested = false
-            if (activity.packageManager.canRequestPackageInstalls()) install()
+            if (Build.VERSION.SDK_INT < 26 || activity.packageManager.canRequestPackageInstalls()) install()
             else { status = "安装权限未开启，可在这里再次安装"; show(anchor) }
+        } else if (!checkedThisSession && auto) {
+            // Nag semantics need a fresh verdict on every app start, not the 6-hour poll cadence;
+            // when the library is still loading the poll loop retries this below.
+            checkedThisSession = check(false)
         }
     }
     fun pause() {
@@ -83,11 +92,28 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         // TLS socket close may send close_notify; it must not run on Android's main thread.
         Thread({ repository.close() }, "hongguotv-update-cleanup").start()
     }
-    private fun updateStatus(text: String) { status = text; statusView?.text = text }
-    private fun deferred(update: AppUpdate) = preferences.getLong("deferred_code", 0) == update.versionCode && preferences.getLong("deferred_until", 0) > System.currentTimeMillis()
+    /** Release 说明是 Markdown：去掉标题井号与加粗标记，行首 `-` 换成居中点，避免电视上直接显示 `**`。 */
+    private fun notesText(raw: String): String = raw.replace("\r\n", "\n")
+        .replace(Regex("(?m)^#{1,6}\\s*"), "")
+        .replace("**", "")
+        .replace(Regex("(?m)^- "), "· ")
+        .trim()
+    private fun updateStatus(text: String) { status = text; statusView?.text = text; fitStatus() }
+    /** 更新说明可能很长：限制正文高度并允许滚动，避免把「立即安装」按钮挤出屏幕。 */
+    private fun fitStatus() {
+        val scroll = statusScroll ?: return
+        val text = statusView ?: return
+        scroll.post {
+            if (scroll !== statusScroll) return@post
+            val max = (activity.resources.displayMetrics.heightPixels * 0.42f).toInt()
+            val target = if (text.height > max) max else ViewGroup.LayoutParams.WRAP_CONTENT
+            val lp = scroll.layoutParams ?: return@post
+            if (lp.height != target) { lp.height = target; scroll.layoutParams = lp }
+        }
+    }
     private fun renderActions() {
-        dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.apply {
-            text = when { busy -> "处理中…"; ready -> "安装新版"; available != null -> "下载新版"; else -> "检查更新" }
+        actionButton?.apply {
+            text = when { busy -> "处理中…"; ready -> "立即安装"; available != null -> "下载新版"; else -> "检查更新" }
             // Keep D-pad focus stable while the request runs; action methods reject duplicates.
             isEnabled = true
         }
@@ -96,37 +122,69 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         if (!active) return
         anchor = from
         dialog?.dismiss()
-        val dp = activity.resources.displayMetrics.density * UiProfile.scale
+        // One nag per process lifetime: the user may close it, but the next app restart re-prompts.
+        val updatePending = available != null
+        if (updatePending) promptedThisSession = true
+        val dp = activity.resources.displayMetrics.density
         val body = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding((24*dp).toInt(), (12*dp).toInt(), (24*dp).toInt(), 0) }
-        statusView = TextView(activity).apply { text = status; textSize = UiProfile.sp(17f); setTextColor(TvStyle.text) }
-        body.addView(statusView)
-        body.addView(CheckBox(activity).apply {
-            text = "自动检查并下载更新"; isChecked = auto
-            setOnCheckedChangeListener { _, enabled ->
-                preferences.edit().putBoolean("automatic", enabled).apply()
-                if (!enabled && busy) { interrupt(); updateStatus("自动更新已关闭，可手动检查"); renderActions() }
-            }
-        })
+        body.addView(TvDialog.title(activity,"版本与更新 · ${BuildConfig.VERSION_NAME}"))
+        statusView = TextView(activity).apply { text = status; textSize = 17f; setTextColor(TvStyle.text) }
+        statusScroll = ScrollView(activity).apply {
+            isFillViewport = false
+            addView(statusView, ViewGroup.LayoutParams(-1, -2))
+        }
+        body.addView(statusScroll)
+        if (!updatePending) {
+            body.addView(CheckBox(activity).apply {
+                text = "自动检查并下载更新"; isChecked = auto; setTextColor(TvStyle.text)
+                setOnCheckedChangeListener { _, enabled ->
+                    preferences.edit().putBoolean("automatic", enabled).apply()
+                    if (!enabled && busy) { interrupt(); updateStatus("自动更新已关闭，可手动检查"); renderActions() }
+                }
+            })
+        }
         body.addView(TextView(activity).apply {
-            text = "只在应用前台浏览时检查，播放中不打扰。下载后需确认系统安装，收藏与观看记录保留。"; textSize = UiProfile.sp(13f); setTextColor(TvStyle.muted)
+            text = if (updatePending) "发现新版本，点击即可更新" else "只在应用前台浏览时检查，播放中不打扰。下载后需确认系统安装，收藏与观看记录保留。"
+            textSize = 13f; setTextColor(TvStyle.muted)
             setPadding(0, (8*dp).toInt(), 0, (8*dp).toInt())
         })
-        val next = AlertDialog.Builder(activity).setTitle("版本与更新 · ${BuildConfig.VERSION_NAME}").setView(ScrollView(activity).apply { addView(body) })
-            .setNegativeButton("稍后", null).setPositiveButton("检查更新", null).create()
+        val buttons = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.END
+            setPadding(0, (14*dp).toInt(), 0, 0)
+        }
+        val later = TvDialog.capsuleButton(activity,"稍后") { }
+        val action = TvDialog.capsuleButton(activity,"检查更新") { }
+        actionButton = action
+        buttons.addView(later, LinearLayout.LayoutParams(-2,-2).apply { rightMargin=(12*dp).toInt() })
+        buttons.addView(action, LinearLayout.LayoutParams(-2,-2))
+        body.addView(buttons)
+        val next = AlertDialog.Builder(activity).setView(TvDialog.card(activity,body)).create()
+        TvDialog.styleWindow(activity,next)
         dialog = next
         next.setOnDismissListener {
-            if (dialog === next) { dialog = null; statusView = null }
+            if (dialog === next) { dialog = null; statusView = null; statusScroll = null; actionButton = null }
             if (from?.isAttachedToWindow == true) from.requestFocus()
         }
         next.show()
-        next.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { when { ready -> install(); available != null -> download(true); else -> check(true) } }
-        next.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
-            available?.let { preferences.edit().putLong("deferred_code", it.versionCode).putLong("deferred_until", System.currentTimeMillis()+24*60*60*1000L).apply() }
-            next.dismiss()
-        }
+        later.setOnClickListener { next.dismiss() }
+        action.setOnClickListener { when { ready -> install(); available != null -> download(); else -> check(true) } }
         renderActions()
-        next.getButton(AlertDialog.BUTTON_POSITIVE).post { if (dialog === next) next.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus() }
+        fitStatus()
+        action.post { if (dialog === next) action.requestFocus() }
     }
+    /**
+     * 语音/外部指令入口：打开面板并立刻查一次。
+     *
+     * 已经发现新版（`available != null`）时什么都不做——面板上摆着「下载新版」，
+     * 要不要装是用户的决定，一句「检查更新」不该替人按下下载。
+     * 正在下载或已下载完（busy / ready）时同样跳过，避免把进行中的流程打断。
+     */
+    fun checkNow(from: View?) {
+        show(from)
+        if (available == null && !busy && !ready) check(true)
+    }
+
     private fun <T> work(action: () -> T, done: (T) -> Unit) {
         busy = true; renderActions(); val ticket = ++generation
         task = worker.submit {
@@ -141,8 +199,12 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
             }
         }
     }
-    private fun check(manual: Boolean) {
-        if (busy || !active || !idle()) return
+    /** @return true when the request actually started; callers may retry later otherwise. */
+    private fun check(manual: Boolean): Boolean {
+        if (busy || !active) return false
+        // 「不打扰」只约束自动检查（前台、目录页、无弹窗）。手动/语音检查是用户当场要的，
+        // 停在播放页也该立刻执行——以前把 idle() 一刀切，语音喊「检查更新」只会开个空面板。
+        if (!manual && !idle()) return false
         preferences.edit().putLong("last_attempt", System.currentTimeMillis()).apply()
         updateStatus("正在检查新版…")
         work({ repository.latest() }) { update ->
@@ -151,12 +213,13 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
                 updateStatus(if (update.versionCode > BuildConfig.VERSION_CODE && update.minSdk > Build.VERSION.SDK_INT) "新版需要 Android API ${update.minSdk}，当前电视继续使用本版" else "已是最新版本 ${BuildConfig.VERSION_NAME}")
                 worker.execute { apk.delete() }
             } else {
-                updateStatus("发现 ${update.versionName} · ${"%.1f".format(update.size/1048576.0)} MB\n${update.notes}")
-                if (manual || auto) download(manual)
+                updateStatus("发现 ${update.versionName} · ${"%.1f".format(update.size/1048576.0)} MB\n${notesText(update.notes)}")
+                if (manual || auto) download()
             }
         }
+        return true
     }
-    private fun download(manual: Boolean) {
+    private fun download() {
         val update = available ?: return
         if (busy || !active || !idle()) return
         updateStatus("正在下载 ${update.versionName}…")
@@ -165,22 +228,26 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
             repository.download(update, apk) { percent -> main.post { if (generation == ticket && active) updateStatus("正在下载 ${update.versionName} · $percent%") } }
             validateApk(update)
         }) {
-            ready = true; updateStatus("${update.versionName} 已下载并校验\n${update.notes}\n\n确认后由系统覆盖安装，保留本机记录。")
-            if (idle() && dialog == null && (manual || !deferred(update))) { promptedCode = update.versionCode; show(activity.currentFocus) }
+            ready = true; updateStatus("${update.versionName} 已下载并校验\n${notesText(update.notes)}\n\n确认后由系统覆盖安装，保留本机记录。")
+            if (idle() && dialog == null && !promptedThisSession) show(activity.currentFocus)
         }
     }
     @Suppress("DEPRECATION")
     private fun validateApk(update: AppUpdate) {
         if (!UpdateFiles.verify(apk, update)) throw IOException("安装包校验未通过，请重新下载")
         val pm = activity.packageManager
-        val flags = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+        // API 28/29 的 getPackageArchiveInfo 只在带 GET_SIGNATURES 时才收集证书，
+        // 仅传 GET_SIGNING_CERTIFICATES 会让 candidate.signingInfo 为 null（API 30 起修复）。
+        val flags = if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES else PackageManager.GET_SIGNATURES
         val candidate = pm.getPackageArchiveInfo(apk.path, flags) ?: throw IOException("安装包无法识别")
         val installed = pm.getPackageInfo(activity.packageName, flags)
         val version = if (Build.VERSION.SDK_INT >= 28) candidate.longVersionCode else candidate.versionCode.toLong()
         fun signers(info: android.content.pm.PackageInfo) =
-            (if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners else info.signatures)?.map { it.toCharsString() }?.toSet().orEmpty()
+            ((if (Build.VERSION.SDK_INT >= 28) info.signingInfo?.apkContentsSigners else null) ?: info.signatures)?.map { it.toCharsString() }?.toSet().orEmpty()
+        // ApplicationInfo.minSdkVersion 要 API 24，低版本读不到就不校验这一项
+        val candidateMinSdk = if (Build.VERSION.SDK_INT >= 24) candidate.applicationInfo?.minSdkVersion ?: 0 else update.minSdk
         if (candidate.packageName != activity.packageName || version != update.versionCode || candidate.versionName != update.versionName || version <= BuildConfig.VERSION_CODE ||
-            candidate.applicationInfo?.minSdkVersion != update.minSdk || signers(installed).isEmpty() || signers(installed) != signers(candidate))
+            candidateMinSdk != update.minSdk || signers(installed).isEmpty() || signers(installed) != signers(candidate))
             throw IOException("新版包名、版本或签名不匹配，已阻止安装")
     }
     private fun install() {
@@ -188,7 +255,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         if (busy || !active || !ready) return
         work({ validateApk(update) }) {
             try {
-                if (!activity.packageManager.canRequestPackageInstalls()) {
+                if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
                     permissionRequested = true
                     activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")))
                 } else {

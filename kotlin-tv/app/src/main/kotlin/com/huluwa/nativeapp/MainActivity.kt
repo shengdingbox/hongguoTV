@@ -71,7 +71,9 @@ class MainActivity: Activity() {
     private val gold by lazy { TvStyle.gold }
     private val main=Handler(Looper.getMainLooper())
     private val io=Executors.newFixedThreadPool(3)
-    private val repository=ContentRepository()
+    // 签名完全在本机完成：设备档案落在应用私有目录，冷启动直接复用，不再依赖签名服务。
+    private val signerStore by lazy { SharedPrefsSignerStore(this) }
+    private val repository=ContentRepository(signer=RemoteSigner(store=signerStore))
     private val touchPlayback by lazy { TouchControls.isHandheld(this) }
     private val randomRecommender by lazy {
         val raw=getSharedPreferences("random_pool", MODE_PRIVATE).getString("pool", null)
@@ -106,7 +108,8 @@ class MainActivity: Activity() {
      * 方向键也走不过去（模拟器 320dpi / 特大档实测）。由 showCatalog 每次重建时赋值。
      */
     private var navTight=false
-    private val danmakuRepo=DanmakuRepository(repository.http)
+    // 复用同一台设备身份：弹幕与内容/播放必须签同一份档案，否则平台会当成两台设备。
+    private val danmakuRepo=DanmakuRepository(repository.http, signer=repository.signer)
     private val playbackCache=EpisodePlaybackCache(repository)
     // 已提前挂进 ExoPlayer 播放列表的下一集；资源继续归相邻集缓存持有，手动切集也能复用。
     private var queuedNextId=""
@@ -522,7 +525,7 @@ class MainActivity: Activity() {
         // 永久遥控的密钥/端口落盘，必须先于任何 PhoneRemoteSession 构造
         RemoteAccess.init(this)
         XiaoAiAccess.init(this)
-        accountManager=AccountManager(this,library)
+        accountManager=AccountManager(this,library,repository.signer)
         accountManager.onAccountChanged={
             accountButton?.text=accountManager.accountLabel
             // 账号状态变化后，正在展示的记录页立即重建（登录后拉取云端历史、退出后清空云端区）。
@@ -2210,7 +2213,7 @@ class MainActivity: Activity() {
         lateinit var checkButton: TextView
         checkButton=setting(about,"接口自检  ·  首页 / 搜索 / 播放") { showInterfaceCheck(checkButton) }
         val license=setting(about,"开源许可") {
-            TvDialog.info(this,"开源许可","本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\n请求签名由局域网签名服务生成，App 内不含签名算法。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\n完整源码和许可证见 GitHub：jycao2/hongguoTV。").show()
+            TvDialog.info(this,"开源许可","本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\n请求签名算法移植自 openhongguo（GPL-3.0），在本机完成计算与匿名设备注册。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\n完整源码和许可证见 GitHub：jycao2/hongguoTV。").show()
         }
         // 页脚固定在滚动区之外（屏幕底部居中）：始终可见，因此不再需要抢焦点
         val settingsFooter=text("红果TV  /  ${BuildConfig.VERSION_NAME}    ·    收藏与本机记录保存在设备 · 登录后可同步到红果账号",12f,muted).apply {

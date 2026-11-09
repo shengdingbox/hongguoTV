@@ -1,9 +1,8 @@
 package com.hongguotv.core
 
 fun main(args: Array<String>) {
-    // --signer=URL 指定签名服务；不传则用 RemoteSigner.DEFAULT_BASE_URL。
-    val signerUrl=args.firstOrNull { it.startsWith("--signer=") }?.substringAfter('=')
-    val signer=if(signerUrl!=null) RemoteSigner(signerUrl) else RemoteSigner()
+    // 签名与设备注册都在本机完成；--signer 仅为兼容旧命令行保留，传入也不再生效。
+    val signer = RemoteSigner()
     val repository=ContentRepository(signer=signer)
     if(args.contains("--ranking")) {
         try {
@@ -38,7 +37,7 @@ fun main(args: Array<String>) {
     // --stream-only：只验证详情与播放链路，跳过搜索和首页，避免内容接口偶发故障挡住播放排查。
     val streamOnly=args.contains("--stream-only")
     val seriesArg=positional.firstOrNull { it.matches(Regex("[0-9]{1,30}")) }
-    println("signer=${signer.baseUrl}; device=${runCatching { signer.profile().deviceId }.getOrElse { "不可用：" + it.message }}")
+    println("本机注册设备 device=${runCatching { signer.profile().deviceId }.getOrElse { "不可用：" + it.message }}")
     if(!streamOnly) {
         val search=repository.search(keyword,type=type); println("searchMs=${System.currentTimeMillis()-started}; search=${search.items.size}; hasMore=${search.hasMore}")
         if(type==ContentType.COMIC && search.hasMore) {

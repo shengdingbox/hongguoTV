@@ -1,11 +1,21 @@
 # 原生版第三方声明
 
-`core` 中 Spade URL / key 处理、MP4 CENC 处理是以下 GPL-3.0 源码的 Kotlin 移植；内容请求签名已改为调用局域网签名服务（见 `RemoteSigner.kt`），不再内置签名算法：
+`core` 中 Spade URL / key 处理、MP4 CENC 处理是以下 GPL-3.0 源码的 Kotlin 移植：
 
 - drpys, `spider/js/红果果[短].js`
 - https://github.com/woshishiq1/drpys/tree/22261adfa31435e3b3ef5a730b8a2a75bcaf1715
 - 本仓库对照源：`../server/vendor/hongguo.cjs`，取回于 2026-09-21。
 - 本版改动：完整 Kotlin 实现；加密媒体通过 Media3 DataSource 直接读取；增加样本边界检查、子样本处理和 AVC 原始编码恢复。
+
+`core` 中的请求签名算法（`SignPrimitives.kt`、`SignAlgorithms.kt`、`AesV3.kt`，含 SM3、
+X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios 与魔改 AES-V3）与匿名设备注册协议
+（`DeviceRegister.kt`）是以下 GPL-3.0 源码的 Kotlin 移植，均在设备本地离线计算，
+不依赖任何外部签名服务：
+
+- openhongguo, `internal/protocol/sign/`、`internal/protocol/register.go`
+- https://github.com/beilunyang/openhongguo
+- 对照版本见 `docs/SIGN_SERVICE.md`；测试向量取自其 `sign_test.go`，见 `LocalSignerTest.kt`。
+- 本版改动：仅保留实际在用的签名路径；hash 分支通过调整 `_rticket` 选取；设备档案落在应用私有目录。
 
 `kotlin-tv/` 原生应用源码和派生实现以 GPL-3.0-only 发布，许可证全文见 `LICENSE`。发布 APK 时同时提供本分支对应源码、Gradle 包装器和构建说明。APK 不包含 Node、React Native、JavaScript 引擎或该 JavaScript 源文件。
 

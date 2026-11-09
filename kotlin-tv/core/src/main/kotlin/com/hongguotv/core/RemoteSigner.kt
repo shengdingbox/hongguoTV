@@ -1,22 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-only.
 package com.hongguotv.core
 
+import java.io.InterruptedIOException
 import java.io.IOException
-import java.net.URLEncoder
+import java.util.UUID
 import java.util.concurrent.TimeUnit
+import okhttp3.CookieJar
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
-/** 签名服务不可用或返回的数据不符合约定。 */
+/** 签名前置条件不满足（设备注册失败、算法分支不可用等）。 */
 class SignatureException(message: String, cause: Throwable? = null) : IOException(message, cause)
 
 /** 一次签名结果：完整请求地址（参数已按设备档案补全）与需要回写的请求头。 */
 data class SignedRequest(val url: String, val headers: Map<String, String>, val body: ByteArray? = null)
 
-/** 签名服务里的匿名设备档案。 */
+/** 本机持有的匿名设备档案。 */
 data class SignerProfile(val params: Map<String, String>, val userAgent: String) {
     val deviceId get() = params["device_id"].orEmpty()
     val installId get() = params["iid"].orEmpty()
@@ -26,36 +28,46 @@ data class SignerProfile(val params: Map<String, String>, val userAgent: String)
 }
 
 /**
- * 红果签名服务客户端。
+ * 红果请求签名器：**全部在本地完成**，不依赖任何签名服务。
  *
- * 电视端不再内置任何签名算法：访问红果官方接口前，通过 FRP 公网入口访问
- * openhongguo 签名服务（默认 `http://123.57.172.104:8901`），取设备档案与签名头。
+ * 两件事都在本机做：
+ * 1. 匿名设备注册——用 [DeviceRegister] 的 ttEncrypt 协议直接向 log5 注册，
+ *    拿到平台认可的 `device_id` / `iid`。平台按「注册过的身份」放行，
+ *    随机生成的身份只会拿到 HTTP 200 + 0 字节空响应。
+ * 2. 签名——[SignAlgorithms] 里的纯本地算法算出六个签名头。
  *
- * - `GET /info`：已注册的匿名设备档案（`deviceProfile.params` + `user_agent`）。
- *   签名服务会拒绝与档案不符的 `device_id` / `iid`，所以请求参数必须用档案里的身份。
- * - `POST /sign`：传入完整 URL，返回六个签名头（Gorgon/Khronos/Argus/Ladon/Medusa/Helios）。
- * - `POST /recover`：设备身份被平台拒绝时，请服务更换一台匿名设备。
+ * 设备档案持久化由调用方注入的 [store] 负责（电视端落在应用私有目录），
+ * 冷启动复用同一身份，避免每次开机都重新注册。
  *
- * 平台按「注册过的 device_id + iid」放行，未注册的随机身份只会拿到 HTTP 200 空响应。
+ * 身份失效（持续空响应）时调用 [recover]，重新注册一台匿名设备。
+ *
+ * 保留 `RemoteSigner` 这个类名是为了让上层调用点无需改动。
  */
 open class RemoteSigner(
-    /** 签名服务地址；留空表示未配置。 */
-    val baseUrl: String = DEFAULT_BASE_URL,
+    /** 设备注册使用的传输；留空时按默认超时新建。 */
     private val http: OkHttpClient =
         OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(45, TimeUnit.SECONDS)
-            .callTimeout(60, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(45, TimeUnit.SECONDS)
             .build(),
+    /** 设备档案持久化；为空时只在内存里保存（进程退出即失效）。 */
+    private val store: SignerProfileStore = InMemorySignerProfileStore(),
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val random: java.util.Random = java.util.Random(),
 ) {
     companion object {
-        /** FRP 转发至飞牛的 openhongguo 签名容器，移动网络也可访问。 */
-        const val DEFAULT_BASE_URL = "http://123.57.172.104:8901"
-        private const val MAX_BODY = 1 shl 20
-        private const val JSON_TYPE = "application/json; charset=utf-8"
-        private val HEADER_NAMES =
-            setOf("X-Gorgon", "X-Khronos", "X-Argus", "X-Ladon", "X-Medusa", "X-Helios")
-        /** 这些字段必须与设备档案一致，本机传了也不采纳。 */
+        /** 与设备档案里的取值保持一致；改动会同时影响查询串与签名指纹。 */
+        const val APP_VERSION_NAME = "7.3.9.32"
+        const val APP_VERSION_CODE = "73932"
+        const val DEFAULT_USER_AGENT =
+            "com.phoenix.read/73932 (Linux; U; Android 14; zh_CN; 23127PN0CC; " +
+                "Build/UKQ1.230804.001; Cronet/TTNetVersion:8d40f833 2026-03-03 QuicVersion:21ac1950 2025-11-18)"
+
+        /**
+         * 这些字段必须与设备档案一致，本机传了也不采纳。
+         * 保留给上层：业务参数与本机身份冲突时，以档案为准。
+         */
         val IDENTITY_KEYS =
             setOf(
                 "device_id", "iid", "cdid", "openudid", "ac", "channel", "aid", "app_name",
@@ -65,122 +77,202 @@ open class RemoteSigner(
                 "user_is_login", "compliance_status", "need_personal_recommend", "player_so_load",
                 "is_android_pad_screen",
             )
-        /** 这些是本机业务参数，档案里有同名值时以本机为准。 */
-        private val BUSINESS_KEYS =
-            setOf(
-                "_rticket", "query", "count", "offset", "tab_type", "bookshelf_search_plan",
-                "use_correct", "user_is_login", "search_id", "passback", "video_id", "video_id_type",
-                "device_level", "need_all_video_definition", "need_mp4_align", "use_os_player",
-                "video_platform", "source", "from_video_id", "video_series_id", "screen_width_px",
-                "is_horizontal_screen", "cursor", "start_time", "end_time", "item_id",
-            )
+
+        /** 注册请求不带签名头，且要做 GZIP + ttEncrypt；这里给出完整的注册地址。 */
+        const val REGISTER_URL =
+            "https://log5-applog-lf.fqnovel.com/service/2/device_register/" +
+                "?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin" +
+                "&use_store_region_cookie=1"
     }
 
-    /** 最近的 `/info` 结果；`/recover` 后会失效重取。 */
+    /** 当前设备档案；首次访问时从 [store] 读取，缺失则注册一台新设备。 */
     @Volatile private var profileCache: SignerProfile? = null
 
-    val configured get() = baseUrl.isNotBlank()
+    /** 本机生成的安装标识；注册时上报，平台不校验其与真实安装一致。 */
+    private val cdid = UUID.randomUUID().toString()
 
     @Synchronized
     open fun profile(): SignerProfile {
         profileCache?.let { return it }
-        val parsed = parseProfile(parse(get("/info")))
-        profileCache = parsed
-        return parsed
-    }
-
-    /** 丢掉缓存的设备档案，下次请求重新向签名服务取。 */
-    fun invalidate() {
-        profileCache = null
-    }
-
-    /**
-     * 请签名服务更换匿名设备。成功与否都清掉本地档案缓存，
-     * 失败本身不外抛——由调用方决定是否带着旧档案再试一次。
-     */
-    open fun recover() {
-        if (!configured) return
-        try {
-            execute(Request.Builder().url(join("/recover")).post(body("{}")).build())
-        } catch (_: IOException) {
-            // 恢复失败保留原档案，播放链路会走自己的兜底。
-        } finally {
-            invalidate()
+        store.load()?.let { saved ->
+            if (saved.available) {
+                profileCache = saved
+                return saved
+            }
         }
+        return register()
+    }
+
+    /** 丢弃本地身份并重新注册一台匿名设备。 */
+    @Synchronized
+    open fun recover() {
+        profileCache = null
+        store.clear()
+        runCatching { register() }
+    }
+
+    /** [recover] 的显式版本：注册失败会抛出，便于调用方决定是否继续。 */
+    @Synchronized
+    fun renew(): SignerProfile {
+        profileCache = null
+        store.clear()
+        return register()
     }
 
     /**
      * 为 [url] 生成签名。
      *
-     * [values] 里的业务参数保留本机取值；身份字段一律用设备档案覆盖，否则签名服务会拒绝。
+     * [values] 里的业务参数保留本机取值；身份字段一律用设备档案覆盖，
+     * 与平台校验的口径一致（签名服务版本也是这么做的）。
      * [SignedRequest.url] 才是实际要请求的地址（含补全后的查询串）。
      */
     open fun sign(url: String, values: Map<String, String>, body: ByteArray? = null): SignedRequest {
-        if (!configured) throw SignatureException("未配置签名服务地址")
         val profile = profile()
-        val signedUrl = buildUrl(url, values, profile)
-        val json = parse(post("/sign", JSONObject().put("url", signedUrl).toString()))
-        val headers = linkedMapOf<String, String>()
-        for (name in HEADER_NAMES) {
-            val value = json.optString(name, "")
-            if (value.isNotBlank()) headers[name] = value
-        }
-        if (headers.isEmpty()) throw SignatureException("签名服务未返回签名头")
-        return SignedRequest(signedUrl, headers, body)
-    }
-
-    /** 用设备档案拼查询串：业务参数本机优先，身份参数一律以档案为准。 */
-    private fun buildUrl(url: String, values: Map<String, String>, profile: SignerProfile): String {
+        if (!profile.available) throw SignatureException("本机匿名设备尚未就绪")
+        // 业务参数本机优先，身份字段一律以设备档案为准；档案特有的参数补齐其余。
         val merged = linkedMapOf<String, String>()
         for ((key, value) in values) if (key !in IDENTITY_KEYS) merged[key] = value
         for ((key, value) in profile.params) {
             if (value.isBlank()) continue
-            if (key in BUSINESS_KEYS && merged.containsKey(key)) continue
+            if (key in merged) continue
             merged[key] = value
         }
-        merged["_rticket"] = System.currentTimeMillis().toString()
-        return url.substringBefore('?') + "?" + encodeQuery(merged)
+        val (signedUrl, headers) = signQuery(url, merged, body, profile)
+        return SignedRequest(signedUrl, headers, body)
     }
 
-    private fun parseProfile(json: JSONObject): SignerProfile {
-        val device =
-            json.optJSONObject("deviceProfile")
-                ?: json.optJSONObject("device")
-                ?: throw SignatureException("签名服务未返回设备档案")
-        val params = device.optJSONObject("params") ?: throw SignatureException("设备档案缺少 params")
-        val values = linkedMapOf<String, String>()
-        for (key in params.keys()) values[key] = params.optString(key, "")
-        val profile = SignerProfile(values, device.optString("user_agent", ""))
-        if (!profile.available) throw SignatureException("签名服务设备档案不完整")
+    /**
+     * 组装查询串与六个签名头。
+     *
+     * `_rticket` 从当前毫秒时间开始逐个递增，直到 hash 分支落在可直接计算的分支上。
+     * 分支为 1 时 [hashF13] 走最简单的拼接路径，旧实现同样只支持这一支。
+     */
+    private fun signQuery(
+        url: String,
+        values: Map<String, String>,
+        body: ByteArray?,
+        profile: SignerProfile,
+    ): Pair<String, Map<String, String>> {
+        val now = clock()
+        val hasBody = body != null
+        val bodyMd5 = if (hasBody) digest("MD5", body!!) else ByteArray(16)
+        var ticket = now
+        var khronos = 0
+        var query = ""
+        // 参考实现遇到「非 1」分支就停止调整；分支 1 由 hashF13 内部另行处理。
+        // 这里保持一致：绝大多数请求第一次就跳出循环，最坏情况退到 32 次后的取值。
+        for (offset in 0L until 32L) {
+            ticket = now + offset
+            khronos = (ticket / 1000).toInt()
+            val merged = linkedMapOf<String, String>()
+            merged.putAll(values)
+            merged["ts"] = khronos.toString()
+            merged["_rticket"] = ticket.toString()
+            query = encodeQuery(merged)
+            val branch = hashBranch(sm3(query.toByteArray(Charsets.UTF_8)), bodyMd5, le32(khronos))
+            if (branch != 1) break
+        }
+        val entropy = drawEntropy(now, random)
+        // x-medusa 哈希的是这个固定主机的地址，不随实际请求主机变化（平台实测如此）。
+        val path = url.substringAfter("://").let { it.substring(it.indexOf('/')) }
+        val medusaSource = "https://reading.snssdk.com" + path + "?" + query
+        val headers = linkedMapOf(
+            "Accept" to "application/json; charset=utf-8,application/x-protobuf",
+            "x-xs-from-web" to "0",
+            "x-ss-req-ticket" to ticket.toString(),
+            "x-tt-request-tag" to "t=0;n=0",
+            "sdk-version" to "2",
+            "passport-sdk-version" to "50561",
+            "x-vc-bdturing-sdk-version" to "3.7.2.cn",
+            "x-khronos" to khronos.toString(),
+            "x-ladon" to be32(khronos).base64(),
+            "x-argus" to le32(khronos).base64(),
+            "x-gorgon" to xGorgon(query, body, hasBody, khronos, entropy.gorgonRandom),
+            "x-helios" to assembleHelios(khronos, entropy.heliosRandom),
+            "x-medusa" to assembleMedusa(
+                medusaSource,
+                body,
+                hasBody,
+                khronos,
+                profile.deviceId,
+                profile.versionName.ifBlank { APP_VERSION_NAME },
+                entropy,
+            ),
+            "x-tt-dt" to "",
+        )
+        if (hasBody) {
+            headers["Content-Type"] = "application/json; charset=UTF-8"
+            headers["x-ss-stub"] = digest("MD5", body!!).hex().uppercase()
+        }
+        val base = url.substringBefore('?')
+        return "$base?$query" to headers
+    }
+
+    /** 注册一台匿名设备并把档案写入 [store]。 */
+    @Synchronized
+    private fun register(): SignerProfile {
+        if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
+        val device = VendorConstants.device
+        val body = DeviceRegister.payload(device + mapOf("cdid" to cdid), clock())
+        val request = Request.Builder().url(REGISTER_URL).apply {
+            DeviceRegister.headers(body, device, clock()).forEach { (key, value) -> header(key, value) }
+        }.post(body.toRequestBody("application/octet-stream".toMediaType())).build()
+        // 注册请求不带账号 Cookie，避免把网页会话混进来。
+        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+        val registered: DeviceRegister.Registered = try {
+            RequestScope.execute(transport.newCall(request)) { response ->
+                if (!response.isSuccessful) throw SignatureException("设备注册失败（HTTP ${response.code}）")
+                val text = response.body?.string().orEmpty()
+                if (text.isBlank()) throw SignatureException("设备注册返回空响应")
+                DeviceRegister.parse(text, response.headers("Set-Cookie"))
+            }
+        } catch (problem: InterruptedIOException) {
+            throw problem
+        } catch (problem: SignatureException) {
+            throw problem
+        } catch (problem: IOException) {
+            throw SignatureException("设备注册失败", problem)
+        } ?: throw SignatureException("设备注册被平台拒绝，请稍后重试")
+
+        val params = linkedMapOf<String, String>()
+        params.putAll(device)
+        params["device_id"] = registered.deviceId
+        params["iid"] = registered.installId
+        params["cdid"] = cdid
+        params["version_code"] = APP_VERSION_CODE
+        params["manifest_version_code"] = APP_VERSION_CODE
+        params["update_version_code"] = APP_VERSION_CODE
+        params["pv_player"] = APP_VERSION_CODE
+        params["version_name"] = APP_VERSION_NAME
+        val profile = SignerProfile(params, DEFAULT_USER_AGENT)
+        profileCache = profile
+        store.save(profile)
         return profile
     }
 
-    private fun get(path: String): String =
-        execute(Request.Builder().url(join(path)).get().build())
-
-    private fun post(path: String, payload: String): String =
-        execute(Request.Builder().url(join(path)).post(body(payload)).build())
-
-    private fun body(value: String) = value.toRequestBody(JSON_TYPE.toMediaType())
-
-    private fun execute(request: Request): String =
-        RequestScope.execute(http.newCall(request)) { response ->
-            if (!response.isSuccessful) throw SignatureException("签名服务返回 HTTP ${response.code}")
-            val bytes = response.body?.bytes() ?: throw SignatureException("签名服务返回空响应")
-            if (bytes.size > MAX_BODY) throw SignatureException("签名服务响应过大")
-            String(bytes, Charsets.UTF_8)
-        }
-
-    private fun parse(raw: String): JSONObject =
-        runCatching { JSONObject(raw) }
-            .getOrElse { throw SignatureException("签名服务返回的数据格式不正确", it) }
-
-    private fun join(path: String) = baseUrl.trimEnd('/') + path
+    val configured get() = true
 }
 
-/** 表单式查询串编码；与签名服务、红果接口对空格的约定一致（`+` 改写为 `%20`）。 */
+/** 本机持久化匿名设备档案。 */
+interface SignerProfileStore {
+    fun load(): SignerProfile?
+    fun save(profile: SignerProfile)
+    fun clear()
+}
+
+/** 进程内档案：进程退出即丢失，下次启动重新注册。 */
+class InMemorySignerProfileStore : SignerProfileStore {
+    @Volatile private var profile: SignerProfile? = null
+    override fun load(): SignerProfile? = profile
+    override fun save(profile: SignerProfile) { this.profile = profile }
+    override fun clear() { profile = null }
+}
+
+/** 查询串编码：与平台约定一致（空格用 %20，`~` 不转义）。 */
 internal fun encodeQuery(values: Map<String, String>): String =
     values.entries.joinToString("&") { (key, value) -> "${encodePart(key)}=${encodePart(value)}" }
 
 internal fun encodePart(value: String): String =
-    URLEncoder.encode(value, "UTF-8").replace("+", "%20").replace("%7E", "~")
+    java.net.URLEncoder.encode(value, "UTF-8")
+        .replace("+", "%20")
+        .replace("%7E", "~")

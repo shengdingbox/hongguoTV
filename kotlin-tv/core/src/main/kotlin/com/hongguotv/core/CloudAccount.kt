@@ -90,11 +90,11 @@ data class CloudReservation(
 /**
  * 账号相关请求。
  *
- * 登录态本身与设备无关，但请求仍需设备身份与签名：这些统一取自局域网签名服务
- * （[RemoteSigner]），不再由本机注册或计算。
+ * 登录态本身与设备无关，但请求仍需设备身份与签名：这些由本机 [RemoteSigner]
+ * 本地注册并计算，不依赖任何外部服务。
  */
 class CloudAccountClient(private val http: OkHttpClient, private val signer: RemoteSigner = RemoteSigner()) {
-    /** 账号初始化用的匿名设备档案；注册由签名服务负责，这里只取它当前的身份。 */
+    /** 账号初始化用的匿名设备档案；取本机已注册的设备身份。 */
     fun registerDevice(): DeviceRegister.Registered? {
         val profile = runCatching { signer.profile() }.getOrNull() ?: return null
         return DeviceRegister.Registered(profile.deviceId, profile.installId)
@@ -107,7 +107,7 @@ class CloudAccountClient(private val http: OkHttpClient, private val signer: Rem
         body: ByteArray? = null,
         gzip: Boolean = false,
     ): JSONObject {
-        // 设备身份由签名服务下发，credentials 里的旧字段只在签名服务不可用时作兜底。
+        // 以本机已注册身份为准，credentials 里的旧字段只作兜底。
         val device =
             linkedMapOf<String, String>().apply {
                 putAll(credentials.device)

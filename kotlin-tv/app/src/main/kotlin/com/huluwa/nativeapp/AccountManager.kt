@@ -84,7 +84,12 @@ private class AccountStore(context: Context) {
  * 本机与云端观看记录相互独立：云端记录只读展示、不合并不回写本机；
  * 本机记录由用户在最近观看页手动「同步到云端」。
  */
-class AccountManager(private val context: Context, private val library: Library) {
+class AccountManager(
+    private val context: Context,
+    private val library: Library,
+    /** 与内容/播放共用同一台匿名设备：平台按 device_id + iid 放行，各模块不能各注册一台。 */
+    signer: com.hongguotv.core.RemoteSigner,
+) {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { task -> Thread(task, "hongguotv-account") }
     private val http =
@@ -95,7 +100,7 @@ class AccountManager(private val context: Context, private val library: Library)
             .followRedirects(false)
             .followSslRedirects(false)
             .build()
-    private val client = CloudAccountClient(http)
+    private val client = CloudAccountClient(http, signer)
     private val store = AccountStore(context)
     @Volatile private var generation = 0
     @Volatile private var closed = false

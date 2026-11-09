@@ -100,7 +100,7 @@ class DanmakuRepository(
 
     private fun post(vid: String, body: ByteArray): String {
         throttle()
-        // 设备身份与签名头都取自局域网签名服务，UA 与服务下发的档案保持一致。
+        // 设备身份与签名头都由本机生成，UA 与设备档案保持一致。
         val signed = signer.sign("https://api5-normal-sinfonlinea.fqnovel.com/novel/commentapi/comment/list/$vid/v1/", emptyMap(), body)
         val request = Request.Builder().url(signed.url)
             .header("User-Agent", signer.profile().userAgent)

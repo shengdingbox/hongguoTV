@@ -81,7 +81,7 @@ class MemoryCookies : okhttp3.CookieJar {
     }
 }
 
-open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).cookieJar(MemoryCookies()).build(), private val clock: () -> Long = System::currentTimeMillis, private val signer: RemoteSigner = RemoteSigner(), private val modelCache: PlaybackModelCache = PlaybackModelCache()) {
+open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).cookieJar(MemoryCookies()).build(), private val clock: () -> Long = System::currentTimeMillis, val signer: RemoteSigner = RemoteSigner(), private val modelCache: PlaybackModelCache = PlaybackModelCache()) {
     /** 同一份取址缓存、另一套传输：预取需要更短的超时，但必须和正式播放看到同一个缓存。 */
     fun childTransport(http: OkHttpClient) = ContentRepository(http, clock, signer, modelCache)
     private val site = "https://hongguoduanju.com"
@@ -98,10 +98,10 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         ContentType.SHORT -> "real-drama"
         ContentType.AI -> "ai-drama"
     }
-    /** 官方接口统一走这里：签名头来自局域网签名服务，UA 也用服务下发的设备档案。 */
+    /** 官方接口统一走这里：签名头与设备身份都由本机 [RemoteSigner] 生成。 */
     private fun text(url: String): String = text(url, null)
 
-    /** [signed] 非空时用签名服务给出的地址、请求头与 UA；为空时按普通网页请求处理。 */
+    /** [signed] 非空时用本机签名给出的地址与请求头；为空时按普通网页请求处理。 */
     private fun text(url: String, signed: SignedRequest?): String {
         val request = Request.Builder().url(signed?.url ?: url).header("Accept-Language","zh-CN,zh;q=0.9")
         request.header("User-Agent", if (signed != null) signer.profile().userAgent else VendorConstants.VIDEO_UA)
@@ -116,7 +116,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             if(bytes.size > 16*1024*1024) throw IOException("内容响应过大")
             // 受保护接口对「平台不认的设备身份」只回 HTTP 200 + 空体，这里给出可行动的提示。
             if(bytes.isEmpty()) throw IOException(
-                if (signed != null) "接口返回空响应，签名服务设备可能已被限制，请稍后重试或执行签名服务恢复"
+                if (signed != null) "接口返回空响应，本机匿名设备可能已被限制，请稍后重试"
                 else "接口响应为空，请稍后重试")
             String(bytes,Charsets.UTF_8)
         }
@@ -188,7 +188,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     }
     /** 高级搜索：按服务端下发的条件筛选剧集；条件变化后必须重取第 1 页才能拿到新的选项面板。 */
     fun filteredDiscovery(selection: DiscoverySelection, cursor: DiscoveryCursor? = null): FilteredDiscoveryPage {
-        // 客户端版本号由签名服务的设备档案统一提供，这里只传业务参数。
+        // 客户端版本号由本机设备档案统一提供，这里只传业务参数。
         val body=selection.request(cursor)
         val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/reading/distribution/category/landpage/v/",emptyMap(),body.toByteArray(Charsets.UTF_8))
         // 该接口与搜索接口同源，偶发空体或 5xx 时重试一次再判定失败
@@ -345,7 +345,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
         return found
     }
-    /** App 搜索/联想接口和播放接口一样按注册设备放行，身份与版本号统一由签名服务档案决定。 */
+    /** App 搜索/联想接口和播放接口一样按注册设备放行，身份与版本号统一由本机设备档案决定。 */
     private fun searchValues(): MutableMap<String,String> = linkedMapOf()
     private fun suggestRaw(query: String): List<String> {
         synchronized(suggestCache) { suggestCache[query]?.takeIf { clock()-it.first<300_000 }?.let { return it.second } }
@@ -583,7 +583,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
         return WarmReport(ids.size,cached+filled,filled,route)
     }
-    /** 播放请求：签名头由签名服务生成，UA 用服务下发的设备档案，身份不再由本机注册。 */
+    /** 播放请求：签名头由本机算法生成，UA 与本机设备档案一致。 */
     private fun signedBuilder(signed: SignedRequest): Request.Builder =
         Request.Builder().url(signed.url).apply {
             header("User-Agent", signer.profile().userAgent)

@@ -2,16 +2,16 @@
 package com.hongguotv.core
 
 /**
- * 测试替身：不连接局域网签名服务，直接按固定设备档案生成假签名头。
+ * 测试替身：不连外网、不跑真实注册，直接按固定设备档案生成假签名头。
  *
- * 生产代码里所有官方接口都必须经 [RemoteSigner] 取签名，测试用这个子类把
- * “签名服务”留在进程内，避免单测依赖外网和 192.168.3.77。
+ * 真实签名算法与设备注册在 [LocalSignerTest] 里用官方测试向量单独校验；
+ * 其他单测只关心「参数怎么拼、URL 怎么发」，用这个替身即可。
  */
 class FakeSigner(
     private val identity: Map<String, String> =
         linkedMapOf("device_id" to "1905892595378490", "iid" to "1905892595382586"),
     private val agent: String = "com.phoenix.read/73932 (Linux; U; Android 14; zh_CN; 23127PN0CC)",
-) : RemoteSigner(baseUrl = "http://signer.test") {
+) : RemoteSigner() {
 
     /** 记录被请求签名的完整地址，供断言检查参数拼装。 */
     val signedUrls = mutableListOf<String>()

@@ -1,63 +1,70 @@
-# 签名服务接入
+# 请求签名与匿名设备
 
 更新日期：2026-11-09。
 
-红果官方接口（搜索、联想、分类筛选、播放取址、弹幕、账号）都要求请求携带签名头。本版起电视端**不再内置签名算法**，统一通过 FRP 公网入口调用自建签名服务。服务使用 openhongguo SDK，部署容器名为 `hongguo-signer-portable`，与葫芦娃项目共用同一套（`huluwa/hg/portable-signer`）。
+红果官方接口（搜索、联想、分类筛选、播放取址、弹幕、账号）都要求请求携带签名头，
+且只答**平台注册过的匿名设备**。本版起这两件事都在 App 本机完成，**不再依赖任何签名服务**。
 
-## 默认地址
+## 组件
 
-```text
-http://123.57.172.104:8901
-```
-
-地址定义在 `core` 的 `RemoteSigner.DEFAULT_BASE_URL`。签名服务不可用时，搜索会回退到官网 `hongguoduanju.com` 的公开搜索接口，播放取址会报错（「签名服务返回 HTTP …」「未配置签名服务地址」）。剧集详情与分集读取官网公开数据：普通短剧不额外请求多季补全；有明确季号或已知其它季的系列剧，补全最多等待 5 秒，超时后保留已取得的分集与季列表。签名请求也随所属页面或补全任务一起取消，避免离开页面后继续占用网络。
-
-## FRP 映射
-
-使用飞牛上已有的 `frpc` 容器，持久配置为宿主机 `/vol1/1000/docker/frpc/frpc.ini`（容器内 `/etc/frp/frpc.ini`）。服务端地址为 `123.57.172.104:7000`，沿用已有认证配置。
-
-```ini
-[红果sign服务]
-type = tcp
-local_ip = 192.168.3.77
-local_port = 8901
-remote_port = 8901
-```
-
-公网入口转发到飞牛 `192.168.3.77:8901` 的 openhongguo 容器；原来指向 `192.168.3.83:8901` 的目标已改为 `.77`。配置变更使用 `frpc reload -c /etc/frp/frpc.ini` 热重载。
-
-客户端默认使用公网入口，因此 4G/5G 下不再要求接入家中局域网；本地部署仍可显式指定 `http://192.168.3.77:8901`。已安装的旧 APK 需更新到包含公网地址的版本，地址才会切换。
-
-## 接口
-
-| 接口 | 用途 |
+| 文件 | 作用 |
 | --- | --- |
-| `GET /info` | 返回已注册的匿名设备档案：`deviceProfile.params`（`device_id` / `iid` / 版本号 / 机型等）与 `user_agent` |
-| `POST /sign` | 请求体 `{"url": "完整 URL"}`，返回 `X-Gorgon`、`X-Khronos`、`X-Argus`、`X-Ladon`、`X-Medusa`、`X-Helios` |
-| `POST /recover` | 设备身份被平台拒绝时，换一台匿名设备 |
-| `GET /health` | 健康检查，会真实签一次名 |
+| `SignPrimitives.kt` | SM3、GF(2^8)、protobuf 编码、IV 派生、AES S 盒 |
+| `SignAlgorithms.kt` | X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios 与 f13 hash 分支 |
+| `AesV3.kt` | 魔改 AES-V3（X-Medusa 封装用） |
+| `DeviceRegister.kt` | 匿名设备注册（ttEncrypt = GZIP + AES-CBC） |
+| `RemoteSigner.kt` | 对外接口：`profile()` / `sign()` / `recover()` |
+| `SharedPrefsSignerStore.kt`（app） | 设备档案持久化到应用私有目录 |
 
-`/sign` 只覆盖 URL（查询串 + 主机），不覆盖 POST body。体签名由红果服务端按 URL 校验，实测 POST 播放接口可用。
+算法移植自 [openhongguo](https://github.com/beilunyang/openhongguo) 的
+`internal/protocol/sign/`，用其 `sign_test.go` 的官方测试向量逐项校验
+（`LocalSignerTest.kt`）。SM3 另外用 `"abc"` 的标准摘要校验，AES S 盒用 FIPS-197 校验。
 
-## 客户端约定
+## 工作方式
 
-- **身份以档案为准**：签名服务会拒绝与档案不符的 `device_id` / `iid`。因此 `RemoteSigner.sign()` 一律用 `/info` 下发的参数拼查询串：版本号、机型、渠道等身份字段由服务决定；`query`、`offset`、`video_id` 等业务参数由客户端提供。
-- **UA 同步**：受保护接口的 `User-Agent` 必须与档案声明的一致（例如 `com.phoenix.read/73932 (...)`），`RemoteSigner.profile().userAgent` 提供该值。
-- **空响应含义**：平台对未注册或已被限制的设备只回 `HTTP 200` + 0 字节。播放链路遇到空体会调用 `/recover` 换设备再试；搜索接口空响应则回退到官网搜索。
-- **取址接口的配额差异（2026-11-09 实测）**：单集接口 `GET /reading/bookapi/video_tab/video_model/v`（参数 `video_id` / `source` / `need_all_video_definition`）对同一匿名设备可连续请求，实测 12/12 全部返回模型；多集接口 `video_tab/multi_video_model/v1/` 对匿名设备近乎一次性配额（第 1 次成功后持续空响应，换主机也只能再成功一次），首主机空时换 `api5-normal-sinfonlinea` 还能再取到一次，说明配额按「设备 + 主机」计。
-  因此单集取址优先走前者，多集接口仅作兜底；批量预热也只走单集接口，不再消耗多集配额。改动前曾因把多集接口当主路由，导致界面长时间停在「正在获取播放地址…」。
-- **设备身份不做本地持久化**：由签名服务持有；电视端每次启动重新取一次档案并缓存，`recover` 后缓存失效。
+1. **注册**：首次播放/搜索时向 `log5-applog-lf.fqnovel.com/service/2/device_register/`
+   发一次匿名注册请求，拿到 `device_id` / `install_id`。平台对未注册设备只回
+   `HTTP 200 + 0 字节`，因此这一步不可省。
+2. **持久化**：档案写进 `SharedPreferences("native-signer-v1")`，冷启动直接复用，
+   不必每次开机重新注册。
+3. **签名**：每次请求本地算出六个签名头；`_rticket` 从当前毫秒开始递增，
+   直到 f13 的 hash 分支落在可直接计算的一支上（分支 0 / 1 / 2 均支持）。
+4. **恢复**：持续空响应说明当前身份被限制，`recover()` 重新注册一台匿名设备。
+
+所有模块（内容、播放、弹幕、账号）共用同一个 `RemoteSigner` 实例——平台按
+`device_id + iid` 放行，各模块各注册一台会被当成不同设备。
+
+## 与旧版本的区别
+
+旧版（0.30.x 早期）通过 FRP 公网入口调用自建签名服务
+（`http://123.57.172.104:8901`），签名与设备身份都由服务端决定。这样做的代价是：
+
+- 签名服务是单点：FRP 断线或容器重启，App 全部受保护接口失效；
+- 每次请求多一次 `/sign` 往返（实测约 110ms）；
+- 4G/5G 下必须能访问公网入口。
+
+现在这些都不需要了。签名服务仓库与容器仍可保留给其他项目使用，
+但红果TV 不再依赖它；`--signer=` 探针参数仅为兼容旧命令行保留，传入不生效。
+
+## 已知边界
+
+- **接口配额与签名方式无关**：`multi_video_model` 对匿名设备近乎一次性配额
+  （见 `docs/SIGN_SERVICE.md` 旧记录与 `ContentRepository` 注释）。本版取址主路由是
+  `GET video_tab/video_model/v`，同一设备可重复请求；多集接口仅作兜底。
+- **平台改算法时需要发版**：内置算法不像服务端那样可以热更新。若红果升级风控，
+  需要跟进 openhongguo 的上游实现后重新发版。
+- **匿名设备仍可能被限制**：注册是无成本的匿名流程，平台若整体收紧匿名访问，
+  本地注册也绕不过去（openhongguo README 同样标注了该限制）。
 
 ## 验证方法
 
-`core` 里有联网探针，可在打包机上直接跑真实链路：
+`core` 里有联网探针，可在打包机上直接跑真实链路（不需要任何签名服务）：
 
 ```bash
 cd kotlin-tv
 ./gradlew :core:installDist
-core/build/install/core/bin/core --signer=http://123.57.172.104:8901          # 搜索 / 首页 / 详情 / 播放
-core/build/install/core/bin/core --stream-only --signer=http://...         # 只验证详情与播放
-core/build/install/core/bin/core --signer=http://... --comic --warm       # 漫剧 + 批量预热
+core/build/install/core/bin/core --stream-only          # 只验证详情与播放
+core/build/install/core/bin/core --stream-only --warm   # 附带批量预热
 ```
 
-探针会先打印 `signer=<地址>; device=<device_id>`，用于确认取到的是签名服务的设备档案。
+探针会先打印 `本机注册设备 device=<device_id>`，用于确认注册成功。

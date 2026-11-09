@@ -76,6 +76,7 @@ object LibraryBackup {
         val autoNext=settings.get("autoNext"); require(autoNext is Boolean)
         val type=ContentType.entries.firstOrNull { it.storedValue==settings.getString("type") } ?: error("内容类型无效")
         val frame=VideoFrameMode.entries.firstOrNull { it.name==settings.getString("frame") } ?: error("画面模式无效")
+        // 备份只携带播放偏好。
         return BackupData(favorites,history,watchedIds,searches,BackupSettings(quality,speed.toFloat(),autoNext,type,frame),later,hiddenIds)
     }
     /** Existing favorites stay first; only newer imported progress replaces a local record. */

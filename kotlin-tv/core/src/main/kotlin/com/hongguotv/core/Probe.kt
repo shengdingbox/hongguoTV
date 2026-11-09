@@ -1,7 +1,11 @@
 package com.hongguotv.core
 
 fun main(args: Array<String>) {
-    val repository=ContentRepository()
+    // 自检可覆盖内置连接：--server http://host:8000 --key <访问密钥>
+    val server=args.getOrNull(args.indexOf("--server").takeIf { it>=0 }?.plus(1))
+    val key=args.getOrNull(args.indexOf("--key").takeIf { it>=0 }?.plus(1))
+    val repository=if(server!=null) ContentRepository(serverUrl=server,accessKey=key ?: HuluwaConfig.ACCESS_KEY) else ContentRepository()
+    println("source=${if(repository.viaHuluwa) "huluwa" else "local-sign"}")
     if(args.contains("--ranking")) {
         try {
             val first=repository.comicRanking()
@@ -27,11 +31,13 @@ fun main(args: Array<String>) {
     val type=if(args.contains("--comic")) ContentType.COMIC else ContentType.SHORT
     val keyword=if(type==ContentType.COMIC) "修仙" else "总裁"
     val search=repository.search(keyword,type=type); println("search=${search.items.size}; hasMore=${search.hasMore}")
+    // 两条通路都按 20 条一页翻页；漫剧第 2 页必须能拿到不同条目。
     if(type==ContentType.COMIC && search.hasMore) {
         val next=repository.search(keyword,2,type)
         println("searchPage2=${next.items.size}; overlap=${search.items.map { it.id }.intersect(next.items.map { it.id }.toSet()).size}")
     }
     val home=repository.home(type=type); println("type=${type.label}; home=${home.items.size}; hasMore=${home.hasMore}")
+    // 短剧首页在葫芦娃通路下只有一批推荐；漫剧走榜单才有第 2 页。
     if(type==ContentType.COMIC) {
         val next=repository.home(2,type)
         println("homePage2=${next.items.size}; overlap=${home.items.map { it.id }.intersect(next.items.map { it.id }.toSet()).size}")

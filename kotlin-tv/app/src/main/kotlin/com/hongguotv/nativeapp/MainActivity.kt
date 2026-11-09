@@ -376,10 +376,11 @@ class MainActivity: Activity() {
             input.setOnEditorActionListener { _,_,_-> search(); true }; container.addView(searchRow)
         } else if(tab==2) {
             val heading=row().apply { setPadding(0,dp(8),0,dp(6)) }
-            heading.addView(text("漫剧热播榜",25f).apply { setTypeface(null,Typeface.BOLD) },lp(0,-2).apply { weight=1f })
+            val rankTitle="${library.contentType.label}热播榜"
+            heading.addView(text(rankTitle,25f).apply { setTypeface(null,Typeface.BOLD) },lp(0,-2).apply { weight=1f })
             rankRefresh=addButton(heading,"刷新榜单") { page=1; catalogFocus=""; showCatalog(true) }.apply { nextFocusUpId=nav[tab].id }
             container.addView(heading)
-            rankSubtitle=text(if(load) "正在读取最新榜单…" else ranking?.updatedText?.ifBlank { "来源：红果漫剧热播榜" } ?: "来源：红果漫剧热播榜",13f,muted)
+            rankSubtitle=text(if(load) "正在读取最新榜单…" else ranking?.updatedText?.ifBlank { "来源：红果$rankTitle" } ?: "来源：红果$rankTitle",13f,muted)
                 .apply { setPadding(0,0,0,dp(8)) }
             container.addView(rankSubtitle)
             nav.forEach { it.nextFocusDownId=rankRefresh!!.id }
@@ -411,7 +412,12 @@ class MainActivity: Activity() {
             else { message(body,"正在加载…"); if(focusType) typeButtons[library.contentType]?.requestFocus() else nav[tab].requestFocus() }
             val requestTab=tab; val requestPage=page; val requestQuery=query; val requestType=library.contentType
             work({
-                val result=when(requestTab) { 0 -> repository.home(requestPage,requestType); 2 -> repository.comicRanking(requestPage); else -> repository.search(requestQuery,requestPage,requestType) }
+                val result=when(requestTab) {
+                    0 -> repository.home(requestPage,requestType)
+                    // 榜单页跟随当前内容类型：漫剧看漫剧榜，短剧看短剧榜。
+                    2 -> repository.ranking(requestPage,requestType)
+                    else -> repository.search(requestQuery,requestPage,requestType)
+                }
                 result
             }, { result ->
                 if(requestTab==0 && requestPage==1) library.cacheHome(requestType,result.items,result.hasMore)
@@ -421,7 +427,7 @@ class MainActivity: Activity() {
                 } else {
                     catalog=result.items; hasMore=result.hasMore; ranking=result.ranking
                     val keepNav=nav.any { it.hasFocus() }; val keepType=typeButtons.values.any { it.hasFocus() }
-                    rankSubtitle?.text=ranking?.updatedText?.ifBlank { "来源：红果漫剧热播榜" } ?: "来源：红果漫剧热播榜"
+                    rankSubtitle?.text=ranking?.updatedText?.ifBlank { "来源：红果${library.contentType.label}热播榜" } ?: "来源：红果${library.contentType.label}热播榜"
                     body.removeAllViews(); catalogGrid(body,keepNav || focusNav,keepType || focusType)
                 }
             }, { problem ->

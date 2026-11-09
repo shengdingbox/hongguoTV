@@ -12,6 +12,10 @@ import org.junit.Test
 import java.io.IOException
 
 class ContentRepositoryTest {
+    private companion object {
+        const val SERVER = "http://huluwa.test:8000"
+        const val KEY = "test-key"
+    }
     private fun streamRepository(vararg variants: Triple<Int,String,String>) = repository { request ->
         if(request.url.host=="example.com") {
             val rows=JSONObject()
@@ -48,6 +52,117 @@ class ContentRepositoryTest {
                 .code(200).message("OK").body(respond(chain.request()).toResponseBody()).build()
         }.build(),clock
     )
+
+    // 以下用例覆盖葫芦娃通路：请求打到 /api/tv/**，响应信封为 {code,message,data}。
+    private fun huluwa(respond: (Request) -> JSONObject) = ContentRepository(
+        OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(JSONObject().put("code",200).put("message","ok").put("data",respond(chain.request()))
+                    .toString().toResponseBody()).build()
+        }.build(), serverUrl=SERVER, accessKey=KEY
+    )
+
+    private fun tvSeries(id: String, title: String, count: Int = 10) = JSONObject()
+        .put("id",id).put("title",title).put("cover","https://example.com/$id.jpg")
+        .put("intro","简介 $id").put("episodeCount",count)
+
+    @Test fun `huluwa search authenticates and maps rows to series`() {
+        var seenToken = ""; var seenPath = ""
+        val repo = ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
+            seenToken = chain.request().header("Authorization").orEmpty()
+            seenPath = chain.request().url.encodedPath + "?" + chain.request().url.query
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(JSONObject().put("code",200).put("message","ok").put("data",JSONObject()
+                    .put("items",JSONArray().put(tvSeries("101","闪婚")).put(tvSeries("102","闪婚2",0)))
+                    .put("hasMore",true).put("nextOffset",20)).toString().toResponseBody()).build()
+        }.build(), serverUrl=SERVER, accessKey=KEY)
+        val page = repo.search("闪婚",1)
+        assertEquals("Bearer $KEY",seenToken)
+        assertTrue(seenPath.startsWith("/api/tv/search?"))
+        assertEquals(listOf("101","102"),page.items.map { it.id })
+        assertEquals("全 10 集",page.items.first().badge)
+        assertTrue(page.hasMore)
+    }
+
+    @Test fun `huluwa ranking keeps backend order as rank and passes cursor`() {
+        var seenPath = ""
+        val repo = ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
+            seenPath = chain.request().url.toString()
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(JSONObject().put("code",200).put("message","ok").put("data",JSONObject()
+                    .put("items",JSONArray().put(tvSeries("1","第一").put("score","1000万热度"))
+                        .put(tvSeries("2","第二").put("score","900万热度")))
+                    .put("content","comic_series_rank").put("board","ranklist_hot_sc")
+                    .put("cursor","next").put("hasMore",true).put("version","v1")).toString().toResponseBody()).build()
+        }.build(), serverUrl=SERVER, accessKey=KEY)
+        val page = repo.ranking(1,ContentType.COMIC)
+        assertTrue(seenPath.contains("content=comic_series_rank"))
+        assertEquals(listOf(1,2),page.items.mapNotNull { page.ranking!!.positions[it.id]!!.rank })
+        assertEquals("1000万热度",page.ranking!!.positions["1"]!!.heat)
+        assertTrue(page.hasMore)
+    }
+
+    @Test fun `huluwa detail exposes episode ids that playback then uses`() {
+        var playbackPath = ""
+        val repo = ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
+            val path = chain.request().url.encodedPath
+            val data = when {
+                path.startsWith("/api/tv/series/") -> JSONObject().put("id","9").put("title","测试剧")
+                    .put("cover","https://example.com/9.jpg").put("intro","简介")
+                    .put("episodes",JSONArray().put(JSONObject().put("id","501")).put(JSONObject().put("id","502")))
+                else -> { playbackPath = path; JSONObject().put("streams",JSONArray()
+                    .put(JSONObject().put("url","https://cdn.example.com/540.mp4").put("height",540)
+                        .put("codec","bytevc1").put("encrypted",true).put("encryptionMethod","cenc-aes-ctr")
+                        .put("spadeA","rLwi9m6+I8NthBTDaL8h9Fu5FPRFvg/0X40j82y9PPJwhTiMjA=="))
+                    .put(JSONObject().put("url","https://cdn.example.com/bvc2.mp4").put("height",1080)
+                        .put("codec","bytevc2").put("encrypted",false))) }
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(JSONObject().put("code",200).put("message","ok").put("data",data).toString().toResponseBody()).build()
+        }.build(), serverUrl=SERVER, accessKey=KEY)
+        val detail = repo.detail("9")
+        assertTrue(playbackPath.isEmpty())
+        assertEquals(listOf("501","502"),detail.episodes)
+        val stream = repo.stream(detail.episodes.first(),720)
+        assertEquals("/api/tv/episodes/501/playback",playbackPath)
+        assertEquals("https://cdn.example.com/540.mp4",stream.url)
+        assertNotNull(stream.key) // spade_a 已派生为内容密钥
+        assertEquals("540P",stream.quality)
+    }
+
+    @Test fun `huluwa vertical drama picks quality by definition not pixel height`() {
+        // 竖屏短剧 720P 的 height 是 1280（长边）；按 height 匹配会让选 720P 的用户拿到 1080P。
+        val repo = huluwa { _ ->
+            JSONObject().put("streams",JSONArray()
+                .put(JSONObject().put("url","https://cdn.example.com/720.mp4").put("definition","720p")
+                    .put("height",1280).put("codec","bytevc1").put("encrypted",false))
+                .put(JSONObject().put("url","https://cdn.example.com/1080.mp4").put("definition","1080p")
+                    .put("height",1920).put("codec","bytevc1").put("encrypted",false)))
+        }
+        val stream = repo.stream("501",720)
+        assertEquals("https://cdn.example.com/720.mp4",stream.url)
+        assertEquals("720P",stream.quality)
+    }
+
+    @Test fun `huluwa auth failure surfaces a readable message`() {
+        val repo = ContentRepository(OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(401).message("Unauthorized")
+                .body("""{"code":401,"message":"电视访问密钥无效，请检查葫芦娃服务配置"}""".toResponseBody()).build()
+        }.build(), serverUrl=SERVER, accessKey="wrong-key")
+        val error = assertThrows(HuluwaException::class.java) { repo.search("闪婚",1) }
+        assertEquals(401,error.code)
+        assertTrue(error.message!!.contains("密钥"))
+    }
+
+    @Test fun `huluwa home uses discover for short dramas`() {
+        val repo = huluwa { request ->
+            assertEquals("/api/tv/discover",request.url.encodedPath)
+            JSONObject().put("items",JSONArray().put(tvSeries("301","推荐剧",24)))
+        }
+        val page = repo.home(1,ContentType.SHORT)
+        assertEquals(listOf("301"),page.items.map { it.id })
+        assertEquals("全 24 集",page.items.single().badge)
+        assertFalse(page.hasMore)
+    }
 
     private fun rankPayload(page: Int = 1, totalPages: Int = 2) = JSONObject()
         .put("isSuccess",true)

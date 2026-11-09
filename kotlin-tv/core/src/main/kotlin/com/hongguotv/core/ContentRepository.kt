@@ -24,11 +24,29 @@ data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val rankin
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String)
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
 
-class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build(), private val clock: () -> Long = System::currentTimeMillis) {
+class ContentRepository(
+    val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).build(),
+    private val clock: () -> Long = System::currentTimeMillis,
+    /** 服务地址与密钥；默认取内置值，测试时注入本地桩。 */
+    serverUrl: String = HuluwaConfig.SERVER_URL,
+    accessKey: String = HuluwaConfig.ACCESS_KEY,
+) {
     private val signer = Signer()
     private val site = "https://hongguoduanju.com"
+    /**
+     * 葫芦娃服务客户端。私人自用版固定走葫芦娃后端（由后端负责设备与签名），
+     * 地址与密钥内置于 APK；后端在播放接口被拒（110）时可能先自动恢复再重试，
+     * 耗时超过列表请求的 45 秒总超时，因此单独放宽调用超时，只共享连接池。
+     *
+     * 下方本机签名实现保留为离线兜底：仅当 [viaHuluwa] 为 false 时才会执行。
+     */
+    val huluwa = HuluwaClient(http.newBuilder().callTimeout(90,TimeUnit.SECONDS).build(),serverUrl,accessKey)
+    /** 固定走葫芦娃后端；置为 false 时回退到本机签名实现（仅排查用）。 */
+    var viaHuluwa: Boolean = true
     private data class SearchCursor(val searchId: String, val passback: String, val offset: Int?, val updatedAt: Long)
     private val searchCursors=linkedMapOf<Triple<ContentType,String,Int>,SearchCursor>()
+    /** 葫芦娃榜单游标：同一内容分类+子榜+页码对应后端下发的不透明游标。 */
+    private val huluwaCursors=linkedMapOf<Triple<ContentType,String,Int>,HuluwaCursor>()
     private fun text(url: String, signed: Signer.Request? = null): String {
         val request = Request.Builder().url(url).header("User-Agent",VendorConstants.VIDEO_UA).header("Accept-Language","zh-CN,zh;q=0.9")
         signed?.headers?.forEach { (k,v) -> request.header(k,v) }
@@ -53,10 +71,18 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     private fun valid(rows: List<Series>) = rows.filter { it.id.matches(Regex("[0-9]{1,30}")) && it.title.isNotBlank() }.distinctBy { it.id }
     fun comicRanking(page: Int = 1): CatalogPage {
         require(page in 1..100)
+        if(viaHuluwa) return huluwaRanking(page,ContentType.COMIC)
         return ComicRank.parse(text("$site/rank/hot-comic-drama?page=$page"),page)
+    }
+    /** 按内容类型取榜单；未配置葫芦娃时只有漫剧榜可用，短剧回退到首页推荐。 */
+    fun ranking(page: Int = 1, type: ContentType = ContentType.COMIC): CatalogPage {
+        require(page in 1..100)
+        if(viaHuluwa) return huluwaRanking(page,type)
+        return if(type==ContentType.COMIC) comicRanking(page) else home(1,type)
     }
     fun home(page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
         require(page in 1..100)
+        if(viaHuluwa) return huluwaHome(page,type)
         if(type==ContentType.COMIC) return comicRanking(page)
         val data=router("$site/category?tab=1&sort_type=1"+if(page>1) "&page=$page" else "")
         val section=data.optJSONObject("category_page") ?: data.optJSONObject("category_$") ?: throw IOException("首页数据结构已变化")
@@ -67,6 +93,7 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     }
     fun search(keyword: String, page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
         require(keyword.isNotBlank() && keyword.length<=80 && page in 1..100)
+        if(viaHuluwa) return huluwa.search(keyword,(page-1)*20)
         // The website search does not constrain content type. Never use it for comics.
         if(type==ContentType.COMIC) return appSearch(keyword,page,type)
         try { val result=appSearch(keyword,page,type); if(result.items.isNotEmpty() || !result.hasMore) return result } catch (e: Exception) { if(e is SearchSessionExpiredException) throw e; /* Website fallback for short dramas only. */ }
@@ -76,6 +103,34 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         val items=valid(rows.objects().map(::card))
         return CatalogPage(items,items.isNotEmpty() && page<100)
     }
+    /** 葫芦娃首页：短剧取推荐（一条精选流），漫剧取漫剧热播榜。 */
+    private fun huluwaHome(page: Int, type: ContentType): CatalogPage {
+        if(type==ContentType.SHORT) {
+            // 后端 discover 不分页；首页只要第 1 页，翻页会切到「短剧热播榜」。
+            val items=huluwa.discover()
+            return CatalogPage(items,false)
+        }
+        return huluwaRanking(page,type)
+    }
+    /** 葫芦娃榜单：按内容分类请求，名次由后端顺序决定。 */
+    private fun huluwaRanking(page: Int, type: ContentType, board: String = ""): CatalogPage {
+        // 后端分页是不透明游标：第 1 页不传，之后必须用「上一页」返回的游标。
+        val cursor=synchronized(huluwaCursors) { huluwaCursors[Triple(type,board,page-1)] }
+        val result=huluwa.ranking(type.rankContent,board,cursor?.cursor.orEmpty())
+        // 只保留当前页游标供下一页使用；覆盖写，避免翻回再前进时用到过期游标。
+        synchronized(huluwaCursors) {
+            if(result.cursor.isNotBlank()) huluwaCursors[Triple(type,board,page)]=HuluwaCursor(result.cursor)
+            else huluwaCursors.remove(Triple(type,board,page))
+            while(huluwaCursors.size>60) huluwaCursors.remove(huluwaCursors.keys.first())
+        }
+        val positions=result.items.associate { it.series.id to RankPosition(it.rank,it.heat) }
+        // 游标为空说明后端已到底，此时不应再显示「下一页」。
+        val more=result.hasMore && result.cursor.isNotBlank() && page<100
+        // 葫芦娃返回的是榜单版本号，不是「9月22日已更新」这样的文案，界面按来源文案兜底。
+        return CatalogPage(result.items.map { it.series },more,
+            ComicRanking(positions,if(more) page+1 else page,""))
+    }
+    private data class HuluwaCursor(val cursor: String)
     private fun appSearch(keyword: String, page: Int, type: ContentType): CatalogPage {
         val values=VendorConstants.device.toMutableMap()
         for(k in listOf("version_code","manifest_version_code","update_version_code","pv_player")) values[k]="72232"
@@ -117,6 +172,7 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     }
     fun detail(id: String): Detail {
         require(id.matches(Regex("[0-9]{1,30}")))
+        if(viaHuluwa) return huluwa.detail(id)
         val o=router("$site/detail?series_id=$id").optJSONObject("detail_page")?.optJSONObject("seriesDetail") ?: throw IOException("剧集详情暂不可用")
         val raw=o.optJSONArray("vid_list") ?: throw IOException("分集暂不可用")
         val episodes=(0 until raw.length()).map { raw.getString(it) }
@@ -125,6 +181,7 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     }
     fun stream(id: String, maxQuality: Int = 1080): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
+        if(viaHuluwa) return huluwa.stream(id,maxQuality)
         val payload="""{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]}}""".toByteArray()
         val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/",VendorConstants.device,payload)
         val data=JSONObject(text(signed.url,signed))

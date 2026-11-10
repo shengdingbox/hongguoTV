@@ -5638,15 +5638,17 @@ class MainActivity: Activity() {
         screen="catalog"
         val (frame,content,nav)=PhoneUi.scaffold(this,phoneTab,{ switchPhoneTab(it) },{ switchPhoneTab("search") })
         PhoneUi.paintNav(nav,phoneTab)
-        val scroll=android.widget.ScrollView(this).apply { isVerticalScrollBarEnabled=false }
+        // 用 NestedScrollView 而不是普通 ScrollView：里面的海报网格是 RecyclerView，
+        // 只有嵌套滚动才肯把竖向拖动让给整页，否则手指落在「热门发现」上整页不动。
+        val scroll=androidx.core.widget.NestedScrollView(this).apply { isVerticalScrollBarEnabled=false; isFillViewport=true }
         val body=column()
         scroll.addView(body)
         when(phoneTab) {
-            "home" -> phonePages.home(body,loading=phoneHomeLoading)
-            "rank" -> phonePages.rank(body)
-            "fav" -> phonePages.favorites(body)
+            "home" -> phonePages.home(body,loading=phoneHomeLoading,scrollRoot=scroll)
+            "rank" -> phonePages.rank(body,scrollRoot=scroll)
+            "fav" -> phonePages.favorites(body,scrollRoot=scroll)
             "mine" -> phonePages.mine(body)
-            "search" -> renderPhoneSearch(body)
+            "search" -> renderPhoneSearch(body,scroll)
         }
         content.addView(scroll,lp(-1,0).apply { weight=1f })
         root.removeAllViews(); root.addView(frame,android.widget.FrameLayout.LayoutParams(-1,-1))
@@ -5657,10 +5659,10 @@ class MainActivity: Activity() {
     }
 
     /** 手机搜索页：输入框 + 历史/结果。 */
-    private fun renderPhoneSearch(body: LinearLayout) {
+    private fun renderPhoneSearch(body: LinearLayout,scrollRoot: androidx.core.widget.NestedScrollView?=null) {
         val (bar,input)=phonePages.searchBox { runPhoneSearch(it) }
         body.addView(bar,lp(-1,-2))
-        phonePages.search(body,input) { runPhoneSearch(it) }
+        phonePages.search(body,input,{ runPhoneSearch(it) },scrollRoot)
     }
 
     /** 手机首页是否有正在进行的首页请求。 */
@@ -5777,7 +5779,7 @@ class MainActivity: Activity() {
         val active=phoneCollectionTab
         val (frame,content,nav)=PhoneUi.scaffold(this,active,{ switchPhoneTab(it) },{ switchPhoneTab("search") })
         PhoneUi.paintNav(nav,active)
-        val scroll=android.widget.ScrollView(this).apply { isVerticalScrollBarEnabled=false }
+        val scroll=androidx.core.widget.NestedScrollView(this).apply { isVerticalScrollBarEnabled=false; isFillViewport=true }
         val body=column()
         scroll.addView(body)
         val title=when(kind) { "later" -> "稍后看"; "updates" -> "收藏有更新"; "resume" -> "接着看"; else -> "接着看" }
@@ -5790,7 +5792,7 @@ class MainActivity: Activity() {
         else {
             val grid=androidx.recyclerview.widget.RecyclerView(this)
             body.addView(grid,lp(-1,-2))
-            val adapter=PhoneUi.PosterGrid(this,::loadCover,{ openDetailPhone(it) },null)
+            val adapter=PhoneUi.PosterGrid(this,::loadCover,{ openDetailPhone(it) },null,scroll)
             adapter.items=items
             adapter.attach(grid)
         }

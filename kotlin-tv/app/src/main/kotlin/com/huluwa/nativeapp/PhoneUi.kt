@@ -17,6 +17,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.widget.NestedScrollView
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.hongguotv.core.Series
@@ -167,12 +168,15 @@ object PhoneUi {
         }
     }
 
-    /** 两列海报网格（含加载更多 footer）。点击卡片进详情。 */
+    /** 两列海报网格（含加载更多 footer）。点击卡片进详情。
+     *  [scrollParent] 是页面外层的竖向滚动容器：网格放进 NestedScrollView 时高度随内容展开、
+     *  自身不滚，拖动由外层接管，所以「加载更多」也要改看外层的滚动位置。 */
     class PosterGrid(
         private val activity: Activity,
         private val loadCover: (ImageView, String) -> Unit,
         private val open: (Series) -> Unit,
         private val more: (() -> Unit)?,
+        private val scrollParent: NestedScrollView? = null,
     ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         var items: List<Series> = emptyList()
         var loading = false
@@ -223,15 +227,35 @@ object PhoneUi {
             recycler.clipToPadding = false
             recycler.isVerticalScrollBarEnabled = false
             recycler.itemAnimator = null
-            // 滚到底自动加载更多
-            recycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
-                override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
-                    if (dy <= 0 || loading || more == null) return
-                    val grid = rv.layoutManager as? GridLayoutManager ?: return
-                    val last = grid.findLastVisibleItemPosition()
-                    if (last >= itemCount - 4) more()
+            // 外层是 NestedScrollView 时网格不自己滚：高度随内容撑开，拖动与滑动都交给整页，
+            // 否则手指落在网格上会被 RecyclerView 吞掉，整页一动不动。
+            recycler.isNestedScrollingEnabled = false
+            val checkLoadMore = {
+                if (more != null && !loading) {
+                    val grid = recycler.layoutManager as? GridLayoutManager
+                    val last = grid?.findLastVisibleItemPosition() ?: RecyclerView.NO_POSITION
+                    if (last != RecyclerView.NO_POSITION && last >= itemCount - 4) more()
                 }
-            })
+            }
+            if (scrollParent != null) {
+                // 网格整段展开后「最后可见位置」永远是最后一项，不能再拿它判断触底；
+                // 改成看外层还能往下滚多少，剩不到一屏就翻页，避免一路狂刷。
+                // 用 NestedScrollView 自己的监听接口：View.setOnScrollChangeListener 要 API 23，
+                // 而本项目还有 minSdk 21 的兼容包。
+                scrollParent.setOnScrollChangeListener(NestedScrollView.OnScrollChangeListener { _, _, _, _, _ ->
+                    if (more == null || loading) return@OnScrollChangeListener
+                    val content = scrollParent.getChildAt(0) ?: return@OnScrollChangeListener
+                    val remaining = content.height - (scrollParent.scrollY + scrollParent.height)
+                    if (remaining <= (240 * activity.resources.displayMetrics.density).toInt()) more()
+                })
+            } else {
+                recycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                    override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                        if (dy <= 0 || loading || more == null) return
+                        checkLoadMore()
+                    }
+                })
+            }
         }
     }
 

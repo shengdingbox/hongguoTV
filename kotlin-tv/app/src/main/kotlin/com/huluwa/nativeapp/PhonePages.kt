@@ -11,6 +11,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.widget.NestedScrollView
 import androidx.recyclerview.widget.RecyclerView
 import com.hongguotv.core.ContentType
 import com.hongguotv.core.Series
@@ -31,7 +32,7 @@ class PhonePages(
 
     // ---- 首页：接着看 + 收藏有更新 + 热门发现（两列网格） ----
 
-    fun home(scroll: LinearLayout, loading: Boolean) {
+    fun home(scroll: LinearLayout, loading: Boolean, scrollRoot: NestedScrollView? = null) {
         val library = activity.phoneLibrary
         val recent = library.history().filterNot { library.watched(it.series.id) }
         val updates = library.favorites().filter { library.favoriteUpdate(it.id)?.hasUpdate == true }
@@ -75,7 +76,7 @@ class PhonePages(
         val grid = RecyclerView(activity)
         scroll.addView(grid, PhoneUi.lp(-1, -2))
         val adapter = PhoneUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
-            if (activity.hasMore) { { activity.loadMorePhone() } } else null)
+            if (activity.hasMore) { { activity.loadMorePhone() } } else null, scrollRoot)
         adapter.items = hot
         adapter.attach(grid)
     }
@@ -89,7 +90,7 @@ class PhonePages(
 
     // ---- 排行榜页 ----
 
-    fun rank(scroll: LinearLayout) {
+    fun rank(scroll: LinearLayout, scrollRoot: NestedScrollView? = null) {
         val head = row().apply { setPadding(dp(14), dp(10), dp(14), dp(4)) }
         head.addView(text("排行榜", 20f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }, PhoneUi.lp(0, -2).apply { weight = 1f })
         // 榜单切换：漫剧 / 真人 / AI
@@ -117,14 +118,14 @@ class PhonePages(
         val grid = RecyclerView(activity)
         scroll.addView(grid, PhoneUi.lp(-1, -2))
         val adapter = PhoneUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
-            if (activity.hasMore) { { activity.loadMorePhone() } } else null)
+            if (activity.hasMore) { { activity.loadMorePhone() } } else null, scrollRoot)
         adapter.items = items
         adapter.attach(grid)
     }
 
     // ---- 收藏页 ----
 
-    fun favorites(scroll: LinearLayout) {
+    fun favorites(scroll: LinearLayout, scrollRoot: NestedScrollView? = null) {
         val library = activity.phoneLibrary
         val head = row().apply { setPadding(dp(14), dp(10), dp(14), dp(4)) }
         head.addView(text("我的收藏", 20f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }, PhoneUi.lp(0, -2).apply { weight = 1f })
@@ -152,7 +153,7 @@ class PhonePages(
         }
         val grid = RecyclerView(activity)
         scroll.addView(grid, PhoneUi.lp(-1, -2))
-        val adapter = PhoneUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) }, null)
+        val adapter = PhoneUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) }, null, scrollRoot)
         adapter.items = items
         adapter.attach(grid)
     }
@@ -206,7 +207,7 @@ class PhonePages(
 
     // ---- 搜索页 ----
 
-    fun search(scroll: LinearLayout, input: EditText, onSearch: (String) -> Unit) {
+    fun search(scroll: LinearLayout, input: EditText, onSearch: (String) -> Unit, scrollRoot: NestedScrollView? = null) {
         val library = activity.phoneLibrary
         val history = library.searches()
         val query = activity.phoneQueryText
@@ -225,7 +226,7 @@ class PhonePages(
             val grid = RecyclerView(activity)
             scroll.addView(grid, PhoneUi.lp(-1, -2))
             val adapter = PhoneUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
-                if (activity.hasMore) { { activity.loadMorePhone() } } else null)
+                if (activity.hasMore) { { activity.loadMorePhone() } } else null, scrollRoot)
             adapter.items = items
             adapter.attach(grid)
             return

@@ -44,11 +44,22 @@ object PhoneUi {
     }
 
     /**
-     * 播放页用哪套皮肤：与「启动方向」完全一致——
-     * 强制竖屏 / 跟随系统且竖着拿 → 手机播放页（葫芦娃红果那套交互）；
-     * 强制横屏 / 跟随系统且横过来 → 电视播放器，不做任何手机化处理。
+     * 播放页用哪套皮肤：
+     *  - 强制横屏 / 跟随系统且横着拿 → 电视播放器（遥控向界面，手机不接管）；
+     *  - 强制竖屏 → 手机播放页（竖屏那套；点全屏再转成横屏全屏皮肤）；
+     *  - 跟随系统且竖着拿 → 手机播放页。
      */
     fun shouldUsePlayer(activity: Activity): Boolean = shouldUse(activity)
+
+    /**
+     * 手机播放页的横屏全屏皮肤（[PhonePlayer] 的 fullscreen 布局）。
+     *
+     * 与电视播放器严格区分：手机强制竖屏 / 跟随系统下点「全屏」都旋转并切成这套
+     * 葫芦娃风格的横屏全屏界面；只有强制横屏（[OrientationMode.LANDSCAPE]）和
+     * 真正的电视设备才走 TV 播放器那套。
+     */
+    fun shouldUsePhoneFullscreen(activity: Activity): Boolean =
+        TouchControls.isHandheld(activity) && orientationMode(activity) != OrientationMode.LANDSCAPE
 
     /** 用户设置里的启动方向偏好（每次实时读，设置改完立即生效）。 */
     fun orientationMode(activity: Activity): OrientationMode =

@@ -51,6 +51,8 @@ private const val FOOTER_ERROR=3
 private const val FOOTER_MORE_HOT=4
 // 上新区的时间窗，id 直接对应服务端 online_time 维度的选项；循环切换只在这四个里转
 private val NEW_RELEASE_WINDOWS=listOf("days_7" to "近7天","days_14" to "近14天","days_30" to "近30天","days_90" to "近90天")
+/** 退出全屏后把方向交还传感器前的等待（毫秒）：给转屏动画留时间，太快会被新方向覆盖。 */
+private const val ORIENTATION_RESTORE_DELAY_MS=300L
 
 /**
  * 切换系统风格 / 界面缩放必须 recreate() 让新主题和新密度生效，而重建后的 Activity
@@ -490,7 +492,7 @@ class MainActivity: Activity() {
             remotePublish()
             if(screen=="player") {
                 if(sleepTimer.poll()) stopForSleep()
-                if(phoneLayout()) refreshPhonePlayer() else if(hud.visibility==View.VISIBLE) updatePlaybackText()
+                if(phonePlayerLayout()) refreshPhonePlayer() else if(hud.visibility==View.VISIBLE) updatePlaybackText()
                 // 三段缓存条带也要跟着每秒刷新：切集后它对应的「下 1/2/3 集」变了，
                 // 下载进度也在持续变化。只在条带已挂载时做，其他页面零开销。
                 if(cacheStripSegments!=null) refreshCacheStrip()
@@ -3432,7 +3434,7 @@ class MainActivity: Activity() {
         refreshCacheStrip()
         // 手机播放页切集走相邻集交接（reuse），UI 不会重建；标题与集号必须手动刷新，
         // 否则第 2 集起顶部一直停在第 1 集的编号。
-        if(phoneLayout()) phonePlayer?.updateEpisode(data)
+        if(phonePlayerLayout()) phonePlayer?.updateEpisode(data)
         panel=false; playError=false; playbackReady=false; quality=""; pausedForLifecycle=!autoplay
         retainPlaybackWindow()
         playerScreenOn=true; refreshScreenOn()
@@ -3444,10 +3446,11 @@ class MainActivity: Activity() {
                 setKeepContentOnPlayerReset(true); setShutterBackgroundColor(Color.BLACK); setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
             }
             playerView=view
-            if(phoneLayout()) {
-                // 手机竖屏：仿葫芦娃红果播放页，视频铺满整屏，控件浮在画面上
+            if(phonePlayerLayout()) {
+                // 手机播放页（竖屏或横屏全屏）：仿葫芦娃红果播放页，视频铺满整屏，控件浮在画面上
                 val playerUi=phonePlayerOrCreate
-                playerUi.render(root,data)
+                phonePlayerRenderedFullscreen=phoneFullscreenPlayback
+                playerUi.render(root,data,fullscreen=phoneFullscreenPlayback)
                 // 弹幕层覆盖视频区，但在控件之下；PhonePlayer 会把它的上沿压到标题栏下面。
                 // PlayerView 以索引 0 插入视频区最底层，所以先挂弹幕再挂视频也没问题。
                 val danmakuLayer=DanmakuView(this)
@@ -4500,8 +4503,8 @@ class MainActivity: Activity() {
     }
     private fun showPanel() {
         if(playError) return
-        // 手机竖屏的控制条常驻在 PhonePlayer 里，不需要（也看不到）电视版 HUD
-        if(phoneLayout()) return
+        // 手机播放页（含横屏全屏皮肤）的控制条常驻在 PhonePlayer 里，不需要（也看不到）电视版 HUD
+        if(phonePlayerLayout()) return
         panel=true; showHud(); controls.visibility=View.VISIBLE; controls.removeAllViews()
         val transport=row(); controls.addView(transport)
         val play=addButton(transport,playButtonLabel()) { togglePlayback() }.also { transportPlay=it }
@@ -4811,7 +4814,7 @@ class MainActivity: Activity() {
         if(episodePanel!=null) return
         // 手机竖屏播放页按葫芦娃的交互：选集只弹「数字宫格」底部弹层，不再套 TV 的
         // 侧边面板（那边有跳转集数/上一组等遥控向操作，手机上一没必要二挡画面）。
-        if(phoneLayout()) { showPhoneEpisodeSheet(data); return }
+        if(phonePlayerLayout()) { showPhoneEpisodeSheet(data); return }
         val ticket=generation
         val overlayWasVisible=hud.visibility==View.VISIBLE
         requestedAutoplay=player?.playWhenReady ?: requestedAutoplay
@@ -4829,9 +4832,9 @@ class MainActivity: Activity() {
                     if(requestedAutoplay && !sleepStopped && !pausedForLifecycle) player?.play()
                     // 手机页没有焦点导航，anchor 只是占位；不要强行 requestFocus，
                     // 否则会从触摸控件上抢走焦点，弹层关掉后第一个点击失效。
-                    if(!phoneLayout() && anchor.isAttachedToWindow) anchor.requestFocus()
-                    // 手机竖屏没有 HUD，弹层关闭后不必（也不能）去显示它
-                    if(phoneLayout()) { /* PhonePlayer 常驻控制面板无需恢复 */ }
+                    if(!phonePlayerLayout() && anchor.isAttachedToWindow) anchor.requestFocus()
+                    // 手机播放页没有 HUD，弹层关闭后不必（也不能）去显示它
+                    if(phonePlayerLayout()) { /* PhonePlayer 常驻控制面板无需恢复 */ }
                     else if(overlayWasVisible) showHud() else hidePlaybackOverlay()
                 }
             })
@@ -5018,6 +5021,10 @@ class MainActivity: Activity() {
         // 手机播放面板的控件引用随页面一起作废，避免 tick 写到已移除的视图上
         // （旋转重建时由调用方先 takeFullscreenState，release 不会再抢方向）
         phonePlayer?.release()
+        // 外壳已拆：它不再是横屏皮肤了。全屏会话标记本身不在这里清——
+        // 「从全屏播放进设置页再回来」要先按全屏标记重挂，标记由 exitFullscreenPhone /
+        // returnToDetail 负责复位。
+        phonePlayerRenderedFullscreen=false
         video=null
         if(!preservePlaybackCache) playbackCache.clear()
         // 整集落盘缓存不随播放器一起清：它是磁盘池，进程重启后本来就会重新扫描复用，
@@ -5034,8 +5041,23 @@ class MainActivity: Activity() {
         // 真正离开播放页才算一次播放会话结束：「只对当前这部剧生效」的档位、倍速、
         // 画面到这里全部作废。不能放进 releasePlayer()——换清晰度重播也会走那条路，
         // 会把用户刚选的档位当场清掉。
+        // 标记先于 releasePlayer 复位：release 里的方向交还要看它判断这次是不是全屏会话
+        val wasFullscreen=phoneFullscreenPlayback
+        phoneFullscreenPlayback=false
         resetPlaybackSession()
         sleepTimer.cancel(); sleepStopped=false; saveProgress(); library.flush(); invalidatePage(); releasePlayer()
+        // 全屏播放中直接退出播放页：屏幕还横着，先把方向交还「启动方向」，
+        // 否则详情页会以横屏形态画出来、而手机页面本身只有竖屏那一套。
+        // 跟随系统同样先锁竖屏再交还传感器，否则设备横着时系统不会自己转回来。
+        if(wasFullscreen) {
+            val mode=PhoneUi.orientationMode(this)
+            requestedOrientation = if(mode==OrientationMode.AUTO) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                else PhoneUi.requestedOrientation(this)
+            if(mode==OrientationMode.AUTO) main.postDelayed({
+                if(!isFinishing && !isDestroyed) requestedOrientation=android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }, ORIENTATION_RESTORE_DELAY_MS)
+            WindowCompat.getInsetsController(window,window.decorView).show(WindowInsetsCompat.Type.systemBars())
+        }
         if(phoneLayout()) {
             // 手机竖屏：回到手机版详情页（resume 进来的回首页）
             if(directPlayback && !forceDetail) goBackPhone()
@@ -6005,6 +6027,17 @@ class MainActivity: Activity() {
     private fun phoneLayout()=PhoneUi.shouldUsePlayer(this)
 
     /**
+     * 播放页是否应该由手机播放页（含横屏全屏皮肤）接管。
+     *
+     * 比 [phoneLayout] 多一种情况：手机播放页点全屏锁成横屏后，皮肤不能翻成电视播放器，
+     * 而是换成 [PhonePlayer] 的横屏全屏那套（见 [PhoneUi.shouldUsePhoneFullscreen]）。
+     * 是否全屏以本次播放会话的 [phoneFullscreenPlayback] 为准，不读实际方向——
+     * 这样强制竖屏下旋转到一半、或系统还没回调方向变化时，页面不会来回跳皮肤。
+     */
+    private fun phonePlayerLayout() =
+        phoneLayout() || (phoneFullscreenPlayback && PhoneUi.shouldUsePhoneFullscreen(this))
+
+    /**
      * 首屏已经画出来了。
      *
      * `initialCatalogPending` 原来只在电视版 showCatalog() 里清，手机竖屏启动走的是
@@ -6054,6 +6087,18 @@ class MainActivity: Activity() {
     /** 手机播放页 UI 实例（单例复用，控件引用由 render 重建时刷新）。 */
     private var phonePlayer: PhonePlayer?=null
     private val phonePlayerOrCreate get() = phonePlayer ?: PhonePlayer(this).also { phonePlayer=it }
+    /** 当前手机播放页实例；PhonePlayer 用它确认自己没有被旋转重建替换掉。 */
+    val currentPhonePlayer: PhonePlayer? get() = phonePlayer
+    /**
+     * 当前播放会话是否处于「手机横屏全屏皮肤」。
+     *
+     * 手机播放页点全屏会锁横屏，但皮肤不能跟着 phoneLayout() 变成电视播放器：
+     * 这个标记跟着播放会话走，直到用户退出全屏 / 离开播放页才复位。
+     * 旋转重建时也是它决定新外壳长成竖屏还是横屏那套。
+     */
+    private var phoneFullscreenPlayback=false
+    /** 当前挂着的 PhonePlayer 外壳是不是横屏全屏那套（判断要不要补重建，见 [phonePlayerIsFullscreenSkin]）。 */
+    private var phonePlayerRenderedFullscreen=false
     // 手机页面实例：首次使用时创建后缓存（lazy 不能修饰 var）
     private val phonePages by lazy { PhonePages(this,::loadCover) }
     /** 手机端完整设置页（竖屏可调全部设置，不必再转到横屏）。 */
@@ -6495,21 +6540,22 @@ class MainActivity: Activity() {
     fun phoneStatusBarFollowTheme()=phoneStatusBarLight(TvStyle.theme==TvStyle.Theme.PORCELAIN)
 
     /**
-     * 进入手机全屏播放：隐藏系统栏。
+     * 进入手机全屏播放：隐藏系统栏并锁成横屏。
      *
-     * 方向严格按「启动方向」：强制竖屏下不转屏，只是竖向铺满；其余情况锁横屏，
-     * 由 onConfigurationChanged 判定为横屏后自动换成电视播放器那套界面。
+     * 强制竖屏与跟随系统都转横屏（「强制竖屏」是对竖屏界面的偏好，不是禁止全屏，
+     * 否则全屏按钮点了没反应）；皮肤由 [phoneFullscreenPlayback] + [phonePlayerLayout]
+     * 决定 —— 手机上不会切成电视播放器，而是 [PhonePlayer] 的横屏全屏那套。
      */
     fun enterFullscreenPhone() {
-        val portraitMode = PhoneUi.orientationMode(this)==OrientationMode.PORTRAIT
-        if(portraitMode) {
-            // 强制竖屏：整机界面就是竖屏模式，设备不旋转。全屏只隐藏系统栏、让画面铺满，
-            // 控件仍按竖屏（葫芦娃红果）那套布局。
-            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        } else {
-            // 跟随系统时，全屏才把设备锁成横屏。只是横屏，不再强制走 TV 皮肤——
-            // 皮肤由 phoneLayout() 在方向变化后统一判定。
-            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        // 标记必须先于 requestOrientation 置位：方向回调/重建时就要按全屏皮肤渲染。
+        // 只有手机播放页会调到这里（电视播放器没有这个按钮），所以不再按偏好二次判断。
+        if(screen=="player") phoneFullscreenPlayback=true
+        requestedOrientation = when(PhoneUi.orientationMode(this)) {
+            // 强制横屏：手机本来就走电视播放器，理论上到不了这里，保持横屏
+            OrientationMode.LANDSCAPE -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            // 强制竖屏 / 跟随系统：全屏都锁横屏（SENSOR_LANDSCAPE 允许横屏两个方向，
+            // 用户把手机掉个头也能正常看；固定 LANDSCAPE 会卡在一个方向）
+            else -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         }
         // Android 15 起老的 systemUiVisibility 全屏标志被忽略，必须走 InsetsController；
         // 滑动临时呼出对应原 IMMERSIVE_STICKY 行为
@@ -6519,20 +6565,61 @@ class MainActivity: Activity() {
         phoneStatusBarLight(false)
     }
 
-    /** 退出手机全屏：恢复竖屏与常规系统栏。强制横屏偏好下不把界面掰回竖屏。 */
-    fun exitFullscreenPhone() {
-        requestedOrientation = when(PhoneUi.orientationMode(this)) {
-            OrientationMode.LANDSCAPE -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-            OrientationMode.PORTRAIT -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            // 跟随系统：退出全屏回到传感器方向，横竖由设备姿态决定（竖着拿就回竖屏播放页）
-            OrientationMode.AUTO -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    /**
+     * 退出手机全屏：转回竖屏并恢复常规系统栏，皮肤也回到竖屏那套。
+     *
+     * [rebuild] 为 false 时只恢复系统栏、不重挂播放页——离开播放页（release）
+     * 时用，否则会在刚拆掉的页面上又拉一次 playEpisode。
+     * 方向则只有在 [restoreOrientation] 为 true 时才交还：旋转重建同样会走 release，
+     * 那次绝不能把「全屏会话」的方向改回竖屏。
+     */
+    fun exitFullscreenPhone(rebuild: Boolean = true, restoreOrientation: Boolean = true) {
+        val wasFullscreenSkin=phoneFullscreenPlayback
+        // 只有真正的「退出全屏 / 离开播放页」才结束会话；旋转重建（restoreOrientation=false）
+        // 必须保留会话标记，否则横屏外壳刚挂上就会被判定成非全屏
+        if(restoreOrientation) phoneFullscreenPlayback=false
+        if(restoreOrientation) {
+            val mode=PhoneUi.orientationMode(this)
+            if(mode==OrientationMode.AUTO) {
+                // 跟随系统：先锁一次竖屏把界面掰回来，转屏动画结束后再交还传感器。
+                // 设备此刻还横着时只设 UNSPECIFIED 系统不会转，退出全屏会卡在横屏皮肤上
+                // （葫芦娃同样在退出时主动锁回进入前的方向）。postDelayed 是给转屏动画留时间。
+                requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                // 正在退出 App 时不要再排这个回调：窗口都拆了，交还方向也没有意义
+                if(!isFinishing && !isDestroyed) main.postDelayed({
+                    if(!isFinishing && !isDestroyed) requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                }, ORIENTATION_RESTORE_DELAY_MS)
+            } else {
+                // 强制横屏 / 强制竖屏：直接按偏好锁死
+                requestedOrientation = when(mode) {
+                    OrientationMode.LANDSCAPE -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                    else -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                }
+            }
         }
         WindowCompat.getInsetsController(window,window.decorView).show(WindowInsetsCompat.Type.systemBars())
         phoneStatusBarFollowTheme()
+        // 只要这次真的结束了全屏会话，就必须用竖屏皮肤重挂：设备本来就竖着时不会触发
+        // 方向回调，光清标记会让界面一直停在横屏皮肤上
+        if(rebuild && wasFullscreenSkin && screen=="player") rebuildPhonePlayerForLayout()
     }
 
     /** PhonePlayer 内部状态变化后立即刷新一帧。 */
-    fun refreshPhonePlayerNow() { if(screen=="player" && phoneLayout()) refreshPhonePlayer() }
+    fun refreshPhonePlayerNow() { if(screen=="player" && phonePlayerLayout()) refreshPhonePlayer() }
+
+    /** 当前外壳是不是已经长成手机横屏全屏皮肤（方向回调没来时用来判断要不要补一次重建）。 */
+    fun phonePlayerIsFullscreenSkin() = phonePlayerRenderedFullscreen
+
+    /**
+     * 按当前全屏标记与方向重挂播放页外壳。设备已经横着时点全屏不会触发
+     * onConfigurationChanged，需要调用方主动走一次和方向变化完全一致的路径。
+     */
+    fun rebuildPhonePlayerForLayout() {
+        if(screen!="player") return
+        val position=currentPosition(); val autoplay=player?.playWhenReady==true && !pausedForLifecycle
+        phonePlayer=null; playerView=null
+        playEpisode(episodeIndex,position,autoplay)
+    }
     /**
      * PhonePlayer 切换全屏后的收尾：全屏状态变了、界面可能刚换了皮肤，
      * 立刻按新状态刷一次进度与控件，避免要等下一秒 tick 才更新。
@@ -6540,7 +6627,7 @@ class MainActivity: Activity() {
     fun applyPhoneFullscreen(fullscreen: Boolean) {
         if(screen!="player") return
         applyPhoneSystemBars()
-        if(phoneLayout()) refreshPhonePlayer()
+        if(phonePlayerLayout()) refreshPhonePlayer()
         else if(hud.visibility==View.VISIBLE) updatePlaybackText()
     }
     private fun refreshPhonePlayer() {
@@ -6579,9 +6666,11 @@ class MainActivity: Activity() {
             phoneSettingsFromPlayer=true
             phoneSettingsPosition=currentPosition()
             phoneSettingsAutoplay=player?.playWhenReady==true
-            // 全屏标记先取走再退出全屏：留着会让 phoneLayout() 在设置页里仍判定为「手机全屏界面」，
+            // 全屏标记先取走再退出全屏：留着会让方向/皮肤判定在设置页里仍按全屏处理，
             // 退出设置时再用记下的值恢复
             phoneSettingsFullscreen=phonePlayer?.takeFullscreenState()==true
+            // 设置页是竖屏单列，全屏会话在这里先结束；退出设置页再按记下的值重建
+            phoneFullscreenPlayback=false
             // 和设置页转横屏再转回来一样：先收掉播放浮层，否则「退出播放」回详情后
             // 焦点可能落在已被移除的控件上；播放本身不停，退出设置时按记录的进度重挂
             hidePlaybackOverlay()
@@ -6612,15 +6701,18 @@ class MainActivity: Activity() {
         val position=phoneSettingsPosition
         val autoplay=phoneSettingsAutoplay
         val fullscreen=phoneSettingsFullscreen
-        // 立刻复位标记：下面调用的 playEpisode → releasePlayer → phonePlayer.release() 会走
-        // exitFullscreenPhone，那一步读的是设备状态；标记留在 true 会让下一次返回误判
+        // 立刻复位标记：下面调用的 playEpisode → releasePlayer → phonePlayer.release() 里
+        // 会按旧的全屏状态收尾；标记留在 true 会让下一次返回误判
         phoneSettingsFromPlayer=false; phoneSettingsFullscreen=false
         if(fromPlayer && detail!=null) {
             // 与横竖屏重建同一条路：先拆掉旧外壳，再按记录的进度重新挂载，播放不断流
             phonePlayer=null; playerView=null
             screen="player"
+            // 设置页是全屏横屏时进来的，回播放页仍是全屏皮肤，标记要先于方向设置复位
+            phoneFullscreenPlayback=fullscreen
             // 进设置页时为了竖屏单列临时锁了竖屏，回播放页要交还「启动方向」偏好
-            requestedOrientation=PhoneUi.requestedOrientation(this)
+            requestedOrientation=if(fullscreen) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                else PhoneUi.requestedOrientation(this)
             playEpisode(episodeIndex,position,autoplay)
             if(fullscreen) {
                 // 设置页显示过系统栏，回全屏要重新隐藏并锁回全屏方向
@@ -6759,6 +6851,9 @@ class MainActivity: Activity() {
             val next=OrientationMode.entries.getOrNull(choice) ?: return@choose
             if(next!=current) {
                 library.orientationMode=next.name
+                // 改启动方向即退出手机全屏会话：全屏皮肤只属于「竖屏界面点全屏」这一种情况，
+                // 这时候强切到横向的电视界面（或强制竖屏直接回竖屏播放页）都不该再保留它
+                phoneFullscreenPlayback=false
                 // 锁朝向：系统会按需要回调 onConfigurationChanged，由那里重建对应皮肤
                 requestedOrientation=PhoneUi.requestedOrientation(this)
                 // 朝向没真的变化时不会触发重建（比如已经横着的设备选「强制横屏」），这里主动刷新一次；
@@ -6769,7 +6864,10 @@ class MainActivity: Activity() {
                     // 手机设置页：方向真变了由 onConfigurationChanged 重建皮肤；
                     // 没变就把「启动方向」这一行的值就地刷出来
                     screen=="settings" -> phoneRefreshSettingsValues()
-                    screen=="player" -> Unit
+                    // 播放页：方向真变了走 onConfigurationChanged 重建外壳；方向没变
+                    // （常见于强制竖屏，刚才全屏锁的就是横屏，切到强制竖屏才真转）时
+                    // 这里主动按新偏好重挂一次，否则横屏全屏皮肤会一直留着
+                    screen=="player" -> rebuildPhonePlayerForLayout()
                     phoneLayout() -> if(phoneTab!="detail") renderPhone() else detail?.series?.let { openDetailPhone(it) }
                     screen=="catalog" -> { settingsFocusKey="启动方向"; showCatalog() }
                 }
@@ -6859,7 +6957,14 @@ class MainActivity: Activity() {
             }
         }
         when(screen) {
-            "player" -> if(player?.playbackState==Player.STATE_ENDED) returnToDetail() else if(hud.visibility==View.VISIBLE && !playError) hidePlaybackOverlay() else returnToDetail()
+            // 手机全屏播放：返回键先退出全屏回到竖屏播放页（葫芦娃 BackHandler 同款），
+            // 再按一次才退出播放。电视播放器那套仍按原逻辑走。
+            "player" -> when {
+                phonePlayer?.isFullscreen()==true -> phonePlayer?.exitFullscreenFromBack()
+                player?.playbackState==Player.STATE_ENDED -> returnToDetail()
+                phonePlayerLayout() -> returnToDetail()
+                else -> if(hud.visibility==View.VISIBLE && !playError) hidePlaybackOverlay() else returnToDetail()
+            }
             "detail" -> showCatalog()
             else -> if(tab==1 && advancedSearch) { switchAdvanced(false); filterToggle?.post { filterToggle?.requestFocus() } } else if(tab==6 && third?.onBack()==true) {} else if(tab==3 && favoriteManage) { favoriteManage=false; favoriteSelected.clear(); showCatalog() } else if(tab==2 && newRelease) { newRelease=false; page=1; catalog=emptyList(); hasMore=false; ranking=null; catalogFocus=""; discoveryCursor=null; discoverySelection=DiscoverySelection(); tabState.remove(2); tabFocus.remove(2); pendingNewReleaseFocus="back"; showCatalog(true) } else if(tab==2 && aiCatalog) { aiCatalog=false; aiGenre=null; page=1; catalogFocus=""; tabState.remove(2); tabFocus.remove(2); showCatalog(true); aiEntry?.post { if(aiEntry?.isAttachedToWindow==true) aiEntry?.requestFocus() } } else if(collection!=null) { leaveCollection(); showCatalog() } else if(nav.any { it.hasFocus() }) { if(tab!=0) { switchTab(0); nav[0].requestFocus() } else showExitConfirm() } else if(nav.getOrNull(tab)?.requestFocus()!=true) showExitConfirm()
         }
@@ -6944,19 +7049,25 @@ class MainActivity: Activity() {
         if(!library.isLoaded) return
         // 手机竖屏 ⇄ 横屏（TV 版界面）切换：manifest 不再锁死方向，两侧各按当前方向重建；
         // 播放中的重建沿用原有「按进度重挂」逻辑（手机/电视播放内核一致，只是皮肤不同）。
-        // 离开竖屏时 phoneTab 会残留 detail/player，横屏若跟着它走会画出空目录页，先复位。
-        // 播放页皮肤严格跟随「启动方向」：强制竖屏下全屏也不转横屏，所以这里不再保留
-        // 「全屏播放器仍是手机界面」的特例——横屏就该是电视播放器。
-        if(!phoneLayout() && phoneTab in listOf("detail","player")) phoneTab="home"
-        // 从手机竖屏横过来：手机播放页全屏只是隐藏系统栏，界面本身没变，
-        // 但「启动方向」已变成跟随系统且实际是横屏 —— 统一交给 playEpisode 重挂电视播放器。
+        // 播放页全屏会话期间横屏仍是手机横屏皮肤（见 phonePlayerLayout），不是电视界面。
+        // 离开竖屏时 phoneTab 会残留 detail/player，横屏若跟着它走会画出空目录页，先复位；
+        // 全屏会话例外，它随时可能转回竖屏继续走手机页面。
+        if(!phoneLayout() && !phoneFullscreenPlayback && phoneTab in listOf("detail","player")) phoneTab="home"
         when(screen) {
             // 手机设置页跟着方向重建：竖屏保持手机设置页；转到横屏时如果是从播放页进来的，
-            // 要回到播放画面（电视版播放器），否则落回电视版设置页签
-            "settings" -> if(phoneLayout()) phoneSettings.render(root) else closePhoneSettings()
+            // 要回到播放画面（全屏皮肤），否则落回电视版设置页签
+            "settings" -> if(phoneLayout() || phoneFullscreenPlayback) phoneSettings.render(root) else closePhoneSettings()
             // 旋转会让播放页外壳尺寸彻底改变，必须重建 UI；
             // playerView 置空让 playEpisode 走 !reuse 分支重新挂载，播放本身不断流。
+            // 皮肤由 phonePlayerLayout() 决定：全屏会话留在手机横屏皮肤，否则按启动方向。
             "player" -> {
+                // 全屏会话还没结束就真的转回竖屏（例如设备姿态被系统改回）：会话结束，
+                // 用竖屏皮肤重建；强制横屏偏好下没有手机全屏皮肤，也在这里收掉标记。
+                if(phoneFullscreenPlayback &&
+                    (newConfig.orientation==android.content.res.Configuration.ORIENTATION_PORTRAIT ||
+                        !PhoneUi.shouldUsePhoneFullscreen(this))) {
+                    phoneFullscreenPlayback=false
+                }
                 val position=currentPosition(); val autoplay=player?.playWhenReady==true && !pausedForLifecycle
                 phonePlayer=null; playerView=null
                 playEpisode(episodeIndex,position,autoplay)
@@ -7026,14 +7137,14 @@ class MainActivity: Activity() {
         val view=playerView ?: return false
         // onStop 期间页面结构没动过，不重建外壳：把播放器接回视图，再刷新一遍文案与状态条
         if(view.player!==p) view.player=p
-        detail?.let { data -> if(phoneLayout()) phonePlayer?.updateEpisode(data) }
+        detail?.let { data -> if(phonePlayerLayout()) phonePlayer?.updateEpisode(data) }
         playbackReady=p.playbackState==Player.STATE_READY
         refreshCacheStrip()
         // 保持暂停态：与以往「切回来先停住、按播放继续」的手感一致。
         requestedAutoplay=false; pausedForLifecycle=true
         p.pause()
         // 手机播放面板的控件不随 onStop 销毁，直接刷新一遍；电视版重画 HUD。
-        if(phoneLayout()) phonePlayer?.refresh(
+        if(phonePlayerLayout()) phonePlayer?.refresh(
             playing=false,
             position=p.currentPosition,
             duration=p.duration.coerceAtLeast(0),
@@ -7094,6 +7205,9 @@ class MainActivity: Activity() {
     }
     override fun onDestroy() {
         generation++; cancelWork()
+        // 全屏播放中点着返回退出 App：方向已经交给「启动方向」，别把横屏留给下一次启动
+        if(phoneFullscreenPlayback) requestedOrientation=PhoneUi.requestedOrientation(this)
+        phoneFullscreenPlayback=false; phonePlayerRenderedFullscreen=false
         if(networkRegistered) connectivity.unregisterNetworkCallback(networkCallback)
         favoriteMonitor.destroy(); tvTools.destroy(); updater.destroy(); saveProgress(); releasePlayer(); accountManager.destroy(); library.close()
         closeRemote()

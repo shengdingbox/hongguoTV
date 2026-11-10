@@ -29,11 +29,21 @@ object PhoneInsets {
     fun listen(view: View, onChange: (topInset: Int, bottomInset: Int, imeInset: Int) -> Unit) {
         ViewCompat.setOnApplyWindowInsetsListener(view) { _, insets ->
             val safe = insets.getInsets(SAFE_TYPES)
+            sideIndicator = maxOf(safe.left, safe.right)
             onChange(safe.top, safe.bottom, insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
             insets
         }
         request(view)
     }
+
+    /**
+     * 最近一次派发的左右安全区（取较大的一边）。横屏播放页的刘海 / 挖孔在侧边，
+     * 顶部栏与控制条要按它让位。用「最近一次 listen 回调的值」而不是重新查
+     * getRootWindowInsets，是因为播放页在 Insets 回调里立刻就要排版，那一刻
+     * 根窗口的 Insets 还不一定是最新的。没有监听者时返回 0。
+     */
+    var sideIndicator: Int = 0
+        private set
 
     /** 视图可能在 addView 之前就设好监听，attach 时补一次派发。 */
     private fun request(view: View) {

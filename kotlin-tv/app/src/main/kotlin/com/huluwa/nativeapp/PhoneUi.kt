@@ -76,8 +76,9 @@ object PhoneUi {
     fun scaffold(activity: Activity, activeTab: String, onTab: (String) -> Unit, onSearch: () -> Unit): Triple<FrameLayout, LinearLayout, LinearLayout> {
         val root = FrameLayout(activity).apply { setBackgroundColor(TvStyle.background) }
         val shell = column(activity)
-        // 顶栏：品牌 + 版本
-        val top = row(activity).apply { setPadding(dp(activity, 16), dp(activity, 10), dp(activity, 16), dp(activity, 8)) }
+        // 顶栏：品牌 + 版本。顶部内边距要额外让出状态栏/刘海高度，见文件末尾的 Insets 适配
+        val topBaseTop = dp(activity, 10)
+        val top = row(activity).apply { setPadding(dp(activity, 16), topBaseTop, dp(activity, 16), dp(activity, 8)) }
         val brand = row(activity)
         brand.addView(ImageView(activity).apply { setImageResource(com.huluwa.nativeapp.R.drawable.app_icon) }, lp(dp(activity, 24), dp(activity, 24)).apply { rightMargin = dp(activity, 7) })
         brand.addView(text(activity, "红果", 19f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) })
@@ -87,10 +88,11 @@ object PhoneUi {
         // 内容区
         val content = column(activity)
         shell.addView(content, lp(-1, 0).apply { weight = 1f })
-        // 底部导航
+        // 底部导航：底部内边距要额外让出手势导航条的高度
+        val navBaseBottom = dp(activity, 6)
         val nav = row(activity).apply {
             setBackgroundColor(TvStyle.surface)
-            setPadding(0, dp(activity, 6), 0, dp(activity, 6))
+            setPadding(0, dp(activity, 6), 0, navBaseBottom)
         }
         TABS.forEach { tab ->
             val item = column(activity).apply { gravity = Gravity.CENTER_HORIZONTAL }
@@ -115,6 +117,15 @@ object PhoneUi {
             contentDescription = "搜索"
         }
         top.addView(searchEntry, lp(dp(activity, 36), dp(activity, 36)))
+        // 系统栏适配：顶栏让出状态栏/刘海，底栏让出手势条，内容区让出键盘，
+        // 否则 targetSdk 35 的强制 edge-to-edge 会让状态栏压住品牌行、手势条压住导航 Tab。
+        PhoneInsets.listen(shell) { topInset, bottomInset, imeInset ->
+            top.setPadding(dp(activity, 16), topBaseTop + topInset, dp(activity, 16), dp(activity, 8))
+            nav.setPadding(0, dp(activity, 6), 0, navBaseBottom + bottomInset)
+            // 键盘弹起时窗口不再自动缩放，把多出来的高度补给内容区底部，
+            // 保证搜索框/结果能被滚到键盘上方。导航条那部分已经由 nav 自己让过，不重复扣。
+            content.setPadding(0, 0, 0, (imeInset - bottomInset).coerceAtLeast(0))
+        }
         return Triple(root, content, nav)
     }
 

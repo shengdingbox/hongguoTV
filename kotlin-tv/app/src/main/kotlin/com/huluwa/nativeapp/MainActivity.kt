@@ -29,6 +29,9 @@ import android.text.Spanned
 import android.text.TextUtils
 import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.media3.common.*
@@ -540,7 +543,17 @@ class MainActivity: Activity() {
             settingsFocusKey=PageRestore.focusKey
             PageRestore.tab=-1; PageRestore.focusKey=null
         }
-        window.decorView.systemUiVisibility=View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        // 系统栏策略：电视维持原有沉浸全屏标志；手机竖屏要正常显示状态栏（时钟/信号），
+        // Android 15 起 edge-to-edge 是强制的，低版本显式打开统一行为——内容铺到系统栏
+        // 下面，由 PhoneInsets 在各页面让位，避免 14- 上状态栏被沉浸标志整个藏掉。
+        if(TouchControls.isHandheld(this)) {
+            WindowCompat.setDecorFitsSystemWindows(window,false)
+            window.statusBarColor=Color.TRANSPARENT
+            window.navigationBarColor=Color.TRANSPARENT
+            applyPhoneSystemBars()
+        } else {
+            window.decorView.systemUiVisibility=View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        }
         // 方向策略：电视锁横屏（原清单行为）；手机交给系统，竖屏自动切换到手机版页面
         requestedOrientation=if(TouchControls.isHandheld(this)) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
@@ -5620,6 +5633,8 @@ class MainActivity: Activity() {
         if(!phoneLayout() || !library.isLoaded) return
         // detail/player 有各自的渲染入口，误调进来会把正在看的页面清成空骨架
         if(phoneTab=="detail" || phoneTab=="player") return
+        // 从播放页（黑底白图标）返回或切换主题后，状态栏图标外观跟当前主题对齐
+        phoneStatusBarFollowTheme()
         screen="catalog"
         val (frame,content,nav)=PhoneUi.scaffold(this,phoneTab,{ switchPhoneTab(it) },{ switchPhoneTab("search") })
         PhoneUi.paintNav(nav,phoneTab)
@@ -5967,19 +5982,48 @@ class MainActivity: Activity() {
         })
     }
 
+    /** 手机状态栏图标外观：浅色顶栏要配深色图标，否则暖玉白主题下白色图标看不清。 */
+    fun phoneStatusBarLight(light: Boolean) {
+        WindowCompat.getInsetsController(window,window.decorView).isAppearanceLightStatusBars=light
+    }
+
+    /**
+     * 手机横竖屏切换时同步系统栏：横屏走电视版界面，维持沉浸全屏；
+     * 竖屏回手机页面恢复常规系统栏（内容由 PhoneInsets 让位）。全屏播放的
+     * 系统栏由 enter/exitFullscreenPhone 专管，这里不能抢。
+     */
+    private fun applyPhoneSystemBars() {
+        if(!TouchControls.isHandheld(this)) return
+        if(screen=="player" && phonePlayer?.isFullscreen()==true) return
+        val controller=WindowCompat.getInsetsController(window,window.decorView)
+        if(phoneLayout()) {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            phoneStatusBarFollowTheme()
+        } else {
+            controller.systemBarsBehavior=WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    /** 普通手机页面（目录/详情）顶栏背景跟随主题，状态栏图标也跟着切。 */
+    fun phoneStatusBarFollowTheme()=phoneStatusBarLight(TvStyle.theme==TvStyle.Theme.PORCELAIN)
+
     /** 进入手机全屏播放：隐藏系统栏并锁定横屏（短剧全屏就是横过来满屏看）。 */
     fun enterFullscreenPhone() {
         requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
-            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
-            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        // Android 15 起老的 systemUiVisibility 全屏标志被忽略，必须走 InsetsController；
+        // 滑动临时呼出对应原 IMMERSIVE_STICKY 行为
+        val controller=WindowCompat.getInsetsController(window,window.decorView)
+        controller.systemBarsBehavior=WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        phoneStatusBarLight(false)
     }
 
     /** 退出手机全屏：恢复竖屏与常规系统栏。 */
     fun exitFullscreenPhone() {
         requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        WindowCompat.getInsetsController(window,window.decorView).show(WindowInsetsCompat.Type.systemBars())
+        phoneStatusBarFollowTheme()
     }
 
     /** PhonePlayer 内部状态变化后立即刷新一帧。 */
@@ -6193,6 +6237,8 @@ class MainActivity: Activity() {
     }
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
+        // 系统栏同步不依赖数据加载，先于库就绪判断处理（内部自带手机/全屏守卫）
+        applyPhoneSystemBars()
         if(!library.isLoaded) return
         // 手机竖屏 ⇄ 横屏（TV 版界面）切换：manifest 不再锁死方向，两侧各按当前方向重建；
         // 播放中的重建沿用原有「按进度重挂」逻辑（手机/电视播放内核一致，只是皮肤不同）。

@@ -30,6 +30,8 @@ class PhoneDetail(
 
     fun render(root: android.widget.FrameLayout, data: Detail) {
         val library = activity.phoneLibrary
+        // 详情页顶栏背景跟随主题，状态栏图标也跟着切（播放页退出后残留的白色图标要纠正回来）
+        activity.phoneStatusBarFollowTheme()
         root.removeAllViews()
         root.setBackgroundColor(TvStyle.background)
         val scroll = ScrollView(activity).apply { isVerticalScrollBarEnabled = false }
@@ -46,6 +48,10 @@ class PhoneDetail(
         }
         top.addView(back)
         content.addView(top, lp(-1, -2))
+        // 整页可滚动：内容区底部让出手势导航条的高度，最后一行才不会被系统手势条盖住
+        PhoneInsets.listen(scroll) { topInset, bottomInset, _ ->
+            content.setPadding(0, topInset, 0, bottomInset)
+        }
 
         // 海报 + 信息区
         val hero = PhoneUi.row(activity).apply { gravity = Gravity.TOP; setPadding(dp(14), dp(8), dp(14), dp(8)) }

@@ -74,6 +74,8 @@ class PhonePlayer(
     /** 构建播放页外壳；PlayerView 与弹幕层随后由 MainActivity 放进 [videoHost]。 */
     fun render(root: FrameLayout, data: Detail) {
         clearRefs()
+        // 播放页恒黑底：状态栏图标固定白色（暖玉白主题下也不切深色图标）
+        activity.phoneStatusBarLight(false)
         root.setBackgroundColor(Color.BLACK)
         val page = FrameLayout(activity)
         host = page
@@ -211,11 +213,12 @@ class PhonePlayer(
         page.addView(layer, FrameLayout.LayoutParams(-1, -1))
 
         // 顶部栏
+        val topBaseTop = dp(8)
         val top = PhoneUi.row(activity).apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
                 intArrayOf(Color.argb(170, 0, 0, 0), Color.TRANSPARENT))
-            setPadding(dp(4), dp(8), dp(6), dp(24))
+            setPadding(dp(4), topBaseTop, dp(6), dp(24))
         }
         top.addView(iconButton(R.drawable.ic_back) { activity.returnToDetailPhone() }, rowLp(dp(40), dp(40)))
         val titles = PhoneUi.column(activity).apply { setPadding(dp(2), 0, dp(8), 0) }
@@ -239,11 +242,12 @@ class PhonePlayer(
         layer.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
 
         // 底部区
+        val bottomBaseBottom = dp(10)
         val bottom = PhoneUi.column(activity).apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.BOTTOM_TOP,
                 intArrayOf(Color.argb(215, 0, 0, 0), Color.TRANSPARENT))
-            setPadding(0, dp(36), 0, dp(10))
+            setPadding(0, dp(36), 0, bottomBaseBottom)
         }
         val info = PhoneUi.column(activity).apply { setPadding(dp(16), 0, dp(16), 0) }
         episodePickerText = text("", 15f).apply {
@@ -325,6 +329,14 @@ class PhonePlayer(
         floating.addView(videoInfoLine, rowLp(-1, -2))
         videoInfo = floating
         page.addView(floating, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+        // 竖屏播放页状态栏可见，顶部标题与底部控制要让出状态栏/手势条；全屏（横屏）时
+        // 系统栏隐藏、Insets 归零只剩刘海，padding 自动回落到基础值（回调可能多次派发，
+        // 必须用「基础值 + 偏移」的幂等写法）
+        PhoneInsets.listen(page) { topInset, bottomInset, _ ->
+            top.setPadding(dp(4), topBaseTop + topInset, dp(6), dp(24))
+            bottom.setPadding(0, dp(36), 0, bottomBaseBottom + bottomInset)
+            floating.setPadding(dp(16), dp(20), dp(16), dp(10) + bottomInset)
+        }
     }
 
     // ---------------- 触摸与控件显隐 ----------------

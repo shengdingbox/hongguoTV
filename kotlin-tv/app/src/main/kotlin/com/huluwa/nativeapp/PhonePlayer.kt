@@ -339,7 +339,7 @@ class PhonePlayer(
             setPadding(dp(16), 0, dp(12), 0)
             setOnClickListener { activity.showPhoneEpisodePicker() }
         }
-        episodePickerText = text("选集 · 全$episodeCount集", 15f).apply { maxLines = 1 }
+        episodePickerText = text("选集 · 全${episodeCount}集", 15f).apply { maxLines = 1 }
         picker.addView(episodePickerText, rowLp(0, -2).apply { weight = 1f })
         picker.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_keyboard_arrow_up); setColorFilter(Color.WHITE)

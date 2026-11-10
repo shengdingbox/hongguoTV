@@ -3621,12 +3621,6 @@ class MainActivity: Activity() {
                 override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(playing) maybePrefetch(); if(hud.visibility==View.VISIBLE) showHud(); syncMediaSession() } }
                 override fun onPlaybackParametersChanged(parameters: PlaybackParameters) { if(active()) syncMediaSession() }
                 override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,newPosition: Player.PositionInfo,reason: Int) { if(active()) { syncMediaSession(); danmakuView?.seekTo(newPosition.positionMs) } }
-                // 竖屏画幅的短剧/漫剧：手机播放页的简介与进度已经常驻在底部，
-                // 这里只把画幅告诉 PhonePlayer，留给后续按画幅微调用。
-                override fun onVideoSizeChanged(videoSize: VideoSize) {
-                    if(!active()) return
-                    phonePlayer?.setPortraitVideo(videoSize.height>0 && videoSize.width>0 && videoSize.width.toFloat()/videoSize.height < 1f)
-                }
                 override fun onPlayerError(error: PlaybackException) { if(active()) playerFailure(error) }
             }
             playerListener=listener; p.addListener(listener)

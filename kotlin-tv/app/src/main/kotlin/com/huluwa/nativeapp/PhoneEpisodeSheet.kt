@@ -88,8 +88,17 @@ class PhoneEpisodeSheet(
         }, LinearLayout.LayoutParams(-2, -2))
         panel.addView(head, LinearLayout.LayoutParams(-1, -2))
 
-        // 数字宫格：每行 5 个，打开时滚到当前集所在行
-        val scroll = ScrollView(activity).apply { isVerticalScrollBarEnabled = false }
+        // 数字宫格：每行 5 个，打开时滚到当前集所在行。
+        // 高度最多占屏幕 70%（减去标题行），超出由 ScrollView 滚动；集数少时按内容收缩。
+        // ScrollView 没有 maxHeight，这里重写测量把上限写进 heightMeasureSpec。
+        val panelHeight = (activity.resources.displayMetrics.heightPixels * .7f).toInt()
+        val maxGridHeight = (panelHeight - dp(70)).coerceAtLeast(dp(160))
+        val scroll = object : ScrollView(activity) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val cap = MeasureSpec.makeMeasureSpec(maxGridHeight, MeasureSpec.AT_MOST)
+                super.onMeasure(widthMeasureSpec, cap)
+            }
+        }.apply { isVerticalScrollBarEnabled = false }
         val grid = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(10), dp(16), dp(20)) }
         scroll.addView(grid, LinearLayout.LayoutParams(-1, -2))
         val columns = 5
@@ -106,9 +115,6 @@ class PhoneEpisodeSheet(
             repeat(columns - indexes.size) { line.addView(Space(activity), LinearLayout.LayoutParams(0, dp(52)).apply { weight = 1f; rightMargin = dp(10) }) }
             grid.addView(line, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
         }
-        // 宫格高度按内容，最多到面板剩余空间（面板封顶屏幕 70%，标题行约 70dp）：超出就滚动
-        val panelHeight = (activity.resources.displayMetrics.heightPixels * .7f).toInt()
-        scroll.maxHeight = (panelHeight - dp(70)).coerceAtLeast(dp(160))
         panel.addView(scroll, LinearLayout.LayoutParams(-1, -2))
         root.addView(panel, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
         // 打开时把当前集所在行滚到可见区中部（上方留两行上下文）

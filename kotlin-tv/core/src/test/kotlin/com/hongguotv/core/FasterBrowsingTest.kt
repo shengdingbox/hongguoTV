@@ -37,6 +37,20 @@ class FasterBrowsingTest {
         assertNull(CatalogSnapshot.decode(value,999)); assertNull(CatalogSnapshot.decode(value,1000+8*24*60*60*1000L))
         assertNull(CatalogSnapshot.decode("{bad",1100)); assertNull(CatalogSnapshot.decode("x".repeat(200001),1100))
     }
+    @Test fun rankSnapshotRoundTripsPositionsAndToleratesLegacyAndCorruption() {
+        val items=(1..3).map { Series(it.toString(),"剧 $it") }
+        val ranking=ComicRanking(linkedMapOf("1" to RankPosition(1,"1200万热度"),"2" to RankPosition(null,"")),3,"更新时间：今天")
+        // 名次/热度随榜单缓存完整往返；rank 为 null 的条目落盘为 0，读回还原成 null
+        val value=CatalogSnapshot.encode(items,false,1000,ranking)
+        val page=CatalogSnapshot.decode(value,1100)!!
+        assertEquals(ranking,page.ranking)
+        // 旧首页缓存没有 ranking 字段：照常解码且 ranking 为 null
+        assertNull(CatalogSnapshot.decode(CatalogSnapshot.encode(items,false,1000),1100)!!.ranking)
+        // 榜单缓存被篡改（非法剧 id / 名次结构坏掉）时整体拒绝，返回 null
+        val tampered=org.json.JSONObject(value).put("ranking",JSONObject().put("positions",JSONObject().put("bad-id",JSONObject().put("rank",1,"heat","x")))))
+        assertNull(CatalogSnapshot.decode(tampered.toString(),1100))
+        assertNull(CatalogSnapshot.decode(org.json.JSONObject(value).put("ranking",JSONObject().put("positions","bad")).toString(),1100))
+    }
     @Test fun oldBackupStillImportsAndNewQuickActionListsMergeWithinLimits() {
         val base=BackupData(listOf(Series("1","收藏")),emptyList(),emptySet(),emptyList(),BackupSettings())
         val old=JSONObject(LibraryBackup.encode(base)).apply { remove("later"); remove("hidden") }.toString()

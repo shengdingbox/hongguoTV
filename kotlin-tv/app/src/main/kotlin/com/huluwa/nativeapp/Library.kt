@@ -46,6 +46,15 @@ class Library(context: Context) {
     private var index: LibraryIndex? = null
     private val homes = mutableMapOf<ContentType, CatalogPage>()
     private val homeSavedAt = mutableMapOf<ContentType, Long>()
+    // 榜单缓存：漫剧/短剧/AI 三个榜各自独立一条，与首页缓存同存同有效期
+    private val ranks = mutableMapOf<RankBoard, CatalogPage>()
+    private val rankSavedAt = mutableMapOf<RankBoard, Long>()
+
+    /** 启动加载时一次性带进内存的缓存包：首页与榜单快照 + 各自的落盘时间。 */
+    private data class DiskCaches(
+        val homes: Map<ContentType, CatalogPage>, val homeStamps: Map<ContentType, Long>,
+        val ranks: Map<RankBoard, CatalogPage>, val rankStamps: Map<RankBoard, Long>
+    )
     private var loading = false
     private var closed = false
     private val readyCallbacks = mutableListOf<() -> Unit>()
@@ -92,15 +101,28 @@ class Library(context: Context) {
                 if (oldKeys.isNotEmpty() && migration.commit()) {
                     prefs.edit().also { edit -> oldKeys.forEach(edit::remove) }.commit()
                 }
-                Triple(loaded, cached, stamps)
+                // 榜单缓存是新 key，无旧库迁移：三个榜各读各的
+                val rankCached = mutableMapOf<RankBoard, CatalogPage>()
+                val rankStamps = mutableMapOf<RankBoard, Long>()
+                RankBoard.entries.forEach { board ->
+                    homePrefs.getString("rank-${board.rankKey}", null)?.let { raw ->
+                        CatalogSnapshot.decode(raw, now)?.let { page ->
+                            rankCached[board] = page
+                            rankStamps[board] = org.json.JSONObject(raw).getLong("savedAt")
+                        }
+                    }
+                }
+                Pair(loaded, DiskCaches(cached, stamps, rankCached, rankStamps))
             }
             main.post {
                 loading = false
                 if (closed) { readyCallbacks.clear(); errorCallbacks.clear(); return@post }
                 val ready = readyCallbacks.toList(); readyCallbacks.clear()
                 val errors = errorCallbacks.toList(); errorCallbacks.clear()
-                result.onSuccess { (loaded, cached, stamps) ->
-                    index = loaded; homes.putAll(cached); homeSavedAt.putAll(stamps)
+                result.onSuccess { (loaded, boot) ->
+                    index = loaded
+                    homes.putAll(boot.homes); homeSavedAt.putAll(boot.homeStamps)
+                    ranks.putAll(boot.ranks); rankSavedAt.putAll(boot.rankStamps)
                     ready.forEach { it() }
                 }.onFailure { failure -> errors.forEach { it(failure) } }
             }
@@ -175,6 +197,24 @@ class Library(context: Context) {
         homes[type] = CatalogPage(retained, hasMore)
         homeSavedAt[type] = now
         homeWrites.submit(mapOf("home-${type.storedValue}" to { CatalogSnapshot.encode(retained, hasMore, now) }))
+    }
+
+    /** 榜单缓存读取：与首页同款 7 天有效期，过期或从未缓存返回 null。 */
+    fun cachedRank(board: RankBoard): CatalogPage? {
+        state()
+        val age = System.currentTimeMillis() - (rankSavedAt[board] ?: return null)
+        return ranks[board].takeIf { age in 0..7 * 24 * 60 * 60 * 1000L }
+    }
+
+    /** 榜单第 1 页落缓存：名次/热度一并存入，供冷启动直接带排名显示。 */
+    fun cacheRank(board: RankBoard, items: List<Series>, hasMore: Boolean, ranking: ComicRanking?) {
+        state()
+        if (items.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val retained = items.take(30).map { it.copy(description = it.description.take(1500)) }
+        ranks[board] = CatalogPage(retained, hasMore, ranking)
+        rankSavedAt[board] = now
+        homeWrites.submit(mapOf("rank-${board.rankKey}" to { CatalogSnapshot.encode(retained, hasMore, now, ranking) }))
     }
     var maxQuality: Int
         get() = state().settings.quality

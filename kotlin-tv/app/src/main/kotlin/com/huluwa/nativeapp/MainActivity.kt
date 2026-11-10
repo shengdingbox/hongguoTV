@@ -175,6 +175,8 @@ class MainActivity: Activity() {
     private var homeScreen: HomeScreen?=null
     private var selectionPreview: SeriesPreview?=null
     private var homeFromCache=false
+    /** 榜单页当前内容是否来自缓存：影响联网回调要不要打断展示。 */
+    private var rankFromCache=false
     private var homeUpdateCount=0
     private var launchStarted=android.os.SystemClock.elapsedRealtime()
     private val activityStarted=launchStarted
@@ -891,8 +893,15 @@ class MainActivity: Activity() {
         if(navHiddenAt(tab)) tab=0
         // Never cache a new page number with the previous page's results while a request is pending.
         if(load) {
-            val cached=if(tab==0 && page==1 && genre==null) library.cachedHome(library.contentType) else null
-            catalog=cached?.items ?: emptyList(); hasMore=cached?.hasMore ?: false; ranking=null; homeFromCache=cached!=null
+            val cached=when {
+                tab==0 && page==1 && genre==null -> library.cachedHome(library.contentType)
+                // 榜单首页缓存：三个榜各自独立；上新与 AI 分类走别的数据通路，不缓存
+                tab==2 && page==1 && !newRelease && !aiCatalog -> library.cachedRank(rankBoard)
+                else -> null
+            }
+            catalog=cached?.items ?: emptyList(); hasMore=cached?.hasMore ?: false; ranking=cached?.ranking
+            homeFromCache=tab==0 && cached!=null
+            rankFromCache=tab==2 && cached!=null
         }
         invalidatePage(); screen="catalog"; releaseCatalogViews(); val container=base()
         if(foreground && library.isLoaded && !favoriteMonitor.running) main.post { if(foreground && screen=="catalog") favoriteMonitor.check() }
@@ -1262,7 +1271,12 @@ class MainActivity: Activity() {
                 else -> "来源：红果${rankBoard.label}热播榜"
             }
             val loadingText=when { newRelease -> "正在读取最新上架…"; aiCatalog -> "正在读取AI剧分类…"; else -> "正在读取最新榜单…" }
-            rankSubtitle=text(if(load) loadingText else ranking?.updatedText?.ifBlank { defaultSource } ?: defaultSource,13f,muted)
+            rankSubtitle=text(when {
+                // 缓存已在展示：副标题说明正在后台更新，而不是假装从零加载
+                load && rankFromCache -> "已显示上次榜单 · 正在更新…"
+                load -> loadingText
+                else -> ranking?.updatedText?.ifBlank { defaultSource } ?: defaultSource
+            },13f,muted)
                 .apply { setPadding(0,0,0,dp(8)) }
             container.addView(rankSubtitle)
             nav.forEach { it.nextFocusDownId=(when { newRelease -> newReleaseBack ?: newReleaseWindowButton; aiCatalog -> aiBack ?: aiGenreButton; else -> newReleaseEntry ?: aiEntry ?: rankSwitch })?.id ?: View.NO_ID }
@@ -1398,6 +1412,12 @@ class MainActivity: Activity() {
             loadNewRelease(body)
         } else if(load) {
             if(tab==0) catalogGrid(body,focusNav,focusType,loading=true)
+            // 榜单缓存已带内容：直接渲染上次榜单，联网结果回来再提示换新
+            else if(tab==2 && catalog.isNotEmpty()) {
+                catalogGrid(body,focusNav,focusType)
+                // 从上新退回时焦点落回「上新」入口而不是首张卡片，与联网成功路径同一处理
+                if(pendingNewReleaseFocus!=null) catalogRecycler?.postDelayed({ consumePendingNewReleaseFocus() },80)
+            }
             else { message(body,"正在加载…"); if(focusType) typeButtons[library.contentType]?.requestFocus() else nav[tab].requestFocus() }
             val requestTab=tab; val requestPage=page; val requestQuery=query; val requestType=library.contentType
             val requestBoard=rankBoard; val requestGenre=if(requestTab==0) genre else null
@@ -1411,9 +1431,20 @@ class MainActivity: Activity() {
                 result
             }, { result ->
                 if(requestTab==0 && requestPage==1 && requestGenre==null) library.cacheHome(requestType,result.items,result.hasMore)
+                // 榜单第 1 页到手先落缓存，无论界面是否立即换新
+                if(requestTab==2 && requestPage==1 && !requestAi) library.cacheRank(requestBoard,result.items,result.hasMore,result.ranking)
                 if(requestTab==0 && requestPage==1 && requestGenre==null && (homeFromCache || tvTools.showing || updater.showing)) {
                     homeScreen?.refresh?.text="热门已更新 · 按确认查看"
                     homeScreen?.refresh?.setOnClickListener { catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; showCatalog() }
+                } else if(requestTab==2 && requestPage==1 && !requestAi && rankFromCache) {
+                    // 用户正看着上次榜单：不打断焦点与滚动，刷新按钮换成查看新榜，按确认一次性换上
+                    rankRefresh?.text="榜单已更新 · 按确认查看"
+                    rankRefresh?.setOnClickListener {
+                        // 缓存展示期间可能已翻页，换新后从第 1 页重新起算，避免续页跳页
+                        catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; page=1; rankFromCache=false
+                        showCatalog()
+                        rankRefresh?.post { if(rankRefresh?.isAttachedToWindow==true) rankRefresh?.requestFocus() }
+                    }
                 } else {
                     catalog=result.items; hasMore=result.hasMore; ranking=result.ranking
                     // 手机输入的精确剧名搜索零结果时自动恢复联想，帮助用户纠正剧名
@@ -1434,6 +1465,11 @@ class MainActivity: Activity() {
                 if(requestTab==0 && requestPage==1 && requestGenre==null) {
                     homeScreen?.refresh?.text=if(catalog.isNotEmpty()) "当前显示上次内容 · 联网后按确认刷新" else "热门暂时无法加载 · 按确认重试"
                     homeScreen?.refresh?.setOnClickListener { showCatalog(true) }
+                    return@work
+                }
+                // 上次榜单还在展示：保留内容不清空，副标题提示联网失败，按钮保持可重试
+                if(requestTab==2 && !requestAi && rankFromCache) {
+                    rankSubtitle?.text="榜单更新失败 · 当前显示上次榜单"
                     return@work
                 }
                 catalog=emptyList(); hasMore=false; ranking=null; rankSubtitle?.text=if(requestAi) "AI剧分类加载失败" else "榜单加载失败"; if(requestTab==2) pendingNewReleaseFocus=null
@@ -5804,7 +5840,7 @@ class MainActivity: Activity() {
                 catalog.isNotEmpty() && phoneCatalogSource=="home" -> renderPhone()
                 else -> showPhoneHome(load=true)
             }
-            "rank" -> if(catalog.isNotEmpty() && phoneCatalogSource=="rank" && rankingPhone!=null) {
+            "rank" -> if(catalog.isNotEmpty() && phoneCatalogSource=="rank") {
                 renderPhone()
             } else {
                 phoneRankPage=1; catalog=emptyList(); rankingPhone=null; phoneCatalogSource="rank"
@@ -5854,18 +5890,27 @@ class MainActivity: Activity() {
         })
     }
 
-    /** 手机排行榜数据加载。 */
+    /** 手机排行榜数据加载：先用上次榜单缓存顶上冷启动，联网结果回来后覆盖并更新缓存。 */
     private fun showPhoneRank() {
+        // catalog 为空说明是首次进入该榜单：先渲染缓存，避免整页空转
+        if(catalog.isEmpty()) {
+            val cached=library.cachedRank(rankBoardPhone)
+            if(cached!=null) { catalog=cached.items; hasMore=cached.hasMore; rankingPhone=cached.ranking; renderPhone() }
+        }
         val ticket=generation
         work({ repository.ranking(rankBoardPhone,phoneRankPage) }, { result ->
             if(phoneLayout() && ticket==generation && phoneTab=="rank") {
-                if(phoneRankPage<=1) { catalog=result.items; rankingPhone=result.ranking; phoneCatalogSource="rank" }
+                if(phoneRankPage<=1) {
+                    catalog=result.items; rankingPhone=result.ranking; phoneCatalogSource="rank"
+                    library.cacheRank(rankBoardPhone,result.items,result.hasMore,result.ranking)
+                }
                 else catalog=catalog+result.items
                 hasMore=result.hasMore; renderPhone()
             }
         }, { problem ->
             if(phoneLayout() && ticket==generation && phoneTab=="rank") {
-                catalog=emptyList(); hasMore=false; rankingPhone=null; renderPhone()
+                // 上次榜单还在展示时不清空，只在无缓存首进时回空态
+                if(catalog.isEmpty()) { hasMore=false; rankingPhone=null; renderPhone() }
                 android.util.Log.w("HongguoTV","Phone rank failed: ${problem.message}")
             }
         })

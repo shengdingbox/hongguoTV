@@ -498,56 +498,78 @@ class ContentRepositoryTest {
         assertEquals(3,paths.size)
     }
 
-    private fun relatedItem(id: String,name: String)=JSONObject().put("series_id",id).put("series_name",name)
+    // 详情接口已改为红果官方 JSON（POST /reading/player/video_detail/v1/），
+    // 分集在 video_data.video_list[].vid；相关推荐与系列剧走 plan feed，用 from 参数区分。
+    private val detailPath="/reading/player/video_detail/v1/"
+    private val planPath="/reading/bookapi/plan/v1/"
+    private fun relatedItem(id: String,name: String)=JSONObject().put("series_id_str",id).put("series_title",name)
         .put("series_cover","https://example.com/$id.jpg").put("episode_cnt",10).put("episode_right_text","全 10 集")
-    private fun detailHtml(series: JSONObject,recommended: JSONArray): String {
-        val recommendations=JSONObject().put("videoList",JSONArray())
-            .put("recommendationGroups",JSONObject().put("related_list",recommended))
-        val args=JSONArray().put("detail_page").put(JSONArray().put(JSONObject().put("key","recommendations")
-            .put("routerDataFnName","p").put("routerDataFnArgs",JSONArray().put(recommendations.toString()))))
-        val attribute=args.toString().replace("&","&amp;").replace("\"","&quot;")
-        return """<script>_ROUTER_DATA={"loaderData":{"detail_page":{"seriesDetail":$series}}};</script><script data-fn-args="$attribute"></script>"""
+    private fun detailVideo(id: String,name: String,vids: List<String>)=JSONObject().put("code",0)
+        .put("video_data",JSONObject().put("series_id_str",id).put("series_title",name)
+            .put("video_list",JSONArray().apply { vids.forEach { put(JSONObject().put("vid",it)) } }))
+    private fun planPayload(showType: Int,items: List<JSONObject>)=JSONObject().put("code",0)
+        .put("data",JSONArray().put(JSONObject().put("show_type",showType)
+            .put("video_data",JSONArray().apply { items.forEach { put(it) } })))
+    private fun emptyPlan()="""{"code":0,"data":[]}"""
+    // 详情改走 POST 后 series_id 在请求体里，按 body 区分是哪一季的详情请求。
+    private fun detailBodyId(request: Request): String {
+        val body=request.body ?: return ""
+        val buffer=okio.Buffer(); body.writeTo(buffer)
+        return runCatching { JSONObject(buffer.readUtf8()).optString("series_id") }.getOrDefault("")
     }
+    private fun isPlanFrom(request: Request,from: String)=
+        request.url.encodedPath==planPath && request.url.queryParameter("from")==from
 
     @Test fun detailRelatedHoistsSameNameSeasonsAndSkipsCurrentSeries() {
-        val series=JSONObject().put("series_id","123").put("series_name","测试剧").put("vid_list",JSONArray().put("900").put("901"))
-        val html=detailHtml(series,JSONArray()
-            .put(relatedItem("111","别人的剧"))
-            .put(relatedItem("222","测试剧"))
-            .put(relatedItem("333","测试剧 第二季"))
-            .put(relatedItem("123","测试剧")))
-        val detail=repository { html }.detail("123")
+        val related=arrayListOf(
+            relatedItem("111","别人的剧"),relatedItem("222","测试剧"),
+            relatedItem("333","测试剧 第二季"),relatedItem("123","测试剧"))
+        val repo=repository { request ->
+            when {
+                request.url.encodedPath==detailPath -> detailVideo("123","测试剧",listOf("900","901")).toString()
+                isPlanFrom(request,"select_panel_recommend") -> planPayload(160,related).toString()
+                else -> emptyPlan()
+            }
+        }
+        val detail=repo.detail("123")
         assertEquals(listOf("900","901"),detail.episodes)
         assertEquals(listOf("222","333","111"),detail.related.map { it.id })
     }
 
     @Test fun detailWithoutRecommendationPayloadStillLoadsEpisodes() {
-        val html="""<script>_ROUTER_DATA={"loaderData":{"detail_page":{"seriesDetail":{"series_id":"123","series_name":"测试剧","vid_list":["900","901"]}}}};</script>"""
-        val detail=repository { html }.detail("123")
+        val repo=repository { request ->
+            when {
+                request.url.encodedPath==detailPath -> detailVideo("123","测试剧",listOf("900","901")).toString()
+                else -> emptyPlan()
+            }
+        }
+        val detail=repo.detail("123")
         assertEquals(listOf("900","901"),detail.episodes)
         assertTrue(detail.related.isEmpty())
     }
 
     @Test fun detailCollectsSameNameSeasonsFromWebsiteSearchOrderedBySeason() {
-        val series=JSONObject().put("series_id","123").put("series_name","测试剧 第二季").put("vid_list",JSONArray().put("900"))
         val repo=repository { request ->
-            if(request.url.encodedPath=="/detail") detailHtml(series,JSONArray())
-            else """{"searchList":[
-                {"video_data":{"series_id":"222","series_name":"测试剧 第三季","genre":"203"}},
-                {"video_data":{"series_id":"111","series_name":"别人的剧","genre":"203"}},
-                {"video_data":{"series_id":"333","series_name":"测试剧 第一季","genre":"203"}},
-                {"video_data":{"series_id":"444","series_name":"测试剧 第十季","genre":"203"}},
-                {"video_data":{"series_id":"123","series_name":"测试剧 第二季","genre":"203"}}]}"""
+            when {
+                request.url.encodedPath==detailPath -> detailVideo("123","测试剧 第二季",listOf("900")).toString()
+                request.url.encodedPath==planPath -> emptyPlan()
+                else -> """{"searchList":[
+                    {"video_data":{"series_id":"222","series_name":"测试剧 第三季","genre":"203"}},
+                    {"video_data":{"series_id":"111","series_name":"别人的剧","genre":"203"}},
+                    {"video_data":{"series_id":"333","series_name":"测试剧 第一季","genre":"203"}},
+                    {"video_data":{"series_id":"444","series_name":"测试剧 第十季","genre":"203"}},
+                    {"video_data":{"series_id":"123","series_name":"测试剧 第二季","genre":"203"}}]}"""
+            }
         }
         val detail=repo.detail("123")
         assertEquals(listOf("333","222","444"),detail.sameName.map { it.id })
     }
 
     @Test fun detailFillsMissingSeasonsFromSuggestionsLikeSearch() {
-        val series=JSONObject().put("series_id","123").put("series_name","测试剧 第一季").put("vid_list",JSONArray().put("900"))
         val repo=repository { request ->
             when {
-                request.url.encodedPath=="/detail" -> detailHtml(series,JSONArray())
+                request.url.encodedPath==detailPath -> detailVideo("123","测试剧 第一季",listOf("900")).toString()
+                request.url.encodedPath==planPath -> emptyPlan()
                 request.url.host.endsWith("fqnovel.com") -> JSONObject().put("code",0)
                     .put("data",JSONObject().put("query_result",JSONArray().put("测试剧 第二季").put("测试剧 第三季"))).toString()
                 else -> {
@@ -570,14 +592,15 @@ class ContentRepositoryTest {
         // 2026-11-08 用户实测：第 1 季详情页 related 聚合了全季，补齐管线算出「无缺季」的空结果被缓存；
         // 跳到其它季页（related 只带部分季）后复用这条空缓存，缺的季不再补齐。
         // 修复：空结果只在「已知季数一致」时才可信，规模变化触发重算。
-        val s1=JSONObject().put("series_id","1").put("series_name","测试剧 第一季").put("vid_list",JSONArray().put("900"))
-        val s2=JSONObject().put("series_id","2").put("series_name","测试剧 第二季").put("vid_list",JSONArray().put("901"))
         val repo=repository { request ->
             when {
-                request.url.encodedPath=="/detail" ->
-                    if(request.url.queryParameter("series_id")=="1")
-                        detailHtml(s1,JSONArray().put(relatedItem("2","测试剧 第二季")).put(relatedItem("3","测试剧 第三季")))
-                    else detailHtml(s2,JSONArray().put(relatedItem("1","测试剧 第一季")))
+                request.url.encodedPath==detailPath ->
+                    if(detailBodyId(request)=="1") detailVideo("1","测试剧 第一季",listOf("900")).toString()
+                    else detailVideo("2","测试剧 第二季",listOf("901")).toString()
+                request.url.encodedPath==planPath ->
+                    if(request.url.queryParameter("book_id")=="1") planPayload(160,arrayListOf(
+                        relatedItem("2","测试剧 第二季"),relatedItem("3","测试剧 第三季"))).toString()
+                    else planPayload(160,arrayListOf(relatedItem("1","测试剧 第一季"))).toString()
                 request.url.encodedPath=="/api/search/result/" ->
                     """{"searchList":[{"video_data":{"series_id":"3","series_name":"测试剧 第三季","genre":"203"}}]}"""
                 else -> """{"code":0,"data":{"query_result":[]}}"""
@@ -594,14 +617,15 @@ class ContentRepositoryTest {
         // 「系列 N 季」完全由搜索补齐管线构建。第 6 季页补齐出 1-5 季入缓存后，
         // 点进第 5 季页时已知集合只有第 5 季，若缓存只存差集，过滤后只剩 1-4 季，第 6 季消失。
         // 修复：缓存存「已知季并集」，任何季页减去自己已有的季即可拿回全部。
-        fun season(id: String,title: String)=JSONObject().put("series_id",id).put("series_name",title).put("vid_list",JSONArray().put("90$id"))
+        fun season(id: String,title: String)=detailVideo(id,title,listOf("90$id")).toString()
         val page=mapOf(
-            "6" to detailHtml(season("6","测试剧第六季"),JSONArray()),
-            "5" to detailHtml(season("5","测试剧第五季"),JSONArray()),
+            "6" to season("6","测试剧第六季"),
+            "5" to season("5","测试剧第五季"),
         )
         val repo=repository { request ->
             when {
-                request.url.encodedPath=="/detail" -> page[request.url.queryParameter("series_id")].orEmpty()
+                request.url.encodedPath==detailPath -> page[detailBodyId(request)].orEmpty()
+                request.url.encodedPath==planPath -> emptyPlan()
                 request.url.host.endsWith("fqnovel.com") -> JSONObject().put("code",0).put("data",JSONObject()
                     .put("query_result",JSONArray().put("测试剧第二季").put("测试剧第三季")
                         .put("测试剧第四季").put("测试剧第五季"))).toString()

@@ -504,10 +504,13 @@ class ContentRepositoryTest {
     private val planPath="/reading/bookapi/plan/v1/"
     private fun relatedItem(id: String,name: String)=JSONObject().put("series_id_str",id).put("series_title",name)
         .put("series_cover","https://example.com/$id.jpg").put("episode_cnt",10).put("episode_right_text","全 10 集")
-    private fun detailVideo(id: String,name: String,vids: List<String>)=JSONObject().put("code",0)
+    // 默认按传入顺序编 vid_index；需要验证乱序时显式传 indexes。
+    private fun detailVideo(id: String,name: String,vids: List<String>,indexes: List<Int>?=null)=JSONObject().put("code",0)
         .put("data",JSONObject().put(id,JSONObject().put("video_data",
             JSONObject().put("series_id_str",id).put("series_title",name)
-                .put("video_list",JSONArray().apply { vids.forEach { put(JSONObject().put("vid",it)) } }))))
+                .put("video_list",JSONArray().apply {
+                    vids.forEachIndexed { i,vid -> put(JSONObject().put("vid",vid).put("vid_index",indexes?.get(i) ?: i)) }
+                }))))
     private fun planPayload(showType: Int,items: List<JSONObject>)=JSONObject().put("code",0)
         .put("data",JSONArray().put(JSONObject().put("show_type",showType)
             .put("video_data",JSONArray().apply { items.forEach { put(it) } })))
@@ -540,7 +543,7 @@ class ContentRepositoryTest {
     }
 
     @Test fun detailSortsEpisodesByOfficialIndex() {
-        val raw=detailVideo("123","测试剧",listOf("901","900")).toString()
+        val raw=detailVideo("123","测试剧",listOf("901","900"),listOf(1,0)).toString()
         val repo=repository { request ->
             if(request.url.encodedPath==detailPath) raw else emptyPlan()
         }

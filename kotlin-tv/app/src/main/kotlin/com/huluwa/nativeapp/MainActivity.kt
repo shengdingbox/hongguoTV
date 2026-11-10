@@ -5826,16 +5826,21 @@ class MainActivity: Activity() {
             "search" -> phoneSearchPage+1
             else -> page+1
         }
-        val request=when(phoneTab) {
-            "rank" -> repository.ranking(rankBoardPhone,nextPage)
-            "search" -> repository.search(phoneQuery,nextPage,library.contentType)
-            else -> repository.home(nextPage,library.contentType,null)
-        }
-        work({ request }, { result ->
+        val tab=phoneTab; val board=rankBoardPhone; val keyword=phoneQuery; val type=library.contentType
+        // 网络请求必须放进 work 的 action 里执行：写成 `val request=repository.xxx()` 再
+        // `work({ request })` 会在主线程（RecyclerView 滚动回调里）当场发起请求，直接
+        // NetworkOnMainThreadException。这里把各参数先取好，请求在 IO 线程里再发。
+        work({
+            when(tab) {
+                "rank" -> repository.ranking(board,nextPage)
+                "search" -> repository.search(keyword,nextPage,type)
+                else -> repository.home(nextPage,type,null)
+            }
+        }, { result ->
             if(phoneLayout() && ticket==generation) {
                 loadingMore=false
                 if(result.items.isNotEmpty()) {
-                    when(phoneTab) {
+                    when(tab) {
                         "rank" -> { phoneRankPage=nextPage; catalog=catalog+result.items }
                         "search" -> { phoneSearchPage=nextPage; catalog=catalog+result.items }
                         else -> { page=nextPage; catalog=catalog+result.items }

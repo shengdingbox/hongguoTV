@@ -136,6 +136,8 @@ class MainActivity: Activity() {
     private var deferredWork: DeferredUi?=null
     private var initialCatalogPending=true
     private var restoreStoppedPage=false
+    /** 启动崩溃提示只弹一次：进入前台时检测，弹过就不再查（recreate 会再走 onResume）。 */
+    private var crashPromptDone=false
     private var pendingDetail: Series?=null
     private var detailAutoplay=true
     private var libraryLoadError: Throwable?=null
@@ -426,7 +428,7 @@ class MainActivity: Activity() {
             remotePublish()
             if(screen=="player") {
                 if(sleepTimer.poll()) stopForSleep()
-                if(hud.visibility==View.VISIBLE) updatePlaybackText()
+                if(phoneLayout()) refreshPhonePlayer() else if(hud.visibility==View.VISIBLE) updatePlaybackText()
                 danmakuLoader?.let { loader -> if(player?.isPlaying==true) { val position=currentPosition(); io.execute { runCatching { loader.loadUpTo(position) } } } }
                 maybePrefetch()
                 val p=player; val data=detail
@@ -531,6 +533,9 @@ class MainActivity: Activity() {
             PageRestore.tab=-1; PageRestore.focusKey=null
         }
         window.decorView.systemUiVisibility=View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        // 方向策略：电视锁横屏（原清单行为）；手机交给系统，竖屏自动切换到手机版页面
+        requestedOrientation=if(TouchControls.isHandheld(this)) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         library=Library(this); artwork=ArtworkLoader(this); tvTools=TvTools(this); extras=PlaybackExtras(this); root=FrameLayout(this).apply { setBackgroundColor(bg) }; setContentView(root)
         // 上新区沿用上次选择的时间窗（只在本机记，识别不了的值回落到默认档）
         newReleaseWindow=library.newReleaseWindow.takeIf { id -> NEW_RELEASE_WINDOWS.any { it.first==id } } ?: NEW_RELEASE_WINDOWS[0].first
@@ -579,7 +584,11 @@ class MainActivity: Activity() {
             if(!isDestroyed) { libraryLoadError=problem; if(foreground) showLibraryError(problem) }
         }) {
             if(!isDestroyed && foreground) handleLocalBackupOnStartup {
-                if(!isDestroyed && foreground) { showCatalog(load=true); favoriteMonitor.check() }
+                // 手机竖屏：渲染手机首页（热门走缓存+后台刷新）；电视/横屏维持原有 showCatalog
+                if(!isDestroyed && foreground) {
+                    if(phoneLayout()) { showPhoneHome(load=true); favoriteMonitor.check() }
+                    else { showCatalog(load=true); favoriteMonitor.check() }
+                }
             }
         }
     }
@@ -751,6 +760,23 @@ class MainActivity: Activity() {
                         if(foreground) failed(e) else deferredWork=DeferredUi({ failed(e) })
                     }
                 }
+            }
+        }
+    }
+    /** 上次运行留下的崩溃日志：本次启动首次进入前台时弹窗展示，支持一键复制。
+     *  读取走后台线程（磁盘 IO），只在有未提示过的新崩溃时才建弹窗。 */
+    private fun maybePromptCrash() {
+        if(crashPromptDone) return
+        crashPromptDone=true
+        io.execute {
+            val records=CrashReporter.reports(this)
+            val prompted=CrashReporter.promptedAt(this)
+            val fresh=records.filter { it.at>prompted }
+            if(fresh.isEmpty()) return@execute
+            main.post {
+                if(isDestroyed || !foreground) return@post
+                // 弹窗会盖在当前页面上；不预取任何锚点，居中展示即可
+                CrashDialog.showList(this@MainActivity,records,fromStartup=true)
             }
         }
     }
@@ -2225,6 +2251,12 @@ class MainActivity: Activity() {
         updates=setting(about,"版本与更新  ·  ${BuildConfig.VERSION_NAME}") { updater.show(updates) }
         lateinit var checkButton: TextView
         checkButton=setting(about,"接口自检  ·  首页 / 搜索 / 播放") { showInterfaceCheck(checkButton) }
+        val crashLogs=setting(about,"异常日志  ·  ${CrashReporter.count(this)} 份") {
+            io.execute {
+                val records=CrashReporter.reports(this)
+                main.post { if(!isDestroyed) { if(records.isEmpty()) Toast.makeText(this,"应用启动以来未发生崩溃",Toast.LENGTH_SHORT).show() else CrashDialog.showList(this@MainActivity,records) } }
+            }
+        }
         val license=setting(about,"开源许可") {
             TvDialog.info(this,"开源许可","本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\n请求签名算法移植自 openhongguo（GPL-3.0），在本机完成计算与匿名设备注册。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\n完整源码和许可证见 GitHub：jycao2/hongguoTV。").show()
         }
@@ -3123,7 +3155,29 @@ class MainActivity: Activity() {
                 useController=false; resizeMode=frameResizeMode(); isFocusable=false
                 setKeepContentOnPlayerReset(true); setShutterBackgroundColor(Color.BLACK); setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
             }
-            playerView=view; root.addView(view,FrameLayout.LayoutParams(-1,-1))
+            playerView=view
+            if(phoneLayout()) {
+                // 手机竖屏：视频固定在顶部 16:9 区域，下方是常驻控制面板（PhonePlayer）
+                root.addView(view,FrameLayout.LayoutParams(-1,(resources.displayMetrics.widthPixels*9f/16f).toInt(),Gravity.TOP))
+                val playerUi=phonePlayerOrCreate
+                playerUi.render(root,data)
+                // 弹幕层只覆盖视频区，不压到下方控制面板
+                val danmakuLayer=DanmakuView(this)
+                danmakuView=danmakuLayer
+                danmakuLayer.setBlockedFilter { text -> extras.blocks(text) }
+                danmakuLayer.applyPrefs(library.danmakuOpacity,library.danmakuFont,library.danmakuSpeed,library.danmakuRows)
+                root.addView(danmakuLayer,FrameLayout.LayoutParams(-1,(resources.displayMetrics.widthPixels*9f/16f).toInt(),Gravity.TOP).apply { topMargin=dp(6) },1)
+                // 手机版不需要 TV 的 hud/controls/转圈，但仍需初始化引用避免 tick 空指针
+                hud=column().apply { visibility=View.GONE }
+                playbackTitle=text("",15f).apply { visibility=View.GONE }
+                playbackStatus=text("",13f).apply { visibility=View.GONE }
+                playbackText=text("",13f).apply { visibility=View.GONE }
+                controls=column().apply { visibility=View.GONE }
+                progressBar=PlaybackSeekBar(this).apply { max=1000; visibility=View.GONE }
+                recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { indeterminateTintList=android.content.res.ColorStateList.valueOf(accent); visibility=View.GONE }
+                playerScreenOn=true; refreshScreenOn()
+            } else {
+            root.addView(view,FrameLayout.LayoutParams(-1,-1))
             val danmakuLayer=DanmakuView(this)
             danmakuView=danmakuLayer
             danmakuLayer.setBlockedFilter { text -> extras.blocks(text) }
@@ -3171,6 +3225,7 @@ class MainActivity: Activity() {
             recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { indeterminateTintList=android.content.res.ColorStateList.valueOf(accent); visibility=View.GONE }
             root.addView(recoverySpinner,FrameLayout.LayoutParams(dp(56),dp(56),Gravity.CENTER))
             root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled=false; addView(hud) },FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
+            }
         }
         playbackTitle.text="${data.series.title}  ·  第 ${episodeIndex+1} 集"
         addressRequestedAt=android.os.SystemClock.elapsedRealtime()
@@ -4527,6 +4582,12 @@ class MainActivity: Activity() {
         // 会把用户刚选的档位当场清掉。
         resetPlaybackSession()
         sleepTimer.cancel(); sleepStopped=false; saveProgress(); library.flush(); invalidatePage(); releasePlayer()
+        if(phoneLayout()) {
+            // 手机竖屏：回到手机版详情页（resume 进来的回首页）
+            if(directPlayback && !forceDetail) goBackPhone()
+            else { directPlayback=false; detail?.let { phoneTab="detail"; phoneDetail.render(root,it) } ?: goBackPhone(); prefetchDetailWindow(episodeIndex) }
+            return
+        }
         if(directPlayback && !forceDetail) showCatalog()
         else { directPlayback=false; showDetail(true); prefetchDetailWindow(episodeIndex) }
     }
@@ -5482,6 +5543,308 @@ class MainActivity: Activity() {
         return next!=null && next.requestFocus()
     }
 
+    // ================= 手机竖屏页面 =================
+    // 与 TV 原页面并行的一套纵向 UI：竖屏手持设备走这里，横屏与电视一律走原有页面。
+    // 页面状态独立保存（phoneTab/phoneQuery/...），切回横屏再回来不丢位置。
+
+    /** 当前是否由手机竖屏页面接管渲染。 */
+    private fun phoneLayout()=PhoneUi.shouldUse(this)
+
+    /** 手机页签：home / rank / fav / mine / search / detail / player。 */
+    private var phoneTab="home"
+    /** 手机页面滚动位置：切页签/横竖屏后恢复。 */
+    private var phoneScrollY=0
+    /** 搜索页状态。 */
+    private var phoneQuery=""
+    private var phoneSearching=false
+    /** 手机排行的当前榜单与结果（独立于 TV 排行榜状态，互不覆盖）。 */
+    var rankBoardPhone=com.hongguotv.core.RankBoard.COMIC
+        private set
+    var rankingPhone: ComicRanking?=null
+        private set
+    /** 手机收藏分组筛选。 */
+    var favoriteGroupFilterPhone: String?=null
+    /** 手机播放页的集号镜像（PhoneDetail/PhonePlayer 读取，同步自 episodeIndex）。 */
+    val phoneEpisodeIndex get() = episodeIndex
+    val phonePlaybackReady get() = playbackReady
+    /** PhonePlayer 进度条用的总时长（毫秒）；未就绪返回 0。 */
+    val playerDuration get() = player?.duration?.takeIf { it>0 } ?: 0L
+    /** 手机播放页 UI 实例（单例复用，控件引用由 render 重建时刷新）。 */
+    private var phonePlayer: PhonePlayer?=null
+    private val phonePlayerOrCreate get() = phonePlayer ?: PhonePlayer(this).also { phonePlayer=it }
+    private var phonePages by lazy { PhonePages(this,::loadCover) }
+    private var phoneDetail by lazy { PhoneDetail(this,::loadCover) }
+
+    /** 手机底部导航渲染总入口：按 phoneTab 渲染对应页面。 */
+    private fun renderPhone() {
+        if(!phoneLayout() || !library.isLoaded) return
+        screen=if(phoneTab=="player") "player" else if(phoneTab=="detail") "detail" else "catalog"
+        val (frame,content,nav)=PhoneUi.scaffold(this,phoneTab,{ switchPhoneTab(it) },{ switchPhoneTab("search") })
+        PhoneUi.paintNav(nav,phoneTab)
+        val scroll=android.widget.ScrollView(this).apply { isVerticalScrollBarEnabled=false }
+        val body=column()
+        scroll.addView(body)
+        when(phoneTab) {
+            "home" -> phonePages.home(body,loading=phoneHomeLoading)
+            "rank" -> phonePages.rank(body)
+            "fav" -> phonePages.favorites(body)
+            "mine" -> phonePages.mine(body)
+            "search" -> renderPhoneSearch(body)
+        }
+        content.addView(scroll,lp(-1,0).apply { weight=1f })
+        root.removeAllViews(); root.addView(frame,android.widget.FrameLayout.LayoutParams(-1,-1))
+        scroll.post { if(scroll.scrollY!=phoneScrollY) scroll.scrollTo(0,phoneScrollY) }
+        scroll.viewTreeObserver.addOnScrollChangedListener { phoneScrollY=scroll.scrollY }
+    }
+
+    /** 手机搜索页：输入框 + 历史/结果。 */
+    private fun renderPhoneSearch(body: LinearLayout) {
+        val (bar,input)=phonePages.searchBox { runPhoneSearch(it) }
+        body.addView(bar,lp(-1,-2))
+        phonePages.search(body,input) { runPhoneSearch(it) }
+    }
+
+    /** 手机首页是否有正在进行的首页请求。 */
+    private var phoneHomeLoading=true
+
+    private fun switchPhoneTab(next: String) {
+        if(next==phoneTab) return
+        phoneTab=next; phoneScrollY=0
+        if(next=="home" && catalog.isEmpty()) showPhoneHome(load=true) else renderPhone()
+    }
+
+    /** 手机首页数据加载：直接复用 repository.home 与 library.cachedHome。 */
+    private fun showPhoneHome(load: Boolean=false) {
+        if(!phoneLayout()) return
+        if(load) {
+            val cached=library.cachedHome(library.contentType)
+            catalog=cached?.items ?: emptyList(); hasMore=cached?.hasMore ?: false
+            phoneHomeLoading=true
+        }
+        renderPhone()
+        if(!load && catalog.isNotEmpty()) { phoneHomeLoading=false; return }
+        val ticket=generation
+        work({ repository.home(1,library.contentType,genre) }, { result ->
+            if(phoneLayout() && ticket==generation) {
+                catalog=result.items; hasMore=result.hasMore; ranking=result.ranking
+                library.cacheHome(library.contentType,result.items,result.hasMore)
+                phoneHomeLoading=false; renderPhone()
+            }
+        }, { problem ->
+            if(phoneLayout() && ticket==generation) {
+                phoneHomeLoading=false
+                catalog=emptyList(); renderPhone()
+                android.util.Log.w("HongguoTV","Phone home failed: ${problem.message}")
+            }
+        })
+    }
+
+    /** 手机排行榜数据加载。 */
+    private fun showPhoneRank() {
+        val ticket=generation
+        work({ repository.ranking(rankBoardPhone,phoneRankPage) }, { result ->
+            if(phoneLayout() && ticket==generation && phoneTab=="rank") {
+                if(phoneRankPage<=1) { catalog=result.items; rankingPhone=result.ranking }
+                else catalog=catalog+result.items
+                hasMore=result.hasMore; renderPhone()
+            }
+        }, { problem ->
+            if(phoneLayout() && ticket==generation) {
+                catalog=emptyList(); hasMore=false; renderPhone()
+                android.util.Log.w("HongguoTV","Phone rank failed: ${problem.message}")
+            }
+        })
+    }
+
+    /** 手机排行榜分页页码。 */
+    private var phoneRankPage=1
+
+    private fun switchRankBoardPhone(board: com.hongguotv.core.RankBoard) {
+        if(rankBoardPhone==board && catalog.isNotEmpty()) return
+        rankBoardPhone=board; phoneRankPage=1; catalog=emptyList(); rankingPhone=null
+        renderPhone(); showPhoneRank()
+    }
+
+    /** 手机收藏分组：collection 视图复用 TV 的 localItems 口径。 */
+    private fun openCollectionPhone(kind: String) {
+        collectionReturn=CatalogState(page,catalog,hasMore,ranking); collection=kind; catalog=emptyList()
+        phoneDetailCollection=true
+        renderPhoneCollection(kind)
+    }
+
+    private var phoneDetailCollection=false
+
+    /** 手机版合集页（接着看/稍后看/收藏有更新）：两列网格。 */
+    private fun renderPhoneCollection(kind: String) {
+        screen="catalog"
+        val (frame,content,nav)=PhoneUi.scaffold(this,"home",{ switchPhoneTab(it) },{ switchPhoneTab("search") })
+        PhoneUi.paintNav(nav,"home")
+        val scroll=android.widget.ScrollView(this).apply { isVerticalScrollBarEnabled=false }
+        val body=column()
+        scroll.addView(body)
+        val title=when(kind) { "later" -> "稍后看"; "updates" -> "收藏有更新"; "resume" -> "接着看"; else -> "接着看" }
+        val head=row().apply { setPadding(dp(14),dp(10),dp(14),dp(4)) }
+        head.addView(button("‹ 返回") { phoneDetailCollection=false; leaveCollection(); switchPhoneTab("home") },lp(-2,-2).apply { rightMargin=dp(12) })
+        head.addView(text(title,20f).apply { typeface=android.graphics.Typeface.create("sans-serif-medium",android.graphics.Typeface.NORMAL) })
+        body.addView(head,lp(-1,-2))
+        val items=localItems()
+        if(items.isEmpty()) body.addView(PhoneUi.emptyHint(this,"这里暂时没有内容"))
+        else {
+            val grid=androidx.recyclerview.widget.RecyclerView(this)
+            body.addView(grid,lp(-1,-2))
+            val adapter=PhoneUi.PosterGrid(this,::loadCover,{ openDetailPhone(it) },null)
+            adapter.items=items
+            adapter.attach(grid)
+        }
+        content.addView(scroll,lp(-1,0).apply { weight=1f })
+        root.removeAllViews(); root.addView(frame,android.widget.FrameLayout.LayoutParams(-1,-1))
+    }
+
+    /** 手机搜索执行。 */
+    private fun runPhoneSearch(value: String) {
+        val clean=value.trim(); if(clean.isEmpty() || clean.length>80) return
+        phoneQuery=clean; phoneSearching=true; catalog=emptyList(); hasMore=false
+        library.rememberSearch(clean,library.contentType)
+        page=1; renderPhone()
+        val ticket=generation; val type=library.contentType; val query=clean
+        work({ repository.search(query,page,type) }, { result ->
+            if(phoneLayout() && ticket==generation) {
+                phoneSearching=false; catalog=result.items; hasMore=result.hasMore
+                renderPhone()
+            }
+        }, { problem ->
+            if(phoneLayout() && ticket==generation) {
+                phoneSearching=false; catalog=emptyList(); renderPhone()
+                android.util.Log.w("HongguoTV","Phone search failed: ${problem.message}")
+            }
+        })
+    }
+
+    /** 手机加载更多（排行/搜索/首页翻页）。 */
+    fun loadMorePhone() {
+        if(loadingMore) return
+        loadingMore=true
+        val next=page+1; val ticket=generation
+        val request=when(phoneTab) {
+            "rank" -> repository.ranking(rankBoardPhone,phoneRankPage+1)
+            "search" -> repository.search(phoneQuery,next,library.contentType)
+            else -> repository.home(next,library.contentType,genre)
+        }
+        work({ request }, { result ->
+            if(phoneLayout() && ticket==generation) {
+                loadingMore=false
+                if(result.items.isNotEmpty()) {
+                    if(phoneTab=="rank") { phoneRankPage++; catalog=catalog+result.items }
+                    else { page=next; catalog=catalog+result.items }
+                    hasMore=result.hasMore
+                } else hasMore=false
+                renderPhone()
+            }
+        }, { problem ->
+            if(phoneLayout() && ticket==generation) { loadingMore=false; renderPhone() }
+            android.util.Log.w("HongguoTV","Phone loadMore failed: ${problem.message}")
+        })
+    }
+
+    /** 手机内容类型切换（漫剧/短剧）：复用 library.contentType，重新拉首页。 */
+    fun switchContentTypePhone(type: com.hongguotv.core.ContentType) {
+        if(library.contentType==type) return
+        library.contentType=type
+        catalog=emptyList(); hasMore=false; phoneScrollY=0
+        showPhoneHome(load=true)
+    }
+
+    /** 手机详情入口：复用 openDetail 的数据流，但页面渲染走 PhoneDetail。 */
+    fun openDetailPhone(series: com.hongguotv.core.Series,resume: Boolean=false) {
+        if(!phoneLayout()) { openDetail(series,resume); return }
+        pendingDetail=series; detailAutoplay=true
+        invalidatePage(); releaseCatalogViews(); screen="detail"; detail=null; synopsisExpanded=false; phoneTab="detail"
+        root.removeAllViews()
+        message(column().also { body -> root.addView(body,android.widget.FrameLayout.LayoutParams(-1,-1)) },"正在加载剧集…")
+        work({ repository.detail(series.id) }, { result ->
+            if(!phoneLayout()) { openDetail(series,resume,preloaded=result); return }
+            detail=result; library.observeFavorite(series.id,result.episodes.size,System.currentTimeMillis(),acknowledge=true)
+            val progress=library.progress(series.id)
+            val target=ResumePlayback.target(result.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true)
+            episodeIndex=target.index; group=episodeIndex/20
+            if(resume) playEpisodePhone(target.index,target.position)
+            else {
+                phoneDetail.render(root,result)
+                prefetchDetailWindow(target.index)
+            }
+        }, { problem ->
+            if(!phoneLayout()) return
+            val body=column(); error(body,problem) { openDetailPhone(series,resume) }
+            root.removeAllViews(); root.addView(body,android.widget.FrameLayout.LayoutParams(-1,-1))
+        })
+    }
+
+    /** 手机播放入口：复用 playEpisode 全部播放管线，播放界面换手机版。 */
+    fun playEpisodePhone(index: Int,position: Long=0,autoplay: Boolean=true) {
+        playEpisode(index,position,autoplay)
+    }
+
+    /** 手机详情页返回。 */
+    fun goBackPhone() {
+        phoneTab="home"; phoneDetailCollection=false; leaveCollection()
+        if(catalog.isEmpty()) showPhoneHome(load=true) else renderPhone()
+    }
+
+    /** 手机播放页返回详情。 */
+    fun returnToDetailPhone() {
+        returnToDetail(true)
+    }
+
+    /** 手机播放控制桥接：由 PhonePlayer 调用，复用既有播放操作。 */
+    fun togglePlaybackPhone()=togglePlayback()
+    fun seekToPhone(position: Long)=seekTo(position)
+    fun skipEpisodePhone(direction: Int) { if(!skipEpisode(direction)) PhoneUi.toast(this,"没有更多集数") }
+    fun showPhoneEpisodePicker() { if(detail!=null) showEpisodePanel(voiceAnchor) }
+    fun showPhoneSpeedPicker() { showSpeedPicker(voiceAnchor,true) }
+    fun showPhoneQualityPicker() { showQualityPicker(voiceAnchor,true) }
+    fun togglePhoneDanmaku() { detail?.series?.id?.let { toggleSeriesDanmaku(it) } }
+
+    /** 手机播放页每秒刷新：由 tick 调用，进度文字/播放按钮同步当前状态。 */
+    private fun refreshPhonePlayer() {
+        val ui=phonePlayer ?: return
+        val p=player ?: return
+        if(ui.seekBar?.scrubbing==true) return
+        val duration=p.duration.coerceAtLeast(0)
+        val position=pendingSeek ?: p.currentPosition
+        ui.seekBar?.progress=if(duration>0) (position*1000/duration).toInt().coerceIn(0,1000) else 0
+        val state=when { p.playbackState==Player.STATE_BUFFERING -> "缓冲中"; p.playbackState==Player.STATE_ENDED -> "本集已结束"; !p.playWhenReady -> "已暂停"; else -> "正在播放" }
+        val danmakuOn=library.danmaku && detail?.series?.id?.let { extras.danmakuEnabled(it,true) }!=false
+        ui.statusText?.text=listOfNotNull(quality.ifBlank { null },com.hongguotv.core.PlaybackSpeed.label(p.playbackParameters.speed),"弹幕 "+(if(danmakuOn) "开" else "关")).joinToString("  ·  ")
+        ui.progressText?.text="$state  ·  ${formatTime(position)} / ${formatTime(duration)}"
+        ui.playButton?.text=if(p.playWhenReady) "暂停" else "播放"
+    }
+
+    /** 手机设置弹层：把最常用的几个设置项收进一个选择弹窗（复用 tvTools.choose）。 */
+    fun showPhoneSettings() {
+        val options=listOf(
+            "系统风格  ·  ${if(TvStyle.theme==TvStyle.Theme.NIGHT) "深夜影院" else "暖玉白"}",
+            "默认清晰度  ·  ${library.maxQuality}P",
+            "默认倍速  ·  ${com.hongguotv.core.PlaybackSpeed.label(library.playbackSpeed)}",
+            "自动连播  ·  ${if(library.autoNext) "开启" else "关闭"}",
+            "弹幕  ·  ${if(library.danmaku) "开启" else "关闭"}",
+            "更多设置请旋转到横屏或用电视界面")
+        tvTools.choose("播放与界面设置",options,voiceAnchor,{ choice ->
+            when(choice) {
+                0 -> { library.theme=TvStyle.toggle().name; renderPhone() }
+                1 -> showQualityPicker(voiceAnchor,false)
+                2 -> showSpeedPicker(voiceAnchor,false)
+                3 -> { library.autoNext=!library.autoNext; PhoneUi.toast(this,"自动连播已${if(library.autoNext) "开启" else "关闭"}") }
+                4 -> { library.danmaku=!library.danmaku; applyDanmakuPrefs(); PhoneUi.toast(this,"弹幕已${if(library.danmaku) "开启" else "关闭"}") }
+            }
+        })
+    }
+
+    /** 手机搜索页重渲染（清空历史后调用）。 */
+    fun renderPhoneSearch() { if(phoneLayout() && phoneTab=="search") renderPhone() }
+
+    /** 手机页签重渲染入口（收藏分组筛选变化时用）。 */
+    fun renderPhoneTab() { if(phoneLayout()) renderPhone() }
+
     /** 与电视菜单键的抬起分支完全一致：短按按用户配置分流，长按走快捷面板。片源页则交给片源自己。 */
     private fun remoteMenuShort(): Boolean {
         if(tab==6) return third?.remoteMenu()==true
@@ -5538,6 +5901,16 @@ class MainActivity: Activity() {
 
     private fun goBack() {
         if(!library.isLoaded) { finish(); return }
+        // 手机竖屏页面：按手机导航栈退出（合集→首页、详情→来源页、搜索结果→历史）
+        if(phoneLayout() && screen!="player") {
+            if(phoneDetailCollection) { phoneDetailCollection=false; leaveCollection(); switchPhoneTab("home"); return }
+            when(phoneTab) {
+                "detail" -> { goBackPhone(); return }
+                "search" -> { if(phoneQuery.isNotBlank()) { phoneQuery=""; catalog=emptyList(); renderPhoneSearch(); return } }
+                "home","rank","fav","mine" -> { showExitConfirm(); return }
+                else -> {}
+            }
+        }
         when(screen) {
             "player" -> if(player?.playbackState==Player.STATE_ENDED) returnToDetail() else if(hud.visibility==View.VISIBLE && !playError) hidePlaybackOverlay() else returnToDetail()
             "detail" -> showCatalog()
@@ -5620,24 +5993,34 @@ class MainActivity: Activity() {
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
         if(!library.isLoaded) return
+        // 手机竖屏 ⇄ 横屏（TV 版界面）切换：manifest 不再锁死方向，两侧各按当前方向重建；
+        // 播放中的重建沿用原有「按进度重挂」逻辑（手机/电视播放内核一致，只是皮肤不同）。
         when(screen) {
             "player" -> { val position=currentPosition(); val autoplay=player?.playWhenReady==true && !pausedForLifecycle; playEpisode(episodeIndex,position,autoplay) }
-            "detail" -> if(detail!=null) showDetail(false)
-            else -> showCatalog()
+            "detail" -> if(detail!=null) { if(phoneLayout()) openDetailPhone(detail!!.series) else showDetail(false) }
+            else -> if(phoneLayout()) renderPhone() else showCatalog()
         }
     }
     override fun onResume() {
         super.onResume(); foreground=true; main.removeCallbacks(tick); main.post(tick)
         updater.resume()
+        maybePromptCrash()
         autoStartRemote()
         startXiaoAi()
         // 从「安装未知应用」授权页返回：同一个包继续安装，不用重新扫码
         pendingQuickApk?.let { apk -> if(Build.VERSION.SDK_INT<26 || packageManager.canRequestPackageInstalls()) { pendingQuickApk=null; installQuickApk(apk) } }
         if(library.isLoaded) {
-            if(initialCatalogPending) showCatalog(load=true)
+            if(initialCatalogPending) { if(phoneLayout()) showPhoneHome(load=true) else showCatalog(load=true) }
             else if(restoreStoppedPage) {
                 restoreStoppedPage=false
-                when(screen) {
+                if(phoneLayout()) {
+                    // 手机竖屏回来：按最后所在页面重建（播放页由 playEpisode 自己恢复）
+                    when {
+                        screen=="player" && detail!=null -> playEpisode(episodeIndex,startPosition,autoplay=false)
+                        screen=="detail" && detail!=null -> openDetailPhone(pendingDetail ?: detail!!.series)
+                        else -> renderPhone()
+                    }
+                } else when(screen) {
                     "player" -> playEpisode(episodeIndex,startPosition,autoplay=false)
                     "detail" -> if(detail!=null) showDetail(false) else pendingDetail?.let { openDetail(it,directPlayback,autoplay=false) } ?: showCatalog()
                     else -> showCatalog(load=!localCatalog() && catalog.isEmpty() && (tab==0 || tab==2 || (tab==1 && query.isNotBlank())))

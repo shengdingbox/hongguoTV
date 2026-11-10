@@ -22,7 +22,8 @@ import com.hongguotv.core.Detail
  *
  *  - 顶部状态栏：返回 / 标题 / 倍速 / 更多，压在视频上方的黑色渐变里，状态栏图标固定白色；
  *    竖屏标题只显示「第 N 集」（葫芦娃同款），简介放在底部
- *  - 点击交互：轻点画面 = 播放 / 暂停（暂停时正中浮大播放键）；上下滑动切上一集 / 下一集
+ *  - 点击交互：轻点画面 = 显示 / 隐藏顶部栏与底部面板（沉浸式观看）；
+ *    双击画面 = 播放 / 暂停（暂停时正中浮大播放键）；上下滑动切上一集 / 下一集
  *  - 弹幕层从标题栏下沿开始滚，不与顶部按钮重叠（见 [attachDanmaku]）
  *  - 底部：剧名 + 「第N集 | 简介」（可展开）/ 白色细线进度条 /
  *    「选集 · 全N集」整行按钮 + 收藏爱心 + 全屏，与葫芦娃红果播放页一一对应
@@ -47,8 +48,10 @@ class PhonePlayer(
     private var host: FrameLayout? = null
     /** 视频区：PlayerView 与弹幕层放在这里。 */
     private var videoHost: FrameLayout? = null
-    /** 顶部栏 + 底部面板。竖屏播放页常驻显示（轻点画面只切播放/暂停，与葫芦娃一致）。 */
+    /** 顶部栏 + 底部面板。轻点画面切换显隐，隐藏后即沉浸式观看。 */
     private var controls: FrameLayout? = null
+    /** 控件层当前是否隐藏（沉浸模式）。 */
+    private var uiHidden = false
 
     private var topBar: LinearLayout? = null
     private var bottom: LinearLayout? = null
@@ -85,6 +88,8 @@ class PhonePlayer(
         currentDescription = data.series.description
         episodeCount = data.episodes.size
         favorite = activity.phoneLibrary.favorite(data.series.id)
+        // 新外壳一律先按「控件可见」起，避免沿用上一次被隐藏的状态
+        uiHidden = false
         // 播放页恒黑底：状态栏图标固定白色（暖玉白主题下也不切深色图标）
         activity.phoneStatusBarLight(false)
         root.setBackgroundColor(Color.BLACK)
@@ -415,7 +420,13 @@ class PhonePlayer(
             }
 
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                // 与葫芦娃一致：轻点画面 = 播放 / 暂停（暂停时正中还有个大播放键）
+                // 轻点画面 = 切换控件显隐，进入 / 退出沉浸式观看
+                toggleUiVisibility()
+                return true
+            }
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                // 双击画面 = 播放 / 暂停（暂停时正中还有个大播放键）
                 activity.togglePlaybackPhone()
                 return true
             }
@@ -423,6 +434,25 @@ class PhonePlayer(
     }
 
     // ---------------- 操作 ----------------
+
+    /**
+     * 轻点画面切换控件显隐：隐藏时顶部栏与底部面板淡出，只留画面与暂停大播放键，
+     * 即沉浸式观看；再点一次恢复。只动控件层，不碰播放内核。
+     */
+    private fun toggleUiVisibility() {
+        val layer = controls ?: return
+        uiHidden = !uiHidden
+        layer.animate().cancel()
+        layer.visibility = View.VISIBLE
+        layer.animate()
+            .alpha(if (uiHidden) 0f else 1f)
+            .setDuration(180)
+            .withEndAction {
+                // 动画期间用户可能又点了一次，状态已变回显示时不能把它藏掉
+                if (uiHidden) layer.visibility = View.GONE
+            }
+            .start()
+    }
 
     /** 收藏按钮：与详情页共用 library.toggle，图标即时切换。 */
     private fun toggleFavorite() {

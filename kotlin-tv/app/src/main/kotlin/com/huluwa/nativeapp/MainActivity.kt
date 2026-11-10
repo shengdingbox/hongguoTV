@@ -928,7 +928,7 @@ class MainActivity: Activity() {
 
     private fun restoreRetainedCatalog(next: Int): Boolean {
         val state=retainedCatalogs[next] ?: return false
-        if(state.contentType!=library.contentType || retainedTheme!=TvStyle.theme || retainedWidthDp!=widthDp()) {
+        if(state.contentType!=library.contentType || retainedTheme!=TvStyle.theme || retainedWidthDp!=widthDp().toInt()) {
             retainedCatalogs.clear()
             return false
         }
@@ -1023,7 +1023,7 @@ class MainActivity: Activity() {
             rankFromCache=tab==2 && cached!=null
         }
         invalidatePage(); screen="catalog"; releaseCatalogViews(); val container=base()
-        retainedTheme=TvStyle.theme; retainedWidthDp=widthDp()
+        retainedTheme=TvStyle.theme; retainedWidthDp=widthDp().toInt()
         if(foreground && library.isLoaded && !favoriteMonitor.running) main.post { if(foreground && screen=="catalog") favoriteMonitor.check() }
         val top=row().apply { setPadding(0,0,0,dp(8)) }
         val wdp=widthDp()

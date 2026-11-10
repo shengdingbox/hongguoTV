@@ -248,7 +248,8 @@ class MainActivity: Activity() {
     private lateinit var connectivity: ConnectivityManager
     private var networkRegistered=false
     private val networkCallback=object: ConnectivityManager.NetworkCallback() {
-        private fun changed() { main.post { if(connectivity.isActiveNetworkMetered || !networkAvailable()) cancelPrefetch(); if(foreground && screen=="player" && playError && autoRecovery) scheduleRecovery() } }
+        // 只在真正断网时取消预取：移动网络同样允许缓存，不再按计费网络停用
+        private fun changed() { main.post { if(!networkAvailable()) cancelPrefetch(); if(foreground && screen=="player" && playError && autoRecovery) scheduleRecovery() } }
         override fun onAvailable(network: Network) { changed() }
         override fun onLost(network: Network) { changed() }
         override fun onCapabilitiesChanged(network: Network,capabilities: NetworkCapabilities) { changed() }
@@ -3752,7 +3753,6 @@ class MainActivity: Activity() {
         // 全灰：把最关键的一条原因挑出来。开关本身在播放页改不了，先于调度条件提示。
         val reason=when {
             cache==null -> "整集预载缓存未启动（可在设置里开关一次）"
-            connectivity.isActiveNetworkMetered -> "移动网络下不预载，连 Wi-Fi 后自动开始"
             !networkAvailable() -> "当前无网络，联网后自动开始预载"
             !prefetchMemoryReady() -> "内存紧张，预载已暂停"
             else -> cache.skipReason.ifBlank { "正在排队，稍等几秒" }
@@ -3822,7 +3822,6 @@ class MainActivity: Activity() {
             cache.clear()
         }
         episodeCacheQuality=quality
-        if(connectivity.isActiveNetworkMetered) { idle("移动网络下不预载"); return }
         if(!networkAvailable()) { idle("当前无网络"); return }
         if(!prefetchMemoryReady()) { idle("内存紧张，预载暂停"); return }
         val ordered=listOf(episodeIndex+1,episodeIndex+2,episodeIndex+3,episodeIndex,episodeIndex-1)
@@ -3874,7 +3873,7 @@ class MainActivity: Activity() {
         val session=playbackSession ?: return
         if(queuedNextId.isNotEmpty() && (!library.autoNext || sleepStopped)) dropQueuedNext()
         if(!foreground || !p.playWhenReady || playError || sleepStopped || pausedForLifecycle || video==null) return
-        if(!networkAvailable() || connectivity.isActiveNetworkMetered) return
+        if(!networkAvailable()) return
         if(!prefetchMemoryReady()) return
         if(data.episodes.getOrNull(episodeIndex)!=p.currentMediaItem?.mediaId) return
         retainPlaybackWindow()
@@ -6186,6 +6185,9 @@ class MainActivity: Activity() {
         renderPhone(); showPhoneRank()
     }
 
+    /** 「我的」页统计格跳转到收藏页签（switchPhoneTab 是私有的，这里给页面一个公开入口）。 */
+    fun openFavoritesPhone() = switchPhoneTab("fav")
+
     /** 手机收藏分组：collection 视图复用 TV 的 localItems 口径。 */
     fun openCollectionPhone(kind: String) {
         // 记住来源页签：从「我的」打开的合集返回时不该被丢回首页
@@ -6599,7 +6601,7 @@ class MainActivity: Activity() {
         })
         appendLine("网络: " + when {
             !networkAvailable() -> "无连接"
-            connectivity.isActiveNetworkMetered -> "移动网络（不预载）"
+            connectivity.isActiveNetworkMetered -> "移动网络（同样缓存）"
             else -> "可用"
         } + " · 内存预载" + if (prefetchMemoryReady()) "正常" else "已暂停")
         if (cache != null) {

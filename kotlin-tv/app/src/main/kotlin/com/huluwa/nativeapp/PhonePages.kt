@@ -158,55 +158,162 @@ class PhonePages(
         adapter.attach(grid)
     }
 
-    // ---- 我的页：观看记录 + 稍后看 + 账号 + 设置入口 ----
+    // ---- 我的页：账号卡片 + 内容统计 + 偏好/关于分组入口 ----
 
-    /** 「我的」页入口行：左标题 + 可选副标题 + 右箭头，整行可点。 */
-    private fun entryRow(title: String, subtitle: String = "", onClick: () -> Unit): LinearLayout {
+    /** 分组小标题：比正文弱一档，用来把若干入口行归到同一组。 */
+    private fun sectionTitle(parent: LinearLayout, title: String) {
+        parent.addView(text(title, 13f, TvStyle.muted).apply {
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(dp(18), dp(16), dp(18), dp(6))
+        }, PhoneUi.lp(-1, -2))
+    }
+
+    /** 一张圆角卡片里纵向排列若干入口行，行间用细分割线隔开。 */
+    private fun groupCard(parent: LinearLayout, rows: List<View>) {
+        val card = column().apply {
+            background = TvStyle.shape(activity, TvStyle.surface, radius = 14)
+        }
+        rows.forEachIndexed { index, line ->
+            if (index > 0) {
+                card.addView(View(activity).apply { setBackgroundColor(TvStyle.outline) },
+                    PhoneUi.lp(-1, dp(1)).apply { leftMargin = dp(16) })
+            }
+            card.addView(line, PhoneUi.lp(-1, -2))
+        }
+        parent.addView(card, PhoneUi.lp(-1, -2).apply { leftMargin = dp(14); rightMargin = dp(14) })
+    }
+
+    /** 入口行：左标题 + 可选副标题 + 右侧当前值 + 箭头，整行可点。 */
+    private fun entryRow(title: String, subtitle: String = "", value: String? = null, onClick: () -> Unit): LinearLayout {
         val entry = row().apply {
-            // 统一最小高度：账号（常无副标题）与设置（带副标题）两行视觉对齐
-            minimumHeight = dp(64)
-            setPadding(dp(16), dp(12), dp(16), dp(12))
-            background = TvStyle.shape(activity, TvStyle.surface)
+            // 统一最小高度：有副标题和没副标题的行视觉对齐
+            minimumHeight = dp(58)
+            setPadding(dp(16), dp(12), dp(14), dp(12))
+            isClickable = true
             setOnClickListener { onClick() }
         }
         val label = column()
-        // 昵称可能很长，限一行省略，避免把右箭头挤出可视区
+        // 昵称/标题可能很长，限一行省略，避免把右箭头挤出可视区
         label.addView(text(title, 15f).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
         if (subtitle.isNotBlank()) label.addView(text(subtitle, 12f, TvStyle.muted), PhoneUi.lp(0, -2).apply { topMargin = dp(2) })
         entry.addView(label, PhoneUi.lp(0, -2).apply { weight = 1f })
-        entry.addView(text("›", 16f, TvStyle.muted))
+        if (value != null) {
+            entry.addView(text(value, 13f, TvStyle.muted).apply {
+                maxLines = 1
+                maxWidth = dp(150)
+                ellipsize = TextUtils.TruncateAt.END
+            }, PhoneUi.lp(-2, -2).apply { leftMargin = dp(8) })
+        }
+        entry.addView(text("›", 16f, TvStyle.muted).apply { setPadding(dp(6), 0, 0, 0) })
         return entry
     }
 
-    /** 入口行布局参数：左右各留 14dp，宽度铺满。 */
-    private fun entryMargin(top: Int) = PhoneUi.lp(-1, -2).apply { leftMargin = dp(14); rightMargin = dp(14); topMargin = dp(top) }
+    /** 账号卡片：圆形头像 + 昵称 + 登录状态，右侧是登录/管理按钮，整卡可点。 */
+    private fun profileCard(): LinearLayout {
+        val account = activity.phoneAccount
+        // accountLabel 形如「昵称 · 云端 N 部」，头像取昵称首字，未登录时兜底为「红」
+        val nickname = account.accountLabel.substringBefore(" · ").ifBlank { "红果账号" }
+        val card = row().apply {
+            setPadding(dp(16), dp(16), dp(14), dp(16))
+            background = TvStyle.shape(activity, TvStyle.raised, border = TvStyle.outline, radius = 16)
+            isClickable = true
+            setOnClickListener { account.showLoginDialog(activity) }
+        }
+        card.addView(text(nickname.take(1), 20f, TvStyle.background).apply {
+            gravity = Gravity.CENTER
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            background = TvStyle.shape(activity, TvStyle.accent, radius = 28)
+        }, PhoneUi.lp(dp(56), dp(56)).apply { rightMargin = dp(13) })
+
+        val info = column()
+        info.addView(text(nickname, 17f).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        })
+        val subtitle = when {
+            account.signedIn -> "已登录 · 云端 ${account.cloudRows().size} 部观看记录"
+            account.accountLabel.contains("验证中") -> "正在验证登录状态…"
+            else -> "登录后把观看进度同步到云端"
+        }
+        info.addView(text(subtitle, 12f, TvStyle.muted), PhoneUi.lp(0, -2).apply { topMargin = dp(3) })
+        card.addView(info, PhoneUi.lp(0, -2).apply { weight = 1f })
+
+        val action = text(if (account.signedIn) "管理" else "登录", 12f, if (account.signedIn) TvStyle.text else TvStyle.background).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            background = TvStyle.shape(activity, if (account.signedIn) TvStyle.raised else TvStyle.accent, radius = 14)
+        }
+        card.addView(action, PhoneUi.lp(-2, -2).apply { leftMargin = dp(10) })
+        return card
+    }
+
+    /** 统计格：上方数字、下方名称，整格可点。 */
+    private fun statCell(value: String, label: String, onClick: () -> Unit): LinearLayout {
+        val cell = column().apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, dp(6), 0, dp(6))
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
+        cell.addView(text(value, 19f, TvStyle.accent).apply { typeface = Typeface.create("sans-serif-medium", Typeface.BOLD) })
+        cell.addView(text(label, 12f, TvStyle.muted), PhoneUi.lp(-2, -2).apply { topMargin = dp(3) })
+        return cell
+    }
 
     fun mine(scroll: LinearLayout) {
         val library = activity.phoneLibrary
-        val head = row().apply { setPadding(dp(14), dp(10), dp(14), dp(4)) }
-        head.addView(text("我的", 20f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }, PhoneUi.lp(0, -2).apply { weight = 1f })
+        val favorites = library.favorites()
+        val updates = favorites.count { library.favoriteUpdate(it.id)?.hasUpdate == true }
+        val later = library.later()
+
+        val head = row().apply { setPadding(dp(18), dp(10), dp(18), dp(4)) }
+        head.addView(text("我的", 22f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }, PhoneUi.lp(0, -2).apply { weight = 1f })
         scroll.addView(head, PhoneUi.lp(-1, -2))
 
-        val account = activity.phoneAccount
-        val accountText = if (account.signedIn) account.accountLabel else "红果账号"
-        val accountDetail = if (account.signedIn) "" else "未登录"
-        scroll.addView(entryRow(accountText, accountDetail) { account.showLoginDialog(activity) }, entryMargin(top = 6))
+        scroll.addView(profileCard(), PhoneUi.lp(-1, -2).apply {
+            leftMargin = dp(14); rightMargin = dp(14); topMargin = dp(12)
+        })
 
-        // 设置入口：竖屏下打开完整设置页（[PhoneSettings]），不再需要转到横屏才能改全
-        scroll.addView(entryRow("设置", "播放、外观、设备与数据") { activity.showPhoneSettings() }, entryMargin(top = 8))
-        // 运行日志：放在「我的」一级页，出问题时少点两步就能复制到最新日志
-        scroll.addView(entryRow("运行日志", "排查问题用 · 一键复制") { activity.phoneRuntimeLogs() }, entryMargin(top = 8))
+        // 内容统计：三格等分，点到对应的列表页；不再展示「最近观看」横滑条带
+        val stats = row().apply {
+            setPadding(0, dp(8), 0, dp(8))
+            background = TvStyle.shape(activity, TvStyle.surface, radius = 14)
+        }
+        val cells = listOf(
+            statCell(favorites.size.toString(), "我的收藏") { activity.openFavoritesPhone() },
+            statCell(updates.toString(), "有更新") { activity.openCollectionPhone("updates") },
+            statCell(later.size.toString(), "稍后看") { activity.openCollectionPhone("later") })
+        cells.forEachIndexed { index, cell ->
+            if (index > 0) {
+                stats.addView(View(activity).apply { setBackgroundColor(TvStyle.outline) },
+                    PhoneUi.lp(dp(1), dp(30)).apply { gravity = Gravity.CENTER_VERTICAL })
+            }
+            stats.addView(cell, PhoneUi.lp(0, -2).apply { weight = 1f })
+        }
+        scroll.addView(stats, PhoneUi.lp(-1, -2).apply {
+            leftMargin = dp(14); rightMargin = dp(14); topMargin = dp(10)
+        })
 
-        val recent = library.history().filterNot { library.watched(it.series.id) }
-        if (recent.isNotEmpty()) {
-            scroll.addView(shelfSeries("最近观看", recent.take(10).map { it.series }, more = { activity.openCollectionPhone("resume") }), PhoneUi.lp(-1, -2).apply { topMargin = dp(10) })
-        }
-        if (library.later().isNotEmpty()) {
-            scroll.addView(shelfSeries("稍后看", library.later().take(10), more = { activity.openCollectionPhone("later") }), PhoneUi.lp(-1, -2))
-        }
-        if (recent.isEmpty() && library.later().isEmpty()) {
-            scroll.addView(PhoneUi.emptyHint(activity, "播放过的剧集会自动保存在这里"), PhoneUi.lp(-1, -2))
-        }
+        sectionTitle(scroll, "偏好与数据")
+        groupCard(scroll, listOf(
+            // 设置入口：竖屏下打开完整设置页（[PhoneSettings]），不再需要转到横屏才能改全
+            entryRow("设置", "播放、外观、设备与数据") { activity.showPhoneSettings() },
+            entryRow("观看统计", "本机累计观看时长") { activity.phoneWatchStats() },
+            // 运行日志：放在「我的」一级页，出问题时少点两步就能复制到最新日志
+            entryRow("运行日志", "排查问题用 · 一键复制") { activity.phoneRuntimeLogs() }))
+
+        sectionTitle(scroll, "关于")
+        groupCard(scroll, listOf(
+            entryRow("版本与更新", "当前版本", BuildConfig.VERSION_NAME) { activity.phoneUpdater() },
+            entryRow("开源许可") {
+                TvDialog.info(activity, "开源许可", "本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\n请求签名算法移植自 openhongguo（GPL-3.0），在本机完成计算与匿名设备注册。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\n完整源码和许可证见 GitHub：jycao2/hongguoTV。").show()
+            }))
+
+        scroll.addView(text("红果 ${BuildConfig.VERSION_NAME} · 收藏与本机记录保存在设备 · 登录后可同步到红果账号", 11f, TvStyle.muted).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(20), dp(18), dp(20), dp(24))
+        }, PhoneUi.lp(-1, -2))
     }
 
     // ---- 搜索页 ----

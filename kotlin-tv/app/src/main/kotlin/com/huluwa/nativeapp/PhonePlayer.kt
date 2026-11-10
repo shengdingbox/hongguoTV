@@ -138,9 +138,9 @@ class PhonePlayer(
         videoHost?.addView(view, FrameLayout.LayoutParams(-1, -1))
     }
 
-    /** 屏幕最底部 2px 离线状态条：挂在视频区底部，不挡控件。 */
+    /** 屏幕最底部 2px 离线状态条（含条上方的原因提示）：压在视频区底部，不挡控件。 */
     fun attachCacheStrip(view: View) {
-        videoHost?.addView(view, FrameLayout.LayoutParams(-1, dp(2), Gravity.BOTTOM))
+        videoHost?.addView(view, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
     }
 
     /** 切集/详情刷新时更新标题与集号信息。 */

@@ -28,10 +28,27 @@ class EpisodeDiskCache(
     private val lowMemory: () -> Boolean = { false },
     /** 地址解析委托给相邻集缓存：取址、重试、模型缓存、即将过期重取全部复用同一套。 */
     private val resolver: (String, Int) -> StreamInfo,
+    /** 调度摘要回调（运行日志用）。与按行输出的 [onLog] 分开：摘要会覆盖旧值，不是事件流。 */
+    private val onState: (String) -> Unit = {},
     private val onLog: (String) -> Unit = {},
 ) : Closeable {
     /** 落盘进度回调：每完成一个分段在主线程之外触发，参数为该集当前已落盘比例 0f–1f。 */
     @Volatile var onProgress: (String, Int, Float) -> Unit = { _, _, _ -> }
+    /** 最近一次「为什么没下载」的全局原因：空串表示正常调度。供状态页解释三根进度条为何全灰。 */
+    @Volatile var skipReason: String = ""
+        private set
+    /** 当前下载队列长度（含正在下的那条）：0 且 skipReason 为空时说明已全部下完。 */
+    @Volatile var queuedCount: Int = 0
+        private set
+
+    private fun markSkip(reason: String) {
+        if (skipReason != reason) {
+            skipReason = reason
+            runCatching { onState(reason) }
+        }
+    }
+    private fun setQueued(count: Int) { queuedCount = count }
+
     /** 元数据视图：播放端只需要这些，样本索引与区间列表不往上传。 */
     data class Meta(val id: String, val quality: Int, val url: String, val key: ByteArray?, val qualityLabel: String,
         val expiresAt: Long, val total: Long, val header: ByteArray, val samples: List<MediaCrypto.Sample>,
@@ -212,14 +229,18 @@ class EpisodeDiskCache(
      *  保留窗口保留所有已有条目（含部分下载），再按播放窗口裁剪；
      *  返回 false 表示磁盘空间不足，本轮放弃调度。 */
     fun schedule(orderedIds: List<String>, quality: Int, retainedIds: Set<String>, retainedQuality: Int): Boolean {
-        if (closed) return false
+        if (closed) { markSkip("缓存池已关闭"); return false }
         val keys = orderedIds.filter { ID_PATTERN.matches(it) }.distinct().map { Key(it, quality) }
         synchronized(lock) {
             if (freeBytes() < FREE_FLOOR_BYTES || lowMemory()) {
-                onLog("Episode disk cache paused: storage or memory constrained")
+                markSkip("磁盘空间或内存不足（可用 ${freeBytes() / 1048576}MB）")
+                onLog("Episode disk cache paused: storage or memory constrained, free=${freeBytes() / 1048576}MB lowMemory=${lowMemory()}")
                 return false
             }
+            // 空目标列表是「播放失败/收尾时收缩窗口」的正常调用，不应覆盖真实的跳过原因
+            if (keys.isNotEmpty()) markSkip("")
             val before = entries.size
+            onLog("Episode disk cache schedule: targets=${keys.joinToString(",") { "${it.id}-q${it.quality}" }}")
             entries.keys.filter { it.id !in retainedIds || it.quality != retainedQuality }.toList().forEach { dropLocked(it) }
             // 总量与集数上限：最旧的非窗口目标先删，窗口内的下载目标永远受保护。
             evictLocked()
@@ -253,6 +274,7 @@ class EpisodeDiskCache(
     fun clear() {
         synchronized(lock) {
             want = emptyList(); scheduled = false; queued = emptyList()
+            setQueued(0); markSkip("缓存已清空")
             entries.keys.toList().forEach { dropLocked(it) }
             worker?.cancel(true)
         }
@@ -285,12 +307,14 @@ class EpisodeDiskCache(
         downloadedThisRun = 0L
         while (true) {
             val key = synchronized(lock) {
-                if (closed || !scheduled) return
+                if (closed || !scheduled) { setQueued(0); return }
                 if (queued.isEmpty()) {
                     queued = want.filter { k ->
                         val entry = entries[k]
                         entry == null || !entry.meta.done || !covered(entry.ranges, 0, entry.meta.total)
                     }
+                    // 队列清空：要么全下完了，要么这一轮一个都没排上
+                    setQueued(queued.size)
                     if (queued.isEmpty()) return
                 }
                 queued.first()
@@ -299,7 +323,9 @@ class EpisodeDiskCache(
             val existing = synchronized(lock) { entries[key]?.let { Row(key, it, dataFile(key), metaFile(key)) } }
             val row = existing ?: openRow(key)
             if (row == null) {
-                synchronized(lock) { if (queued.firstOrNull() == key) queued = queued.drop(1) }
+                synchronized(lock) { if (queued.firstOrNull() == key) { queued = queued.drop(1); setQueued(queued.size) } }
+                // 这一轮只剩失败的条目时，把「队列清空」写进摘要，别让用户误以为是还没开始下
+                synchronized(lock) { if (queued.isEmpty() && skipReason.isEmpty()) markSkip("队列已清空，等待下一次播放调度") }
                 continue
             }
             try {
@@ -307,9 +333,11 @@ class EpisodeDiskCache(
                 synchronized(lock) {
                     if (entries[row.key] === row.entry) {
                         queued = queued.drop(1)
+                        setQueued(queued.size)
                         row.entry.meta = row.entry.meta.copy(done = true, updatedAt = clock())
                         row.entry.doneBytes = row.entry.meta.total
                         runCatching { saveMeta(row.key, row.entry) }
+                        if (skipReason.isNotEmpty()) markSkip("")
                         onLog("Episode cached ${row.key.id} q${row.key.quality} ${row.entry.meta.total / 1048576}MB")
                     }
                 }
@@ -322,14 +350,19 @@ class EpisodeDiskCache(
                     if (entries[row.key] !== row.entry) false else {
                         // 地址过期：整条作废，等下一轮 schedule 用新地址重新整集下载
                         if (row.entry.meta.expiresAt > 0 && row.entry.meta.expiresAt <= clock()) {
-                            dropLocked(row.key); queued = queued.drop(1); false
+                            markSkip("播放地址已过期，等下一轮重新取址")
+                            dropLocked(row.key); queued = queued.drop(1); setQueued(queued.size); false
                         } else true
                     }
                 }
                 if (!retry) continue
-                onLog("Episode cache download failed ${row.key.id}: ${problem.javaClass.simpleName}")
+                // 失败原因写进摘要：只记在日志里，用户点开时往往已经被下一轮的成功/失败刷掉
+                val reason = "下载失败：${problem.javaClass.simpleName} ${problem.message.orEmpty().take(120)}"
+                markSkip(reason)
+                onLog("Episode cache download failed ${row.key.id}: $reason")
                 try { Thread.sleep(10_000) } catch (interrupted: InterruptedException) { return }
                 if (downloadedThisRun > POOL_LIMIT_BYTES) {
+                    markSkip("本轮下载量已达上限，暂停到下次播放")
                     onLog("Episode disk cache paused: run budget exhausted")
                     return
                 }
@@ -340,8 +373,18 @@ class EpisodeDiskCache(
     /** 缺元数据则解析地址并整段 prepare（约两三跳网络），之后按 4MiB 段续传。锁外执行。 */
     private fun openRow(key: Key): Row? {
         synchronized(lock) { entries[key]?.let { return Row(key, it, dataFile(key), metaFile(key)) } }
-        val info = runCatching { resolver(key.id, key.quality) }.getOrNull() ?: return null
-        if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) return null
+        val info = runCatching { resolver(key.id, key.quality) }.getOrElse {
+            // 整部剧都下不来时最常见的原因是取址失败：这条必须留下，否则界面只能看到一片灰
+            val reason = "取址失败：${it.javaClass.simpleName} ${it.message.orEmpty().take(120)}"
+            markSkip(reason)
+            onLog("Episode cache resolve failed ${key.id} q${key.quality}: $reason")
+            return null
+        }
+        if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
+            markSkip("播放地址将在 60 秒内过期，暂不下整集")
+            onLog("Episode cache skipped ${key.id} q${key.quality}: stream expires within 60s")
+            return null
+        }
         val remote = RemoteVideo(http, info, chunkBytes = 256 * 1024)
         try {
             remote.prepare()
@@ -356,6 +399,10 @@ class EpisodeDiskCache(
             }
             return Row(key, entry, dataFile(key), metaFile(key))
         } catch (problem: Throwable) {
+            // prepare 失败同样静默：补一条带原因的日志与状态摘要
+            val reason = "解析视频信息失败：${problem.javaClass.simpleName} ${problem.message.orEmpty().take(120)}"
+            markSkip(reason)
+            onLog("Episode cache prepare failed ${key.id} q${key.quality}: $reason")
             return null
         } finally {
             remote.close()

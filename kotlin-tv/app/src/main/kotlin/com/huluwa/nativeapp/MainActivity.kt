@@ -129,9 +129,15 @@ class MainActivity: Activity() {
     private var episodeCacheOn=false
     /** 播放中切换清晰度：落盘池整体换档重建，旧画质条目全部废弃。 */
     private var episodeCacheQuality=0
+    /** 上一次记录过的「调度为什么没跑」：同一条原因只写一次日志，避免每秒 tick 刷屏。 */
+    private var lastScheduleIdle=""
+    /** 最近一次的调度阻塞原因（不受去重影响）：日志弹窗的现场摘要直接读它。 */
+    private var lastIdleForSummary=""
     /** 屏幕最底部的 2px 离线状态条：三段依次对应下 1/2/3 集，null 表示当前页面未挂。 */
     private var cacheStripSegments: List<View>?=null
     private var cacheStripView: View?=null
+    /** 状态条下方的原因提示：三段全灰时告诉用户是哪一步没跑起来，而不是只留一条灰线。 */
+    private var cacheStripHint: TextView?=null
     // 与页面取址状态分开：等待新集就绪时，旧媒体源仍可能在播放器线程中读取。
     private var playerVideo: RemoteVideo?=null
     private val switchingVideos=mutableSetOf<RemoteVideo>()
@@ -2506,6 +2512,7 @@ class MainActivity: Activity() {
         updates=setting(about,"版本与更新  ·  ${BuildConfig.VERSION_NAME}") { updater.show(updates) }
         lateinit var checkButton: TextView
         checkButton=setting(about,"接口自检  ·  首页 / 搜索 / 播放") { showInterfaceCheck(checkButton) }
+        setting(about,"运行日志  ·  预载缓存 / 一键复制") { RuntimeLogDialog.show(this, ::runtimeLogSummary) }
         val crashLogs=setting(about,"异常日志  ·  ${CrashReporter.count(this)} 份") {
             io.execute {
                 val records=CrashReporter.reports(this)
@@ -3431,7 +3438,7 @@ class MainActivity: Activity() {
                 playerUi.attachDanmaku(danmakuLayer)
                 // 屏幕最底部 2px 离线状态条：三段对应下 1/2/3 集
                 cacheStripSegments=buildCacheStrip()
-                cacheStripView?.let { playerUi.attachCacheStrip(it) }
+                playerUi.attachCacheStrip(cacheStripHost())
                 refreshCacheStrip()
                 // 手机版不需要 TV 的 hud/controls/转圈，但仍需初始化引用避免 tick 空指针
                 hud=column().apply { visibility=View.GONE }
@@ -3493,7 +3500,7 @@ class MainActivity: Activity() {
             root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled=false; addView(hud) },FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
             // 屏幕最底部 2px 离线状态条：三段对应下 1/2/3 集
             cacheStripSegments=buildCacheStrip()
-            cacheStripView?.let { root.addView(it,FrameLayout.LayoutParams(-1,dp(2),Gravity.BOTTOM)) }
+            root.addView(cacheStripHost(),FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
             refreshCacheStrip()
             }
         }
@@ -3684,7 +3691,11 @@ class MainActivity: Activity() {
                 freeBytes={ runCatching { android.os.StatFs(cacheDir.absolutePath).availableBytes }.getOrDefault(Long.MAX_VALUE) },
                 lowMemory={ (getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.let { it.isLowRamDevice || it.memoryClass<=128 } ?: false },
                 resolver={ id,q -> playbackCache.resolveStream(id,q) },
-                onLog={ android.util.Log.i("HongguoTV",it) })
+                onState={ reason ->
+                    // 只在状态翻转时记录，避免每轮调度都刷一行；这也是「三条灰条」的第一手原因
+                    RuntimeLog.add(if(reason.isEmpty()) "cache state: 调度正常" else "cache state: 未下载 · $reason")
+                },
+                onLog={ message -> RuntimeLog.add(message) })
             cache.onProgress={ _,_,_ -> main.post { refreshCacheStrip() } }
             episodeDiskCache=cache
             playbackCache.onInvalidate={ id -> cache.invalidate(id) }
@@ -3698,16 +3709,21 @@ class MainActivity: Activity() {
         }
         refreshCacheStrip()
     }
-    /** 屏幕最底部 2px 离线状态条：三段对应下 1/2/3 集，蓝色=已落盘比例，灰色=未离线。 */
+    /** 屏幕最底部 2px 离线状态条：三段对应下 1/2/3 集，蓝色=已落盘比例，灰色=未离线。
+     *  三段全灰时还要在条上方给一句人话原因：开关关了 / 移动网络 / 内存紧张 / 取址失败，
+     *  否则用户只能看到三条永远不动的灰线，分不清是还没下还是压根没开始下。 */
     private fun refreshCacheStrip() {
         val segments=cacheStripSegments ?: return
         val data=detail
         if(!library.episodeCache || data==null || screen!="player") {
             segments.forEach { it.visibility=View.GONE }
+            cacheStripHint?.visibility=View.GONE
             return
         }
         val quality=effectiveQuality()
         val cache=episodeDiskCache
+        var anyVisible=false
+        var anyFilled=false
         segments.forEachIndexed { offset,segment ->
             val id=data.episodes.getOrNull(episodeIndex+offset+1)
             val ratio=if(cache!=null && id!=null) cache.progress(id,quality) else 0f
@@ -3715,6 +3731,8 @@ class MainActivity: Activity() {
                 segment.visibility=View.GONE
             } else {
                 segment.visibility=View.VISIBLE
+                anyVisible=true
+                if(ratio>0f) anyFilled=true
                 val fill=segment.tag as? View ?: return@forEachIndexed
                 val width=segment.width
                 if(width>0) {
@@ -3726,6 +3744,21 @@ class MainActivity: Activity() {
                 }
             }
         }
+        val hint=cacheStripHint ?: return
+        if(!anyVisible || anyFilled) {
+            hint.visibility=View.GONE
+            return
+        }
+        // 全灰：把最关键的一条原因挑出来。开关本身在播放页改不了，先于调度条件提示。
+        val reason=when {
+            cache==null -> "整集预载缓存未启动（可在设置里开关一次）"
+            connectivity.isActiveNetworkMetered -> "移动网络下不预载，连 Wi-Fi 后自动开始"
+            !networkAvailable() -> "当前无网络，联网后自动开始预载"
+            !prefetchMemoryReady() -> "内存紧张，预载已暂停"
+            else -> cache.skipReason.ifBlank { "正在排队，稍等几秒" }
+        }
+        hint.text="下 1–3 集均未缓存 · $reason"
+        hint.visibility=View.VISIBLE
     }
     /** 构建 2px 状态条（尚未挂载）：返回三段轨道（每段 tag 里存蓝色填充 View）。 */
     private fun buildCacheStrip(): List<View> {
@@ -3751,23 +3784,54 @@ class MainActivity: Activity() {
         cacheStripView=strip
         return segments
     }
+    /** 状态条 + 原因提示一起挂进播放页：提示压在条正上方，条本身仍贴底 2px 不挡控件。 */
+    private fun cacheStripHost(): View {
+        val strip=cacheStripView ?: LinearLayout(this)
+        val hint=TextView(this).apply {
+            textSize=11f
+            setTextColor(Color.argb(200,255,255,255))
+            setPadding(dp(10),dp(3),dp(10),dp(3))
+            setBackgroundColor(Color.argb(120,0,0,0))
+            visibility=View.GONE
+        }
+        cacheStripHint=hint
+        return column().apply {
+            gravity=Gravity.BOTTOM
+            addView(hint,LinearLayout.LayoutParams(-1,-2))
+            addView(strip,LinearLayout.LayoutParams(-1,dp(2)))
+        }
+    }
     /** 整集落盘调度：上一集/当前集/下三集保留窗口，下载优先级下一集 > +2 > +3 > 当前集 > 上一集。 */
     private fun scheduleDiskCache() {
-        if(!episodeCacheOn) return
-        val data=detail ?: return
+        // 提前返回的每一种情况都记一笔（同一原因只记一次）：用户导出的日志里必须能看到
+        // 「为什么三条进度条一直不填」，而不是只有一片空白
+        fun idle(reason: String) {
+            lastIdleForSummary=reason
+            if(lastScheduleIdle==reason) return
+            lastScheduleIdle=reason
+            RuntimeLog.add("cache idle: $reason")
+        }
+        if(!episodeCacheOn) { idle("整集预载缓存开关关闭"); return }
+        val data=detail
+        if(data==null) { idle("没有剧集详情"); return }
         val quality=effectiveQuality()
-        val cache=episodeDiskCache ?: return
+        val cache=episodeDiskCache
+        if(cache==null) { idle("缓存池尚未创建，可在设置里开关一次"); return }
         if(quality!=episodeCacheQuality && episodeCacheQuality!=0) {
             // 换档后旧画质密文没有意义：整体清空重排
             cache.clear()
         }
         episodeCacheQuality=quality
-        if(!networkAvailable() || connectivity.isActiveNetworkMetered) return
-        if(!prefetchMemoryReady()) return
+        if(connectivity.isActiveNetworkMetered) { idle("移动网络下不预载"); return }
+        if(!networkAvailable()) { idle("当前无网络"); return }
+        if(!prefetchMemoryReady()) { idle("内存紧张，预载暂停"); return }
         val ordered=listOf(episodeIndex+1,episodeIndex+2,episodeIndex+3,episodeIndex,episodeIndex-1)
             .mapNotNull { data.episodes.getOrNull(it) }
         val from=(episodeIndex-1).coerceAtLeast(0)
         val to=(episodeIndex+4).coerceAtMost(data.episodes.size)
+        // 排上调度：清掉上次的 idle 记录，之后若再卡住还能重新记一笔
+        lastScheduleIdle=""
+        lastIdleForSummary=""
         cache.schedule(ordered,quality,data.episodes.subList(from,to).toSet(),quality)
     }
     /** 移除自动连播队列时保留相邻集的媒体源，手动切集继续复用。 */
@@ -6521,6 +6585,37 @@ class MainActivity: Activity() {
     fun phoneBlockedWords() = showBlockedWordDialog(voiceAnchor)
     fun phoneWatchStats() = showWatchStats(voiceAnchor)
     fun phoneInterfaceCheck() = showInterfaceCheck(voiceAnchor)
+    fun phoneRuntimeLogs() = RuntimeLogDialog.show(this, ::runtimeLogSummary)
+
+    /** 复制到日志里的现场状态：排查「三条进度条全灰」时不依赖日志有没有打到。 */
+    private fun runtimeLogSummary(): String = buildString {
+        val data = detail
+        val cache = episodeDiskCache
+        appendLine("页面: $screen / 页签 $phoneTab" + if (data != null) " · 第 ${episodeIndex + 1}/${data.episodes.size} 集" else "")
+        appendLine("整集预载缓存: " + when {
+            !library.episodeCache -> "开关关闭"
+            cache == null -> "已开启但缓存池未创建（设置里开关一次即可重建）"
+            else -> "运行中 · 画质 ${effectiveQuality()}P · 队列 ${cache.queuedCount} 条"
+        })
+        appendLine("网络: " + when {
+            !networkAvailable() -> "无连接"
+            connectivity.isActiveNetworkMetered -> "移动网络（不预载）"
+            else -> "可用"
+        } + " · 内存预载" + if (prefetchMemoryReady()) "正常" else "已暂停")
+        if (cache != null) {
+            appendLine("调度阻塞: " + lastIdleForSummary.ifBlank { "无（调度正常）" })
+            appendLine("跳过原因: " + cache.skipReason.ifBlank { "无（调度正常）" })
+            if (data != null) {
+                val quality = effectiveQuality()
+                // 三根进度条对应的就是下 1/2/3 集：把比例与是否已完整落盘一并写出来
+                (1..3).mapNotNull { offset ->
+                    val id = data.episodes.getOrNull(episodeIndex + offset) ?: return@mapNotNull null
+                    val ratio = cache.progress(id, quality)
+                    "  下 $offset 集: ${(ratio * 100).toInt()}%" + if (cache.meta(id, quality) != null) "（已完整缓存）" else ""
+                }.forEach(::appendLine)
+            }
+        }
+    }
     fun phoneRemoteAddress() = showRemoteAddress(voiceAnchor)
     fun phoneXiaoAi() = showXiaoAiDialog(voiceAnchor)
     fun phoneLocalBackup() = showLocalBackupDialog(voiceAnchor)

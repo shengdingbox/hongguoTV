@@ -13,5 +13,7 @@ class App: Application() {
     override fun attachBaseContext(base: Context) {
         super.attachBaseContext(base)
         CrashReporter.install(base)
+        // 运行日志第一行就有版本与机型：用户反馈「日志是空的」时能立刻判断 App 是否重启过
+        RuntimeLog.appStart(base)
     }
 }

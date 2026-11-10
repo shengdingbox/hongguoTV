@@ -194,6 +194,8 @@ class PhonePages(
 
         // 设置入口：竖屏下打开完整设置页（[PhoneSettings]），不再需要转到横屏才能改全
         scroll.addView(entryRow("设置", "播放、外观、设备与数据") { activity.showPhoneSettings() }, entryMargin(top = 8))
+        // 运行日志：放在「我的」一级页，出问题时少点两步就能复制到最新日志
+        scroll.addView(entryRow("运行日志", "排查问题用 · 一键复制") { activity.phoneRuntimeLogs() }, entryMargin(top = 8))
 
         val recent = library.history().filterNot { library.watched(it.series.id) }
         if (recent.isNotEmpty()) {

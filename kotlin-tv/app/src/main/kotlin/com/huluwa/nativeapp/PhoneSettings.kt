@@ -244,6 +244,7 @@ class PhoneSettings(private val activity: MainActivity) {
         heading(parent, "关于红果", "版本更新、接口自检与许可")
         addRow(parent, row("版本与更新", BuildConfig.VERSION_NAME) { activity.phoneUpdater() })
         addRow(parent, row("接口自检", "首页 / 搜索 / 播放") { activity.phoneInterfaceCheck() })
+        addRow(parent, row("运行日志", "预载缓存 · 一键复制") { activity.phoneRuntimeLogs() })
         addRow(parent, row("异常日志", "${CrashReporter.count(activity)} 份", { "${CrashReporter.count(activity)} 份" }) {
             activity.phoneCrashLogs()
         })

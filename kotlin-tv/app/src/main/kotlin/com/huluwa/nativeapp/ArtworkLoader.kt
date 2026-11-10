@@ -82,14 +82,15 @@ class ArtworkLoader(context: Context) {
         if (closed) return
         val previous = bindings[view]
         if (previous != null && previous.owner == owner && previous.url == url && previous.width == widthPx && previous.height == heightPx) {
+            // 同一张图重复绑定（如手机竖屏切页签后整页重建、RecyclerView 复用卡片）：
+            // 直接复用旧 binding，位图还在就只更新优先级，绝不清图，避免闪一帧空白。
             previous.priority = priority.coerceIn(PRIORITY_FOCUSED, PRIORITY_PREFETCH)
             previous.failed = null
             request(previous)
             return
         }
         if (previous != null) unbind(previous)
-        view.setImageDrawable(null)
-        if (url.isBlank()) return
+        if (url.isBlank()) { view.setImageDrawable(null); return }
         val binding = Binding(view, owner, url, priority.coerceIn(PRIORITY_FOCUSED, PRIORITY_PREFETCH), widthPx, heightPx)
         binding.layout = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> request(binding) }
         binding.attach = object : View.OnAttachStateChangeListener {
@@ -99,7 +100,22 @@ class ArtworkLoader(context: Context) {
         bindings[view] = binding
         view.addOnLayoutChangeListener(binding.layout)
         view.addOnAttachStateChangeListener(binding.attach)
+        // 清图前先看内存缓存：命中就直接贴上，新图没回来之前不闪空白。
+        // 只有确实没有缓存时才置空，等 request() 布局回调里算好尺寸再异步解码。
+        if (peekCached(view, url, widthPx, heightPx)?.let { cached -> view.setImageBitmap(cached); binding.applied = binding.key; true } != true) {
+            view.setImageDrawable(null)
+        }
         request(binding)
+    }
+
+    /** 视图为空/size 未定时返回 null；命中内存缓存时返回 Bitmap 并把 binding.key 记录好。 */
+    private fun peekCached(view: ImageView, url: String, widthPx: Int, heightPx: Int): Bitmap? {
+        val width = if (widthPx > 0) widthPx else view.width - view.paddingLeft - view.paddingRight
+        val height = if (heightPx > 0) heightPx else view.height - view.paddingTop - view.paddingBottom
+        if (width <= 0 || height <= 0) return null
+        val scale = min(1.0, 1024.0 / max(width, height))
+        val key = Key(url, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
+        return cache.get(key)
     }
 
     private fun request(binding: Binding) {

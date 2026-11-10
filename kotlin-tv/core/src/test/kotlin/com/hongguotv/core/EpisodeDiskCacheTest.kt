@@ -128,8 +128,8 @@ class EpisodeDiskCacheTest {
         val cache = EpisodeDiskCache(http, dir, resolver = { _, _ -> error("不该取址") })
         val buf = ByteArray(8 * 1024)
         assertEquals(8192, cache.read("501", 720, 0, buf, 0, buf.size))
-        // 前 24 字节是 ftyp/moov box 头，0xAB 填充从 box 之后开始；抽查 box 之后的一个字节即可
-        assertEquals(0xAB.toByte(), buf[24])
+        // 读出的前 8KiB 必须与源文件逐字节一致（含 ftyp/moov 头与 0xAB 填充）
+        assertArrayEquals(file.copyOf(8192), buf)
         // 未落盘区间返回 0；越过 total 的读取被截断
         assertEquals(0, cache.read("501", 720, 40 * 1024, buf, 0, buf.size))
         cache.close()

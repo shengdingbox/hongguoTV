@@ -310,6 +310,18 @@ class EpisodeDiskCache(
         // 正在跑的 download 会在下一段开头发现条目已被移除而自行退出。
     }
 
+    /** 暂停后台下载但保留已落盘内容：切界面 / 退到后台 / 播放失败收尾都走这里。
+     *  以前这些场景调的是 schedule(emptyList(), …, 只留当前集)，会按窗口把下三集连文件一起删掉，
+     *  用户切走再回来看到的就是三条进度条全空。 */
+    fun pause() {
+        synchronized(lock) {
+            want = emptyList(); scheduled = false
+            setQueued(0); markSkip("")
+        }
+        // 不碰 entries 与线程池：正在下的段会在下一段开头发现已停调度而退出，
+        // 已落盘区间写进 meta，之后的 schedule() 从缺口续传。
+    }
+
     /** 新一轮播放会话开始（进入/切换播放页）：复位本轮下载预算，并允许重新调度。 */
     fun resetBudget() {
         budgetExhausted = false
@@ -393,7 +405,12 @@ class EpisodeDiskCache(
             }
             runCatching { onProgress(row.key.id, row.key.quality, 1f) }
         } catch (cancelled: InterruptedException) {
-            // 线程池关闭或 cache.clear()，直接退出
+            // 线程池关闭、暂停调度或切出窗口：把已落盘区间写回元数据，
+            // 之后再排到这一集时从缺口续传，已经下好的部分不会白费。
+            synchronized(lock) {
+                val entry = entries[key]
+                if (entry != null) runCatching { saveMeta(key, entry) }
+            }
         } catch (problem: Throwable) {
             if (closed) return
             // 地址过期：整条作废，等下一轮 schedule 用新地址重新整集下载

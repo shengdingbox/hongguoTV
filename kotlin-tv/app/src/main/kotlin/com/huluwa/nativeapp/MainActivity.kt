@@ -448,6 +448,11 @@ class MainActivity: Activity() {
     private var video: RemoteVideo?=null
     private var playbackReady=false
     private var pausedForLifecycle=false
+    /** 这次 onStop 只停不拆：播放器与媒体源留着，回到前台原地续播。
+     *  正在播放时切到别的 App（或锁屏/下拉通知栏）会走 onStop，以前一律 releasePlayer()，
+     *  回来只能重新取址、重新 prepare、重新缓冲，用户看到的就是「切出去再回来又加载一遍」。
+     *  真正的拆除仍由离开播放页（returnToDetail 等）或页面回到详情/列表时触发。 */
+    private var playbackKeptOnStop=false
     private lateinit var hud: LinearLayout
     private lateinit var playbackText: TextView
     private lateinit var playbackStatus: TextView
@@ -3422,6 +3427,8 @@ class MainActivity: Activity() {
         if(autoplay) sleepStopped=false
         screen="player"; episodeIndex=selectedIndex; group=episodeIndex/20
         markPageShown()
+        // 走进播放页就是一次正常的挂载/切集：之前 onStop 留下的「原地续播」意图作废
+        playbackKeptOnStop=false
         refreshCacheStrip()
         // 手机播放页切集走相邻集交接（reuse），UI 不会重建；标题与集号必须手动刷新，
         // 否则第 2 集起顶部一直停在第 1 集的编号。
@@ -3667,6 +3674,9 @@ class MainActivity: Activity() {
         dropQueuedNext()
         playbackSession?.setPreloadingEnabled(false)
         video?.setPlaybackActive(false)
+        // 后台下载只停不删：切界面 / 退到后台 / 播放失败都走这里，
+        // 用 schedule(emptyList(), …, 只留当前集) 会把已下好的下三集连文件一起清掉。
+        episodeDiskCache?.pause()
         val current=detail?.episodes?.getOrNull(episodeIndex)
         if(current==null) {
             // 启动阶段网络/内存回调可能早于本机设置加载；空窗口不读取清晰度设置。
@@ -3677,8 +3687,6 @@ class MainActivity: Activity() {
         val ids=setOf(current)
         playbackSession?.retain(ids,effectiveQuality())
         playbackCache.retain(ids,effectiveQuality())
-        // 失败/低内存收尾只留当前集：落盘池同样收缩，后台下载目标全部取消
-        episodeDiskCache?.schedule(emptyList(),effectiveQuality(),ids,effectiveQuality())
     }
     private fun retainPlaybackWindow() {
         val data=detail ?: return
@@ -5012,7 +5020,10 @@ class MainActivity: Activity() {
         phonePlayer?.release()
         video=null
         if(!preservePlaybackCache) playbackCache.clear()
-        episodeDiskCache?.clear()
+        // 整集落盘缓存不随播放器一起清：它是磁盘池，进程重启后本来就会重新扫描复用，
+        // 离开播放页（进设置、旋转重建、回详情再进来）立刻清空只会让下好的三集白下。
+        // 真正的清理只在关闭开关（applyEpisodeCacheSetting）与窗口滑动逐出时发生。
+        episodeDiskCache?.pause()
         // 三段状态条随播放页一起作废：releaseCatalogViews() 已经不再清这两处引用
         //（切集场景要保留，否则复用播放器时条子会停在上一次画出的宽度）。
         cacheStripSegments=null; cacheStripView=null
@@ -6971,19 +6982,24 @@ class MainActivity: Activity() {
             if(initialCatalogPending) { if(phoneLayout()) showPhoneHome(load=true) else showCatalog(load=true) }
             else if(restoreStoppedPage) {
                 restoreStoppedPage=false
-                if(phoneLayout()) {
-                    // 手机竖屏回来：按最后所在页面重建（播放页由 playEpisode 自己恢复）
-                    when {
-                        screen=="settings" -> phoneSettings.render(root)
-                        screen=="player" && detail!=null -> playEpisode(episodeIndex,startPosition,autoplay=false)
-                        screen=="detail" && detail!=null -> openDetailPhone(pendingDetail ?: detail!!.series)
-                        else -> renderPhone()
+                // 后台期间只暂停、没拆播放器：原地续播，不重建页面也不重新取址。
+                // 保持暂停态（与之前「回来先停住」的手感一致），按播放即可继续。
+                val kept = resumeKeptPlayback()
+                if(!kept) {
+                    if(phoneLayout()) {
+                        // 手机竖屏回来：按最后所在页面重建（播放页由 playEpisode 自己恢复）
+                        when {
+                            screen=="settings" -> phoneSettings.render(root)
+                            screen=="player" && detail!=null -> playEpisode(episodeIndex,startPosition,autoplay=false)
+                            screen=="detail" && detail!=null -> openDetailPhone(pendingDetail ?: detail!!.series)
+                            else -> renderPhone()
+                        }
+                    } else when(screen) {
+                        "settings" -> { tab=5; showCatalog() }
+                        "player" -> playEpisode(episodeIndex,startPosition,autoplay=false)
+                        "detail" -> if(detail!=null) showDetail(false) else pendingDetail?.let { openDetail(it,directPlayback,autoplay=false) } ?: showCatalog()
+                        else -> showCatalog(load=!localCatalog() && catalog.isEmpty() && (tab==0 || tab==2 || (tab==1 && query.isNotBlank())))
                     }
-                } else when(screen) {
-                    "settings" -> { tab=5; showCatalog() }
-                    "player" -> playEpisode(episodeIndex,startPosition,autoplay=false)
-                    "detail" -> if(detail!=null) showDetail(false) else pendingDetail?.let { openDetail(it,directPlayback,autoplay=false) } ?: showCatalog()
-                    else -> showCatalog(load=!localCatalog() && catalog.isEmpty() && (tab==0 || tab==2 || (tab==1 && query.isNotBlank())))
                 }
             } else {
                 val waiting=deferredWork; deferredWork=null; waiting?.apply?.invoke()
@@ -6993,6 +7009,40 @@ class MainActivity: Activity() {
         } else libraryLoadError?.let(::showLibraryError)
         // 回到前台：先把状态推给手机（页面从「电视已暂停」恢复），缓存意图由 remotePublish 内部补上
         remotePublish(true)
+    }
+    /**
+     * 从后台回来时原地续播：onStop 已经保留了播放器与媒体源，这里只把界面重新挂回去。
+     * 返回 true 表示已处理（调用方跳过整页重建），false 表示这次的播放器没保住、走原有重建流程。
+     *
+     * 播放器、媒体源、已缓冲样本、解码器都还是原来的实例，所以不需要重新取址、重新 prepare，
+     * 回来直接停在暂停位置，用户按播放就从原处继续。
+     */
+    private fun resumeKeptPlayback(): Boolean {
+        if(!playbackKeptOnStop) return false
+        // 无论这次能不能原地恢复，标记都要消费掉：下次 onStop 重新判断
+        playbackKeptOnStop=false
+        if(screen!="player" || playError || !::hud.isInitialized) return false
+        val p=player ?: return false
+        val view=playerView ?: return false
+        // onStop 期间页面结构没动过，不重建外壳：把播放器接回视图，再刷新一遍文案与状态条
+        if(view.player!==p) view.player=p
+        detail?.let { data -> if(phoneLayout()) phonePlayer?.updateEpisode(data) }
+        playbackReady=p.playbackState==Player.STATE_READY
+        refreshCacheStrip()
+        // 保持暂停态：与以往「切回来先停住、按播放继续」的手感一致。
+        requestedAutoplay=false; pausedForLifecycle=true
+        p.pause()
+        // 手机播放面板的控件不随 onStop 销毁，直接刷新一遍；电视版重画 HUD。
+        if(phoneLayout()) phonePlayer?.refresh(
+            playing=false,
+            position=p.currentPosition,
+            duration=p.duration.coerceAtLeast(0),
+            bufferingNow=p.playbackState==Player.STATE_BUFFERING || !playbackReady,
+            error=null,
+            speed=com.hongguotv.core.PlaybackSpeed.label(p.playbackParameters.speed))
+        else showHud()
+        syncMediaSession()
+        return true
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
@@ -7013,7 +7063,21 @@ class MainActivity: Activity() {
         restoreStoppedPage=true; generation++; cancelWork(); tvTools.close()
         stopXiaoAi()
         third?.stop()
-        if(screen=="player") { startPosition=currentPosition(); saveProgress(); releasePlayer() }
+        // 播放页留在屏幕上但被切到后台（切 App / 锁屏 / 下拉通知栏）：只暂停，不拆播放器。
+        // 以前这里无条件 releasePlayer()，回来要重新取址、重新 prepare、重新缓冲。
+        // 播放器的解码器与已缓冲的媒体样本都还在，onResume 可以直接原地续播。
+        // view 已经挂不住了（Surface 被收回）的极端情况由播放器自行重建输出，不影响数据源。
+        if(screen=="player") {
+            startPosition=currentPosition(); saveProgress()
+            playbackKeptOnStop=player!=null && playerView!=null && !playError
+            if(!playbackKeptOnStop) releasePlayer()
+            else {
+                // 只暂停：媒体源、解码器、已缓冲样本都留在播放器里，
+                // 回来走 onResume 的原地续播分支，不再重新取址。
+                player?.pause()
+                cancelPrefetch()
+            }
+        } else playbackKeptOnStop=false
         artwork.cancelPage(clearMemory=true); library.flush()
         remotePublish(true)
         super.onStop()

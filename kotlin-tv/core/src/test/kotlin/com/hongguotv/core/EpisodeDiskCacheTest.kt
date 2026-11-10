@@ -80,6 +80,29 @@ class EpisodeDiskCacheTest {
         assertFalse(File(dir, "101-q720.mp4").exists())
         reloaded.close(); cache.close()
     }
+    @Test fun pauseKeepsCachedEpisodes() {
+        val info = { id: String, q: Int -> StreamInfo(server.url("/v/$id").toString(), null, "720P") }
+        // 三条下好的条目：模拟用户切走界面时下三集已缓存
+        for (n in 1..3) {
+            val key = "30$n"
+            File(dir, "$key-q720.mp4").writeBytes(ByteArray(1024))
+            writeMeta(key, 720, EpisodeDiskCache.Meta(key, 720, server.url("/v/$key").toString(), null, "720P", 0,
+                1024, ByteArray(16), emptyList(), n.toLong(), true), listOf(longArrayOf(0, 1024)))
+        }
+        val cache = EpisodeDiskCache(http, dir, resolver = info)
+        cache.schedule(listOf("301", "302", "303"), 720, setOf("301", "302", "303"), 720)
+        cache.pause()
+        // 暂停只停调度，不清条目：切界面回来三条进度条仍然是满的
+        for (n in 1..3) {
+            assertNotNull(cache.meta("30$n", 720))
+            assertTrue(File(dir, "30$n-q720.mp4").exists())
+        }
+        assertEquals(0, cache.queuedCount)
+        // 恢复调度后仍能命中原文件
+        cache.schedule(listOf("301", "302", "303"), 720, setOf("301", "302", "303"), 720)
+        assertNotNull(cache.meta("302", 720))
+        cache.close()
+    }
     @Test fun poolCapDropsOldestEntry() {
         val info = { id: String, q: Int -> StreamInfo(server.url("/v/$id").toString(), null, "720P") }
         for (n in 1..5) {

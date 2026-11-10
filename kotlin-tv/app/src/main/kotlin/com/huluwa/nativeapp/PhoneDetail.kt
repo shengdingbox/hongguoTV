@@ -29,7 +29,7 @@ class PhoneDetail(
     private fun lp(w: Int = LinearLayout.LayoutParams.MATCH_PARENT, h: Int = LinearLayout.LayoutParams.WRAP_CONTENT) = LinearLayout.LayoutParams(w, h)
 
     fun render(root: android.widget.FrameLayout, data: Detail) {
-        val library = activity.library
+        val library = activity.phoneLibrary
         root.removeAllViews()
         root.setBackgroundColor(TvStyle.background)
         val scroll = ScrollView(activity).apply { isVerticalScrollBarEnabled = false }
@@ -94,7 +94,7 @@ class PhoneDetail(
             setPadding(dp(10), dp(12), dp(10), dp(12))
             background = TvStyle.shape(activity, TvStyle.raised)
             setOnClickListener {
-                activity.favoriteMonitor.stop()
+                activity.phoneFavoriteMonitor.stop()
                 val saved = library.toggle(data.series)
                 if (saved) library.observeFavorite(data.series.id, data.episodes.size, System.currentTimeMillis(), acknowledge = true)
                 favorite.text = if (saved) "已收藏" else "收藏"

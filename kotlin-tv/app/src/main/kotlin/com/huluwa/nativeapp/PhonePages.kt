@@ -32,7 +32,7 @@ class PhonePages(
     // ---- 首页：接着看 + 收藏有更新 + 热门发现（两列网格） ----
 
     fun home(scroll: LinearLayout, loading: Boolean) {
-        val library = activity.library
+        val library = activity.phoneLibrary
         val recent = library.history().filterNot { library.watched(it.series.id) }
         val updates = library.favorites().filter { library.favoriteUpdate(it.id)?.hasUpdate == true }
         val later = library.later()
@@ -125,7 +125,7 @@ class PhonePages(
     // ---- 收藏页 ----
 
     fun favorites(scroll: LinearLayout) {
-        val library = activity.library
+        val library = activity.phoneLibrary
         val head = row().apply { setPadding(dp(14), dp(10), dp(14), dp(4)) }
         head.addView(text("我的收藏", 20f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }, PhoneUi.lp(0, -2).apply { weight = 1f })
         scroll.addView(head, PhoneUi.lp(-1, -2))
@@ -160,12 +160,12 @@ class PhonePages(
     // ---- 我的页：观看记录 + 稍后看 + 账号 + 设置入口 ----
 
     fun mine(scroll: LinearLayout) {
-        val library = activity.library
+        val library = activity.phoneLibrary
         val head = row().apply { setPadding(dp(14), dp(10), dp(14), dp(4)) }
         head.addView(text("我的", 20f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }, PhoneUi.lp(0, -2).apply { weight = 1f })
         scroll.addView(head, PhoneUi.lp(-1, -2))
 
-        val account = activity.accountManager
+        val account = activity.phoneAccount
         val accountRow = row().apply {
             setPadding(dp(14), dp(10), dp(14), dp(10))
             background = TvStyle.shape(activity, TvStyle.surface)
@@ -201,18 +201,19 @@ class PhonePages(
     // ---- 搜索页 ----
 
     fun search(scroll: LinearLayout, input: EditText, onSearch: (String) -> Unit) {
-        val library = activity.library
+        val library = activity.phoneLibrary
         val history = library.searches()
-        if (activity.phoneQuery.isBlank() && history.isEmpty()) {
+        val query = activity.phoneQueryText
+        if (query.isBlank() && history.isEmpty()) {
             scroll.addView(PhoneUi.emptyHint(activity, "输入名称关键词搜索${library.contentType.label}"), PhoneUi.lp(-1, -2))
         }
-        if (activity.phoneQuery.isNotBlank()) {
+        if (query.isNotBlank()) {
             val head = row().apply { setPadding(dp(14), dp(6), dp(14), dp(2)) }
-            head.addView(text("“${activity.phoneQuery}” 的搜索结果", 14f), PhoneUi.lp(0, -2).apply { weight = 1f })
+            head.addView(text("“${query}” 的搜索结果", 14f), PhoneUi.lp(0, -2).apply { weight = 1f })
             scroll.addView(head, PhoneUi.lp(-1, -2))
             val items = activity.catalog
             if (items.isEmpty()) {
-                scroll.addView(PhoneUi.messageBlock(activity, if (activity.phoneSearching) "正在搜索…" else "没有找到相关${library.contentType.label}，换个关键词试试", retry = { onSearch(activity.phoneQuery) }), PhoneUi.lp(-1, -2))
+                scroll.addView(PhoneUi.messageBlock(activity, if (activity.phoneSearchActive) "正在搜索…" else "没有找到相关${library.contentType.label}，换个关键词试试", retry = { onSearch(query) }), PhoneUi.lp(-1, -2))
                 return
             }
             val grid = RecyclerView(activity)
@@ -228,7 +229,9 @@ class PhonePages(
             val head = row().apply { setPadding(dp(14), dp(10), dp(14), dp(4)) }
             head.addView(text("搜索历史", 15f).apply { setTypeface(null, Typeface.BOLD) }, PhoneUi.lp(0, -2).apply { weight = 1f })
             val clear = text("清空", 13f, TvStyle.muted).apply { setOnClickListener {
-                com.huluwa.nativeapp.TvDialog.confirm(activity, "清空搜索历史", "清除本机保存的搜索词？", clear) { library.clearSearches(); activity.renderPhoneSearch() }
+                com.huluwa.nativeapp.TvDialog.confirm(activity, "清空搜索历史", "清除本机保存的搜索词？") {
+                    library.clearSearches(); activity.renderPhoneSearch()
+                }.show()
             } }
             head.addView(clear)
             scroll.addView(head, PhoneUi.lp(-1, -2))
@@ -248,7 +251,7 @@ class PhonePages(
     fun searchBox(onSearch: (String) -> Unit): Pair<LinearLayout, EditText> {
         val bar = row().apply { setPadding(dp(14), dp(8), dp(14), dp(4)) }
         val input = EditText(activity).apply {
-            hint = "输入${activity.library.contentType.label}名称"
+            hint = "输入${activity.phoneLibrary.contentType.label}名称"
             textSize = 15f
             setTextColor(TvStyle.text)
             setHintTextColor(TvStyle.muted)

@@ -24,6 +24,7 @@ class PhonePlayer(
     private fun lp(w: Int = LinearLayout.LayoutParams.MATCH_PARENT, h: Int = LinearLayout.LayoutParams.WRAP_CONTENT) = LinearLayout.LayoutParams(w, h)
 
     /** 面板控件引用，由 MainActivity 每秒 tick 刷新文字。 */
+    var titleText: TextView? = null
     var statusText: TextView? = null
     var progressText: TextView? = null
     var playButton: TextView? = null
@@ -39,9 +40,10 @@ class PhonePlayer(
         val panel = PhoneUi.column(activity).apply { setBackgroundColor(TvStyle.background) }
         // 标题行
         val titleRow = PhoneUi.row(activity).apply { setPadding(dp(14), dp(10), dp(14), dp(2)) }
-        titleRow.addView(text("${data.series.title}  ·  第 ${activity.phoneEpisodeIndex+1} 集", 16f).apply {
+        titleText = text("${data.series.title}  ·  第 ${activity.phoneEpisodeIndex+1} 集", 16f).apply {
             setTypeface(null, android.graphics.Typeface.BOLD); maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-        }, lp(0, -2).apply { weight = 1f })
+        }
+        titleRow.addView(titleText, lp(0, -2).apply { weight = 1f })
         val back = text("✕ 退出", 13f, TvStyle.muted).apply {
             setPadding(dp(10), dp(5), dp(10), dp(5))
             background = TvStyle.shape(activity, TvStyle.raised)
@@ -113,7 +115,10 @@ class PhonePlayer(
         }
         panel.addView(extras, lp(-1, -2))
 
-        root.addView(panel, android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+        // 面板贴着视频区下沿放（而不是钉在屏幕底部）：竖屏屏高差异大，
+        // 钉底会让视频与控件之间留出大片黑边，控件也离视频太远。
+        val videoHeight = (activity.resources.displayMetrics.widthPixels * 9f / 16f).toInt()
+        root.addView(panel, android.widget.FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply { topMargin = videoHeight })
     }
 
     private fun formatTime(millis: Long): String {

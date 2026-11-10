@@ -188,7 +188,8 @@ object PhoneUi {
             if (getItemViewType(position) == 1) {
                 val label = (holder.itemView as FrameLayout).getChildAt(0) as TextView
                 label.text = if (loading) "正在加载…" else "加载更多…"
-                if (!loading && more != null) holder.itemView.setOnClickListener { more() }
+                // 每次绑定都要重设：复用的 footer 会把上一页的点击监听带过来
+                holder.itemView.setOnClickListener { if (!loading && more != null) more() }
                 return
             }
             val card = (holder as Holder).card

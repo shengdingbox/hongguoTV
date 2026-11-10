@@ -32,8 +32,6 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.media3.common.*
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.hongguotv.core.*
 import java.util.Locale
@@ -113,7 +111,13 @@ class MainActivity: Activity() {
     private var navTight=false
     // 复用同一台设备身份：弹幕与内容/播放必须签同一份档案，否则平台会当成两台设备。
     private val danmakuRepo by lazy { DanmakuRepository(repository.http, signer=repository.signer) }
-    private val playbackCache by lazy { EpisodePlaybackCache(repository) }
+    private val playbackCache by lazy {
+        EpisodePlaybackCache(repository,onPrepared={ _,_ ->
+            // 地址和索引一就绪便交给 Media3，不再等下一次一秒定时刷新。
+            main.post { if(!isDestroyed && screen=="player") maybePrefetch() }
+        })
+    }
+    private var playbackSession: EpisodePlaybackSession?=null
     // 已提前挂进 ExoPlayer 播放列表的下一集；资源继续归相邻集缓存持有，手动切集也能复用。
     private var queuedNextId=""
     private var queuedIndex=-1
@@ -3078,16 +3082,18 @@ class MainActivity: Activity() {
         val reuse=screen=="player" && player!=null && playerView!=null && !recovering && !playError
         library.setWatched(data.series.id,false)
         val selectedIndex=index.coerceIn(0,data.episodes.lastIndex)
+        val restarting=screen=="player" && selectedIndex==episodeIndex
         val retrying=recovering || playError
         val prefetched=if(!retrying) playbackCache.peek(data.episodes[selectedIndex],effectiveQuality()) else null
         saveProgress(); library.flush(); invalidatePage(); favoriteMonitor.stop(); releaseCatalogViews(); stopDanmaku()
         if(reuse) {
+            playerListener?.let { player?.removeListener(it) }; playerListener=null
             cancelRecovery(); dropQueuedNext(); tvTools.close()
             episodePanel?.dismiss(); episodePanel=null; speedDialog?.dismiss(); speedDialog=null
-            playerListener?.let { player?.removeListener(it) }; playerListener=null
-            player?.stop(); player?.clearMediaItems()
+            // 相邻集直接交接 Media3 已预加载的媒体源，不 stop/clear 破坏样本队列。
+            playbackSession?.pauseForSwitch()
             video?.let { android.util.Log.w("HongguoTV","Prefetch episode=${episodeIndex+1} ${it.stats()}") }
-            video?.pauseReadAhead(cancelReads=true); video=null
+            video?.setPlaybackActive(false); video=null
             main.removeCallbacks(hideHud); main.removeCallbacks(seekRunnable); pendingSeek=null
         } else releasePlayer(preservePlaybackCache=true)
         if(retrying) playbackCache.invalidate(data.episodes[selectedIndex])
@@ -3101,7 +3107,6 @@ class MainActivity: Activity() {
         if(autoplay) sleepStopped=false
         screen="player"; episodeIndex=selectedIndex; group=episodeIndex/20
         panel=false; playError=false; playbackReady=false; quality=""; pausedForLifecycle=!autoplay
-        player?.playWhenReady=requestedAutoplay
         retainPlaybackWindow()
         playerScreenOn=true; refreshScreenOn()
         remotePublish(true)
@@ -3170,20 +3175,16 @@ class MainActivity: Activity() {
         val requestedId=data.episodes[episodeIndex]; val maxQuality=effectiveQuality(); val ticket=generation
         // 每集最多自动降两档，换集后重新计数，避免一集失败就把整部剧拖到最低画质。
         if(requestedId!=downgradeEpisode) { downgradeEpisode=requestedId; downgradeCount=0 }
-        work({ playbackCache.load(requestedId,maxQuality) }, { prepared ->
+        val beginPlayback: (EpisodePlaybackCache.PreparedEpisode)->Unit={ prepared ->
             val remote=prepared.video
             video=remote; quality=remote.info.quality
             // 取址成功，后面的「缓冲」交给 PlayerView 自己的缓冲圈。
             recoverySpinner?.visibility=View.GONE
-            val p=player ?: run {
-                val load=DefaultLoadControl.Builder().setBufferDurationsMs(20000,50000,1000,5000).setTargetBufferBytes(32*1024*1024).build()
-                val renderers=androidx.media3.exoplayer.DefaultRenderersFactory(this).setEnableDecoderFallback(true)
-                ExoPlayer.Builder(this,renderers).setLoadControl(load).build().also {
-                    player=it; playerView?.player=it
-                    it.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),true)
-                    it.setHandleAudioBecomingNoisy(true)
-                }
+            val session=playbackSession ?: EpisodePlaybackSession(this).also {
+                playbackSession=it; player=it.player; playerView?.player=it.player
             }
+            val p=session.player
+            session.select(requestedId,selectedIndex,resetSource=restarting)
             p.setPlaybackSpeed(effectiveSpeed())
             var episodeStartedAt=playbackStarted
             val listener=object: Player.Listener {
@@ -3245,7 +3246,9 @@ class MainActivity: Activity() {
                     library.setWatched(data.series.id,false)
                     playbackTitle.text="${data.series.title}  ·  第 ${episodeIndex+1} 集"
                     progressBar.progress=0
-                    oldVideo?.pauseReadAhead(cancelReads=true); retainPlaybackWindow()
+                    oldVideo?.setPlaybackActive(false)
+                    session.select(nextId,episodeIndex)
+                    retainPlaybackWindow()
                     android.util.Log.w("HongguoTV","Playback seamless switch episode=${fromIndex+1}->${episodeIndex+1} previousDurationMs=$fromDuration")
                     val intro=library.skipMark(data.series.id)?.introSeconds ?: 0
                     if(intro>0) {
@@ -3263,32 +3266,45 @@ class MainActivity: Activity() {
                         android.util.Log.w("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-episodeStartedAt}")
                     }
                 }
-                override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(hud.visibility==View.VISIBLE) showHud(); syncMediaSession() } }
+                override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(playing) maybePrefetch(); if(hud.visibility==View.VISIBLE) showHud(); syncMediaSession() } }
                 override fun onPlaybackParametersChanged(parameters: PlaybackParameters) { if(active()) syncMediaSession() }
                 override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,newPosition: Player.PositionInfo,reason: Int) { if(active()) { syncMediaSession(); danmakuView?.seekTo(newPosition.positionMs) } }
                 override fun onPlayerError(error: PlaybackException) { if(active()) playerFailure(error) }
             }
             playerListener=listener; p.addListener(listener)
-            val source=ProgressiveMediaSource.Factory { VideoDataSource(remote) }.createMediaSource(MediaItem.Builder().setMediaId(requestedId).setUri("hongguotv://episode/$requestedId").setMimeType(MimeTypes.VIDEO_MP4).build())
-            val introSkip=if(position<=0 && (skipMark?.introSeconds ?: 0)>0) skipMark!!.introSeconds*1000L else position.coerceAtLeast(0)
-            p.setMediaSource(source); p.seekTo(introSkip); p.prepare(); p.playWhenReady=foreground && requestedAutoplay && !pausedForLifecycle && episodePanel==null
+            val introSkip=episodeStartPosition(selectedIndex,position)
+            val source=session.mediaSource(EpisodePlaybackSession.Episode(requestedId,selectedIndex,maxQuality,remote,introSkip))
+            p.setMediaSource(source,introSkip); p.prepare(); p.playWhenReady=foreground && requestedAutoplay && !pausedForLifecycle && episodePanel==null
             if(introSkip>0 && position<=0) Toast.makeText(this,"已跳过片头 ${skipMark!!.introSeconds} 秒",Toast.LENGTH_SHORT).show()
-        }, { problem -> playerFailure(problem) })
+            // 地址到手即准备相邻集；媒体样本仍等当前集积累三秒缓冲后再预加载。
+            maybePrefetch()
+        }
+        // 命中相邻集缓存时直接交接，省掉后台线程排队和再投递一次主线程。
+        if(prefetched!=null) {
+            try { beginPlayback(prefetched) } catch(problem: Exception) { playerFailure(problem) }
+        } else work({ playbackCache.load(requestedId,maxQuality) },beginPlayback,{ problem -> playerFailure(problem) })
     }
+    private fun episodeStartPosition(index: Int,position: Long=savedPosition(index)): Long =
+        if(position>0) position else (detail?.series?.id?.let { library.skipMark(it)?.introSeconds } ?: 0)*1000L
     /** 取消相邻集预取，但不打断当前视频的数据源。 */
     private fun cancelPrefetch() {
         dropQueuedNext()
-        video?.pauseReadAhead()
+        playbackSession?.setPreloadingEnabled(false)
+        video?.setPlaybackActive(false)
         val current=detail?.episodes?.getOrNull(episodeIndex)
-        if(current==null) playbackCache.clear() else playbackCache.retain(setOf(current),effectiveQuality())
+        val ids=if(current==null) emptySet() else setOf(current)
+        playbackSession?.retain(ids,effectiveQuality())
+        playbackCache.retain(ids,effectiveQuality())
     }
     private fun retainPlaybackWindow() {
         val data=detail ?: return
         val from=(episodeIndex-1).coerceAtLeast(0)
         val to=(episodeIndex+2).coerceAtMost(data.episodes.size)
-        playbackCache.retain(data.episodes.subList(from,to).toSet(),effectiveQuality())
+        val ids=data.episodes.subList(from,to).toSet()
+        playbackSession?.retain(ids,effectiveQuality())
+        playbackCache.retain(ids,effectiveQuality())
     }
-    /** 从播放队列移除下一集，缓存中的地址、索引和分块仍可供手动切集使用。 */
+    /** 移除自动连播队列时保留相邻集的媒体源，手动切集继续复用。 */
     private fun dropQueuedNext() {
         val p=player
         if(queuedNextId.isNotEmpty() && p!=null) {
@@ -3299,23 +3315,23 @@ class MainActivity: Activity() {
                 }
             }
         }
-        if(queuedVideo!==video) queuedVideo?.pauseReadAhead(cancelReads=true)
+        if(queuedVideo!==video) queuedVideo?.setPlaybackActive(false)
         queuedVideo=null
         queuedNextId=""; queuedIndex=-1; queuedFromIndex=-1; queuedFromDuration=0
     }
-    /** 临近片尾才挂入队列，避免播放器提前大段拉取下一集而挤占当前集带宽。 */
+    /** 自然连播沿用队列；有续播位置或片头跳过时交给同一预加载媒体源按目标位置起播。 */
     private fun handOffPrefetched(id: String,quality: Int) {
         if(isDestroyed || screen!="player" || playError || queuedNextId.isNotEmpty()) return
         val p=player ?: return; val data=detail ?: return
+        val session=playbackSession ?: return
         if(!foreground || !p.isPlaying || !library.autoNext || sleepStopped || pausedForLifecycle || episodePanel!=null) return
-        if(episodeIndex>=data.episodes.lastIndex || savedPosition(episodeIndex+1)>0) return
+        if(episodeIndex>=data.episodes.lastIndex || episodeStartPosition(episodeIndex+1)>0) return
         if(data.episodes[episodeIndex]!=p.currentMediaItem?.mediaId || data.episodes[episodeIndex+1]!=id) return
         if(effectiveQuality()!=quality) return
         val state=p.playbackState
         if(state==Player.STATE_IDLE || state==Player.STATE_ENDED) return
         val remote=playbackCache.peek(id,quality)?.video ?: return
-        val source=ProgressiveMediaSource.Factory { VideoDataSource(remote) }.createMediaSource(MediaItem.Builder().setMediaId(id).setUri("hongguotv://episode/$id").setMimeType(MimeTypes.VIDEO_MP4).build())
-        // 先记录身份，确保播放器的后续回调能识别这次交接。
+        val source=session.mediaSource(EpisodePlaybackSession.Episode(id,episodeIndex+1,quality,remote,0))
         queuedNextId=id; queuedIndex=episodeIndex+1; queuedVideo=remote
         queuedFromIndex=episodeIndex; queuedFromDuration=p.duration.coerceAtLeast(0)
         p.addMediaSource(source)
@@ -3323,28 +3339,28 @@ class MainActivity: Activity() {
     }
     private fun maybePrefetch() {
         val p=player ?: return; val data=detail ?: return
-        if(queuedNextId.isNotEmpty()) {
-            if(!library.autoNext || sleepStopped) dropQueuedNext()
-            else return
-        }
-        if(!foreground || !p.isPlaying || playError || sleepStopped || pausedForLifecycle) return
+        val session=playbackSession ?: return
+        if(queuedNextId.isNotEmpty() && (!library.autoNext || sleepStopped)) dropQueuedNext()
+        if(!foreground || !p.playWhenReady || playError || sleepStopped || pausedForLifecycle || video==null) return
         if(!networkAvailable() || connectivity.isActiveNetworkMetered) return
-        val now=android.os.SystemClock.elapsedRealtime()
-        // 当前集刚 ready 就允许预取相邻集：门槛从 3 秒降到 1 秒。
-        // 预取走独立线程与独立连接，不会抢占当前集的解码与播放；等 3 秒反而让用户
-        // 在这段时间按「下一集」时无缓存可用，又要从零走两跳取址。
-        // 缓冲要求也放宽到 1 秒：首块到手后即可开始准备下一集。
-        if(readySince==0L || now-readySince<1000 ||
-            (p.bufferedPosition-p.currentPosition<1000 && p.bufferedPercentage<100)) return
+        if(data.episodes.getOrNull(episodeIndex)!=p.currentMediaItem?.mediaId) return
         retainPlaybackWindow()
         val quality=effectiveQuality()
         val next=data.episodes.getOrNull(episodeIndex+1)
         val previous=data.episodes.getOrNull(episodeIndex-1)
-        // 预取不限于自动连播，关闭连播后手动切集仍能命中；失败由缓存按次数和间隔退避。
+        // 先准备下一集地址，再准备上一集；样本队列按真实续播/跳片头位置预加载。
         if(next!=null) playbackCache.prefetch(next,quality)
         if(previous!=null && (next==null || !playbackCache.isLoading(next,quality))) {
             playbackCache.prefetch(previous,quality)
         }
+        video?.setPlaybackActive(true)
+        session.setPreloadingEnabled(true)
+        val neighbors=listOf(episodeIndex+1,episodeIndex-1).mapNotNull { index ->
+            val id=data.episodes.getOrNull(index) ?: return@mapNotNull null
+            val remote=playbackCache.peek(id,quality)?.video ?: return@mapNotNull null
+            EpisodePlaybackSession.Episode(id,index,quality,remote,episodeStartPosition(index))
+        }
+        session.updatePreloads(neighbors)
         if(next!=null && library.autoNext && PrefetchPolicy.nearEnd(p.currentPosition,p.duration,p.playbackParameters.speed)) {
             handOffPrefetched(next,quality)
         }
@@ -4455,7 +4471,8 @@ class MainActivity: Activity() {
         playerListener?.let { player?.removeListener(it) }; playerListener=null
         video?.let { android.util.Log.w("HongguoTV","Prefetch end ${it.stats()}") }
         video?.pauseReadAhead(cancelReads=true)
-        playerView?.player=null; playerView=null; player?.release(); player=null; playbackReady=false; transportPlay=null; sleepButton=null
+        playerView?.player=null; playerView=null
+        playbackSession?.release(); playbackSession=null; player=null; playbackReady=false; transportPlay=null; sleepButton=null
         video=null
         if(!preservePlaybackCache) playbackCache.clear()
         stopDanmaku(); danmakuView=null

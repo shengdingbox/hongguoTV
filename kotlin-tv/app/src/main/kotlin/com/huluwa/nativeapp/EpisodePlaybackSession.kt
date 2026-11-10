@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: GPL-3.0-only
+package com.huluwa.nativeapp
+
+import android.content.Context
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
+import com.hongguotv.core.RemoteVideo
+
+/** 相邻集与葫芦娃共用同样的 Media3 预加载策略，不为后台分集创建播放器或解码器。 */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+internal class EpisodePlaybackSession(context: Context) {
+    data class Episode(
+        val id: String,
+        val index: Int,
+        val quality: Int,
+        val video: RemoteVideo,
+        val startPositionMs: Long,
+    )
+    private data class Source(val episode: Episode, val item: MediaItem)
+
+    private val sources = mutableMapOf<String, Source>()
+    private var currentId: String? = null
+    private var currentRanking = 0
+    private var canPreload = false
+    private var preloadingEnabled = false
+    private var dirty = false
+    private val builder = DefaultPreloadManager.Builder(context) { ranking ->
+        if (!preloadingEnabled || !canPreload) null else {
+            sources.values.firstOrNull { it.episode.index * 2 == ranking }?.let { source ->
+                DefaultPreloadManager.PreloadStatus.specifiedRangeLoaded(
+                    source.episode.startPositionMs,
+                    if (ranking >= currentRanking) 5_000L else 3_000L,
+                )
+            }
+        }
+    }.setRenderersFactory(DefaultRenderersFactory(context).setEnableDecoderFallback(true))
+        .setLoadControl(DefaultLoadControl.Builder()
+            .setBufferDurationsMs(10_000, 25_000, 250, 750)
+            .setTargetBufferBytes(16 * 1024 * 1024)
+            .build())
+    private val preloadManager = builder.build()
+    val player = builder.buildExoPlayer().apply {
+        setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
+        setHandleAudioBecomingNoisy(true)
+        addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState != Player.STATE_READY) canPreload = false
+                preloadWhenBuffered()
+            }
+        })
+    }
+
+    /** 等待新地址期间暂停旧集，但保留即将交接的媒体源及样本队列。 */
+    fun pauseForSwitch() {
+        canPreload = false
+        currentId = null
+        sources.values.forEach { it.episode.video.setPlaybackActive(false) }
+        player.pause()
+    }
+
+    /** 手动切集和自动队列交接都更新同一份排序与预读所有权。 */
+    fun select(id: String, index: Int, resetSource: Boolean = false) {
+        if (resetSource) remove(id)
+        currentId = id
+        currentRanking = index * 2 + 1
+        canPreload = false
+        dirty = true
+        preloadManager.setCurrentPlayingIndex(currentRanking)
+        sources.values.forEach { it.episode.video.setPlaybackActive(it.episode.id == id) }
+    }
+
+    fun mediaSource(episode: Episode): MediaSource =
+        checkNotNull(preloadManager.getMediaSource(source(episode).item))
+
+    fun updatePreloads(episodes: List<Episode>) {
+        episodes.forEach { source(it) }
+        preloadWhenBuffered()
+    }
+
+    fun setPreloadingEnabled(enabled: Boolean) {
+        if (preloadingEnabled == enabled) return
+        preloadingEnabled = enabled
+        dirty = true
+        if (!enabled) {
+            canPreload = false
+            preloadManager.invalidate()
+        }
+    }
+
+    /** 当前集先积累三秒缓冲；仅窗口或加载目标变化时重排，避免每秒清理预加载队列。 */
+    private fun preloadWhenBuffered() {
+        if (!preloadingEnabled || currentId == null || player.playbackState != Player.STATE_READY) return
+        if (!canPreload && (player.bufferedPosition - player.currentPosition >= 3_000L || player.bufferedPercentage == 100)) {
+            canPreload = true
+            dirty = true
+        }
+        if (canPreload && dirty) {
+            dirty = false
+            preloadManager.invalidate()
+        }
+    }
+
+    private fun source(episode: Episode): Source {
+        val previous = sources[episode.id]
+        if (previous != null && previous.episode.video === episode.video && previous.episode.quality == episode.quality) {
+            if (previous.episode != episode) {
+                dirty = true
+                return previous.copy(episode = episode).also { sources[episode.id] = it }
+            }
+            return previous
+        }
+        remove(episode.id)
+        episode.video.setPlaybackActive(episode.id == currentId)
+        val item = MediaItem.Builder().setMediaId(episode.id)
+            .setUri("hongguotv://episode/${episode.id}").setMimeType(MimeTypes.VIDEO_MP4).build()
+        val mediaSource = ProgressiveMediaSource.Factory { VideoDataSource(episode.video) }.createMediaSource(item)
+        return Source(episode, item).also {
+            sources[episode.id] = it
+            preloadManager.add(mediaSource, episode.index * 2)
+            dirty = true
+        }
+    }
+
+    /** 先释放窗口外的媒体源，再由地址缓存关闭对应 RemoteVideo。 */
+    fun retain(ids: Set<String>, quality: Int) {
+        sources.values.filter { it.episode.id !in ids || it.episode.quality != quality }
+            .map { it.episode.id }.forEach(::remove)
+    }
+
+    private fun remove(id: String) {
+        sources.remove(id)?.let {
+            preloadManager.remove(it.item)
+            it.episode.video.setPlaybackActive(false)
+            dirty = true
+        }
+    }
+
+    fun release() {
+        currentId = null
+        preloadingEnabled = false
+        sources.values.forEach { it.episode.video.setPlaybackActive(false) }
+        player.release()
+        preloadManager.release()
+        sources.clear()
+    }
+}

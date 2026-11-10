@@ -13,6 +13,7 @@ import java.util.concurrent.FutureTask
 class EpisodePlaybackCache(
     private val repository: ContentRepository,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val onPrepared: (String, Int) -> Unit = { _, _ -> },
 ) : Closeable {
     // 包装结果，资源始终由缓存持有；取消某个页面的等待不能关闭其他页面即将复用的视频。
     data class PreparedEpisode(val video: RemoteVideo, val createdAt: Long)
@@ -91,11 +92,12 @@ class EpisodePlaybackCache(
                     if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
                         throw IOException("播放地址即将过期，请重试")
                     }
-                    // 正式播放只需要索引和首个分块（prepare）；相邻集预取才多读一块（preload），
-                    // 让真正切过去时首帧更快。正式播放多读这一块只会拖慢起播。
-                    RemoteVideo(repository.http, info).also {
+                    // 地址与索引请求共用；相邻集的媒体字节交给 Media3 按实际续播位置预加载，
+                    // 不在这里额外下载开头分块或启动持续预读。
+                    RemoteVideo(repository.http, info, chunkBytes = 256 * 1024).also {
                         video = it
-                        if (speculative) it.preload() else it.prepare()
+                        it.setPlaybackActive(false)
+                        it.prepare()
                     }
                 }
                 val result = PreparedEpisode(prepared, clock())
@@ -104,6 +106,7 @@ class EpisodePlaybackCache(
                     entry.prepared = result
                     attempts.remove(key)
                 }
+                runCatching { onPrepared(key.id, key.quality) }
                 result
             } catch (error: Throwable) {
                 video?.close()

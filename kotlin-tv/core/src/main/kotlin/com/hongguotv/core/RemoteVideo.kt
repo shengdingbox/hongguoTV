@@ -30,6 +30,7 @@ class RemoteVideo(
     private var lastRead=0L
     private var aheadThread: Thread?=null
     private var readAheadEnabled=false
+    private var playbackActive=true
     private var hitChunks=0
     private var missChunks=0
     private var readerChunks=0
@@ -113,8 +114,17 @@ class RemoteVideo(
     /** Bounded warm-up: parses the header, keeps the first chunk resident, starts read-ahead. */
     @Synchronized fun warm(): RemoteVideo {
         prepare()
-        synchronized(lock) { lastRead=0; readAheadEnabled=true; ensureAheadLocked(); lock.notifyAll() }
+        synchronized(lock) { lastRead=0; playbackActive=true; readAheadEnabled=true; ensureAheadLocked(); lock.notifyAll() }
         return this
+    }
+    /** 相邻集的读取由 Media3 的 3/5 秒样本目标限制，不启动额外的 8 MiB 后台预读。 */
+    fun setPlaybackActive(active: Boolean) {
+        synchronized(lock) {
+            if(playbackActive==active) return
+            playbackActive=active
+            if(!active) { readAheadEnabled=false; evictLocked() }
+            lock.notifyAll()
+        }
     }
     /** 暂存上一集时停止后台预读，只留开头与最后读取的分块，继续观看时由 read 自动恢复。 */
     fun pauseReadAhead(cancelReads: Boolean=false) {
@@ -131,12 +141,16 @@ class RemoteVideo(
         if(!readAheadEnabled || total<=0) return -1
         val target=minOf(total,lastRead+aheadBytes)
         var at=lastRead-lastRead%chunkBytes
-        while(at<target) { if(!cache.containsKey(at) && !inFlightLocked(at)) return at; at+=chunkBytes }
+        while(at<target) {
+            // prepare 已保留完整索引，不再为 MP4 提取器重新下载索引覆盖的分块。
+            if((!::prepared.isInitialized || at+chunkBytes>prepared.header.size) && !cache.containsKey(at) && !inFlightLocked(at)) return at
+            at+=chunkBytes
+        }
         return -1
     }
     private fun evictLocked() {
         val floor=lastRead-lastRead%chunkBytes
-        cache.keys.filter { it!=0L && (if(readAheadEnabled) it<floor else it!=floor) }.forEach { cache.remove(it) }
+        cache.keys.filter { it!=0L && (if(readAheadEnabled) it<floor || it>=floor+aheadBytes+chunkBytes else it!=floor) }.forEach { cache.remove(it) }
     }
     private fun aheadLoop() {
         while(true) {
@@ -170,25 +184,27 @@ class RemoteVideo(
         val end=minOf(total,start+length)
         synchronized(lock) {
             if(closed) throw IOException("播放请求已取消")
-            lastRead=start; readAheadEnabled=true; ensureAheadLocked(); lock.notifyAll()
-        }
-        var at=start
-        while(at<end) {
-            val k=at-at%chunkBytes
-            if(cached(k)) synchronized(lock) { hitChunks++ } else { synchronized(lock) { missChunks++ }; readChunk(k) }
-            at=k+chunkBytes
+            lastRead=start; readAheadEnabled=playbackActive; if(readAheadEnabled) ensureAheadLocked(); lock.notifyAll()
         }
         val raw=ByteArray((end-start).toInt())
         var pos=start; var written=0
+        if(pos<prepared.header.size) {
+            val count=(minOf(end,prepared.header.size.toLong())-pos).toInt()
+            prepared.header.copyInto(raw,0,pos.toInt(),pos.toInt()+count)
+            pos+=count; written+=count
+        }
         while(pos<end) {
             val k=pos-pos%chunkBytes
+            if(cached(k)) synchronized(lock) { hitChunks++ } else synchronized(lock) { missChunks++ }
             val chunk=chunkOrFetch(k)
             val from=(pos-k).toInt()
             val count=minOf(chunk.size-from,(end-pos).toInt())
             if(count<=0) throw IOException("视频分段数据不完整")
             System.arraycopy(chunk,from,raw,written,count); written+=count; pos+=count
         }
-        return MediaCrypto.decrypt(raw,start,info.key,prepared)
+        val decrypted=MediaCrypto.decrypt(raw,start,info.key,prepared)
+        synchronized(lock) { lastRead=end-1; evictLocked(); lock.notifyAll() }
+        return decrypted
     }
     override fun close() {
         synchronized(lock) { closed=true; lock.notifyAll() }

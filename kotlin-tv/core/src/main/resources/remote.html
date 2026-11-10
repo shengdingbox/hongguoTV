@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<title>红果TV 遥控</title>
+<title>红果 遥控</title>
 <style>
   :root{
     --bg:#0E1116;--surface:#171B22;--raised:#1D222B;--outline:#262D38;
@@ -309,7 +309,7 @@
     <div class="addr" id="m-addr"></div>
   </div>
 </div>
-<div class="banner" id="banner">电视已暂停。请在电视上重新打开红果TV，回来后会接着遥控。</div>
+<div class="banner" id="banner">电视已暂停。请在电视上重新打开红果，回来后会接着遥控。</div>
 
 <!-- 形态切换：两个形态都要能点到，否则播放中就无法切到浏览、也就没有方向键可用 -->
 <div class="modebar">
@@ -350,7 +350,7 @@
   </div>
   <div class="quick" id="quick"></div>
   <button class="openlist" id="openlist">选集 · 加载中</button>
-  <div class="panelnote">遥控在电视打开红果TV 期间一直有效 · 手机锁屏后会自动重连</div>
+  <div class="panelnote">遥控在电视打开红果期间一直有效 · 手机锁屏后会自动重连</div>
 </section>
 
   <!-- 浏览模式 -->
@@ -406,7 +406,7 @@
 <div class="full" id="f-lost">
   <div class="icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 8.8a15 15 0 0 1 20 0"/><path d="M5 12.5a10 10 0 0 1 14 0"/><path d="M8.5 16a5 5 0 0 1 7 0"/><path d="M12 20h.01"/></svg></div>
   <h2>无法连接电视</h2>
-  <p>请确认手机与电视连在<b>同一个 WiFi</b>，且电视上的红果TV 正在打开。</p>
+  <p>请确认手机与电视连在<b>同一个 WiFi</b>，且电视上的红果正在打开。</p>
   <p>访客网络或路由器的「AP 隔离」会让两台设备互相看不见。</p>
   <p>如果电视上的手机遥控窗口已经关掉，回到电视上重新打开并扫码即可。</p>
   <div class="addr">电视地址 <b id="lost-addr"></b></div>
@@ -536,7 +536,7 @@
       banner.classList.add("on");
       document.body.classList.add("frozen");
     } else {
-      banner.textContent = "电视已暂停。请在电视上重新打开红果TV，回来后会接着遥控。";
+      banner.textContent = "电视已暂停。请在电视上重新打开红果，回来后会接着遥控。";
       banner.classList.toggle("on", !snap.tv.foreground);
       document.body.classList.toggle("frozen", !snap.tv.foreground);
     }

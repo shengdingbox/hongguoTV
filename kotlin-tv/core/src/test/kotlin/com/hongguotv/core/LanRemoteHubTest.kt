@@ -382,7 +382,7 @@ class LanRemoteHubTest {
     }
 
     @Test fun `page resource is packaged instead of the fallback`() {        assertTrue(LanRemotePage.html.contains("EventSource"))
-        assertTrue(LanRemotePage.html.contains("红果TV"))
+        assertTrue(LanRemotePage.html.contains("红果 遥控"))
         assertFalse(LanRemotePage.html.contains("遥控页面未打包"))
     }
 

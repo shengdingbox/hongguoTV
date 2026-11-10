@@ -2362,7 +2362,7 @@ class MainActivity: Activity() {
             TvDialog.info(this,"开源许可","本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\n请求签名算法移植自 openhongguo（GPL-3.0），在本机完成计算与匿名设备注册。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\n完整源码和许可证见 GitHub：jycao2/hongguoTV。").show()
         }
         // 页脚固定在滚动区之外（屏幕底部居中）：始终可见，因此不再需要抢焦点
-        val settingsFooter=text("红果TV  /  ${BuildConfig.VERSION_NAME}    ·    收藏与本机记录保存在设备 · 登录后可同步到红果账号",12f,muted).apply {
+        val settingsFooter=text("红果  /  ${BuildConfig.VERSION_NAME}    ·    收藏与本机记录保存在设备 · 登录后可同步到红果账号",12f,muted).apply {
             id=View.generateViewId(); isFocusable=false; setPadding(dp(10),dp(8),dp(10),dp(3))
         }
         val settingsDisclaimer=text("本应用仅用于技术交流与学习，不提供、不存储、不传播任何视频内容，内容版权归原平台所有。",11f,muted).apply {
@@ -2883,7 +2883,7 @@ class MainActivity: Activity() {
         // 收藏更新优先，其次随机荐剧池，最后退化到首页 7 天缓存随机抽 3 部，全部为本地数据
         val items=if(fromUpdates) updated else randomRecommender.pick(3).ifEmpty { library.cachedHome(library.contentType)?.items?.shuffled()?.take(3) ?: emptyList() }
         val body=column().apply { setPadding(0,0,0,0) }
-        val heading=TvDialog.title(this,if(fromUpdates) "收藏更新，看完再走？" else if(items.isNotEmpty()) "猜你喜欢，再看一会儿？" else "确定要退出红果TV吗？")
+        val heading=TvDialog.title(this,if(fromUpdates) "收藏更新，看完再走？" else if(items.isNotEmpty()) "猜你喜欢，再看一会儿？" else "确定要退出红果吗？")
         heading.gravity=Gravity.CENTER; heading.setPadding(0,0,0,dp(14))
         body.addView(heading,lp(-1,-2))
         val cardWidth=dp(120)

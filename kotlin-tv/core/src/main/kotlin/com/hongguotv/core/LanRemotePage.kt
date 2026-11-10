@@ -18,7 +18,7 @@ object LanRemotePage {
     private val FALLBACK = """
         <!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>红果TV 遥控</title></head>
+        <title>红果 遥控</title></head>
         <body style="font:16px sans-serif;background:#0E1116;color:#E7EAEE;padding:32px">
         <h1 style="font-size:18px">遥控页面未打包</h1>
         <p style="color:#8695A8;line-height:1.7">APK 里缺少 remote.html。请重新安装完整版本。</p>

@@ -286,8 +286,12 @@ class EpisodeDiskCache(
                 queued.first()
             }
             // 地址解析与索引 prepare 要走网络：必须在锁外做，否则几秒内所有读取/调度都被堵死
-            val row = synchronized(lock) { entries[key]?.let { Row(key, it, dataFile(key), metaFile(key)) } }
-                ?: openRow(key) ?: run { synchronized(lock) { if (queued.firstOrNull() == key) queued = queued.drop(1) }; continue }
+            val existing = synchronized(lock) { entries[key]?.let { Row(key, it, dataFile(key), metaFile(key)) } }
+            val row = existing ?: openRow(key)
+            if (row == null) {
+                synchronized(lock) { if (queued.firstOrNull() == key) queued = queued.drop(1) }
+                continue
+            }
             try {
                 download(row)
                 synchronized(lock) {
@@ -341,7 +345,7 @@ class EpisodeDiskCache(
             }
             return Row(key, entry, dataFile(key), metaFile(key))
         } catch (problem: Throwable) {
-            null
+            return null
         } finally {
             remote.close()
         }

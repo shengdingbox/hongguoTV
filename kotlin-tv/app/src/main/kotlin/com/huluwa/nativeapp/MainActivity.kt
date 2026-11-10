@@ -178,6 +178,8 @@ class MainActivity: Activity() {
     private var catalogPageKey=""
     private val scrollPositions=mutableMapOf<String,Int>()
     private var homeScreen: HomeScreen?=null
+    private var catalogSwitcher: android.widget.ViewSwitcher?=null
+    private var catalogContainer: ViewGroup?=null
     private var selectionPreview: SeriesPreview?=null
     private var homeFromCache=false
     /** 榜单页当前内容是否来自缓存：影响联网回调要不要打断展示。 */
@@ -371,6 +373,27 @@ class MainActivity: Activity() {
     // 二级分段首项：导航 ↓ 先落到分段，再进内容
     private var segmentFirst: View?=null
     private val typeButtons=mutableMapOf<ContentType,View>()
+    /** 首页/排行各保留一套已显示的目录视图，普通页签切换不再销毁 ImageView。 */
+    private data class RetainedCatalog(
+        val page: View,
+        val contentType: ContentType,
+        val home: HomeScreen?,
+        val recycler: RecyclerView?,
+        val adapter: CatalogAdapter?,
+        val preview: SeriesPreview?,
+        val nav: List<View>,
+        val types: Map<ContentType,View>,
+        val rankSwitch: View?,
+        val rankRefresh: View?,
+        val rankSubtitle: TextView?,
+        val focus: View?,
+        val focusOwned: Boolean,
+        val focusPosition: Int,
+        val pendingFocusPosition: Int,
+    )
+    private val retainedCatalogs=mutableMapOf<Int,RetainedCatalog>()
+    private var retainedTheme=TvStyle.theme
+    private var retainedWidthDp=0
     private var searchInput: View?=null
     private var searchButton: View?=null
     private val searchActions=mutableListOf<View>()
@@ -525,25 +548,27 @@ class MainActivity: Activity() {
             setPadding(dp(padH),dp(padV),dp(padH),dp(padV)); minHeight=dp(h); setOnClickListener { onClick() }
         }
         view.id=View.generateViewId()
-        fun paint(focused: Boolean) {
-            when {
-                selected -> {
-                    view.background=rounded(Color.TRANSPARENT,accent)
-                    view.setTextColor(accent); view.typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
-                    view.compoundDrawables[0]?.setTint(accent)
-                }
-                focused -> {
-                    view.background=rounded(TvStyle.raised,accent); view.setTextColor(white); view.typeface=Typeface.DEFAULT
-                    view.compoundDrawables[0]?.setTint(white)
-                }
-                else -> {
-                    view.background=rounded(Color.TRANSPARENT,Color.TRANSPARENT); view.setTextColor(muted); view.typeface=Typeface.DEFAULT
-                    view.compoundDrawables[0]?.setTint(muted)
-                }
+        view.setOnFocusChangeListener { v,focused -> paintPillNav(v as TextView,selected,focused) }
+        paintPillNav(view,selected,false)
+        return view
+    }
+
+    private fun paintPillNav(view: TextView,selected: Boolean,focused: Boolean) {
+        when {
+            selected -> {
+                view.background=rounded(Color.TRANSPARENT,accent)
+                view.setTextColor(accent); view.typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL)
+                view.compoundDrawables[0]?.setTint(accent)
+            }
+            focused -> {
+                view.background=rounded(TvStyle.raised,accent); view.setTextColor(white); view.typeface=Typeface.DEFAULT
+                view.compoundDrawables[0]?.setTint(white)
+            }
+            else -> {
+                view.background=rounded(Color.TRANSPARENT,Color.TRANSPARENT); view.setTextColor(muted); view.typeface=Typeface.DEFAULT
+                view.compoundDrawables[0]?.setTint(muted)
             }
         }
-        paint(false); view.setOnFocusChangeListener { _,focused -> paint(focused) }
-        return view
     }
     private fun addButton(parent: LinearLayout,label: String,selected: Boolean=false,onClick: ()->Unit): TextView {
         val view=button(label,selected,onClick); parent.addView(view,lp().apply { width=LinearLayout.LayoutParams.WRAP_CONTENT; rightMargin=dp(8) }); return view
@@ -745,10 +770,13 @@ class MainActivity: Activity() {
         }
     }
     private fun base(title: String?=null): LinearLayout {
+        catalogSwitcher=null; catalogContainer=null; retainedCatalogs.clear()
         root.removeAllViews(); root.setBackgroundColor(bg)
         backdropView?.takeIf { backdropBitmap!=null }?.let { root.addView(it,FrameLayout.LayoutParams(-1,-1)) }
         val container=column(); val horizontal=dp(widthDp()*.05f); val vertical=(resources.displayMetrics.heightPixels*.05f).toInt()
-        container.setPadding(horizontal,vertical,horizontal,vertical); root.addView(container,FrameLayout.LayoutParams(-1,-1))
+        container.setPadding(horizontal,vertical,horizontal,vertical)
+        root.addView(container,FrameLayout.LayoutParams(-1,-1))
+        catalogContainer=container
         if(title!=null) { val heading=row(); addButton(heading,"‹ 返回") { goBack() }; heading.addView(text(title,22f).apply { setTypeface(null,Typeface.BOLD); gravity=Gravity.CENTER_VERTICAL },lp(0,dp(44)).apply { weight=1f }); container.addView(heading) }
         return container
     }
@@ -771,6 +799,7 @@ class MainActivity: Activity() {
         generation++; cancelWork(); artwork.cancelPage()
     }
     private fun releaseCatalogViews() {
+        retainedCatalogs.clear(); catalogSwitcher=null; catalogContainer=null
         homeScreen?.let { homePosition=it.capturePosition() }
         (catalogRecycler?.layoutManager as? GridLayoutManager)?.let { scrollPositions[catalogPageKey]=it.findFirstVisibleItemPosition() }
         homeScreen=null; selectionPreview=null; catalogRecycler=null; catalogAdapter=null; loadingMore=false
@@ -844,6 +873,10 @@ class MainActivity: Activity() {
     private fun switchTab(next: Int) {
         if(navHiddenAt(next)) return
         leaveCollection()
+        if(next==tab) { nav.getOrNull(tab)?.requestFocus(); return }
+        if(retainableCatalog() && canReuseCatalogs() && restoreRetainedCatalog(next)) return
+        // 离开首页/排行互切场景后，旧视图不再保留，后续一律按原流程重建。
+        retainedCatalogs.clear()
         tabState[tab]=CatalogState(page,catalog,hasMore,ranking,rankBoard,genre,aiCatalog,aiGenre,newRelease,newReleaseWindow,discoveryCursor,discoverySelection); tabFocus[tab]=catalogFocus
         // 从其他模块切回搜索页时重置为全新搜索状态，不保留上次的搜索词与结果
         if(next==1) {
@@ -861,7 +894,81 @@ class MainActivity: Activity() {
         // 切回搜索页时焦点落输入框，避免页面重建后焦点丢失
         if(next==1) searchInput?.requestFocus()
     }
+    private fun retainableCatalog(tabIndex: Int=tab)=screen=="catalog" && collection==null && genre==null && when(tabIndex) {
+        0 -> page==1 && catalog.isNotEmpty()
+        2 -> !newRelease && !aiCatalog && page==1 && catalog.isNotEmpty()
+        else -> false
+    }
+
+    /** 记录目标页签的普通状态；特殊子视图不进入双页保留路径。 */
+    private fun canReuseCatalogs()=when {
+        tab==0 -> tabState[2]?.let(::reusableSavedCatalog)==true
+        tab==2 -> tabState[0]?.let(::reusableSavedCatalog)==true
+        else -> false
+    }
+
+    private fun reusableSavedCatalog(saved: CatalogState)=saved.page==1 && saved.items.isNotEmpty() && !saved.newRelease && !saved.aiCatalog &&
+        saved.cursor==null && (!saved.hasMore || (saved.board==rankBoard && saved.items.size<waterfallMaxPages*20))
+
+    /** 两个页面始终留在同一个窗口，只切可见性，避免 detach 触发清图和重新解码。 */
+    private fun retainCurrentCatalog() {
+        if(!retainableCatalog()) return
+        val focused=root.findFocus()
+        val switcher=catalogSwitcher ?: android.widget.ViewSwitcher(this).also { created ->
+            val current=catalogContainer ?: return
+            root.removeView(current)
+            created.addView(current,FrameLayout.LayoutParams(-1,-1))
+            root.addView(created,FrameLayout.LayoutParams(-1,-1))
+            catalogSwitcher=created
+        }
+        val pageView=switcher.currentView ?: return
+        retainedCatalogs[tab]=RetainedCatalog(pageView,library.contentType,homeScreen,catalogRecycler,catalogAdapter,selectionPreview,
+            nav.toList(),typeButtons.toMap(),rankSwitch,rankRefresh,rankSubtitle,focused,gridFocusOwned,catalogFocusPos,pendingCatalogFocusPos)
+    }
+
+    private fun restoreRetainedCatalog(next: Int): Boolean {
+        val state=retainedCatalogs[next] ?: return false
+        if(state.contentType!=library.contentType || retainedTheme!=TvStyle.theme || retainedWidthDp!=widthDp()) {
+            retainedCatalogs.clear()
+            return false
+        }
+        tabState[tab]=CatalogState(page,catalog,hasMore,ranking,rankBoard,genre,aiCatalog,aiGenre,newRelease,newReleaseWindow,discoveryCursor,discoverySelection)
+        tabFocus[tab]=catalogFocus
+        // 已展示的页签保留视图；未完成的目录请求取消，回调不得重建隐藏页。
+        generation++; cancelWork()
+        retainCurrentCatalog()
+        // retainCurrentCatalog 会按需创建窗口；这里必须引用成员，局部作用域的 switcher 在另一个方法里不存在。
+        val switcher=catalogSwitcher ?: return false
+        val saved=tabState[next]
+        if(saved==null) { retainedCatalogs.clear(); return false }
+        tab=next; page=saved.page; catalog=saved.items; hasMore=saved.hasMore; ranking=saved.ranking; catalogFocus=tabFocus[next].orEmpty()
+        rankBoard=saved.board ?: rankBoard; genre=saved.genre
+        aiCatalog=saved.aiCatalog; aiGenre=saved.aiGenre; newRelease=saved.newRelease; newReleaseWindow=saved.newReleaseWindow ?: newReleaseWindow
+        discoveryCursor=saved.cursor; discoverySelection=saved.discovery ?: discoverySelection
+        screen="catalog"
+        homeScreen=state.home; catalogRecycler=state.recycler; catalogAdapter=state.adapter; selectionPreview=state.preview
+        nav.clear(); nav.addAll(state.nav); typeButtons.clear(); typeButtons.putAll(state.types)
+        rankSwitch=state.rankSwitch; rankRefresh=state.rankRefresh; rankSubtitle=state.rankSubtitle
+        root.removeAllViews()
+        root.setBackgroundColor(bg)
+        backdropView?.takeIf { backdropBitmap!=null && it.parent==null }?.let { root.addView(it,0,FrameLayout.LayoutParams(-1,-1)) }
+        root.addView(switcher,FrameLayout.LayoutParams(-1,-1))
+        state.page.visibility=View.VISIBLE
+        switcher.currentView?.takeIf { it!==state.page }?.visibility=View.GONE
+        // 只刷新导航选中态，不碰内容区的卡片和图片。
+        nav.forEachIndexed { index,item ->
+            val selected=when(index) { 0->tab==0; 1->tab==1; 2->tab==2; 3,4->tab==3 || tab==4; 5->tab==5; 6->tab==6; 7->tab==7; else->false }
+            (item as? TextView)?.let { paintPillNav(it,selected,false) }
+        }
+        gridFocusOwned=state.focusOwned; catalogFocusPos=state.focusPosition; pendingCatalogFocusPos=state.pendingFocusPosition
+        (state.focus?.takeIf { it.isAttachedToWindow } ?: nav.getOrNull(tab))?.requestFocus()
+        homeScreen?.reloadArtwork()
+        if(state.focus==null) restoreCatalogFocus()
+        return true
+    }
+
     private fun switchContentType(type: ContentType) {
+        retainedCatalogs.clear()
         if(library.contentType==type) return
         leaveCollection()
         (searchInput as? EditText)?.let { query=it.text.toString().trim() }
@@ -899,6 +1006,7 @@ class MainActivity: Activity() {
         } else library.history().map { it.series }
     }
     private fun showCatalog(load: Boolean=false,focusNav: Boolean=false,focusType: Boolean=false,focusFilter: Boolean=false) {
+        retainedCatalogs.clear()
         initialCatalogPending=false; restoreStoppedPage=false; pendingDetail=null; pendingCloudResume=null
         // 当前模块被隐藏时回到首页，避免停留在不可见的页签
         if(navHiddenAt(tab)) tab=0
@@ -915,6 +1023,7 @@ class MainActivity: Activity() {
             rankFromCache=tab==2 && cached!=null
         }
         invalidatePage(); screen="catalog"; releaseCatalogViews(); val container=base()
+        retainedTheme=TvStyle.theme; retainedWidthDp=widthDp()
         if(foreground && library.isLoaded && !favoriteMonitor.running) main.post { if(foreground && screen=="catalog") favoriteMonitor.check() }
         val top=row().apply { setPadding(0,0,0,dp(8)) }
         val wdp=widthDp()

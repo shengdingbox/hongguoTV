@@ -82,8 +82,7 @@ class ArtworkLoader(context: Context) {
         if (closed) return
         val previous = bindings[view]
         if (previous != null && previous.owner == owner && previous.url == url && previous.width == widthPx && previous.height == heightPx) {
-            // 同一张图重复绑定（如手机竖屏切页签后整页重建、RecyclerView 复用卡片）：
-            // 直接复用旧 binding，位图还在就只更新优先级，绝不清图，避免闪一帧空白。
+            // 同一个控件重复请求同一张图时保留已经显示的位图，只调整请求优先级。
             previous.priority = priority.coerceIn(PRIORITY_FOCUSED, PRIORITY_PREFETCH)
             previous.failed = null
             request(previous)
@@ -100,22 +99,25 @@ class ArtworkLoader(context: Context) {
         bindings[view] = binding
         view.addOnLayoutChangeListener(binding.layout)
         view.addOnAttachStateChangeListener(binding.attach)
-        // 清图前先看内存缓存：命中就直接贴上，新图没回来之前不闪空白。
-        // 只有确实没有缓存时才置空，等 request() 布局回调里算好尺寸再异步解码。
-        if (peekCached(view, url, widthPx, heightPx)?.let { cached -> view.setImageBitmap(cached); binding.applied = binding.key; true } != true) {
-            view.setImageDrawable(null)
-        }
+        // 没有旧图可保留时，才尝试同步命中内存缓存；未命中则清掉复用卡片上的上一部剧。
+        // applied 必须与 key 一起记录，不能在 key 尚未计算时写成 null，否则后续仍会当成未显示。
+        val cached = peekCached(view, url, widthPx, heightPx)
+        if (cached != null) {
+            view.setImageBitmap(cached.second)
+            binding.key = cached.first
+            binding.applied = cached.first
+        } else view.setImageDrawable(null)
         request(binding)
     }
 
-    /** 视图为空/size 未定时返回 null；命中内存缓存时返回 Bitmap 并把 binding.key 记录好。 */
-    private fun peekCached(view: ImageView, url: String, widthPx: Int, heightPx: Int): Bitmap? {
+    /** 尺寸未定时返回 null；命中内存缓存时同时返回实际缓存 key，供 applied 正确登记。 */
+    private fun peekCached(view: ImageView, url: String, widthPx: Int, heightPx: Int): Pair<Key, Bitmap>? {
         val width = if (widthPx > 0) widthPx else view.width - view.paddingLeft - view.paddingRight
         val height = if (heightPx > 0) heightPx else view.height - view.paddingTop - view.paddingBottom
         if (width <= 0 || height <= 0) return null
         val scale = min(1.0, 1024.0 / max(width, height))
         val key = Key(url, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
-        return cache.get(key)
+        return cache.get(key)?.let { key to it }
     }
 
     private fun request(binding: Binding) {

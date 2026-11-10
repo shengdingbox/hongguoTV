@@ -33,6 +33,13 @@ class EpisodePlaybackCache(
         Thread(action, "episode-playback").apply { isDaemon = true }
     }
 
+    /** 整集落盘缓存的地址解析：与相邻集预取走同一条链路（模型缓存、降级重试、即将过期重取）。 */
+    fun resolveStream(id: String, quality: Int): StreamInfo =
+        repository.stream(id, quality).let { info ->
+            if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L)
+                repository.stream(id, quality, refreshModel = true) else info
+        }
+
     private fun fresh(prepared: PreparedEpisode): Boolean {
         val now = clock()
         val expires = prepared.video.info.expiresAt
@@ -91,6 +98,7 @@ class EpisodePlaybackCache(
                     if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
                         info = repository.stream(key.id, key.quality, refreshModel = true)
                     }
+                    info = info.copy(idHint = key.id, qualityNumber = key.quality)
                     if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
                         throw IOException("播放地址即将过期，请重试")
                     }
@@ -133,7 +141,11 @@ class EpisodePlaybackCache(
         entries.keys.filter { it.id == id }.forEach { entries.remove(it)?.let(::cancel) }
         attempts.keys.removeAll { it.id == id }
         repository.invalidatePlayback(id)
+        onInvalidate(id)
     }
+
+    /** 地址失效时级联废弃整集落盘缓存（旧地址下载出的密文已不可用）。由 MainActivity 接线。 */
+    var onInvalidate: (String) -> Unit = {}
 
     /** 播放中、正在切换和已挂入队列的资源由播放器持有，过期换址时延后关闭。 */
     @Synchronized fun protect(videos: Set<RemoteVideo>) {

@@ -185,6 +185,10 @@ class Library(context: Context) {
     var autoSeason: Boolean
         get() = state().settings.autoSeason
         set(value) { if (value != autoSeason) { state().settings = state().settings.copy(autoSeason = value); put("autoSeason", value) } }
+    /** 整集落盘缓存开关：关闭走原有内存预载模式，切换时由 MainActivity 清空磁盘池。 */
+    var episodeCache: Boolean
+        get() = state().settings.episodeCache
+        set(value) { if (value != episodeCache) { state().settings = state().settings.copy(episodeCache = value); put("episodeCache", value) } }
     var danmaku: Boolean
         get() = state().settings.danmaku
         set(value) { if (value != danmaku) { state().settings = state().settings.copy(danmaku = value); put("danmaku", value) } }
@@ -281,7 +285,7 @@ class Library(context: Context) {
             "autoSeason" to { merged.settings.autoSeason }, "danmaku" to { merged.settings.danmaku },
             "danmakuOpacity" to { merged.settings.danmakuOpacity }, "danmakuFont" to { merged.settings.danmakuFont },
             "danmakuSpeed" to { merged.settings.danmakuSpeed }, "danmakuRows" to { merged.settings.danmakuRows }, "showClock" to { merged.settings.showClock },
-            "sourceHidden" to { merged.settings.sourceHidden },
+            "sourceHidden" to { merged.settings.sourceHidden }, "episodeCache" to { merged.settings.episodeCache },
             "sourceHiddenChosen" to { true },
             "navHidden.search" to { "search" in merged.settings.navHidden },
             "navHidden.rank" to { "rank" in merged.settings.navHidden },

@@ -122,6 +122,11 @@ class MainActivity: Activity() {
         })
     }
     private var playbackSession: EpisodePlaybackSession?=null
+    /** 整集落盘缓存池：开关（library.episodeCache）关闭时保持 null，播放取数与调度全部走原有内存模式。 */
+    private var episodeDiskCache: EpisodeDiskCache?=null
+    private var episodeCacheOn=false
+    /** 播放中切换清晰度：落盘池整体换档重建，旧画质条目全部废弃。 */
+    private var episodeCacheQuality=0
     // 与页面取址状态分开：等待新集就绪时，旧媒体源仍可能在播放器线程中读取。
     private var playerVideo: RemoteVideo?=null
     private val switchingVideos=mutableSetOf<RemoteVideo>()
@@ -607,6 +612,8 @@ class MainActivity: Activity() {
         library.loadAsync(onFailure={ problem ->
             if(!isDestroyed) { libraryLoadError=problem; if(foreground) showLibraryError(problem) }
         }) {
+            // 记录加载完成后同步落盘缓存开关：恢复出厂/重装后首次进入也要按偏好创建缓存池
+            applyEpisodeCacheSetting()
             if(!isDestroyed && foreground) handleLocalBackupOnStartup {
                 // 手机竖屏：渲染手机首页（热门走缓存+后台刷新）；电视/横屏维持原有 showCatalog
                 if(!isDestroyed && foreground) {
@@ -2171,6 +2178,13 @@ class MainActivity: Activity() {
             library.autoSeason=!library.autoSeason
             autoSeasonButton.text="系列剧连播  ·  ${if(library.autoSeason) "开启" else "关闭"}"
         }
+        lateinit var episodeCacheButton: TextView
+        fun episodeCacheLabel()="整集预载缓存  ·  ${if(library.episodeCache) "开启" else "关闭"}"
+        episodeCacheButton=setting(playback,episodeCacheLabel()) {
+            library.episodeCache=!library.episodeCache
+            episodeCacheButton.text=episodeCacheLabel()
+            applyEpisodeCacheSetting()
+        }
         val danmakuPrefRows=mutableListOf<TextView>()
         var danmakuExpanded=false
         lateinit var danmakuToggle: TextView
@@ -3332,7 +3346,7 @@ class MainActivity: Activity() {
             video=remote; quality=remote.info.quality
             // 取址成功，后面的「缓冲」交给 PlayerView 自己的缓冲圈。
             recoverySpinner?.visibility=View.GONE
-            val session=playbackSession ?: EpisodePlaybackSession(this).also {
+            val session=playbackSession ?: EpisodePlaybackSession(this,episodeDiskCache).also {
                 playbackSession=it; player=it.player; playerView?.player=it.player
             }
             val p=session.player
@@ -3482,6 +3496,8 @@ class MainActivity: Activity() {
         val ids=setOf(current)
         playbackSession?.retain(ids,effectiveQuality())
         playbackCache.retain(ids,effectiveQuality())
+        // 失败/低内存收尾只留当前集：落盘池同样收缩，后台下载目标全部取消
+        episodeDiskCache?.schedule(emptyList(),effectiveQuality(),ids,effectiveQuality())
     }
     private fun retainPlaybackWindow() {
         val data=detail ?: return
@@ -3491,6 +3507,47 @@ class MainActivity: Activity() {
         protectPlaybackVideos()
         playbackSession?.retain(ids,effectiveQuality())
         playbackCache.retain(ids,effectiveQuality())
+    }
+    /** 开关切换：开启时创建落盘池并立刻按当前窗口排程；关闭时清空磁盘、回到纯内存预载。 */
+    private fun applyEpisodeCacheSetting() {
+        val want=library.episodeCache
+        if(want==episodeCacheOn) return
+        episodeCacheOn=want
+        if(want) {
+            val cache=EpisodeDiskCache(repository.http,java.io.File(cacheDir,"episode-cache"),
+                freeBytes={ runCatching { android.os.StatFs(cacheDir.absolutePath).availableBytes }.getOrDefault(Long.MAX_VALUE) },
+                lowMemory={ (getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.let { it.isLowRamDevice || it.memoryClass<=128 } ?: false },
+                resolver={ id,q -> playbackCache.resolveStream(id,q) },
+                onLog={ android.util.Log.i("HongguoTV",it) })
+            episodeDiskCache=cache
+            playbackCache.onInvalidate={ id -> cache.invalidate(id) }
+            // 播放中开启：当前集与已排队的下一集仍走内存模式，新创建的媒体源（手动切集/之后的连播）自动带磁盘缓存
+            scheduleDiskCache()
+        } else {
+            episodeDiskCache?.clear()
+            episodeDiskCache?.close()
+            episodeDiskCache=null
+            playbackCache.onInvalidate={}
+        }
+    }
+    /** 整集落盘调度：上一集/当前集/下三集保留窗口，下载优先级下一集 > +2 > +3 > 当前集 > 上一集。 */
+    private fun scheduleDiskCache() {
+        if(!episodeCacheOn) return
+        val data=detail ?: return
+        val quality=effectiveQuality()
+        val cache=episodeDiskCache ?: return
+        if(quality!=episodeCacheQuality && episodeCacheQuality!=0) {
+            // 换档后旧画质密文没有意义：整体清空重排
+            cache.clear()
+        }
+        episodeCacheQuality=quality
+        if(!networkAvailable() || connectivity.isActiveNetworkMetered) return
+        if(!prefetchMemoryReady()) return
+        val ordered=listOf(episodeIndex+1,episodeIndex+2,episodeIndex+3,episodeIndex,episodeIndex-1)
+            .mapNotNull { data.episodes.getOrNull(it) }
+        val from=(episodeIndex-1).coerceAtLeast(0)
+        val to=(episodeIndex+4).coerceAtMost(data.episodes.size)
+        cache.schedule(ordered,quality,data.episodes.subList(from,to).toSet(),quality)
     }
     /** 移除自动连播队列时保留相邻集的媒体源，手动切集继续复用。 */
     private fun dropQueuedNext() {
@@ -3553,6 +3610,7 @@ class MainActivity: Activity() {
             EpisodePlaybackSession.Episode(id,index,quality,remote,episodeStartPosition(index))
         }
         session.updatePreloads(neighbors)
+        scheduleDiskCache()
         if(next!=null && library.autoNext && PrefetchPolicy.nearEnd(p.currentPosition,p.duration,p.playbackParameters.speed)) {
             handOffPrefetched(next,quality)
         }
@@ -4677,6 +4735,7 @@ class MainActivity: Activity() {
         phonePlayer?.release()
         video=null
         if(!preservePlaybackCache) playbackCache.clear()
+        episodeDiskCache?.clear()
         stopDanmaku(); danmakuView=null
         playerScreenOn=false; refreshScreenOn()
     }
@@ -6140,6 +6199,7 @@ class MainActivity: Activity() {
             "默认清晰度  ·  ${library.maxQuality}P",
             "默认倍速  ·  ${com.hongguotv.core.PlaybackSpeed.label(library.playbackSpeed)}",
             "自动连播  ·  ${if(library.autoNext) "开启" else "关闭"}",
+            "整集预载缓存  ·  ${if(library.episodeCache) "开启" else "关闭"}",
             "弹幕  ·  ${if(library.danmaku) "开启" else "关闭"}",
             if(OrientationMode.of(library.orientationMode)==OrientationMode.PORTRAIT) "更多设置需先切回「跟随系统」再旋转到横屏"
             else "更多设置请旋转到横屏或用电视界面")
@@ -6152,7 +6212,8 @@ class MainActivity: Activity() {
                 2 -> showQualityPicker(voiceAnchor,false)
                 3 -> showSpeedPicker(voiceAnchor,false)
                 4 -> { library.autoNext=!library.autoNext; PhoneUi.toast(this,"自动连播已${if(library.autoNext) "开启" else "关闭"}") }
-                5 -> { library.danmaku=!library.danmaku; applyDanmakuPrefs(); PhoneUi.toast(this,"弹幕已${if(library.danmaku) "开启" else "关闭"}") }
+                5 -> { library.episodeCache=!library.episodeCache; applyEpisodeCacheSetting(); PhoneUi.toast(this,"整集预载缓存已${if(library.episodeCache) "开启" else "关闭"}") }
+                6 -> { library.danmaku=!library.danmaku; applyDanmakuPrefs(); PhoneUi.toast(this,"弹幕已${if(library.danmaku) "开启" else "关闭"}") }
             }
         })
     }
@@ -6448,7 +6509,7 @@ class MainActivity: Activity() {
         xiaoAi?.destroy()
         third?.release()
         artwork.close(); releaseCatalogViews(); mediaSession.release(); main.removeCallbacksAndMessages(null)
-        io.shutdownNow(); playbackCache.close()
+        io.shutdownNow(); playbackCache.close(); episodeDiskCache?.close(); episodeDiskCache=null
         Thread({ repository.http.dispatcher.cancelAll(); repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() },"hongguotv-network-cleanup").start()
         super.onDestroy()
         if(killOnDestroy) android.os.Process.killProcess(android.os.Process.myPid())

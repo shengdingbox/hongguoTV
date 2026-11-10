@@ -104,6 +104,11 @@ class RemoteVideo(
         if(prepared.samples.any { it.end>total }) throw IOException("视频样本超出资源大小")
         return this
     }
+    /** 整集落盘缓存用的索引快照：只在 prepare 之后调用，返回改写后的明文头与加密样本索引。 */
+    @Synchronized fun preparedSnapshot(): MediaCrypto.Prepared {
+        check(::prepared.isInitialized) { "prepare 尚未完成" }
+        return prepared
+    }
     /** 相邻集只准备索引和媒体开头的一个分块，不启动持续预读。 */
     @Synchronized fun preload(): RemoteVideo {
         prepare()

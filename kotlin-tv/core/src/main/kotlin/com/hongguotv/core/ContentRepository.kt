@@ -55,7 +55,9 @@ data class ComicRanking(val positions: Map<String,RankPosition>, val totalPages:
 data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val ranking: ComicRanking? = null)
 /** One website genre selector entry; the slug selects the category path, ids echo back for validation. */
 data class Genre(val slug: String, val name: String, val ids: List<String>)
-data class StreamInfo(val url: String, val key: ByteArray?, val quality: String, val expiresAt: Long = 0L)
+/** [idHint]/[qualityNumber] 由播放缓存回填，供整集落盘缓存按键查找元数据。 */
+data class StreamInfo(val url: String, val key: ByteArray?, val quality: String, val expiresAt: Long = 0L,
+    val idHint: String = "", val qualityNumber: Int = 0)
 /** 一次窗口取址的结果：[requested] 请求集数、[cached] 取址后可播放的集数、[batch] 本次批量新增、[route] 命中的路由。 */
 data class WarmReport(val requested: Int, val cached: Int, val batch: Int, val route: String?)
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")

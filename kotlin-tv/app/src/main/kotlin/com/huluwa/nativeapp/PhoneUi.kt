@@ -36,6 +36,10 @@ object PhoneUi {
         return portrait && TouchControls.isHandheld(activity)
     }
 
+    /** 手机播放页全屏时会被锁成横屏；这期间仍属于手机界面，不能切回电视版。 */
+    fun shouldUsePlayer(activity: Activity, fullscreen: Boolean): Boolean =
+        fullscreen && TouchControls.isHandheld(activity) || shouldUse(activity)
+
     // ---- 基础视图工具（与 TV 版 dp/text/lp 对齐，但控件尺寸按手机习惯收紧） ----
 
     fun dp(activity: Activity, value: Int) = (value * activity.resources.displayMetrics.density).toInt()

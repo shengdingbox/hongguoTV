@@ -438,7 +438,6 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // 相关推荐与系列剧都来自 plan feed，独立请求；两个都失败也不影响已经拿到的详情。
         val related = runCatching { planRelated(id, main.series) }.getOrDefault(emptyList())
         val sameName = runCatching { planSeasons(id) }.getOrDefault(emptyList())
-            .map { it.toSeries() }
             .filter { it.id != id }
         val merged = (sameName + sameName(main.series, related)).distinctBy { it.id }
             .sortedBy { seasonNumber(it.title).let { n -> if (n == Int.MAX_VALUE) 1 else n } }

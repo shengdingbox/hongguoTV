@@ -159,6 +159,8 @@ class MainActivity: Activity() {
     private var catalogRecycler: RecyclerView?=null
     private var catalogAdapter: CatalogAdapter?=null
     private var catalogFocusPos=RecyclerView.NO_POSITION
+    /** 方向键尚未落焦的目标；滚动回收旧卡片时不能用旧位置覆盖它。 */
+    private var pendingCatalogFocusPos=RecyclerView.NO_POSITION
     /** 焦点当前是否在网格卡片内：用于在 Activity 层拦截下键，即使焦点被回收清空也按记住的位置继续下移 */
     private var gridFocusOwned=false
     private var loadingMore=false
@@ -554,9 +556,8 @@ class MainActivity: Activity() {
         } else {
             window.decorView.systemUiVisibility=View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         }
-        // 方向策略：电视锁横屏（原清单行为）；手机交给系统，竖屏自动切换到手机版页面
-        requestedOrientation=if(TouchControls.isHandheld(this)) android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        // 方向策略：电视锁横屏；手机按「启动方向」偏好，跟随系统时竖屏自动切到手机版页面
+        requestedOrientation=PhoneUi.requestedOrientation(this)
         library=Library(this); artwork=ArtworkLoader(this); tvTools=TvTools(this); extras=PlaybackExtras(this); root=FrameLayout(this).apply { setBackgroundColor(bg) }; setContentView(root)
         // 上新区沿用上次选择的时间窗（只在本机记，识别不了的值回落到默认档）
         newReleaseWindow=library.newReleaseWindow.takeIf { id -> NEW_RELEASE_WINDOWS.any { it.first==id } } ?: NEW_RELEASE_WINDOWS[0].first
@@ -754,6 +755,7 @@ class MainActivity: Activity() {
         homeScreen?.let { homePosition=it.capturePosition() }
         (catalogRecycler?.layoutManager as? GridLayoutManager)?.let { scrollPositions[catalogPageKey]=it.findFirstVisibleItemPosition() }
         homeScreen=null; selectionPreview=null; catalogRecycler=null; catalogAdapter=null; loadingMore=false
+        catalogFocusPos=RecyclerView.NO_POSITION; pendingCatalogFocusPos=RecyclerView.NO_POSITION; gridFocusOwned=false
         nav.clear(); segmentFirst=null; typeButtons.clear(); searchInput=null; searchButton=null; searchActions.clear()
         azFirst=null; azLastRow.clear(); suggestRow=null; suggestFirst=null; suggestTicket++; main.removeCallbacks(pendingSuggest)
         suggestVertical=false; searchBody=null; keyboardKeys=emptyMap(); keyboardRows=emptyList(); historyFirst=null; historyItems=emptyList(); suggestScrollRef=null; resultFirstCard=null
@@ -1506,18 +1508,50 @@ class MainActivity: Activity() {
             layoutManager=grid; this.adapter=adapter
             // Focus entering the grid lands on the first visible card, keeping the user's place.
             isFocusable=true; isFocusableInTouchMode=true
-            setOnFocusChangeListener { _,focused -> if(focused) { val first=grid.findFirstVisibleItemPosition().coerceAtLeast(0); post { findViewHolderForAdapterPosition(first)?.itemView?.requestFocus() } } }
+            setOnFocusChangeListener { _,focused -> if(focused) {
+                post {
+                    // 布局期间网格会短暂拿到焦点；卡片已获焦后不能再被旧回调拉到首行。
+                    if(catalogRecycler===this && isFocused && pendingCatalogFocusPos==RecyclerView.NO_POSITION) {
+                        gridFocusOwned=true; restoreCatalogFocus()
+                    }
+                }
+            } }
+            addOnItemTouchListener(object: RecyclerView.SimpleOnItemTouchListener() {
+                override fun onInterceptTouchEvent(rv: RecyclerView,event: MotionEvent): Boolean {
+                    if(event.actionMasked==MotionEvent.ACTION_DOWN && catalogRecycler===rv) {
+                        // 手势滚动接管位置，分页回调不能再把焦点补回手势前的卡片。
+                        gridFocusOwned=false; pendingCatalogFocusPos=RecyclerView.NO_POSITION
+                    }
+                    return false
+                }
+            })
             // 下键统一在 MainActivity.dispatchKeyEvent 里处理：网格重排/分页时 View 层收不到按键
         }
-        catalogRecycler=recycler; catalogAdapter=adapter; catalogFocusPos=RecyclerView.NO_POSITION; gridFocusOwned=false
-        recycler.viewTreeObserver.addOnGlobalFocusChangeListener { o,n ->
-            if(n!=null && inCatalogGrid(n,recycler)) {
-                val pos=recycler.getChildAdapterPosition(n)
-                if(pos!=RecyclerView.NO_POSITION) { catalogFocusPos=pos; gridFocusOwned=true }
-            } else if(o!=null && inCatalogGrid(o,recycler)) gridFocusOwned=false
-            // 旧焦点为 null：焦点卡在重排中被回收，立刻补回网格，别停在顶栏「首页」
-            else if(o==null && gridFocusOwned) restoreCatalogFocus()
+        catalogRecycler=recycler; catalogAdapter=adapter; catalogFocusPos=RecyclerView.NO_POSITION
+        pendingCatalogFocusPos=RecyclerView.NO_POSITION; gridFocusOwned=false
+        val focusListener=ViewTreeObserver.OnGlobalFocusChangeListener { o,n ->
+            if(catalogRecycler===recycler && screen=="catalog") {
+                if(n!=null && inCatalogGrid(n,recycler)) {
+                    val pos=recycler.findContainingViewHolder(n)?.bindingAdapterPosition ?: RecyclerView.NO_POSITION
+                    if(pos!=RecyclerView.NO_POSITION && !adapter.isHeader(pos) && !adapter.isFooter(pos)) {
+                        gridFocusOwned=true
+                        if(pendingCatalogFocusPos==RecyclerView.NO_POSITION || pendingCatalogFocusPos==pos) {
+                            catalogFocusPos=pos; pendingCatalogFocusPos=RecyclerView.NO_POSITION
+                        }
+                    }
+                } else if(pendingCatalogFocusPos!=RecyclerView.NO_POSITION && gridFocusOwned) {
+                    // 显式移行尚未完成，保留目标，由 moveGridFocus 在布局后落焦。
+                } else if((o==null || n==null) && gridFocusOwned) restoreCatalogFocus()
+                else if(o!=null && inCatalogGrid(o,recycler)) gridFocusOwned=false
+            }
         }
+        recycler.viewTreeObserver.addOnGlobalFocusChangeListener(focusListener)
+        recycler.addOnAttachStateChangeListener(object: View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(view: View) {}
+            override fun onViewDetachedFromWindow(view: View) {
+                if(view.viewTreeObserver.isAlive) view.viewTreeObserver.removeOnGlobalFocusChangeListener(focusListener)
+            }
+        })
         adapter.footer=when {
             localCatalog() -> if(collection=="hot" && collectionReturn?.hasMore==true) FOOTER_MORE_HOT else FOOTER_NONE
             hasMore -> FOOTER_NONE
@@ -1578,7 +1612,11 @@ class MainActivity: Activity() {
             val target=if(found>=0) found else scrollPositions[catalogPageKey]?.coerceIn(0,displayed.size-1) ?: 0
             val targetAdapter=adapter.adapterPosition(target)
             grid.scrollToPositionWithOffset(targetAdapter,0)
-            recycler.post { if(catalogRecycler===recycler) recycler.findViewHolderForAdapterPosition(targetAdapter)?.itemView?.requestFocus() }
+            recycler.post {
+                if(catalogRecycler===recycler && catalogFocusPos==RecyclerView.NO_POSITION && pendingCatalogFocusPos==RecyclerView.NO_POSITION) {
+                    recycler.findViewHolderForAdapterPosition(targetAdapter)?.itemView?.requestFocus()
+                }
+            }
         }
     }
     private fun inCatalogGrid(view: View,recycler: RecyclerView): Boolean {
@@ -1597,7 +1635,8 @@ class MainActivity: Activity() {
             val recycler=catalogRecycler; val adapter=catalogAdapter
             if(recycler!=null && adapter!=null) {
                 val focused=recycler.focusedChild
-                var pos=if(focused!=null) recycler.getChildAdapterPosition(focused) else RecyclerView.NO_POSITION
+                var pos=pendingCatalogFocusPos
+                if(pos==RecyclerView.NO_POSITION && focused!=null) pos=recycler.getChildAdapterPosition(focused)
                 if(pos==RecyclerView.NO_POSITION) pos=catalogFocusPos
                 if(pos!=RecyclerView.NO_POSITION && !adapter.isHeader(pos) && !adapter.isFooter(pos)) {
                     val index=adapter.displayedIndex(pos)
@@ -1610,7 +1649,7 @@ class MainActivity: Activity() {
                 }
             }
         }
-        return super.dispatchKeyEvent(event)
+        return false
     }
     /**
      * 网格内上键：和 [handleCatalogDown] 对称，按「上一行同列」移动。
@@ -1625,7 +1664,8 @@ class MainActivity: Activity() {
             val recycler=catalogRecycler; val adapter=catalogAdapter
             if(recycler!=null && adapter!=null) {
                 val focused=recycler.focusedChild
-                var pos=if(focused!=null) recycler.getChildAdapterPosition(focused) else RecyclerView.NO_POSITION
+                var pos=pendingCatalogFocusPos
+                if(pos==RecyclerView.NO_POSITION && focused!=null) pos=recycler.getChildAdapterPosition(focused)
                 if(pos==RecyclerView.NO_POSITION) pos=catalogFocusPos
                 if(pos!=RecyclerView.NO_POSITION && !adapter.isHeader(pos) && !adapter.isFooter(pos)) {
                     val index=adapter.displayedIndex(pos)
@@ -1646,6 +1686,7 @@ class MainActivity: Activity() {
                                     ?: segmentFirst ?: nav.getOrNull(tab)
                             }
                             if(up==null) return false
+                            pendingCatalogFocusPos=RecyclerView.NO_POSITION; gridFocusOwned=false
                             up.requestFocus()
                         }
                         return true
@@ -1655,14 +1696,19 @@ class MainActivity: Activity() {
         }
         return false
     }
-    /** 把焦点移到网格内指定 adapter 位置：已布局直接移，未布局先滚动再补焦点 */
+    /** 显式移行先记下目标，回收和分页期间的补焦点只能服从这个目标。 */
     private fun moveGridFocus(pos: Int) {
         val recycler=catalogRecycler ?: return
-        val holder=recycler.findViewHolderForAdapterPosition(pos)
-        if(holder!=null) { holder.itemView.requestFocus(); return }
-        // 目标在屏幕外：只按一行高度滚动。用 scrollToPosition 会把目标整行锚到顶部，
-        // 当前焦点卡瞬间被滚出屏幕并回收，焦点被清空后框架直接回落到顶栏「首页」。
-        // 滚动方向必须跟着目标走：向上找目标时要往回滚，否则上一行永远进不了布局。
+        val adapter=catalogAdapter ?: return
+        if(pos !in 0 until adapter.itemCount || adapter.isHeader(pos) || adapter.isFooter(pos)) return
+        pendingCatalogFocusPos=pos; catalogFocusPos=pos; gridFocusOwned=true
+        fun focusTarget() {
+            if(screen=="catalog" && recycler===catalogRecycler && gridFocusOwned && pendingCatalogFocusPos==pos) {
+                recycler.findViewHolderForAdapterPosition(pos)?.itemView?.requestFocus()
+            }
+        }
+        if(recycler.findViewHolderForAdapterPosition(pos)!=null) { focusTarget(); return }
+        // 优先只滚一行，让目标进入视口；目标已布局就同步落焦，不留下抢焦点的旧 post。
         val focused=recycler.focusedChild
         if(focused!=null) {
             val margin=(focused.layoutParams as? RecyclerView.LayoutParams)?.let { it.topMargin+it.bottomMargin } ?: 0
@@ -1670,28 +1716,40 @@ class MainActivity: Activity() {
             val current=recycler.getChildAdapterPosition(focused)
             val downward=current!=RecyclerView.NO_POSITION && pos>current
             recycler.scrollBy(0,if(downward) step else -step)
-        } else recycler.scrollToPosition(pos)
-        recycler.post {
-            if(screen!="catalog" || recycler!==catalogRecycler) return@post
-            recycler.findViewHolderForAdapterPosition(pos)?.itemView?.requestFocus()
         }
+        if(recycler.findViewHolderForAdapterPosition(pos)!=null) { focusTarget(); return }
+        // 焦点已被回收或快速连按跨了多行时，等目标真正完成布局再落焦。
+        recycler.addOnLayoutChangeListener(object: View.OnLayoutChangeListener {
+            override fun onLayoutChange(view: View,left: Int,top: Int,right: Int,bottom: Int,oldLeft: Int,oldTop: Int,oldRight: Int,oldBottom: Int) {
+                view.removeOnLayoutChangeListener(this)
+                focusTarget()
+            }
+        })
+        recycler.scrollToPosition(pos)
     }
-    /** 记住当前焦点卡位置，供列表结构变更（footer 插入/移除、分页插入）后补回焦点，避免掉到顶栏首页 */
+    /** 分页只记住有效的当前焦点，不能覆盖尚未落焦的移动目标。 */
     private fun rememberCatalogFocus() {
         val recycler=catalogRecycler ?: return
-        recycler.focusedChild?.let { catalogFocusPos=recycler.getChildAdapterPosition(it) }
+        if(!gridFocusOwned || pendingCatalogFocusPos!=RecyclerView.NO_POSITION) return
+        val pos=recycler.focusedChild?.let { recycler.getChildAdapterPosition(it) } ?: RecyclerView.NO_POSITION
+        if(pos!=RecyclerView.NO_POSITION) catalogFocusPos=pos
     }
+    /** 补焦点只在当前视口内进行，绝不为恢复已回收的旧卡片而反向滚动列表。 */
     private fun restoreCatalogFocus() {
         val recycler=catalogRecycler ?: return
-        val pos=catalogFocusPos
-        if(pos==RecyclerView.NO_POSITION) return
         recycler.post {
-            if(screen!="catalog" || recycler!==catalogRecycler || recycler.focusedChild!=null) return@post
-            val view=recycler.findViewHolderForAdapterPosition(pos)?.itemView
-            if(view!=null) view.requestFocus() else {
-                recycler.scrollToPosition(pos)
-                recycler.post { recycler.findViewHolderForAdapterPosition(pos)?.itemView?.requestFocus() }
-            }
+            if(screen!="catalog" || recycler!==catalogRecycler || !gridFocusOwned || !recycler.hasWindowFocus()
+                || recycler.scrollState!=RecyclerView.SCROLL_STATE_IDLE || pendingCatalogFocusPos!=RecyclerView.NO_POSITION
+                || recycler.focusedChild!=null) return@post
+            val grid=recycler.layoutManager as? GridLayoutManager ?: return@post
+            val adapter=catalogAdapter ?: return@post
+            val first=grid.findFirstVisibleItemPosition()
+            val last=grid.findLastVisibleItemPosition()
+            if(first==RecyclerView.NO_POSITION || last==RecyclerView.NO_POSITION) return@post
+            val preferred=catalogFocusPos
+            val target=if(preferred in first..last && !adapter.isHeader(preferred) && !adapter.isFooter(preferred)) preferred
+                else (first..last).firstOrNull { !adapter.isHeader(it) && !adapter.isFooter(it) } ?: return@post
+            recycler.findViewHolderForAdapterPosition(target)?.itemView?.requestFocus()
         }
     }
     private fun maybeLoadMore() {
@@ -2193,6 +2251,12 @@ class MainActivity: Activity() {
         refreshBackdropSetting={ backdropButton.text=backdropLabel() }
         lateinit var navModulesButton: TextView
         navModulesButton=setting(look,navModulesLabel()) { showNavModules(navModulesButton) }
+        // 电视/盒子本身锁定横屏，这一项只在手机等触屏设备上才有意义
+        if(TouchControls.isHandheld(this)) {
+            setting(look,"启动方向  ·  ${OrientationMode.of(library.orientationMode).label}") {
+                showOrientationPicker(voiceAnchor)
+            }
+        }
 
         heading(device,"设备与数据",categories[2].second)
         accountButton=setting(device,accountManager.accountLabel) { accountManager.showLoginDialog(this) }
@@ -6012,7 +6076,11 @@ class MainActivity: Activity() {
 
     /** 进入手机全屏播放：隐藏系统栏并锁定横屏（短剧全屏就是横过来满屏看）。 */
     fun enterFullscreenPhone() {
-        requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        // 强制竖屏偏好下全屏不旋转设备：竖屏满屏（控件按竖屏布局），否则会把人手里
+        // 竖着的界面硬掰成横屏，退出后与偏好来回打架。
+        requestedOrientation = if(PhoneUi.orientationMode(this)==OrientationMode.PORTRAIT)
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         // Android 15 起老的 systemUiVisibility 全屏标志被忽略，必须走 InsetsController；
         // 滑动临时呼出对应原 IMMERSIVE_STICKY 行为
         val controller=WindowCompat.getInsetsController(window,window.decorView)
@@ -6021,9 +6089,14 @@ class MainActivity: Activity() {
         phoneStatusBarLight(false)
     }
 
-    /** 退出手机全屏：恢复竖屏与常规系统栏。 */
+    /** 退出手机全屏：恢复竖屏与常规系统栏。强制横屏偏好下不把界面掰回竖屏。 */
     fun exitFullscreenPhone() {
-        requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        requestedOrientation = when(PhoneUi.orientationMode(this)) {
+            OrientationMode.LANDSCAPE -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            OrientationMode.PORTRAIT -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            // 跟随系统：退出全屏回到传感器方向，横竖由设备姿态决定
+            OrientationMode.AUTO -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
         WindowCompat.getInsetsController(window,window.decorView).show(WindowInsetsCompat.Type.systemBars())
         phoneStatusBarFollowTheme()
     }
@@ -6063,6 +6136,7 @@ class MainActivity: Activity() {
     fun showPhoneSettings() {
         val options=listOf(
             "系统风格  ·  ${if(TvStyle.theme==TvStyle.Theme.NIGHT) "深夜影院" else "暖玉白"}",
+            "启动方向  ·  ${OrientationMode.of(library.orientationMode).label}",
             "默认清晰度  ·  ${library.maxQuality}P",
             "默认倍速  ·  ${com.hongguotv.core.PlaybackSpeed.label(library.playbackSpeed)}",
             "自动连播  ·  ${if(library.autoNext) "开启" else "关闭"}",
@@ -6072,12 +6146,42 @@ class MainActivity: Activity() {
             when(choice) {
                 // 竖屏下直接重建页签即可，不必 recreate 整个 Activity
                 0 -> { library.theme=TvStyle.toggle().name; renderPhone() }
-                1 -> showQualityPicker(voiceAnchor,false)
-                2 -> showSpeedPicker(voiceAnchor,false)
-                3 -> { library.autoNext=!library.autoNext; PhoneUi.toast(this,"自动连播已${if(library.autoNext) "开启" else "关闭"}") }
-                4 -> { library.danmaku=!library.danmaku; applyDanmakuPrefs(); PhoneUi.toast(this,"弹幕已${if(library.danmaku) "开启" else "关闭"}") }
+                // 改完方向要整页按新皮肤重建：强制横屏会切到电视页面，单重画手机页签不够
+                1 -> showOrientationPicker(voiceAnchor)
+                2 -> showQualityPicker(voiceAnchor,false)
+                3 -> showSpeedPicker(voiceAnchor,false)
+                4 -> { library.autoNext=!library.autoNext; PhoneUi.toast(this,"自动连播已${if(library.autoNext) "开启" else "关闭"}") }
+                5 -> { library.danmaku=!library.danmaku; applyDanmakuPrefs(); PhoneUi.toast(this,"弹幕已${if(library.danmaku) "开启" else "关闭"}") }
             }
         })
+    }
+
+    /**
+     * 启动方向选择：跟随系统 / 强制横屏 / 强制竖屏。
+     * 选定后立即生效——锁定 Activity 朝向，再按新方向重建当前页面（手机竖屏页与电视页是两套皮肤）。
+     */
+    private fun showOrientationPicker(anchor: android.view.View?) {
+        val current=OrientationMode.of(library.orientationMode)
+        tvTools.choose("启动方向",OrientationMode.entries.map { mode ->
+            mode.label+(if(mode==current) "   ·   当前" else "")
+        },anchor,{ choice ->
+            val next=OrientationMode.entries.getOrNull(choice) ?: return@choose
+            if(next!=current) {
+                library.orientationMode=next.name
+                // 锁朝向：系统会按需要回调 onConfigurationChanged，由那里重建对应皮肤
+                requestedOrientation=PhoneUi.requestedOrientation(this)
+                // 朝向没真的变化时不会触发重建（比如已经横着的设备选「强制横屏」），这里主动刷新一次；
+                // 电视设置页还要把焦点送回「启动方向」这一行。
+                // 播放页正开着时不能重画目录：方向变化由 onConfigurationChanged 重建播放外壳，
+                // 全屏与否也由 enter/exitFullscreenPhone 负责。
+                when {
+                    screen=="player" -> Unit
+                    phoneLayout() -> if(phoneTab!="detail") renderPhone() else openDetailPhone(detail!!.series)
+                    screen=="catalog" -> { settingsFocusKey="启动方向"; showCatalog() }
+                }
+                applyPhoneSystemBars()
+            }
+        },focusIndex=OrientationMode.entries.indexOf(current))
     }
 
     /** 手机搜索页重渲染（清空历史后调用）。 */
@@ -6259,7 +6363,10 @@ class MainActivity: Activity() {
                 playEpisode(episodeIndex,position,autoplay)
                 if(wasFullscreen) {
                     phonePlayer?.restoreFullscreenState(true)
-                    requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    // 重建后重新锁回全屏方向：强制竖屏偏好下保持竖屏
+                    requestedOrientation = if(PhoneUi.orientationMode(this)==OrientationMode.PORTRAIT)
+                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                    else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                 }
             }
             // 详情页要按新方向重建成对应的皮肤；这里必须先判断方向，不能沿用旧的 phoneTab

@@ -13,10 +13,20 @@ class RequestScope {
     /** 调用方据此丢弃「已被新意图取消」的结果与异常，避免把取消当成真实失败上报。 */
     val isCancelled: Boolean @Synchronized get() = cancelled
 
+    /** 返回一个独立取消、但随父页面一起取消的子作用域。 */
+    fun child(): RequestScope {
+        val next=RequestScope()
+        synchronized(this) { if(cancelled) next.cancel() else children+=next }
+        return next
+    }
+
+    private val children=mutableSetOf<RequestScope>()
+
     @Synchronized fun cancel() {
         cancelled = true
         calls.forEach { it.cancel() }
         calls.clear()
+        children.forEach { it.cancel() }
     }
 
     @Synchronized private fun attach(call: Call) {
@@ -42,6 +52,8 @@ class RequestScope {
 
     companion object {
         private val current = ThreadLocal<RequestScope>()
+        /** 子线程需要显式继承取消作用域，页面离开后才能停掉辅助请求。 */
+        fun current(): RequestScope? = current.get()
         fun <T> execute(call: Call, consume: (Response) -> T): T {
             val owner = current.get()
             owner?.attach(call)

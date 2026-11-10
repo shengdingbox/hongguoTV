@@ -949,12 +949,9 @@ class MainActivity: Activity() {
         homeScreen=state.home; catalogRecycler=state.recycler; catalogAdapter=state.adapter; selectionPreview=state.preview
         nav.clear(); nav.addAll(state.nav); typeButtons.clear(); typeButtons.putAll(state.types)
         rankSwitch=state.rankSwitch; rankRefresh=state.rankRefresh; rankSubtitle=state.rankSubtitle
-        root.removeAllViews()
-        root.setBackgroundColor(bg)
-        backdropView?.takeIf { backdropBitmap!=null && it.parent==null }?.let { root.addView(it,0,FrameLayout.LayoutParams(-1,-1)) }
-        root.addView(switcher,FrameLayout.LayoutParams(-1,-1))
-        state.page.visibility=View.VISIBLE
-        switcher.currentView?.takeIf { it!==state.page }?.visibility=View.GONE
+        // 复用时不能把 switcher 自身从 root 移除：这会连带 detach 两个保留页，
+        // ArtworkLoader 随即将所有图片解绑，保留视图就变成空图重新加载。
+        switcher.displayedChild=switcher.indexOfChild(state.page)
         // 只刷新导航选中态，不碰内容区的卡片和图片。
         nav.forEachIndexed { index,item ->
             val selected=when(index) { 0->tab==0; 1->tab==1; 2->tab==2; 3,4->tab==3 || tab==4; 5->tab==5; 6->tab==6; 7->tab==7; else->false }
@@ -3135,7 +3132,9 @@ class MainActivity: Activity() {
                 prefetchDetailWindow(target.index)
             }
         }
+        val cached=if(cloud==null) repository.cachedDetail(series.id) else null
         if(preloaded!=null) apply(preloaded)
+        else if(cached!=null) apply(cached)
         else work({ repository.detail(series.id) }, apply, { problem -> error(body,problem) { openDetail(series,resume,detailAutoplay,cloud) } })
     }
     /** 详情页驻留期间预热「即将播放的那集 + 下一集」。
@@ -3394,7 +3393,8 @@ class MainActivity: Activity() {
             main.removeCallbacks(hideHud); main.removeCallbacks(seekRunnable); pendingSeek=null
         } else releasePlayer(preservePlaybackCache=true)
         if(retrying) playbackCache.invalidate(data.episodes[selectedIndex])
-        artwork.cancelPage(clearMemory=true)
+        // 播放页不展示海报，但返回详情仍要复用同一张位图；清理解绑即可，位图由内存回调统一回收。
+        artwork.cancelPage()
         video=null
         var firstReady=true; var firstFrame=true; var rebufferStart=0L
         if(!recovering) recovery.reset()
@@ -6267,7 +6267,7 @@ class MainActivity: Activity() {
         invalidatePage(); releaseCatalogViews(); screen="detail"; detail=null; synopsisExpanded=false; phoneTab="detail"
         root.removeAllViews()
         message(column().also { body -> root.addView(body,android.widget.FrameLayout.LayoutParams(-1,-1)) },"正在加载剧集…")
-        work({ repository.detail(series.id) }, { result ->
+        val apply: (Detail) -> Unit = { result ->
             // done lambda 同样是非内联的，不能 return：用 if/else 表达「已转回横屏就交给 TV 版」
             if(!phoneLayout()) {
                 openDetail(series,resume,preloaded=result)
@@ -6282,7 +6282,8 @@ class MainActivity: Activity() {
                     prefetchDetailWindow(target.index)
                 }
             }
-        }, { problem ->
+        }
+        repository.cachedDetail(series.id)?.let(apply) ?: work({ repository.detail(series.id) }, apply, { problem ->
             // 失败回调是普通的非内联 lambda，里面不能写裸 return
             if(phoneLayout()) {
                 val body=column(); error(body,problem) { openDetailPhone(series,resume) }

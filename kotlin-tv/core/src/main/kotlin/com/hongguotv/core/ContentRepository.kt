@@ -13,6 +13,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Future
 import java.util.concurrent.TimeoutException
@@ -423,25 +424,39 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         if(key.isEmpty() || key.length>20 || !key.matches(Regex("[a-z0-9]+"))) return emptyList()
         return suggestRaw(key)
     }
-    /**
-     * 剧集详情。改走红果官方 App 的 JSON 接口（移植自 openhongguo 的
-     * `video_detail`），不再抓整页 HTML：一次小 JSON 就拿回剧集信息、整份分集
-     * ID、热度与系列标记，返回速度快一个量级，也彻底摆脱「补季搜索」。
-     *
-     * 相关推荐与「系列剧」换用详情页自己的 plan feed，两个请求并行，失败时退回
-     * 详情接口里能拿到的同名季，绝不再走全网搜索。返回结构保持 [Detail] 不变，
-     * UI 与播放链路不需要任何改动。
-     */
+    /** 剧集详情优先保证主接口与分集尽快回来，推荐/系列剧只给很短的并行等待预算。 */
+    private data class DetailCache(val at: Long, val main: SeriesPayload, val related: List<Series>, val seasons: List<Series>)
+    private val detailCache=linkedMapOf<String,DetailCache>()
+
     fun detail(id: String): Detail {
         require(id.matches(Regex("[0-9]{1,30}")))
-        val main = fetchSeriesDetail(id)
-        // 相关推荐与系列剧都来自 plan feed，独立请求；两个都失败也不影响已经拿到的详情。
-        val related = runCatching { planRelated(id, main.series) }.getOrDefault(emptyList())
-        val sameName = runCatching { planSeasons(id) }.getOrDefault(emptyList())
-            .filter { it.id != id }
-        val merged = (sameName + sameName(main.series, related)).distinctBy { it.id }
-            .sortedBy { seasonNumber(it.title).let { n -> if (n == Int.MAX_VALUE) 1 else n } }
-        return Detail(main.series, main.episodes, related, merged, main.social)
+        cachedDetail(id)?.let { return it }
+        val main=fetchSeriesDetail(id)
+        val scope=RequestScope.current()?.child() ?: RequestScope()
+        // plan feed 只用于辅助展示，绝不能像旧网页补季那样串行拖住整个详情页。
+        // 两个请求共用取消作用域，超时就同时取消，不留下还在跑的无主网络任务。
+        val relatedTask=FutureTask(Callable { scope.run { runCatching { planRelated(id,main.series) }.getOrDefault(emptyList()) } })
+        val seasonsTask=FutureTask(Callable { scope.run { runCatching { planSeasons(id) }.getOrDefault(emptyList()).filter { it.id!=id } } })
+        val threads=listOf(relatedTask,seasonsTask).map { task -> Thread(task,"hongguotv-detail-extra").apply { isDaemon=true; start() } }
+        val deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(DETAIL_AUX_TIMEOUT)
+        fun <T> getAux(task: Future<T>): T? = try { task.get((deadline-System.nanoTime()).coerceAtLeast(0),TimeUnit.NANOSECONDS) }
+        catch(_: TimeoutException) { null } catch(_: ExecutionException) { null } catch(_: InterruptedException) { Thread.currentThread().interrupt(); null }
+        val related=getAux(relatedTask).orEmpty()
+        val sameName=getAux(seasonsTask).orEmpty().distinctBy { it.id }.sortedBy { seasonNumber(it.title).let { n -> if(n==Int.MAX_VALUE) 1 else n } }
+        scope.cancel()
+        threads.forEach { it.interrupt() }
+        synchronized(detailCache) {
+            detailCache[id]=DetailCache(clock(),main,related,sameName)
+            while(detailCache.size>30) detailCache.remove(detailCache.keys.first())
+        }
+        return Detail(main.series,main.episodes,related,sameName,main.social)
+    }
+
+    /** 已打开的详情留在内存里，播放页返回和同季切换不再重新拉整份分集。 */
+    fun cachedDetail(id: String): Detail? = synchronized(detailCache) {
+        detailCache[id]?.takeIf { clock()-it.at<DETAIL_CACHE_TTL }?.let {
+            Detail(it.main.series,it.main.episodes,it.related,it.seasons,it.main.social)
+        }
     }
 
     private data class SeriesPayload(val series: Series, val episodes: List<String>, val social: SeriesSocial)
@@ -874,6 +889,9 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         else -> null
     }
     companion object {
+        // 推荐与系列剧共享两秒预算，详情主接口不会因辅助内容慢而无限等待。
+        private const val DETAIL_AUX_TIMEOUT=2_000L
+        private const val DETAIL_CACHE_TTL=600_000L
         // 网站搜索混合两类内容：video_data.genre 205 是漫剧，203 是短剧
         // （2026-10-13 用站点自带的漫剧热播榜与短剧分类列表逐条核对确认）。
         private const val COMIC_WEB_GENRE="205"

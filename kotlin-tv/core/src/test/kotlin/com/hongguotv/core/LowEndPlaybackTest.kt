@@ -48,6 +48,13 @@ class LowEndPlaybackTest {
         assertEquals("data",current.run { RequestScope.execute(next) { it.body!!.string() } })
         assertFalse(next.cancelled)
     }
+    @Test fun cancellingParentPageAlsoCancelsDetailAuxiliaryChild() {
+        val parent=RequestScope(); val child=parent.child(); val call=FakeCall()
+        parent.cancel()
+        assertTrue(child.isCancelled)
+        assertThrows(IOException::class.java) { child.run { RequestScope.execute(call) { it.body!!.string() } } }
+        assertFalse(call.started)
+    }
     @Test fun prefetchWindowUsesRemainingWallTimeAndRejectsUnknownDuration() {
         assertFalse(PrefetchPolicy.nearEnd(5_000,180_000,1f))
         assertTrue(PrefetchPolicy.nearEnd(150_000,180_000,1f))

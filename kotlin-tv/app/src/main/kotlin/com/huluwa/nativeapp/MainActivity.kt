@@ -3176,7 +3176,8 @@ class MainActivity: Activity() {
                 danmakuView=danmakuLayer
                 danmakuLayer.setBlockedFilter { text -> extras.blocks(text) }
                 danmakuLayer.applyPrefs(library.danmakuOpacity,library.danmakuFont,library.danmakuSpeed,library.danmakuRows)
-                root.addView(danmakuLayer,FrameLayout.LayoutParams(-1,(resources.displayMetrics.widthPixels*9f/16f).toInt(),Gravity.TOP).apply { topMargin=dp(6) },1)
+                // FrameLayout.addView 没有「带索引、不带宽度」的重载：用 LayoutParams 本身定位层级
+                root.addView(danmakuLayer,FrameLayout.LayoutParams(-1,(resources.displayMetrics.widthPixels*9f/16f).toInt(),Gravity.TOP).apply { topMargin=dp(6) })
                 // 手机版不需要 TV 的 hud/controls/转圈，但仍需初始化引用避免 tick 空指针
                 hud=column().apply { visibility=View.GONE }
                 playbackTitle=text("",15f).apply { visibility=View.GONE }
@@ -5599,8 +5600,9 @@ class MainActivity: Activity() {
     /** 手机播放页 UI 实例（单例复用，控件引用由 render 重建时刷新）。 */
     private var phonePlayer: PhonePlayer?=null
     private val phonePlayerOrCreate get() = phonePlayer ?: PhonePlayer(this).also { phonePlayer=it }
-    private var phonePages by lazy { PhonePages(this,::loadCover) }
-    private var phoneDetail by lazy { PhoneDetail(this,::loadCover) }
+    // 手机页面实例：首次使用时创建后缓存（lazy 不能修饰 var）
+    private val phonePages by lazy { PhonePages(this,::loadCover) }
+    private val phoneDetail by lazy { PhoneDetail(this,::loadCover) }
 
     /** 手机底部导航渲染总入口：按 phoneTab 渲染对应页面。 */
     private fun renderPhone() {
@@ -5868,20 +5870,26 @@ class MainActivity: Activity() {
         root.removeAllViews()
         message(column().also { body -> root.addView(body,android.widget.FrameLayout.LayoutParams(-1,-1)) },"正在加载剧集…")
         work({ repository.detail(series.id) }, { result ->
-            if(!phoneLayout()) { openDetail(series,resume,preloaded=result); return }
-            detail=result; library.observeFavorite(series.id,result.episodes.size,System.currentTimeMillis(),acknowledge=true)
-            val progress=library.progress(series.id)
-            val target=ResumePlayback.target(result.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true)
-            episodeIndex=target.index; group=episodeIndex/20
-            if(resume) playEpisodePhone(target.index,target.position)
-            else {
-                phoneDetail.render(root,result)
-                prefetchDetailWindow(target.index)
+            // done lambda 同样是非内联的，不能 return：用 if/else 表达「已转回横屏就交给 TV 版」
+            if(!phoneLayout()) {
+                openDetail(series,resume,preloaded=result)
+            } else {
+                detail=result; library.observeFavorite(series.id,result.episodes.size,System.currentTimeMillis(),acknowledge=true)
+                val progress=library.progress(series.id)
+                val target=ResumePlayback.target(result.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true)
+                episodeIndex=target.index; group=episodeIndex/20
+                if(resume) playEpisodePhone(target.index,target.position)
+                else {
+                    phoneDetail.render(root,result)
+                    prefetchDetailWindow(target.index)
+                }
             }
         }, { problem ->
-            if(!phoneLayout()) return
-            val body=column(); error(body,problem) { openDetailPhone(series,resume) }
-            root.removeAllViews(); root.addView(body,android.widget.FrameLayout.LayoutParams(-1,-1))
+            // 失败回调是普通的非内联 lambda，里面不能写裸 return
+            if(phoneLayout()) {
+                val body=column(); error(body,problem) { openDetailPhone(series,resume) }
+                root.removeAllViews(); root.addView(body,android.widget.FrameLayout.LayoutParams(-1,-1))
+            }
         })
     }
 

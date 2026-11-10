@@ -88,12 +88,11 @@ class EpisodeDiskCacheTest {
                 1024, ByteArray(16), emptyList(), n.toLong(), true)
             writeMeta("20$n", 720, meta, listOf(longArrayOf(0, 1024)))
         }
-        val cache = EpisodeDiskCache(http, dir, resolver = info)
-        // 超过 5 集上限：最旧的 201 被逐出
+        // 全部 6 条都在构造前写盘，缓存启动扫描时一次性看到 6 条 → 超上限逐出最旧的 201
         File(dir, "206-q720.mp4").writeBytes(ByteArray(1024))
         writeMeta("206", 720, EpisodeDiskCache.Meta("206", 720, server.url("/v/206").toString(), null, "720P", 0,
             1024, ByteArray(16), emptyList(), 6, true), listOf(longArrayOf(0, 1024)))
-        cache.schedule(emptyList(), 720, (1..6).map { "20$it" }.toSet(), 720)
+        val cache = EpisodeDiskCache(http, dir, resolver = info)
         assertNull(cache.meta("201", 720))
         assertNotNull(cache.meta("206", 720))
         cache.close()
@@ -129,7 +128,8 @@ class EpisodeDiskCacheTest {
         val cache = EpisodeDiskCache(http, dir, resolver = { _, _ -> error("不该取址") })
         val buf = ByteArray(8 * 1024)
         assertEquals(8192, cache.read("501", 720, 0, buf, 0, buf.size))
-        assertEquals(0xAB.toByte(), buf[0])
+        // 前 24 字节是 ftyp/moov box 头，0xAB 填充从 box 之后开始；抽查 box 之后的一个字节即可
+        assertEquals(0xAB.toByte(), buf[24])
         // 未落盘区间返回 0；越过 total 的读取被截断
         assertEquals(0, cache.read("501", 720, 40 * 1024, buf, 0, buf.size))
         cache.close()

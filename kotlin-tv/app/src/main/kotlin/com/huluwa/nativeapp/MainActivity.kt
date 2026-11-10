@@ -72,8 +72,11 @@ class MainActivity: Activity() {
     private val main=Handler(Looper.getMainLooper())
     private val io=Executors.newFixedThreadPool(3)
     // 签名完全在本机完成：设备档案落在应用私有目录，冷启动直接复用，不再依赖签名服务。
+    // 注意：这些必须用 by lazy。Activity 的字段初始化器在构造阶段执行，
+    // 那时 attachBaseContext 还没跑，this 作为 Context 是空的，
+    // 直接 getSharedPreferences 会 NPE 导致启动即闪退。
     private val signerStore by lazy { SharedPrefsSignerStore(this) }
-    private val repository=ContentRepository(signer=RemoteSigner(store=signerStore))
+    private val repository by lazy { ContentRepository(signer=RemoteSigner(store=signerStore)) }
     private val touchPlayback by lazy { TouchControls.isHandheld(this) }
     private val randomRecommender by lazy {
         val raw=getSharedPreferences("random_pool", MODE_PRIVATE).getString("pool", null)
@@ -109,8 +112,8 @@ class MainActivity: Activity() {
      */
     private var navTight=false
     // 复用同一台设备身份：弹幕与内容/播放必须签同一份档案，否则平台会当成两台设备。
-    private val danmakuRepo=DanmakuRepository(repository.http, signer=repository.signer)
-    private val playbackCache=EpisodePlaybackCache(repository)
+    private val danmakuRepo by lazy { DanmakuRepository(repository.http, signer=repository.signer) }
+    private val playbackCache by lazy { EpisodePlaybackCache(repository) }
     // 已提前挂进 ExoPlayer 播放列表的下一集；资源继续归相邻集缓存持有，手动切集也能复用。
     private var queuedNextId=""
     private var queuedIndex=-1

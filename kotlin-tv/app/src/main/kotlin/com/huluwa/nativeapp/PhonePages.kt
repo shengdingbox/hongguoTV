@@ -163,6 +163,8 @@ class PhonePages(
     /** 「我的」页入口行：左标题 + 可选副标题 + 右箭头，整行可点。 */
     private fun entryRow(title: String, subtitle: String = "", onClick: () -> Unit): LinearLayout {
         val entry = row().apply {
+            // 统一最小高度：账号（常无副标题）与设置（带副标题）两行视觉对齐
+            minimumHeight = dp(64)
             setPadding(dp(16), dp(12), dp(16), dp(12))
             background = TvStyle.shape(activity, TvStyle.surface)
             setOnClickListener { onClick() }

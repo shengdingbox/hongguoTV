@@ -819,7 +819,9 @@ class MainActivity: Activity() {
         homeScreen?.let { homePosition=it.capturePosition() }
         (catalogRecycler?.layoutManager as? GridLayoutManager)?.let { scrollPositions[catalogPageKey]=it.findFirstVisibleItemPosition() }
         homeScreen=null; selectionPreview=null; catalogRecycler=null; catalogAdapter=null; loadingMore=false
-        cacheStripSegments=null; cacheStripView=null
+        // 这里只清「列表页」的视图引用。整集预载状态条属于播放页：手机竖屏切集走 reuse
+        // 复用播放器、不会重建条子，在这里置空会让条子永远停在上一集画出的宽度上
+        //（表现为切集后第三根一上来就是橙色、看不到下载过程）。条子改由 releasePlayer() 清理。
         catalogFocusPos=RecyclerView.NO_POSITION; pendingCatalogFocusPos=RecyclerView.NO_POSITION; gridFocusOwned=false
         nav.clear(); segmentFirst=null; typeButtons.clear(); searchInput=null; searchButton=null; searchActions.clear()
         azFirst=null; azLastRow.clear(); suggestRow=null; suggestFirst=null; suggestTicket++; main.removeCallbacks(pendingSuggest)
@@ -3420,6 +3422,7 @@ class MainActivity: Activity() {
         outroSkipSeconds=skipMark?.outroSeconds ?: 0; outroTriggered=false; ffActive=false
         if(autoplay) sleepStopped=false
         screen="player"; episodeIndex=selectedIndex; group=episodeIndex/20
+        markPageShown()
         refreshCacheStrip()
         // 手机播放页切集走相邻集交接（reuse），UI 不会重建；标题与集号必须手动刷新，
         // 否则第 2 集起顶部一直停在第 1 集的编号。
@@ -5038,6 +5041,10 @@ class MainActivity: Activity() {
         video=null
         if(!preservePlaybackCache) playbackCache.clear()
         episodeDiskCache?.clear()
+        // 三段状态条随播放页一起作废：releaseCatalogViews() 已经不再清这两处引用
+        //（切集场景要保留，否则复用播放器时条子会停在上一次画出的宽度）。
+        // 另外把提示行的文案缓存一起清掉，下次进播放页换集后能重新显示原因。
+        cacheStripSegments=null; cacheStripView=null; cacheStripHint=null; cacheStripKey=null; stripKeyText=null
         stopDanmaku(); danmakuView=null
         playerScreenOn=false; refreshScreenOn()
     }
@@ -6015,6 +6022,23 @@ class MainActivity: Activity() {
     /** 当前是否由手机竖屏页面接管渲染；播放页遵循「启动方向」：竖屏 = 手机播放页，横屏 = 电视播放器。 */
     private fun phoneLayout()=PhoneUi.shouldUsePlayer(this)
 
+    /**
+     * 首屏已经画出来了。
+     *
+     * `initialCatalogPending` 原来只在电视版 showCatalog() 里清，手机竖屏启动走的是
+     * showPhoneHome()/playEpisode()/openDetailPhone()，标记永远是 true —— onResume()
+     * 每次都命中最前面的「首屏还没渲染」分支，showPhoneHome(load=true) 直接把页面
+     * 顶回首页，restoreStoppedPage 的恢复分支永远轮不到。所以手机侧的每个渲染入口
+     * 都要调一次，切后台再回来才能按最后所在页面恢复。
+     *
+     * 只清这个标记，不碰 restoreStoppedPage：后者由 onStop 置位、由 onResume 的恢复
+     * 分支自己消费。后台期间若有异步回调（账号状态变化等）触发重渲染，不能把待恢复
+     * 标记提前吃掉，否则回来照样回首页。
+     */
+    private fun markPageShown() {
+        initialCatalogPending=false
+    }
+
     /** 手机页签：home / rank / fav / mine / search / detail / player。 */
     private var phoneTab="home"
     /** 手机页面滚动位置：切页签/横竖屏后恢复。 */
@@ -6069,6 +6093,7 @@ class MainActivity: Activity() {
         if(screen=="settings") return
         // detail/player 有各自的渲染入口，误调进来会把正在看的页面清成空骨架
         if(phoneTab=="detail" || phoneTab=="player") return
+        markPageShown()
         // 从播放页（黑底白图标）返回或切换主题后，状态栏图标外观跟当前主题对齐
         phoneStatusBarFollowTheme()
         screen="catalog"
@@ -6223,6 +6248,7 @@ class MainActivity: Activity() {
     /** 手机版合集页（接着看/稍后看/收藏有更新）：两列网格。 */
     private fun renderPhoneCollection(kind: String) {
         screen="catalog"
+        markPageShown()
         // 合集页属于它是从哪个页签打开的，底部导航高亮要跟着走
         val active=phoneCollectionTab
         val (frame,content,nav)=PhoneUi.scaffold(this,active,{ switchPhoneTab(it) },{ switchPhoneTab("search") })
@@ -6348,6 +6374,7 @@ class MainActivity: Activity() {
         if(phoneTab!="detail") phoneDetailReturn=phoneTab
         pendingDetail=series; detailAutoplay=true
         invalidatePage(); releaseCatalogViews(); screen="detail"; detail=null; synopsisExpanded=false; phoneTab="detail"
+        markPageShown()
         root.removeAllViews()
         message(column().also { body -> root.addView(body,android.widget.FrameLayout.LayoutParams(-1,-1)) },"正在加载剧集…")
         val apply: (Detail) -> Unit = { result ->
@@ -6583,6 +6610,7 @@ class MainActivity: Activity() {
         // 设置页自己是一整屏，先把可能开着的弹窗收掉，避免它盖在新页面上
         tvTools.close()
         screen="settings"
+        markPageShown()
         cacheStripSegments=null; cacheStripView=null
         phoneSettings.render(root)
         if(phoneSettingsFromPlayer) {

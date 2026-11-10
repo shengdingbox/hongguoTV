@@ -183,9 +183,12 @@ class PhonePlayer(
         titleText?.text = "第 $number 集"
         seriesTitleText?.text = currentTitle
         episodePickerText?.text = "选集 · 全${episodeCount}集"
-        introText?.text = if (currentDescription.isBlank()) "第 $number 集 · 共${episodeCount}集"
-            else "第 $number 集 | $currentDescription"
+        // 文案严格对齐葫芦娃 HongguoPlayerInfo：「第N集 · 共M集」/「第N集 | 简介」，集号不带空格
+        introText?.text = if (currentDescription.isBlank()) "第${number}集 · 共${episodeCount}集"
+            else "第${number}集 | $currentDescription"
         introText?.maxLines = if (introExpanded) 4 else 1
+        // 简介为空时葫芦娃不显示「展开」，这里跟着切
+        introToggle?.visibility = if (currentDescription.isBlank()) View.GONE else View.VISIBLE
     }
 
     /** 收藏态变化后刷新爱心图标。 */
@@ -292,29 +295,38 @@ class PhonePlayer(
         }
         seriesTitleText = text("", 18f).apply {
             setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
+            // 葫芦娃 HongguoPlayerInfo：lineHeight 26sp → 行距 = 26 - 18 = 8sp 额外间距
+            setLineSpacing(dp(8).toFloat(), 1f)
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
         }
         titleRow.addView(seriesTitleText, rowLp(0, -2))
         titleRow.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_chevron_right); setColorFilter(Color.WHITE)
         }, rowLp(dp(20), dp(20)).apply { leftMargin = dp(2) })
+        // heightIn(min = 32dp)，内容垂直居中
         info.addView(titleRow, rowLp(-1, dp(32)))
 
         val introRow = row()
         introText = text("", 14f, Color.argb(184, 255, 255, 255)).apply {
+            // 葫芦娃 HongguoPlayerInfo：lineHeight 22sp → 16sp
+            setLineSpacing(dp(8).toFloat(), 1f)
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(2), 0, dp(4))
+            // padding(vertical = 4dp)
+            setPadding(0, dp(4), 0, dp(4))
         }
         introRow.addView(introText, rowLp(0, -2).apply { weight = 1f })
+        // 葫芦娃：只有简介非空才出现「展开 / 收起」按钮
         introToggle = text("展开", 14f).apply {
-            setPadding(dp(10), dp(2), dp(2), dp(2))
+            gravity = Gravity.CENTER
+            setPadding(dp(8), 0, dp(8), 0)
             setOnClickListener {
                 introExpanded = !introExpanded
                 introText?.maxLines = if (introExpanded) 4 else 1
                 introToggle?.text = if (introExpanded) "收起" else "展开"
             }
         }
-        introRow.addView(introToggle, rowLp(-2, -2))
+        introToggle?.visibility = if (currentDescription.isBlank()) View.GONE else View.VISIBLE
+        introRow.addView(introToggle, rowLp(-2, dp(32)))
         info.addView(introRow, rowLp(-1, -2))
         bottomBar.addView(info, rowLp(-1, -2))
 

@@ -60,6 +60,8 @@ private val NEW_RELEASE_WINDOWS=listOf("days_7" to "近7天","days_14" to "近14
 private object PageRestore {
     var tab=-1
     var focusKey: String?=null
+    /** 手机设置页里切了界面缩放：重建后要回到手机设置页，而不是首页。 */
+    var phoneSettings=false
 }
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -552,6 +554,8 @@ class MainActivity: Activity() {
             settingsFocusKey=PageRestore.focusKey
             PageRestore.tab=-1; PageRestore.focusKey=null
         }
+        // 手机设置页里切了界面缩放：重建后等库加载完，直接回到手机设置页
+        if(PageRestore.phoneSettings) { PageRestore.phoneSettings=false; pendingPhoneSettings=true }
         // 系统栏策略：电视维持原有沉浸全屏标志；手机竖屏要正常显示状态栏（时钟/信号），
         // Android 15 起 edge-to-edge 是强制的，低版本显式打开统一行为——内容铺到系统栏
         // 下面，由 PhoneInsets 在各页面让位，避免 14- 上状态栏被沉浸标志整个藏掉。
@@ -581,6 +585,8 @@ class MainActivity: Activity() {
             if(library.isLoaded && screen=="catalog" && (tab==4 || collection=="resume")) showCatalog()
             // 手机竖屏的「我的 / 收藏」页直接展示账号与云端数据，登录/退出后要立即重建
             if(library.isLoaded && phoneLayout() && screen=="catalog" && (phoneTab=="mine" || phoneTab=="fav")) renderPhone()
+            // 手机设置页里登录/退出：昵称与云端数量就是行标题，整页重画一次
+            if(library.isLoaded && screen=="settings") refreshPhoneSettings()
         }
         // 三方片源配置与观看历史随主备份一起保存/恢复：本地已有的保留，不覆盖
         thirdStore=ThirdStore(this)
@@ -619,7 +625,8 @@ class MainActivity: Activity() {
             if(!isDestroyed && foreground) handleLocalBackupOnStartup {
                 // 手机竖屏：渲染手机首页（热门走缓存+后台刷新）；电视/横屏维持原有 showCatalog
                 if(!isDestroyed && foreground) {
-                    if(phoneLayout()) { showPhoneHome(load=true); favoriteMonitor.check() }
+                    if(pendingPhoneSettings && phoneLayout()) { pendingPhoneSettings=false; showPhoneSettings(); favoriteMonitor.check() }
+                    else if(phoneLayout()) { showPhoneHome(load=true); favoriteMonitor.check() }
                     else { showCatalog(load=true); favoriteMonitor.check() }
                 }
             }
@@ -5786,11 +5793,23 @@ class MainActivity: Activity() {
     private val phonePlayerOrCreate get() = phonePlayer ?: PhonePlayer(this).also { phonePlayer=it }
     // 手机页面实例：首次使用时创建后缓存（lazy 不能修饰 var）
     private val phonePages by lazy { PhonePages(this,::loadCover) }
+    /** 手机端完整设置页（竖屏可调全部设置，不必再转到横屏）。 */
+    private val phoneSettings by lazy { PhoneSettings(this) }
+    /** 播放中点进手机设置页时记下的进度与全屏态，退出设置后原样恢复。 */
+    private var phoneSettingsFromPlayer=false
+    private var phoneSettingsPosition=0L
+    private var phoneSettingsAutoplay=true
+    /** 进来前是否处于全屏播放：退出设置后原样恢复。 */
+    private var phoneSettingsFullscreen=false
+    /** 界面缩放重建后待回到手机设置页（见 PageRestore.phoneSettings）。 */
+    private var pendingPhoneSettings=false
     private val phoneDetail by lazy { PhoneDetail(this,::loadCover) }
 
     /** 手机底部导航渲染总入口：按 phoneTab 渲染对应页面。 */
     private fun renderPhone() {
         if(!phoneLayout() || !library.isLoaded) return
+        // 设置页是一整屏独立页面，不能被页签重渲染顶掉
+        if(screen=="settings") return
         // detail/player 有各自的渲染入口，误调进来会把正在看的页面清成空骨架
         if(phoneTab=="detail" || phoneTab=="player") return
         // 从播放页（黑底白图标）返回或切换主题后，状态栏图标外观跟当前主题对齐
@@ -6237,31 +6256,149 @@ class MainActivity: Activity() {
             ?: "播放失败，可重试或切换清晰度"
     }
 
-    /** 手机设置弹层：把最常用的几个设置项收进一个选择弹窗（复用 tvTools.choose）。 */
+    /** 手机设置入口：竖屏下打开一整套纵向设置页（[PhoneSettings]），
+     * 不再像以前那样只给七项、把其余设置推给「旋转到横屏」。
+     * 目录页与播放页「更多」都走这里，保证同一个入口看到同一份设置。
+     */
     fun showPhoneSettings() {
-        val options=listOf(
-            "系统风格  ·  ${if(TvStyle.theme==TvStyle.Theme.NIGHT) "深夜影院" else "暖玉白"}",
-            "启动方向  ·  ${OrientationMode.of(library.orientationMode).label}",
-            "默认清晰度  ·  ${library.maxQuality}P",
-            "默认倍速  ·  ${com.hongguotv.core.PlaybackSpeed.label(library.playbackSpeed)}",
-            "自动连播  ·  ${if(library.autoNext) "开启" else "关闭"}",
-            "整集预载缓存  ·  ${if(library.episodeCache) "开启" else "关闭"}",
-            "弹幕  ·  ${if(library.danmaku) "开启" else "关闭"}",
-            if(OrientationMode.of(library.orientationMode)==OrientationMode.PORTRAIT) "更多设置需先切回「跟随系统」再旋转到横屏"
-            else "更多设置请旋转到横屏或用电视界面")
-        tvTools.choose("播放与界面设置",options,voiceAnchor,{ choice ->
-            when(choice) {
-                // 竖屏下直接重建页签即可，不必 recreate 整个 Activity
-                0 -> { library.theme=TvStyle.toggle().name; renderPhone() }
-                // 改完方向要整页按新皮肤重建：强制横屏会切到电视页面，单重画手机页签不够
-                1 -> showOrientationPicker(voiceAnchor)
-                2 -> showQualityPicker(voiceAnchor,false)
-                3 -> showSpeedPicker(voiceAnchor,false)
-                4 -> { library.autoNext=!library.autoNext; PhoneUi.toast(this,"自动连播已${if(library.autoNext) "开启" else "关闭"}") }
-                5 -> { library.episodeCache=!library.episodeCache; applyEpisodeCacheSetting(); PhoneUi.toast(this,"整集预载缓存已${if(library.episodeCache) "开启" else "关闭"}") }
-                6 -> { library.danmaku=!library.danmaku; applyDanmakuPrefs(); PhoneUi.toast(this,"弹幕已${if(library.danmaku) "开启" else "关闭"}") }
+        // 播放中点进来时记下进度：退出设置页要回到播放画面，不能把播放丢掉
+        if(screen=="player") {
+            phoneSettingsFromPlayer=true
+            phoneSettingsPosition=currentPosition()
+            phoneSettingsAutoplay=player?.playWhenReady==true
+            // 全屏标记先取走再退出全屏：留着会让 phoneLayout() 在设置页里仍判定为「手机全屏界面」，
+            // 退出设置时再用记下的值恢复
+            phoneSettingsFullscreen=phonePlayer?.takeFullscreenState()==true
+            // 和设置页转横屏再转回来一样：先收掉播放浮层，否则「退出播放」回详情后
+            // 焦点可能落在已被移除的控件上；播放本身不停，退出设置时按记录的进度重挂
+            hidePlaybackOverlay()
+        } else {
+            phoneSettingsFromPlayer=false
+            phoneSettingsFullscreen=false
+        }
+        // 设置页自己是一整屏，先把可能开着的弹窗收掉，避免它盖在新页面上
+        tvTools.close()
+        screen="settings"
+        phoneSettings.render(root)
+        if(phoneSettingsFromPlayer) {
+            // 设置页是竖屏单列：先转回竖屏并恢复系统栏。screen 已改成 settings，
+            // 后续的 onConfigurationChanged 会留在设置页，而不是把播放器重新拉起来
+            requestedOrientation=android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            val controller=WindowCompat.getInsetsController(window,window.decorView)
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            phoneStatusBarFollowTheme()
+        }
+    }
+
+    /** 退出手机设置页：回到进来时的页面（播放页要重新挂回播放器，进度接着走）。 */
+    fun closePhoneSettings() {
+        if(screen!="settings") return
+        val fromPlayer=phoneSettingsFromPlayer
+        val position=phoneSettingsPosition
+        val autoplay=phoneSettingsAutoplay
+        val fullscreen=phoneSettingsFullscreen
+        // 立刻复位标记：下面调用的 playEpisode → releasePlayer → phonePlayer.release() 会走
+        // exitFullscreenPhone，那一步读的是设备状态；标记留在 true 会让下一次返回误判
+        phoneSettingsFromPlayer=false; phoneSettingsFullscreen=false
+        if(fromPlayer && detail!=null) {
+            // 与横竖屏重建同一条路：先拆掉旧外壳，再按记录的进度重新挂载，播放不断流
+            phonePlayer=null; playerView=null
+            screen="player"
+            // 进设置页时为了竖屏单列临时锁了竖屏，回播放页要交还「启动方向」偏好
+            requestedOrientation=PhoneUi.requestedOrientation(this)
+            playEpisode(episodeIndex,position,autoplay)
+            if(fullscreen) {
+                // 设置页显示过系统栏，回全屏要重新隐藏并锁回全屏方向
+                phonePlayer?.restoreFullscreenState(true)
+                enterFullscreenPhone()
             }
-        })
+            return
+        }
+        screen="catalog"
+        when {
+            phoneTab=="detail" && detail!=null -> { screen="detail"; phoneDetail.render(root,detail!!) }
+            phoneLayout() -> renderPhone()
+            // 横屏下没有手机设置页：落到电视版设置页签，用户不会「转完就找不到设置」
+            else -> { tab=5; showCatalog() }
+        }
+    }
+
+    // ---- 手机设置页（PhoneSettings）用的桥接：复用既有的弹窗、开关与恢复逻辑 ----
+
+    /** 手机设置页整页重画（只在行结构本身变化时才用，例如切主题、登录状态变化）。 */
+    fun refreshPhoneSettings() { if(screen=="settings") phoneSettings.render(root) }
+    /** 只刷新各行右侧的取值（不重建页面，滚动位置与焦点都保留）。 */
+    fun phoneRefreshSettingsValues() { if(screen=="settings") phoneSettings.refreshValues() }
+
+    fun phoneOrientationPicker() = showOrientationPicker(voiceAnchor)
+    fun phoneQualityPicker() = showQualityPicker(voiceAnchor,false)
+    fun phoneSpeedPicker() = showSpeedPicker(voiceAnchor,false)
+    fun phoneFramePicker() = showFramePicker(voiceAnchor,false)
+    fun phoneDanmakuOpacity() = showDanmakuOpacityPicker(voiceAnchor)
+    fun phoneDanmakuFont() = showDanmakuFontPicker(voiceAnchor)
+    fun phoneDanmakuSpeed() = showDanmakuSpeedPicker(voiceAnchor)
+    fun phoneDanmakuRows() = showDanmakuRowsPicker(voiceAnchor)
+    fun phoneBlockedWords() = showBlockedWordDialog(voiceAnchor)
+    fun phoneWatchStats() = showWatchStats(voiceAnchor)
+    fun phoneInterfaceCheck() = showInterfaceCheck(voiceAnchor)
+    fun phoneRemoteAddress() = showRemoteAddress(voiceAnchor)
+    fun phoneXiaoAi() = showXiaoAiDialog(voiceAnchor)
+    fun phoneLocalBackup() = showLocalBackupDialog(voiceAnchor)
+    fun phoneQuickFiles() = openQuickFiles(voiceAnchor)
+    fun phoneQuickTransfer() { tvTools.quickTransfer(voiceAnchor,{ file,kind -> handleQuickTransfer(file,kind) },{},{}) }
+    fun phoneUpdater() = updater.show(voiceAnchor)
+    fun phoneCrashLogs() {
+        io.execute {
+            val records=CrashReporter.reports(this)
+            main.post {
+                if(isDestroyed) return@post
+                if(records.isEmpty()) PhoneUi.toast(this,"应用启动以来未发生崩溃") else CrashDialog.showList(this@MainActivity,records)
+            }
+        }
+    }
+
+    /** 设置项改动后的统一收尾：落盘由各 setter 自己做，这里只保证播放中的弹幕参数与缓存开关立即生效。 */
+    fun phoneApplyDanmakuPrefs() = applyDanmakuPrefs()
+    fun phoneApplyEpisodeCache() = applyEpisodeCacheSetting()
+    fun phoneResetDanmakuPrefs() { resetDanmakuPrefs(); phoneRefreshSettingsValues() }
+    fun phoneBlockedWordCount() = extras.blockedWords.size
+    val phoneAutoSkip get() = extras.autoSkipUnplayable
+    fun phoneSetAutoSkip(value: Boolean) { extras.autoSkipUnplayable = value }
+
+    /** 手机设置页切主题：手机页签原地重画即可，不必 recreate 整个 Activity。 */
+    fun phoneThemeToggle() {
+        library.theme = TvStyle.toggle().name
+        refreshPhoneSettings()
+    }
+
+    /** 界面缩放会改 density，只能 recreate；重建后按标记回到手机设置页。 */
+    fun phoneUiScalePicker() {
+        val current = UiScale.index(this)
+        tvTools.choose("界面缩放", UiScale.LEVELS.mapIndexed { index, level ->
+            level.first + (if(index==current) "   ·   当前" else "")
+        }, voiceAnchor, { choice ->
+            if(choice != current) {
+                UiScale.set(this, choice)
+                PageRestore.phoneSettings = true
+                recreate()
+            }
+        }, focusIndex = current)
+    }
+
+    fun phoneUnhideAll() {
+        library.unhideAll()
+        PhoneUi.toast(this, "热门推荐已恢复")
+        refreshPhoneSettings()
+    }
+
+    fun phoneClearCache() {
+        val dirs = listOfNotNull(cacheDir, externalCacheDir)
+        TvDialog.confirm(this, "清理缓存", "清除封面图片和已下载的安装包等缓存数据，不影响收藏和观看记录。") {
+            io.execute {
+                dirs.forEach { dir -> dir.listFiles()?.forEach { it.deleteRecursively() } }
+                main.post { if(!isDestroyed) PhoneUi.toast(this, "缓存已清理") }
+            }
+        }.show()
     }
 
     /**
@@ -6283,6 +6420,9 @@ class MainActivity: Activity() {
                 // 播放页正开着时不能重画目录：方向变化由 onConfigurationChanged 重建播放外壳，
                 // 全屏与否也由 enter/exitFullscreenPhone 负责。
                 when {
+                    // 手机设置页：方向真变了由 onConfigurationChanged 重建皮肤；
+                    // 没变就把「启动方向」这一行的值就地刷出来
+                    screen=="settings" -> phoneRefreshSettingsValues()
                     screen=="player" -> Unit
                     phoneLayout() -> if(phoneTab!="detail") renderPhone() else detail?.series?.let { openDetailPhone(it) }
                     screen=="catalog" -> { settingsFocusKey="启动方向"; showCatalog() }
@@ -6355,6 +6495,8 @@ class MainActivity: Activity() {
 
     private fun goBack() {
         if(!library.isLoaded) { finish(); return }
+        // 手机设置页：先退回进来时的页面（播放页会重新挂回播放器接着放）
+        if(screen=="settings") { closePhoneSettings(); return }
         // 手机竖屏页面：按手机导航栈退出（合集→来源页、详情→来源页、搜索结果→历史）
         if(phoneLayout() && screen!="player") {
             if(phoneDetailCollection) { closePhoneCollection(); return }
@@ -6461,6 +6603,9 @@ class MainActivity: Activity() {
         val keepPhonePlayer = screen=="player" && phonePlayer?.isFullscreen()==true
         if(!phoneLayout() && !keepPhonePlayer && phoneTab in listOf("detail","player")) phoneTab="home"
         when(screen) {
+            // 手机设置页跟着方向重建：竖屏保持手机设置页；转到横屏时如果是从播放页进来的，
+            // 要回到播放画面（电视版播放器），否则落回电视版设置页签
+            "settings" -> if(phoneLayout()) phoneSettings.render(root) else closePhoneSettings()
             // 旋转会让手机播放页的视频区/浮层尺寸彻底改变，必须重建 UI 外壳；
             // playerView 置空让 playEpisode 走 !reuse 分支重新挂载，播放本身不断流。
             // 全屏状态要先记下来：releasePlayer 会把手机播放页外壳一并释放。
@@ -6501,11 +6646,13 @@ class MainActivity: Activity() {
                 if(phoneLayout()) {
                     // 手机竖屏回来：按最后所在页面重建（播放页由 playEpisode 自己恢复）
                     when {
+                        screen=="settings" -> phoneSettings.render(root)
                         screen=="player" && detail!=null -> playEpisode(episodeIndex,startPosition,autoplay=false)
                         screen=="detail" && detail!=null -> openDetailPhone(pendingDetail ?: detail!!.series)
                         else -> renderPhone()
                     }
                 } else when(screen) {
+                    "settings" -> { tab=5; showCatalog() }
                     "player" -> playEpisode(episodeIndex,startPosition,autoplay=false)
                     "detail" -> if(detail!=null) showDetail(false) else pendingDetail?.let { openDetail(it,directPlayback,autoplay=false) } ?: showCatalog()
                     else -> showCatalog(load=!localCatalog() && catalog.isEmpty() && (tab==0 || tab==2 || (tab==1 && query.isNotBlank())))
@@ -6518,6 +6665,12 @@ class MainActivity: Activity() {
         } else libraryLoadError?.let(::showLibraryError)
         // 回到前台：先把状态推给手机（页面从「电视已暂停」恢复），缓存意图由 remotePublish 内部补上
         remotePublish(true)
+    }
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // 手机设置页的取值都改在独立弹窗里：弹窗关闭、窗口重新拿到焦点时刷新一遍右侧文案，
+        // 比在每个弹窗回调里各挂一次可靠（弹窗是别的窗口，不会重建主窗口）
+        if(hasFocus && screen=="settings") phoneRefreshSettingsValues()
     }
     override fun onPause() {
         updater.pause()

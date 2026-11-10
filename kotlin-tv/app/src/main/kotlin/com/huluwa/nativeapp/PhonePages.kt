@@ -190,8 +190,8 @@ class PhonePages(
         val accountDetail = if (account.signedIn) "" else "未登录"
         scroll.addView(entryRow(accountText, accountDetail) { account.showLoginDialog(activity) }, entryMargin(top = 6))
 
-        // 设置入口（复用 TV 设置弹层体系的入口子集：主题 / 清晰度 / 倍速 / 弹幕开关 / 账号）
-        scroll.addView(entryRow("播放与界面设置") { activity.showPhoneSettings() }, entryMargin(top = 8))
+        // 设置入口：竖屏下打开完整设置页（[PhoneSettings]），不再需要转到横屏才能改全
+        scroll.addView(entryRow("设置", "播放、外观、设备与数据") { activity.showPhoneSettings() }, entryMargin(top = 8))
 
         val recent = library.history().filterNot { library.watched(it.series.id) }
         if (recent.isNotEmpty()) {

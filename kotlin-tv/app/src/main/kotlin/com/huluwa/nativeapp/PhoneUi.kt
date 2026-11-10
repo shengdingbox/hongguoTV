@@ -43,9 +43,12 @@ object PhoneUi {
         }
     }
 
-    /** 手机播放页全屏时会被锁成横屏；这期间仍属于手机界面，不能切回电视版。 */
-    fun shouldUsePlayer(activity: Activity, fullscreen: Boolean): Boolean =
-        fullscreen && TouchControls.isHandheld(activity) || shouldUse(activity)
+    /**
+     * 播放页用哪套皮肤：与「启动方向」完全一致——
+     * 强制竖屏 / 跟随系统且竖着拿 → 手机播放页（葫芦娃红果那套交互）；
+     * 强制横屏 / 跟随系统且横过来 → 电视播放器，不做任何手机化处理。
+     */
+    fun shouldUsePlayer(activity: Activity): Boolean = shouldUse(activity)
 
     /** 用户设置里的启动方向偏好（每次实时读，设置改完立即生效）。 */
     fun orientationMode(activity: Activity): OrientationMode =

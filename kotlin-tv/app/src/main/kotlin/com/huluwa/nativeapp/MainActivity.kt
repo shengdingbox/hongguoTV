@@ -133,7 +133,13 @@ class MainActivity: Activity() {
     private var lastScheduleIdle=""
     /** 最近一次的调度阻塞原因（不受去重影响）：日志弹窗的现场摘要直接读它。 */
     private var lastIdleForSummary=""
-    /** 屏幕最底部的 2px 离线状态条：三段依次对应下 1/2/3 集，null 表示当前页面未挂。 */
+    /** 状态条当前对应的「集号 + 画质」：换集后要立刻按新邻接集重算三段比例。 */
+    private var cacheStripKey: Pair<Int,Int>?=null
+    /** 三段缓存条的高度（dp）：轨道与容器共用，避免只改一处导致填充条被裁掉。 */
+    private val cacheStripHeightDp=1
+    /** 上一次写进提示行的文案：每秒刷新时只在文案变化时才 setText，避免无谓重排。 */
+    private var stripKeyText: String?=null
+    /** 屏幕最底部的 1dp 离线状态条：三段依次对应下 1/2/3 集，null 表示当前页面未挂。 */
     private var cacheStripSegments: List<View>?=null
     private var cacheStripView: View?=null
     /** 状态条下方的原因提示：三段全灰时告诉用户是哪一步没跑起来，而不是只留一条灰线。 */
@@ -484,6 +490,9 @@ class MainActivity: Activity() {
             if(screen=="player") {
                 if(sleepTimer.poll()) stopForSleep()
                 if(phoneLayout()) refreshPhonePlayer() else if(hud.visibility==View.VISIBLE) updatePlaybackText()
+                // 三段缓存条带也要跟着每秒刷新：切集后它对应的「下 1/2/3 集」变了，
+                // 下载进度也在持续变化。只在条带已挂载时做，其他页面零开销。
+                if(cacheStripSegments!=null) refreshCacheStrip()
                 danmakuLoader?.let { loader -> if(player?.isPlaying==true) { val position=currentPosition(); io.execute { runCatching { loader.loadUpTo(position) } } } }
                 maybePrefetch()
                 val p=player; val data=detail
@@ -3430,14 +3439,15 @@ class MainActivity: Activity() {
                 // 手机竖屏：仿葫芦娃红果播放页，视频铺满整屏，控件浮在画面上
                 val playerUi=phonePlayerOrCreate
                 playerUi.render(root,data)
-                playerUi.attachPlayerView(view)
-                // 弹幕层覆盖视频区，但在控件之下
+                // 弹幕层覆盖视频区，但在控件之下；PhonePlayer 会把它的上沿压到标题栏下面。
+                // PlayerView 以索引 0 插入视频区最底层，所以先挂弹幕再挂视频也没问题。
                 val danmakuLayer=DanmakuView(this)
                 danmakuView=danmakuLayer
                 danmakuLayer.setBlockedFilter { text -> extras.blocks(text) }
                 danmakuLayer.applyPrefs(library.danmakuOpacity,library.danmakuFont,library.danmakuSpeed,library.danmakuRows)
                 playerUi.attachDanmaku(danmakuLayer)
-                // 屏幕最底部 2px 离线状态条：三段对应下 1/2/3 集
+                playerUi.attachPlayerView(view)
+                // 屏幕最底部 1dp 离线状态条：三段对应下 1/2/3 集
                 cacheStripSegments=buildCacheStrip()
                 playerUi.attachCacheStrip(cacheStripHost())
                 refreshCacheStrip()
@@ -3499,7 +3509,7 @@ class MainActivity: Activity() {
             recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { indeterminateTintList=android.content.res.ColorStateList.valueOf(accent); visibility=View.GONE }
             root.addView(recoverySpinner,FrameLayout.LayoutParams(dp(56),dp(56),Gravity.CENTER))
             root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled=false; addView(hud) },FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
-            // 屏幕最底部 2px 离线状态条：三段对应下 1/2/3 集
+            // 屏幕最底部 1dp 离线状态条：三段对应下 1/2/3 集
             cacheStripSegments=buildCacheStrip()
             root.addView(cacheStripHost(),FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
             refreshCacheStrip()
@@ -3611,7 +3621,8 @@ class MainActivity: Activity() {
                 override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(playing) maybePrefetch(); if(hud.visibility==View.VISIBLE) showHud(); syncMediaSession() } }
                 override fun onPlaybackParametersChanged(parameters: PlaybackParameters) { if(active()) syncMediaSession() }
                 override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,newPosition: Player.PositionInfo,reason: Int) { if(active()) { syncMediaSession(); danmakuView?.seekTo(newPosition.positionMs) } }
-                // 竖屏画幅的短剧/漫剧：手机播放页把简介与进度浮到画面底部
+                // 竖屏画幅的短剧/漫剧：手机播放页的简介与进度已经常驻在底部，
+                // 这里只把画幅告诉 PhonePlayer，留给后续按画幅微调用。
                 override fun onVideoSizeChanged(videoSize: VideoSize) {
                     if(!active()) return
                     phonePlayer?.setPortraitVideo(videoSize.height>0 && videoSize.width>0 && videoSize.width.toFloat()/videoSize.height < 1f)
@@ -3710,15 +3721,20 @@ class MainActivity: Activity() {
         }
         refreshCacheStrip()
     }
-    /** 屏幕最底部 2px 离线状态条：三段对应下 1/2/3 集，蓝色=已落盘比例，灰色=未离线。
+    /** 屏幕最底部 1dp 离线状态条：三段对应下 1/2/3 集，蓝色=已落盘比例，灰色=未离线。
      *  三段全灰时还要在条上方给一句人话原因：开关关了 / 移动网络 / 内存紧张 / 取址失败，
      *  否则用户只能看到三条永远不动的灰线，分不清是还没下还是压根没开始下。 */
     private fun refreshCacheStrip() {
         val segments=cacheStripSegments ?: return
         val data=detail
+        // 集号变了要重画一遍：三段对应「当前集之后第 1/2/3 集」，
+        // 从第 4 集换到第 5 集时条带应跟着变成 6/7/8，而不是停在旧的三集
+        val key=episodeIndex to effectiveQuality()
+        if(key!=cacheStripKey) { cacheStripKey=key; stripKeyText=null }
         if(!library.episodeCache || data==null || screen!="player") {
             segments.forEach { it.visibility=View.GONE }
             cacheStripHint?.visibility=View.GONE
+            stripKeyText=null
             return
         }
         val quality=effectiveQuality()
@@ -3747,20 +3763,23 @@ class MainActivity: Activity() {
         }
         val hint=cacheStripHint ?: return
         if(!anyVisible || anyFilled) {
-            hint.visibility=View.GONE
+            // 至少有一段开始缓存后就不再提示原因；换集回到全灰时会重新显示
+            if(hint.visibility!=View.GONE) { hint.visibility=View.GONE; stripKeyText=null }
             return
         }
-        // 全灰：把最关键的一条原因挑出来。开关本身在播放页改不了，先于调度条件提示。
+        // 全灰：把最关键的一条原因挑出来，网络/内存是调度前置条件，先于池内状态判断
         val reason=when {
             cache==null -> "整集预载缓存未启动（可在设置里开关一次）"
             !networkAvailable() -> "当前无网络，联网后自动开始预载"
             !prefetchMemoryReady() -> "内存紧张，预载已暂停"
             else -> cache.skipReason.ifBlank { "正在排队，稍等几秒" }
         }
-        hint.text="下 1–3 集均未缓存 · $reason"
-        hint.visibility=View.VISIBLE
+        // 这段文本每秒都会重算：内容没变就不 setText，避免条带每秒重建布局
+        val text="下 1–3 集均未缓存 · $reason"
+        if(stripKeyText!=text) { hint.text=text; stripKeyText=text }
+        if(hint.visibility!=View.VISIBLE) hint.visibility=View.VISIBLE
     }
-    /** 构建 2px 状态条（尚未挂载）：返回三段轨道（每段 tag 里存蓝色填充 View）。 */
+    /** 构建 1dp 状态条（尚未挂载）：返回三段轨道（每段 tag 里存蓝色填充 View）。 */
     private fun buildCacheStrip(): List<View> {
         val strip=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
@@ -3777,14 +3796,14 @@ class MainActivity: Activity() {
             }
         }
         segments.forEachIndexed { index,segment ->
-            strip.addView(segment,LinearLayout.LayoutParams(0,dp(2),1f).apply {
+            strip.addView(segment,LinearLayout.LayoutParams(0,dp(cacheStripHeightDp),1f).apply {
                 if(index>0) leftMargin=dp(1)
             })
         }
         cacheStripView=strip
         return segments
     }
-    /** 状态条 + 原因提示一起挂进播放页：提示压在条正上方，条本身仍贴底 2px 不挡控件。 */
+    /** 状态条 + 原因提示一起挂进播放页：提示压在条正上方，条本身贴底且不挡控件。 */
     private fun cacheStripHost(): View {
         val strip=cacheStripView ?: LinearLayout(this)
         val hint=TextView(this).apply {
@@ -3798,7 +3817,7 @@ class MainActivity: Activity() {
         return column().apply {
             gravity=Gravity.BOTTOM
             addView(hint,LinearLayout.LayoutParams(-1,-2))
-            addView(strip,LinearLayout.LayoutParams(-1,dp(2)))
+            addView(strip,LinearLayout.LayoutParams(-1,dp(cacheStripHeightDp)))
         }
     }
     /** 整集落盘调度：上一集/当前集/下三集保留窗口，下载优先级下一集 > +2 > +3 > 当前集 > 上一集。 */
@@ -4813,6 +4832,9 @@ class MainActivity: Activity() {
     private fun showEpisodePanel(anchor: View) {
         val data=detail ?: return
         if(episodePanel!=null) return
+        // 手机竖屏播放页按葫芦娃的交互：选集只弹「数字宫格」底部弹层，不再套 TV 的
+        // 侧边面板（那边有跳转集数/上一组等遥控向操作，手机上一没必要二挡画面）。
+        if(phoneLayout()) { showPhoneEpisodeSheet(data); return }
         val ticket=generation
         val overlayWasVisible=hud.visibility==View.VISIBLE
         requestedAutoplay=player?.playWhenReady ?: requestedAutoplay
@@ -5006,6 +5028,8 @@ class MainActivity: Activity() {
         ffActive=false; outroSkipSeconds=0; outroTriggered=false
         val wasForeground=foreground; foreground=false
         val oldPanel=episodePanel; episodePanel=null; oldPanel?.dismiss(); foreground=wasForeground
+        // 手机竖屏选集弹层同样随播放器一起收掉，否则会浮在详情页上
+        phoneEpisodeSheet?.dismiss(); phoneEpisodeSheet=null
         speedDialog?.dismiss(); speedDialog=null
         main.removeCallbacks(hideHud); main.removeCallbacks(seekRunnable); pendingSeek=null
         playerListener?.let { player?.removeListener(it) }; playerListener=null
@@ -5994,9 +6018,8 @@ class MainActivity: Activity() {
     // 与 TV 原页面并行的一套纵向 UI：竖屏手持设备走这里，横屏与电视一律走原有页面。
     // 页面状态独立保存（phoneTab/phoneQuery/...），切回横屏再回来不丢位置。
 
-    /** 当前是否由手机竖屏页面接管渲染。 */
-    /** 当前是否由手机竖屏页面接管渲染。播放页全屏（横屏）时也仍属手机界面。 */
-    private fun phoneLayout()=PhoneUi.shouldUsePlayer(this, phonePlayer?.isFullscreen()==true)
+    /** 当前是否由手机竖屏页面接管渲染；播放页遵循「启动方向」：竖屏 = 手机播放页，横屏 = 电视播放器。 */
+    private fun phoneLayout()=PhoneUi.shouldUsePlayer(this)
 
     /** 手机页签：home / rank / fav / mine / search / detail / player。 */
     private var phoneTab="home"
@@ -6024,8 +6047,8 @@ class MainActivity: Activity() {
     /** 手机播放页的集号镜像（PhoneDetail/PhonePlayer 读取，同步自 episodeIndex）。 */
     val phoneEpisodeIndex get() = episodeIndex
     val phonePlaybackReady get() = playbackReady
-    /** 手机播放页可见的剧集简介。 */
-    val phoneSeriesDescription get() = detail?.series?.description.orEmpty()
+    /** 手机播放页当前剧集信息（PhonePlayer 收藏 / 切集后刷新用）。 */
+    val phoneCurrentSeries get() = detail?.series
     /** PhonePlayer 进度条用的总时长（毫秒）；未就绪返回 0。 */
     val playerDuration get() = player?.duration?.takeIf { it>0 } ?: 0L
     /** 手机播放页 UI 实例（单例复用，控件引用由 render 重建时刷新）。 */
@@ -6389,9 +6412,25 @@ class MainActivity: Activity() {
     fun seekToPhone(position: Long)=seekTo(position)
     fun skipEpisodePhone(direction: Int) { if(!skipEpisode(direction)) PhoneUi.toast(this,"没有更多集数") }
     fun showPhoneEpisodePicker() { if(detail!=null) showEpisodePanel(voiceAnchor) }
+
+    /** 手机竖屏选集：底部数字宫格弹层（对齐葫芦娃红果播放页），选中后直接切集。 */
+    private fun showPhoneEpisodeSheet(data: com.hongguotv.core.Detail) {
+        // 已开着就先收掉旧的，避免叠两层
+        if(phoneEpisodeSheet!=null) { phoneEpisodeSheet?.dismiss(); phoneEpisodeSheet=null }
+        var sheet: PhoneEpisodeSheet?=null
+        sheet=PhoneEpisodeSheet(this,data,episodeIndex,{ selected ->
+            // 弹层已经先关掉了；回调里只负责切集
+            if(selected!=episodeIndex) playEpisode(selected,savedPosition(selected))
+        },{
+            // 只清当前这一个实例的引用：用户重新打开后会换成新实例
+            if(phoneEpisodeSheet===sheet) phoneEpisodeSheet=null
+        })
+        phoneEpisodeSheet=sheet
+        sheet.show()
+    }
+    private var phoneEpisodeSheet: PhoneEpisodeSheet?=null
     fun showPhoneSpeedPicker() { showSpeedPicker(voiceAnchor,true) }
     fun showPhoneQualityPicker() { showQualityPicker(voiceAnchor,true) }
-    fun togglePhoneDanmaku() { detail?.series?.id?.let { toggleSeriesDanmaku(it) } }
 
     /** 手机播放页「重新加载」：从当前位置重取地址重播。 */
     fun retryPlaybackPhone() {
@@ -6405,17 +6444,26 @@ class MainActivity: Activity() {
             "选集",
             "清晰度  ·  ${effectiveQuality()}P",
             "画面  ·  ${effectiveFrame().label}",
+            "弹幕  ·  ${if (isPhoneDanmakuOn()) "开" else "关"}",
+            // 与葫芦娃一致：更多里直接给「重新加载」
+            "重新加载",
             "播放设置",
             "退出播放"),anchor,{ choice ->
             when(choice) {
                 0 -> showPhoneEpisodePicker()
                 1 -> showPhoneQualityPicker()
                 2 -> showFramePicker(voiceAnchor,true)
-                3 -> showPhoneSettings()
-                4 -> returnToDetailPhone()
+                3 -> { detail?.series?.id?.let { toggleSeriesDanmaku(it) }; refreshPhonePlayerNow() }
+                4 -> retryPlaybackPhone()
+                5 -> showPhoneSettings()
+                6 -> returnToDetailPhone()
             }
         })
     }
+
+    /** 当前剧是否开着弹幕：全局开关 + 本剧单独记忆两层。 */
+    private fun isPhoneDanmakuOn() =
+        library.danmaku && detail?.series?.id?.let { extras.danmakuEnabled(it,true) }!=false
 
     /** 手机状态栏图标外观：浅色顶栏要配深色图标，否则暖玉白主题下白色图标看不清。 */
     fun phoneStatusBarLight(light: Boolean) {
@@ -6443,13 +6491,23 @@ class MainActivity: Activity() {
     /** 普通手机页面（目录/详情）顶栏背景跟随主题，状态栏图标也跟着切。 */
     fun phoneStatusBarFollowTheme()=phoneStatusBarLight(TvStyle.theme==TvStyle.Theme.PORCELAIN)
 
-    /** 进入手机全屏播放：隐藏系统栏并锁定横屏（短剧全屏就是横过来满屏看）。 */
+    /**
+     * 进入手机全屏播放：隐藏系统栏。
+     *
+     * 方向严格按「启动方向」：强制竖屏下不转屏，只是竖向铺满；其余情况锁横屏，
+     * 由 onConfigurationChanged 判定为横屏后自动换成电视播放器那套界面。
+     */
     fun enterFullscreenPhone() {
-        // 强制竖屏偏好下全屏不旋转设备：竖屏满屏（控件按竖屏布局），否则会把人手里
-        // 竖着的界面硬掰成横屏，退出后与偏好来回打架。
-        requestedOrientation = if(PhoneUi.orientationMode(this)==OrientationMode.PORTRAIT)
-            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        val portraitMode = PhoneUi.orientationMode(this)==OrientationMode.PORTRAIT
+        if(portraitMode) {
+            // 强制竖屏：整机界面就是竖屏模式，设备不旋转。全屏只隐藏系统栏、让画面铺满，
+            // 控件仍按竖屏（葫芦娃红果）那套布局。
+            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        } else {
+            // 跟随系统时，全屏才把设备锁成横屏。只是横屏，不再强制走 TV 皮肤——
+            // 皮肤由 phoneLayout() 在方向变化后统一判定。
+            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
         // Android 15 起老的 systemUiVisibility 全屏标志被忽略，必须走 InsetsController；
         // 滑动临时呼出对应原 IMMERSIVE_STICKY 行为
         val controller=WindowCompat.getInsetsController(window,window.decorView)
@@ -6463,7 +6521,7 @@ class MainActivity: Activity() {
         requestedOrientation = when(PhoneUi.orientationMode(this)) {
             OrientationMode.LANDSCAPE -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
             OrientationMode.PORTRAIT -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            // 跟随系统：退出全屏回到传感器方向，横竖由设备姿态决定
+            // 跟随系统：退出全屏回到传感器方向，横竖由设备姿态决定（竖着拿就回竖屏播放页）
             OrientationMode.AUTO -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
         WindowCompat.getInsetsController(window,window.decorView).show(WindowInsetsCompat.Type.systemBars())
@@ -6472,6 +6530,16 @@ class MainActivity: Activity() {
 
     /** PhonePlayer 内部状态变化后立即刷新一帧。 */
     fun refreshPhonePlayerNow() { if(screen=="player" && phoneLayout()) refreshPhonePlayer() }
+    /**
+     * PhonePlayer 切换全屏后的收尾：全屏状态变了、界面可能刚换了皮肤，
+     * 立刻按新状态刷一次进度与控件，避免要等下一秒 tick 才更新。
+     */
+    fun applyPhoneFullscreen(fullscreen: Boolean) {
+        if(screen!="player") return
+        applyPhoneSystemBars()
+        if(phoneLayout()) refreshPhonePlayer()
+        else if(hud.visibility==View.VISIBLE) updatePlaybackText()
+    }
     private fun refreshPhonePlayer() {
         val ui=phonePlayer ?: return
         val p=player
@@ -6480,16 +6548,13 @@ class MainActivity: Activity() {
         val buffering=p!=null && (p.playbackState==Player.STATE_BUFFERING || p.playbackState==Player.STATE_IDLE || !playbackReady) && failure==null
         val duration=p?.duration?.coerceAtLeast(0) ?: 0L
         val position=pendingSeek ?: p?.currentPosition ?: 0L
-        val danmakuOn=library.danmaku && detail?.series?.id?.let { extras.danmakuEnabled(it,true) }!=false
         ui.refresh(
             playing=playing,
             position=position,
             duration=duration,
             bufferingNow=buffering,
             error=failure,
-            danmakuOn=danmakuOn,
-            speed=com.hongguotv.core.PlaybackSpeed.label(p?.playbackParameters?.speed ?: effectiveSpeed()),
-            quality=quality)
+            speed=com.hongguotv.core.PlaybackSpeed.label(p?.playbackParameters?.speed ?: effectiveSpeed()))
     }
 
     /** 手机播放页的失败/恢复提示；一切正常返回 null。 */
@@ -6876,28 +6941,21 @@ class MainActivity: Activity() {
         // 手机竖屏 ⇄ 横屏（TV 版界面）切换：manifest 不再锁死方向，两侧各按当前方向重建；
         // 播放中的重建沿用原有「按进度重挂」逻辑（手机/电视播放内核一致，只是皮肤不同）。
         // 离开竖屏时 phoneTab 会残留 detail/player，横屏若跟着它走会画出空目录页，先复位。
-        // 手机播放页全屏会锁成横屏，但那仍是手机界面，不能按电视版重建。
-        val keepPhonePlayer = screen=="player" && phonePlayer?.isFullscreen()==true
-        if(!phoneLayout() && !keepPhonePlayer && phoneTab in listOf("detail","player")) phoneTab="home"
+        // 播放页皮肤严格跟随「启动方向」：强制竖屏下全屏也不转横屏，所以这里不再保留
+        // 「全屏播放器仍是手机界面」的特例——横屏就该是电视播放器。
+        if(!phoneLayout() && phoneTab in listOf("detail","player")) phoneTab="home"
+        // 从手机竖屏横过来：手机播放页全屏只是隐藏系统栏，界面本身没变，
+        // 但「启动方向」已变成跟随系统且实际是横屏 —— 统一交给 playEpisode 重挂电视播放器。
         when(screen) {
             // 手机设置页跟着方向重建：竖屏保持手机设置页；转到横屏时如果是从播放页进来的，
             // 要回到播放画面（电视版播放器），否则落回电视版设置页签
             "settings" -> if(phoneLayout()) phoneSettings.render(root) else closePhoneSettings()
-            // 旋转会让手机播放页的视频区/浮层尺寸彻底改变，必须重建 UI 外壳；
+            // 旋转会让播放页外壳尺寸彻底改变，必须重建 UI；
             // playerView 置空让 playEpisode 走 !reuse 分支重新挂载，播放本身不断流。
-            // 全屏状态要先记下来：releasePlayer 会把手机播放页外壳一并释放。
             "player" -> {
                 val position=currentPosition(); val autoplay=player?.playWhenReady==true && !pausedForLifecycle
-                val wasFullscreen=phonePlayer?.takeFullscreenState()==true
                 phonePlayer=null; playerView=null
                 playEpisode(episodeIndex,position,autoplay)
-                if(wasFullscreen) {
-                    phonePlayer?.restoreFullscreenState(true)
-                    // 重建后重新锁回全屏方向：强制竖屏偏好下保持竖屏
-                    requestedOrientation = if(PhoneUi.orientationMode(this)==OrientationMode.PORTRAIT)
-                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                    else android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                }
             }
             // 详情页要按新方向重建成对应的皮肤；这里必须先判断方向，不能沿用旧的 phoneTab
             "detail" -> when {

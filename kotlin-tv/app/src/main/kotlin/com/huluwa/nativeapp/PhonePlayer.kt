@@ -3,6 +3,7 @@ package com.huluwa.nativeapp
 
 import android.annotation.SuppressLint
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.text.TextUtils
 import android.view.GestureDetector
@@ -17,14 +18,19 @@ import android.widget.TextView
 import com.hongguotv.core.Detail
 
 /**
- * 手机竖屏播放页，交互参考葫芦娃 App 的红果播放页：
+ * 手机竖屏播放页，逐项对齐葫芦娃 App 的红果播放页（huluwa/ui/HongguoPlayer.kt）：
  *
- *  - 视频占满整屏（不再固定 16:9 + 下方常驻面板），单击显隐控件、双击播放/暂停
- *  - 上下滑动切换上一集/下一集（累计位移或快速轻扫触发）
- *  - 顶部渐变栏：返回 / 标题集号 / 倍速 / 更多（选集、清晰度、弹幕、重新加载）
- *  - 底部渐变区：剧集信息（可展开简介）/ 进度条 / 播放、上下集、弹幕、全屏
- *  - 全屏时隐藏系统栏，控件自动淡出
- *  - 弹幕层由 MainActivity 挂进 [videoHost]，覆盖视频区
+ *  - 顶部状态栏：返回 / 标题 / 倍速 / 更多，压在视频上方的黑色渐变里，状态栏图标固定白色；
+ *    竖屏标题只显示「第 N 集」（葫芦娃同款），简介放在底部
+ *  - 点击交互：轻点画面 = 播放 / 暂停（暂停时正中浮大播放键）；上下滑动切上一集 / 下一集
+ *  - 弹幕层从标题栏下沿开始滚，不与顶部按钮重叠（见 [attachDanmaku]）
+ *  - 底部：剧名 + 「第N集 | 简介」（可展开）/ 白色细线进度条 /
+ *    「选集 · 全N集」整行按钮 + 收藏爱心 + 全屏，与葫芦娃红果播放页一一对应
+ *
+ * 方向规则（严格按用户设置的「启动方向」）：
+ *  - 强制竖屏：全屏也不旋转设备，只隐藏系统栏，控件仍是竖屏这一套；
+ *  - 强制横屏 / 跟随系统且横过来：整个 App 走 TV 横屏模式，本类不参与渲染
+ *    （见 [PhoneUi.shouldUse]），播放页就是电视播放器那套。
  *
  * 播放内核完全复用 MainActivity 的 EpisodePlaybackSession / playbackCache，
  * 进度与状态由 MainActivity 的 tick 通过 [refresh] 驱动。
@@ -34,46 +40,51 @@ class PhonePlayer(
 ) {
     private fun dp(v: Int) = PhoneUi.dp(activity, v)
     private fun text(v: String, size: Float, color: Int = Color.WHITE) = PhoneUi.text(activity, v, size, color)
+    private fun row() = PhoneUi.row(activity)
+    private fun column() = PhoneUi.column(activity)
 
-    /** 整页根容器（不含系统栏）。 */
+    /** 整页根容器。 */
     private var host: FrameLayout? = null
-    /** 视频区：PlayerView 与弹幕层放在这里，尺寸随缩放模式变化。 */
+    /** 视频区：PlayerView 与弹幕层放在这里。 */
     private var videoHost: FrameLayout? = null
-
-    /** 顶部 + 底部控件组，统一显隐。 */
+    /** 顶部栏 + 底部面板。竖屏播放页常驻显示（轻点画面只切播放/暂停，与葫芦娃一致）。 */
     private var controls: FrameLayout? = null
-    /** 竖屏视频时浮在画面底部的一行信息。 */
-    private var videoInfo: View? = null
 
+    private var topBar: LinearLayout? = null
+    private var bottom: LinearLayout? = null
     private var titleText: TextView? = null
-    private var statusText: TextView? = null
-    private var progressText: TextView? = null
-    private var playButton: ImageView? = null
-    private var seekBar: PlaybackSeekBar? = null
-    private var episodeText: TextView? = null
-    private var episodePickerText: TextView? = null
+    private var speedLabel: TextView? = null
+    private var seriesTitleText: TextView? = null
     private var introText: TextView? = null
     private var introToggle: TextView? = null
-    private var danmakuButton: TextView? = null
-    private var speedLabel: TextView? = null
+    private var episodePickerText: TextView? = null
+    private var seekBar: PlaybackSeekBar? = null
+    private var favoriteButton: ImageView? = null
     private var fullscreenButton: ImageView? = null
     private var centerPlay: ImageView? = null
     private var buffering: ProgressBar? = null
     private var errorBlock: View? = null
     private var errorText: TextView? = null
-    private var videoInfoLine: TextView? = null
 
     private var fullscreen = false
-    private var controlsHidByUser = false
     private var introExpanded = false
-    private var lastInteraction = 0L
     private var currentDescription = ""
+    private var currentTitle = ""
+    private var episodeCount = 0
+    private var favorite = false
+
+    /** 状态栏真实高度（px）：顶部栏让位与弹幕层下移用。 */
+    private var topInsetPx = 0
 
     // ---------------- 对外入口 ----------------
 
     /** 构建播放页外壳；PlayerView 与弹幕层随后由 MainActivity 放进 [videoHost]。 */
     fun render(root: FrameLayout, data: Detail) {
         clearRefs()
+        currentTitle = data.series.title
+        currentDescription = data.series.description
+        episodeCount = data.episodes.size
+        favorite = activity.phoneLibrary.favorite(data.series.id)
         // 播放页恒黑底：状态栏图标固定白色（暖玉白主题下也不切深色图标）
         activity.phoneStatusBarLight(false)
         root.setBackgroundColor(Color.BLACK)
@@ -83,15 +94,15 @@ class PhonePlayer(
         videoHost = FrameLayout(activity)
         page.addView(videoHost, FrameLayout.LayoutParams(-1, -1))
 
-        // 暂停时居中显示的大播放按钮
+        // 暂停时居中显示的大播放按钮（葫芦娃红果播放页同款）
         centerPlay = ImageView(activity).apply {
             setImageResource(R.drawable.ic_play_circle)
             setColorFilter(Color.WHITE)
             background = GradientDrawable().apply {
-                setColor(Color.argb(96, 0, 0, 0)); shape = GradientDrawable.OVAL
+                setColor(Color.argb(89, 0, 0, 0)); shape = GradientDrawable.OVAL
             }
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            setOnClickListener { activity.togglePlaybackPhone(); touch() }
+            setOnClickListener { activity.togglePlaybackPhone() }
             visibility = View.GONE
         }
         page.addView(centerPlay, FrameLayout.LayoutParams(dp(64), dp(64), Gravity.CENTER))
@@ -102,55 +113,81 @@ class PhonePlayer(
         }
         page.addView(buffering, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER))
 
-        val error = PhoneUi.column(activity).apply {
+        val error = column().apply {
             background = TvStyle.shape(activity, Color.argb(210, 0, 0, 0), radius = 14)
             setPadding(dp(20), dp(16), dp(20), dp(16))
             visibility = View.GONE
         }
         errorText = text("", 14f).apply { gravity = Gravity.CENTER }
         error.addView(errorText, LinearLayout.LayoutParams(-1, -2))
-        error.addView(text("重新加载", 14f, TvStyle.accent).apply {
+        error.addView(text("重新播放", 14f, TvStyle.accent).apply {
             gravity = Gravity.CENTER
             setPadding(dp(16), dp(8), dp(16), dp(8))
-            setOnClickListener { activity.retryPlaybackPhone(); touch() }
+            setOnClickListener { activity.retryPlaybackPhone() }
         }, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(8) })
         errorBlock = error
         page.addView(error, FrameLayout.LayoutParams(dp(240), -2, Gravity.CENTER))
 
-        buildControls(page, data)
+        buildControls(page)
+
         // 手势只挂在视频区：控件层（按钮/进度条）保持正常点击，不能被整页监听吞掉。
         videoHost?.setOnTouchListener(touchListener)
         root.addView(page, FrameLayout.LayoutParams(-1, -1))
 
-        controlsHidByUser = false
-        showControls(true)
+        // 系统栏让位：顶部栏避开状态栏，底部面板避开手势条，弹幕层跟着顶部栏一起下移。
+        // 回调会多次派发（旋转 / 栏显隐），统一用「基础值 + inset」的幂等写法。
+        PhoneInsets.listen(page) { topInset, bottomInset, _ ->
+            topInsetPx = topInset
+            topBar?.setPadding(dp(4), dp(8) + topInset, dp(6), dp(24))
+            bottom?.setPadding(0, dp(34), 0, dp(8) + bottomInset)
+            videoHost?.findViewWithTag<View>(TAG_DANMAKU)?.let { view ->
+                (view.layoutParams as? FrameLayout.LayoutParams)?.topMargin = dp(DANMAKU_TOP_DP) + topInset
+                view.requestLayout()
+            }
+        }
+
         updateEpisode(data)
+        applyFullscreenUi()
     }
 
-    /** 把 MainActivity 创建的 PlayerView 放进视频区。 */
+    /** 把 MainActivity 创建的 PlayerView 放进视频区最底层。 */
     fun attachPlayerView(view: View) {
-        videoHost?.removeAllViews()
-        videoHost?.addView(view, FrameLayout.LayoutParams(-1, -1))
+        videoHost?.addView(view, 0, FrameLayout.LayoutParams(-1, -1))
     }
 
-    /** 弹幕层挂在视频区最上层（控件之下）。 */
+    /**
+     * 弹幕层挂在视频区，但上沿让出顶部标题栏：葫芦娃红果播放页的弹幕从标题栏下方
+     * 才开始滚，否则第一行弹幕会被返回键和倍速按钮压住。
+     */
     fun attachDanmaku(view: View) {
-        videoHost?.addView(view, FrameLayout.LayoutParams(-1, -1))
+        view.tag = TAG_DANMAKU
+        videoHost?.addView(view, FrameLayout.LayoutParams(-1, -1).apply { topMargin = dp(DANMAKU_TOP_DP) + topInsetPx })
     }
 
-    /** 屏幕最底部 2px 离线状态条（含条上方的原因提示）：压在视频区底部，不挡控件。 */
+    /** 屏幕最底部离线状态条（含条上方的原因提示）：压在视频区底部，不挡控件。 */
     fun attachCacheStrip(view: View) {
         videoHost?.addView(view, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
     }
 
-    /** 切集/详情刷新时更新标题与集号信息。 */
+    /** 切集 / 详情刷新时更新标题、集号与简介。 */
     fun updateEpisode(data: Detail) {
+        currentTitle = data.series.title
         currentDescription = data.series.description
-        titleText?.text = data.series.title
-        episodeText?.text = "第 ${activity.phoneEpisodeIndex + 1} 集"
-        episodePickerText?.text = "第 ${activity.phoneEpisodeIndex + 1} 集  ·  共${data.episodes.size}集  ›"
-        introText?.text = currentDescription.ifBlank { "第 ${activity.phoneEpisodeIndex + 1} 集 · 共${data.episodes.size}集" }
-        videoInfoLine?.text = currentDescription.ifBlank { "第 ${activity.phoneEpisodeIndex + 1} 集" }
+        episodeCount = data.episodes.size
+        val number = activity.phoneEpisodeIndex + 1
+        titleText?.text = "第 $number 集"
+        seriesTitleText?.text = currentTitle
+        episodePickerText?.text = "选集 · 全${episodeCount}集"
+        introText?.text = if (currentDescription.isBlank()) "第 $number 集 · 共${episodeCount}集"
+            else "第 $number 集 | $currentDescription"
+        introText?.maxLines = if (introExpanded) 4 else 1
+    }
+
+    /** 收藏态变化后刷新爱心图标。 */
+    fun setFavorite(value: Boolean) {
+        favorite = value
+        favoriteButton?.setImageResource(if (favorite) R.drawable.ic_favorite else R.drawable.ic_favorite_border)
+        favoriteButton?.setColorFilter(if (favorite) 0xFFFF4D67.toInt() else Color.WHITE)
     }
 
     /** 由 MainActivity 的 tick 每秒调用，刷新进度与状态。 */
@@ -160,31 +197,16 @@ class PhonePlayer(
         duration: Long,
         bufferingNow: Boolean,
         error: String?,
-        danmakuOn: Boolean,
         speed: String,
-        quality: String,
     ) {
-        val hasDuration = duration > 0
         if (seekBar?.scrubbing != true) {
-            seekBar?.progress = if (hasDuration) (position * 1000 / duration).toInt().coerceIn(0, 1000) else 0
+            seekBar?.progress = if (duration > 0) (position * 1000 / duration).toInt().coerceIn(0, 1000) else 0
         }
-        progressText?.text = "${formatTime(position)} / ${formatTime(duration)}"
-        playButton?.setImageResource(if (playing) R.drawable.ic_pause else R.drawable.ic_play_arrow)
         centerPlay?.visibility = if (!playing && !bufferingNow && error == null) View.VISIBLE else View.GONE
         buffering?.visibility = if (bufferingNow && error == null) View.VISIBLE else View.GONE
         errorBlock?.visibility = if (error != null) View.VISIBLE else View.GONE
         if (error != null) errorText?.text = error
         speedLabel?.text = speed
-        statusText?.text = listOfNotNull(quality.ifBlank { null }, "弹幕 " + (if (danmakuOn) "开" else "关"))
-            .joinToString("  ·  ")
-        danmakuButton?.alpha = if (danmakuOn) 1f else .45f
-        // 播放中且用户没在操作时自动收起控件（全屏与竖屏一致，参考葫芦娃红果播放页）；
-        // 暂停时保持常显，避免用户找不到播放按钮。
-        val idle = android.os.SystemClock.elapsedRealtime() - lastInteraction > AUTO_HIDE_MS
-        if (playing && idle && !controlsHidByUser && controls?.visibility == View.VISIBLE) {
-            showControls(false)
-        }
-        if (!playing) showControls(true)
     }
 
     fun isFullscreen() = fullscreen
@@ -196,10 +218,10 @@ class PhonePlayer(
         return was
     }
 
-    /** 新外壳渲染后恢复全屏（不重复请求方向/系统栏，调用方已经设置）。 */
+    /** 新外壳渲染后恢复全屏（不重复请求方向 / 系统栏，调用方已经设置）。 */
     fun restoreFullscreenState(wasFullscreen: Boolean) {
         fullscreen = wasFullscreen
-        fullscreenButton?.setImageResource(if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen)
+        applyFullscreenUi()
     }
 
     /** 退出播放页：解除全屏并释放引用。 */
@@ -212,139 +234,144 @@ class PhonePlayer(
 
     // ---------------- 控件构建 ----------------
 
-    private fun buildControls(page: FrameLayout, data: Detail) {
+    private fun buildControls(page: FrameLayout) {
         val layer = FrameLayout(activity)
         controls = layer
         page.addView(layer, FrameLayout.LayoutParams(-1, -1))
 
-        // 顶部栏
-        val topBaseTop = dp(8)
-        val top = PhoneUi.row(activity).apply {
+        // ---- 顶部状态栏：返回 / 标题 / 倍速 / 更多（葫芦娃红果播放页同构） ----
+        val top = row().apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(Color.argb(170, 0, 0, 0), Color.TRANSPARENT))
-            setPadding(dp(4), topBaseTop, dp(6), dp(24))
+                intArrayOf(Color.argb(178, 0, 0, 0), Color.TRANSPARENT))
+            setPadding(dp(4), dp(8), dp(6), dp(24))
         }
-        top.addView(iconButton(R.drawable.ic_back) { activity.returnToDetailPhone() }, rowLp(dp(40), dp(40)))
-        val titles = PhoneUi.column(activity).apply { setPadding(dp(2), 0, dp(8), 0) }
-        titleText = text("", 16f).apply {
+        topBar = top
+        top.addView(iconButton(R.drawable.ic_back, 26, 44) { activity.returnToDetailPhone() }, rowLp(dp(44), dp(48)))
+        titleText = text("", 18f).apply {
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
         }
-        titles.addView(titleText, rowLp(0, -2))
-        episodeText = text("", 12f, Color.argb(190, 255, 255, 255)).apply { maxLines = 1 }
-        titles.addView(episodeText, rowLp(0, -2))
-        top.addView(titles, rowLp(0, -2).apply { weight = 1f })
+        top.addView(titleText, rowLp(0, -2).apply { weight = 1f; leftMargin = dp(2) })
 
-        speedLabel = text("1×", 14f).apply {
+        // 倍速：时钟图标 + 「1×」文字，点击弹出本剧倍速选择器（与葫芦娃一致）
+        val speed = row().apply {
             gravity = Gravity.CENTER
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            setOnClickListener { touch(); activity.showPhoneSpeedPicker() }
+            setPadding(dp(8), dp(6), dp(10), dp(6))
+            setOnClickListener { activity.showPhoneSpeedPicker() }
         }
-        top.addView(speedLabel, rowLp(-2, -2))
-        val speedAnchor = speedLabel!!
-        top.addView(iconButton(R.drawable.ic_more) { touch(); activity.showPhoneMoreMenu(speedAnchor) }, rowLp(dp(40), dp(40)))
+        speed.addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_speed); setColorFilter(Color.WHITE)
+        }, rowLp(dp(20), dp(20)).apply { rightMargin = dp(6) })
+        speedLabel = text("1×", 15f).apply { maxLines = 1 }
+        speed.addView(speedLabel, rowLp(-2, -2))
+        top.addView(speed, rowLp(-2, dp(44)))
+        val speedAnchor = speed
+        top.addView(iconButton(R.drawable.ic_more, 22, 44) { activity.showPhoneMoreMenu(speedAnchor) }, rowLp(dp(44), dp(44)))
         layer.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
 
-        // 底部区
-        val bottomBaseBottom = dp(10)
-        val bottom = PhoneUi.column(activity).apply {
+        // ---- 底部：剧集信息 + 进度条 + 选集行（葫芦娃 HongguoPlayerInfo + 选集按钮） ----
+        val bottomBar = column().apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.BOTTOM_TOP,
-                intArrayOf(Color.argb(215, 0, 0, 0), Color.TRANSPARENT))
-            setPadding(0, dp(36), 0, bottomBaseBottom)
+                intArrayOf(Color.argb(225, 0, 0, 0), Color.TRANSPARENT))
+            setPadding(0, dp(34), 0, dp(8))
         }
-        val info = PhoneUi.column(activity).apply { setPadding(dp(16), 0, dp(16), 0) }
-        episodePickerText = text("", 15f).apply {
-            setPadding(0, dp(4), 0, dp(6))
-            setOnClickListener { touch(); activity.showPhoneEpisodePicker() }
+        bottom = bottomBar
+
+        val info = column().apply { setPadding(dp(16), 0, dp(16), 0) }
+        val titleRow = row().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(2))
+            setOnClickListener { activity.showPhoneEpisodePicker() }
         }
-        info.addView(episodePickerText, rowLp(-1, -2))
-        val introRow = PhoneUi.row(activity)
-        introText = text("", 13f, Color.argb(180, 255, 255, 255)).apply {
-            maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setPadding(0, 0, 0, dp(4))
+        seriesTitleText = text("", 18f).apply {
+            setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
+            maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+        }
+        titleRow.addView(seriesTitleText, rowLp(0, -2))
+        titleRow.addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_chevron_right); setColorFilter(Color.WHITE)
+        }, rowLp(dp(20), dp(20)).apply { leftMargin = dp(2) })
+        info.addView(titleRow, rowLp(-1, dp(32)))
+
+        val introRow = row()
+        introText = text("", 14f, Color.argb(184, 255, 255, 255)).apply {
+            maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(2), 0, dp(4))
         }
         introRow.addView(introText, rowLp(0, -2).apply { weight = 1f })
-        introToggle = text("展开", 12f, Color.argb(200, 255, 255, 255)).apply {
-            setPadding(dp(10), dp(4), dp(2), dp(4))
+        introToggle = text("展开", 14f).apply {
+            setPadding(dp(10), dp(2), dp(2), dp(2))
             setOnClickListener {
                 introExpanded = !introExpanded
                 introText?.maxLines = if (introExpanded) 4 else 1
                 introToggle?.text = if (introExpanded) "收起" else "展开"
-                touch()
             }
         }
         introRow.addView(introToggle, rowLp(-2, -2))
         info.addView(introRow, rowLp(-1, -2))
-        bottom.addView(info, rowLp(-1, -2))
+        bottomBar.addView(info, rowLp(-1, -2))
 
-        // 进度条 + 时间
-        val seekRow = PhoneUi.row(activity).apply { setPadding(dp(14), dp(2), dp(16), 0) }
-        val bar = PlaybackSeekBar(activity).apply { max = 1000 }
-        bar.onScrubPreview = preview@{ ratio ->
-            touch()
-            val duration = activity.playerDuration
-            if (duration <= 0) return@preview
-            progressText?.text = "${formatTime((duration * ratio).toLong())} / ${formatTime(duration)}"
-        }
+        // 进度条：白色细线 + 小圆点（葫芦娃 HongguoSeekBar 外观）
+        val seek = row().apply { setPadding(dp(16), dp(4), dp(16), dp(2)) }
+        val bar = PlaybackSeekBar(
+            activity,
+            trackColor = Color.argb(51, 255, 255, 255),
+            fillColor = Color.argb(166, 255, 255, 255),
+            thumbRadiusDp = 2.5f,
+            trackHeightDp = 1.5f,
+        ).apply { max = 1000 }
         bar.onScrub = scrub@{ ratio, final ->
             val duration = activity.playerDuration
             if (duration <= 0 || !activity.phonePlaybackReady) return@scrub
             if (final) activity.seekToPhone((duration * ratio).toLong())
         }
         seekBar = bar
-        seekRow.addView(bar, rowLp(0, dp(26)).apply { weight = 1f })
-        progressText = text("", 11f, Color.argb(200, 255, 255, 255)).apply { setPadding(dp(10), 0, 0, 0) }
-        seekRow.addView(progressText, rowLp(-2, -2))
-        bottom.addView(seekRow, rowLp(-1, -2))
+        seek.addView(bar, rowLp(0, dp(24)).apply { weight = 1f })
+        bottomBar.addView(seek, rowLp(-1, -2))
 
-        // 操作行
-        val actions = PhoneUi.row(activity).apply { setPadding(dp(12), dp(2), dp(10), dp(2)) }
-        playButton = iconButton(R.drawable.ic_pause) { touch(); activity.togglePlaybackPhone() }
-        actions.addView(playButton, rowLp(dp(44), dp(44)))
-        actions.addView(iconButton(R.drawable.ic_skip_prev) { touch(); activity.skipEpisodePhone(-1) }, rowLp(dp(44), dp(44)))
-        actions.addView(iconButton(R.drawable.ic_skip_next) { touch(); activity.skipEpisodePhone(1) }, rowLp(dp(44), dp(44)))
-        statusText = text("", 12f, Color.argb(190, 255, 255, 255)).apply {
-            maxLines = 1; setPadding(dp(6), 0, dp(4), 0)
+        // 「选集 · 全N集」整行按钮 + 收藏 + 全屏（葫芦娃同构）
+        val actions = row().apply { setPadding(dp(16), dp(2), dp(16), dp(6)) }
+        val picker = row().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            background = TvStyle.shape(activity, Color.rgb(0x15, 0x15, 0x15), radius = 10)
+            setPadding(dp(16), 0, dp(12), 0)
+            setOnClickListener { activity.showPhoneEpisodePicker() }
         }
-        actions.addView(statusText, rowLp(0, -2).apply { weight = 1f })
-        danmakuButton = text("弹幕", 13f).apply {
-            gravity = Gravity.CENTER
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            setOnClickListener { touch(); activity.togglePhoneDanmaku() }
-        }
-        actions.addView(danmakuButton, rowLp(-2, -2).apply { rightMargin = dp(4) })
-        fullscreenButton = iconButton(R.drawable.ic_fullscreen) { touch(); toggleFullscreen() }
-        actions.addView(fullscreenButton, rowLp(dp(44), dp(44)))
-        bottom.addView(actions, rowLp(-1, -2))
-        layer.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+        episodePickerText = text("选集 · 全$episodeCount集", 15f).apply { maxLines = 1 }
+        picker.addView(episodePickerText, rowLp(0, -2).apply { weight = 1f })
+        picker.addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_keyboard_arrow_up); setColorFilter(Color.WHITE)
+        }, rowLp(dp(22), dp(22)))
+        actions.addView(picker, rowLp(0, dp(44)).apply { weight = 1f })
 
-        // 竖屏视频时浮在画面底部的一行简介
-        val floating = PhoneUi.column(activity).apply {
-            background = GradientDrawable(
-                GradientDrawable.Orientation.BOTTOM_TOP,
-                intArrayOf(Color.argb(150, 0, 0, 0), Color.TRANSPARENT))
-            setPadding(dp(16), dp(20), dp(16), dp(10))
-            visibility = View.GONE
+        favoriteButton = ImageView(activity).apply {
+            setImageResource(if (favorite) R.drawable.ic_favorite else R.drawable.ic_favorite_border)
+            setColorFilter(if (favorite) 0xFFFF4D67.toInt() else Color.WHITE)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setOnClickListener { toggleFavorite() }
         }
-        videoInfoLine = text("", 13f).apply {
-            maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-            setOnClickListener { touch(); activity.showPhoneEpisodePicker() }
+        actions.addView(favoriteButton, rowLp(dp(40), dp(40)).apply { leftMargin = dp(8) })
+
+        fullscreenButton = ImageView(activity).apply {
+            setImageResource(R.drawable.ic_fullscreen)
+            setColorFilter(Color.WHITE)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setOnClickListener { toggleFullscreen() }
         }
-        floating.addView(videoInfoLine, rowLp(-1, -2))
-        videoInfo = floating
-        page.addView(floating, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
-        // 竖屏播放页状态栏可见，顶部标题与底部控制要让出状态栏/手势条；全屏（横屏）时
-        // 系统栏隐藏、Insets 归零只剩刘海，padding 自动回落到基础值（回调可能多次派发，
-        // 必须用「基础值 + 偏移」的幂等写法）
-        PhoneInsets.listen(page) { topInset, bottomInset, _ ->
-            top.setPadding(dp(4), topBaseTop + topInset, dp(6), dp(24))
-            bottom.setPadding(0, dp(36), 0, bottomBaseBottom + bottomInset)
-            floating.setPadding(dp(16), dp(20), dp(16), dp(10) + bottomInset)
-        }
+        actions.addView(fullscreenButton, rowLp(dp(40), dp(40)).apply { leftMargin = dp(4) })
+        bottomBar.addView(actions, rowLp(-1, -2))
+
+        layer.addView(bottomBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
     }
 
-    // ---------------- 触摸与控件显隐 ----------------
+    /** 全屏图标与文案随状态切换；强制竖屏下全屏只是隐藏系统栏，控件布局不变。 */
+    private fun applyFullscreenUi() {
+        fullscreenButton?.setImageResource(if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen)
+    }
+
+    // ---------------- 触摸 ----------------
 
     @SuppressLint("ClickableViewAccessibility")
     private val touchListener = View.OnTouchListener { _, event ->
@@ -372,7 +399,6 @@ class PhonePlayer(
                 // 与 TV 版手势一致：dy 是「上次−当前」，上滑为正 → 下一集
                 if (Math.abs(strokeTotal) > activity.resources.displayMetrics.heightPixels * 0.18f) {
                     strokeLocked = true
-                    touch()
                     if (strokeTotal > 0) activity.skipEpisodePhone(1) else activity.skipEpisodePhone(-1)
                 }
                 return true
@@ -383,88 +409,68 @@ class PhonePlayer(
                 // 快速轻扫位移可能不够 18%，用速度兜底；要求纵向明显占优，避免误伤横向拖动
                 if (Math.abs(vy) > Math.abs(vx) * 1.4f && Math.abs(vy) > 1600f) {
                     strokeLocked = true
-                    touch()
                     if (vy < 0) activity.skipEpisodePhone(1) else activity.skipEpisodePhone(-1)
                 }
                 return true
             }
 
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                // 先判当前状态再 touch()：touch() 自己会把控件叫出来，
-                // 放在后面判的话永远是「已显示」，单击就永远在切播放状态。
-                val showing = controls?.visibility == View.VISIBLE
-                touch()
-                // 控件收起时第一下只管把控件叫回来；已经显示才执行播放/暂停，
-                // 否则用户想点进度条，第一下就把视频停了。
-                if (showing) activity.togglePlaybackPhone()
-                return true
-            }
-
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                touch()
+                // 与葫芦娃一致：轻点画面 = 播放 / 暂停（暂停时正中还有个大播放键）
                 activity.togglePlaybackPhone()
                 return true
             }
         })
     }
 
-    private fun touch() {
-        lastInteraction = android.os.SystemClock.elapsedRealtime()
-        if (controls?.visibility != View.VISIBLE) showControls(true)
+    // ---------------- 操作 ----------------
+
+    /** 收藏按钮：与详情页共用 library.toggle，图标即时切换。 */
+    private fun toggleFavorite() {
+        val series = activity.phoneCurrentSeries ?: return
+        activity.phoneFavoriteMonitor.stop()
+        val saved = activity.phoneLibrary.toggle(series)
+        if (saved) activity.phoneLibrary.observeFavorite(series.id, episodeCount, System.currentTimeMillis(), acknowledge = true)
+        setFavorite(saved)
+        PhoneUi.toast(activity, if (saved) "已收藏" else "已取消收藏")
     }
 
-    private fun showControls(visible: Boolean) {
-        controlsHidByUser = !visible
-        controls?.visibility = if (visible) View.VISIBLE else View.GONE
-        if (visible) lastInteraction = android.os.SystemClock.elapsedRealtime()
-        // 竖屏画幅的浮动信息跟随控件一起显隐；全屏时不显示
-        val floating = videoInfo ?: return
-        floating.visibility = if (visible && !fullscreen && portraitVideo) View.VISIBLE else View.GONE
-    }
-
-    /** 当前视频是否为竖屏画幅（由 MainActivity 在 VideoSize 回调里告知）。 */
-    private var portraitVideo = false
-
-    fun setPortraitVideo(portrait: Boolean) {
-        portraitVideo = portrait
-        videoInfo?.visibility = if (portrait && !fullscreen && controls?.visibility == View.VISIBLE) View.VISIBLE else View.GONE
-    }
-
+    /**
+     * 全屏：强制竖屏下只隐藏系统栏（不转屏）；跟随系统下才真正转横屏，
+     * 转过去之后由 onConfigurationChanged 换成电视播放器那套界面。
+     */
     private fun toggleFullscreen() {
         fullscreen = !fullscreen
-        fullscreenButton?.setImageResource(
-            if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen)
         if (fullscreen) activity.enterFullscreenPhone() else activity.exitFullscreenPhone()
-        showControls(true)
+        applyFullscreenUi()
+        activity.applyPhoneFullscreen(fullscreen)
     }
 
     // ---------------- 小工具 ----------------
 
-    private fun iconButton(icon: Int, action: () -> Unit): ImageView = ImageView(activity).apply {
-        setImageResource(icon)
-        setColorFilter(Color.WHITE)
-        setPadding(dp(10), dp(10), dp(10), dp(10))
-        setOnClickListener { action() }
-    }
+    /** 图标按钮：图片按 [sizeDp] 显示，外面留足 [touchDp] 的点击区。 */
+    private fun iconButton(icon: Int, sizeDp: Int, touchDp: Int, action: () -> Unit): ImageView =
+        ImageView(activity).apply {
+            setImageResource(icon)
+            setColorFilter(Color.WHITE)
+            val pad = ((touchDp - sizeDp) / 2).coerceAtLeast(0)
+            setPadding(dp(pad), dp(pad), dp(pad), dp(pad))
+            setOnClickListener { action() }
+        }
 
     private fun rowLp(w: Int, h: Int) = LinearLayout.LayoutParams(w, h)
 
-    private fun formatTime(millis: Long): String {
-        val seconds = millis.coerceAtLeast(0) / 1000
-        return "%02d:%02d".format(seconds / 60, seconds % 60)
-    }
-
     private fun clearRefs() {
-        host = null; videoHost = null; controls = null; videoInfo = null
-        titleText = null; statusText = null; progressText = null; playButton = null; seekBar = null
-        episodeText = null; episodePickerText = null
-        introText = null; introToggle = null; danmakuButton = null; speedLabel = null
-        fullscreenButton = null; centerPlay = null; buffering = null
-        errorBlock = null; errorText = null; videoInfoLine = null
+        host = null; videoHost = null; controls = null
+        topBar = null; bottom = null; titleText = null; speedLabel = null
+        seriesTitleText = null; introText = null; introToggle = null; episodePickerText = null
+        seekBar = null; favoriteButton = null; fullscreenButton = null
+        centerPlay = null; buffering = null; errorBlock = null; errorText = null
     }
 
     private companion object {
-        /** 播放中控件自动淡出的静默时长。 */
-        const val AUTO_HIDE_MS = 3500L
+        /** 弹幕层上沿：标题栏高度（dp），与顶部栏的视觉高度对齐。 */
+        const val DANMAKU_TOP_DP = 52
+        /** 弹幕层的 view tag：Insets 变化后按它找回来重设上边距。 */
+        const val TAG_DANMAKU = "phone-danmaku-layer"
     }
 }

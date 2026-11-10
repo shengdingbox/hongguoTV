@@ -19,8 +19,17 @@ import android.view.View
  *
  * 拖动期间对 [progress] 的写入会被忽略：播放器每秒刷新一次进度，
  * 不挡住的话手指按住的位置会被播放位置拽回去，拖到一半就跳。
+ *
+ * 轨道粗细与配色可自定义：电视版用主题色粗轨道，手机播放页按葫芦娃红果的样式
+ * 传白色细线 + 小圆点（[trackColor] / [fillColor] / [thumbRadiusDp] / [trackHeightDp]）。
  */
-class PlaybackSeekBar(context: Context) : View(context) {
+class PlaybackSeekBar(
+    context: Context,
+    private val trackColor: Int = TvStyle.surface,
+    private val fillColor: Int = TvStyle.accent,
+    private val thumbRadiusDp: Float = 5f,
+    private val trackHeightDp: Float = 4f,
+) : View(context) {
 
     /** 进度上限，沿用旧 ProgressBar 的 0..max 口径（默认 1000）。 */
     var max: Int = 1000
@@ -60,13 +69,13 @@ class PlaybackSeekBar(context: Context) : View(context) {
     private var dragging = false
     private var hovered = false
     private val density = resources.displayMetrics.density
-    private val trackHeight = 4f * density
-    private val thumbRadius = 5f * density
-    private val thumbHoverRadius = 7f * density
-    private val thumbDragRadius = 8f * density
-    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = TvStyle.surface }
-    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = TvStyle.accent }
-    private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = TvStyle.accent }
+    private val trackHeight = trackHeightDp * density
+    private val thumbRadius = thumbRadiusDp * density
+    private val thumbHoverRadius = (thumbRadiusDp + 2f) * density
+    private val thumbDragRadius = (thumbRadiusDp + 3f) * density
+    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = trackColor }
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fillColor }
+    private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fillColor }
     private val rect = RectF()
 
     init {

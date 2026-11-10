@@ -168,6 +168,10 @@ class PhonePages(
         }, PhoneUi.lp(-1, -2))
     }
 
+    /** 入口行统一高度：单行（无副标题）与双行（带副标题）都按这一高度排版，
+     *  不能再只用 minimumHeight——双行的实际内容高度会超过它，同组里就忽高忽低。 */
+    private fun entryHeight() = dp(62)
+
     /** 一张圆角卡片里纵向排列若干入口行，行间用细分割线隔开。 */
     private fun groupCard(parent: LinearLayout, rows: List<View>) {
         val card = column().apply {
@@ -178,17 +182,17 @@ class PhonePages(
                 card.addView(View(activity).apply { setBackgroundColor(TvStyle.outline) },
                     PhoneUi.lp(-1, dp(1)).apply { leftMargin = dp(16) })
             }
-            card.addView(line, PhoneUi.lp(-1, -2))
+            card.addView(line, PhoneUi.lp(-1, entryHeight()))
         }
         parent.addView(card, PhoneUi.lp(-1, -2).apply { leftMargin = dp(14); rightMargin = dp(14) })
     }
 
-    /** 入口行：左标题 + 可选副标题 + 右侧当前值 + 箭头，整行可点。 */
+    /** 入口行：左标题 + 可选副标题 + 右侧当前值 + 箭头，整行可点。
+     *  高度由 [groupCard] 按 [entryHeight] 固定，内容靠 [row] 的垂直居中收口。 */
     private fun entryRow(title: String, subtitle: String = "", value: String? = null, onClick: () -> Unit): LinearLayout {
         val entry = row().apply {
-            // 统一最小高度：有副标题和没副标题的行视觉对齐
-            minimumHeight = dp(58)
-            setPadding(dp(16), dp(12), dp(14), dp(12))
+            // 上下内边距交给固定行高承担，避免双行内容把行撑高
+            setPadding(dp(16), 0, dp(14), 0)
             isClickable = true
             setOnClickListener { onClick() }
         }
@@ -202,9 +206,14 @@ class PhonePages(
                 maxLines = 1
                 maxWidth = dp(150)
                 ellipsize = TextUtils.TruncateAt.END
+                gravity = Gravity.CENTER_VERTICAL
             }, PhoneUi.lp(-2, -2).apply { leftMargin = dp(8) })
         }
-        entry.addView(text("›", 16f, TvStyle.muted).apply { setPadding(dp(6), 0, 0, 0) })
+        // 箭头按自身高度居中：默认 WRAP_CONTENT 已经能靠父行的 gravity 对齐，不用额外高度
+        entry.addView(text("›", 16f, TvStyle.muted).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), 0, 0, 0)
+        })
         return entry
     }
 
@@ -248,16 +257,21 @@ class PhonePages(
         return card
     }
 
-    /** 统计格：上方数字、下方名称，整格可点。 */
+    /** 统计格：上方数字、下方名称，整格可点。
+     *  子视图必须用 WRAP_CONTENT 宽度——Vertical LinearLayout 的默认布局参数是 MATCH_PARENT，
+     *  那样文字会在整格宽度里左对齐，外面的 CENTER_HORIZONTAL 看起来就失效了。 */
     private fun statCell(value: String, label: String, onClick: () -> Unit): LinearLayout {
         val cell = column().apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, dp(6), 0, dp(6))
+            gravity = Gravity.CENTER_HORIZONTAL or Gravity.CENTER_VERTICAL
+            setPadding(0, dp(12), 0, dp(12))
             isClickable = true
             setOnClickListener { onClick() }
         }
-        cell.addView(text(value, 19f, TvStyle.accent).apply { typeface = Typeface.create("sans-serif-medium", Typeface.BOLD) })
-        cell.addView(text(label, 12f, TvStyle.muted), PhoneUi.lp(-2, -2).apply { topMargin = dp(3) })
+        cell.addView(text(value, 19f, TvStyle.accent).apply {
+            gravity = Gravity.CENTER
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        }, PhoneUi.lp(-2, -2))
+        cell.addView(text(label, 12f, TvStyle.muted).apply { gravity = Gravity.CENTER }, PhoneUi.lp(-2, -2).apply { topMargin = dp(3) })
         return cell
     }
 

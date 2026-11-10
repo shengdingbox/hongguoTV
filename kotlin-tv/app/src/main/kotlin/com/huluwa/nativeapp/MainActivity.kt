@@ -6141,7 +6141,8 @@ class MainActivity: Activity() {
             "默认倍速  ·  ${com.hongguotv.core.PlaybackSpeed.label(library.playbackSpeed)}",
             "自动连播  ·  ${if(library.autoNext) "开启" else "关闭"}",
             "弹幕  ·  ${if(library.danmaku) "开启" else "关闭"}",
-            "更多设置请旋转到横屏或用电视界面")
+            if(OrientationMode.of(library.orientationMode)==OrientationMode.PORTRAIT) "更多设置需先切回「跟随系统」再旋转到横屏"
+            else "更多设置请旋转到横屏或用电视界面")
         tvTools.choose("播放与界面设置",options,voiceAnchor,{ choice ->
             when(choice) {
                 // 竖屏下直接重建页签即可，不必 recreate 整个 Activity
@@ -6176,7 +6177,7 @@ class MainActivity: Activity() {
                 // 全屏与否也由 enter/exitFullscreenPhone 负责。
                 when {
                     screen=="player" -> Unit
-                    phoneLayout() -> if(phoneTab!="detail") renderPhone() else openDetailPhone(detail!!.series)
+                    phoneLayout() -> if(phoneTab!="detail") renderPhone() else detail?.series?.let { openDetailPhone(it) }
                     screen=="catalog" -> { settingsFocusKey="启动方向"; showCatalog() }
                 }
                 applyPhoneSystemBars()

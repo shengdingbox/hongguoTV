@@ -31,15 +31,35 @@ import com.hongguotv.core.Series
  */
 object PhoneUi {
 
-    /** 当前是否应使用手机竖屏页面：触屏手持设备 + 竖屏方向。 */
+    /** 当前是否应使用手机竖屏页面：触屏手持设备，且界面方向为竖（实际朝向或用户强制竖屏）。
+     *  [OrientationMode] 里强制横屏会让这里恒为 false，强制竖屏则恒为 true。 */
     fun shouldUse(activity: Activity): Boolean {
-        val portrait = activity.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT
-        return portrait && TouchControls.isHandheld(activity)
+        if(!TouchControls.isHandheld(activity)) return false
+        return when(orientationMode(activity)) {
+            OrientationMode.PORTRAIT -> true
+            OrientationMode.LANDSCAPE -> false
+            // 跟随系统：横屏仍走 TV 页面，只有竖着拿才接管
+            OrientationMode.AUTO -> activity.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT
+        }
     }
 
     /** 手机播放页全屏时会被锁成横屏；这期间仍属于手机界面，不能切回电视版。 */
     fun shouldUsePlayer(activity: Activity, fullscreen: Boolean): Boolean =
         fullscreen && TouchControls.isHandheld(activity) || shouldUse(activity)
+
+    /** 用户设置里的启动方向偏好（每次实时读，设置改完立即生效）。 */
+    fun orientationMode(activity: Activity): OrientationMode =
+        OrientationMode.of(activity.getSharedPreferences("native-library-v1", android.content.Context.MODE_PRIVATE).getString("orientationMode", null))
+
+    /** Activity 请求的屏幕方向：电视锁横屏；手机按偏好，强制档位锁死朝向，跟随系统则交给传感器。 */
+    fun requestedOrientation(activity: Activity): Int {
+        if(!TouchControls.isHandheld(activity)) return android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        return when(orientationMode(activity)) {
+            OrientationMode.LANDSCAPE -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            OrientationMode.PORTRAIT -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            OrientationMode.AUTO -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
 
     // ---- 基础视图工具（与 TV 版 dp/text/lp 对齐，但控件尺寸按手机习惯收紧） ----
 

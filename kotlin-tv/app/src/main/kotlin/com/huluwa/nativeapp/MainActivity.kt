@@ -136,10 +136,10 @@ class MainActivity: Activity() {
     /** 状态条当前对应的「集号 + 画质」：换集后要立刻按新邻接集重算三段比例。 */
     private var cacheStripKey: Pair<Int,Int>?=null
     /** 三段缓存条的高度（dp）：轨道与容器共用，避免只改一处导致填充条被裁掉。 */
-    private val cacheStripHeightDp=1
+    private val cacheStripHeightDp=0.5f
     /** 上一次写进提示行的文案：每秒刷新时只在文案变化时才 setText，避免无谓重排。 */
     private var stripKeyText: String?=null
-    /** 屏幕最底部的 1dp 离线状态条：三段依次对应下 1/2/3 集，null 表示当前页面未挂。 */
+    /** 屏幕最底部的缓存状态条：三段依次对应下 1/2/3 集，null 表示当前页面未挂。 */
     private var cacheStripSegments: List<View>?=null
     private var cacheStripView: View?=null
     /** 状态条下方的原因提示：三段全灰时告诉用户是哪一步没跑起来，而不是只留一条灰线。 */
@@ -3450,7 +3450,7 @@ class MainActivity: Activity() {
                 danmakuLayer.applyPrefs(library.danmakuOpacity,library.danmakuFont,library.danmakuSpeed,library.danmakuRows)
                 playerUi.attachDanmaku(danmakuLayer)
                 playerUi.attachPlayerView(view)
-                // 屏幕最底部 1dp 离线状态条：三段对应下 1/2/3 集
+                // 屏幕最底部缓存状态条：三段对应下 1/2/3 集
                 cacheStripSegments=buildCacheStrip()
                 playerUi.attachCacheStrip(cacheStripHost())
                 refreshCacheStrip()
@@ -3512,7 +3512,7 @@ class MainActivity: Activity() {
             recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { indeterminateTintList=android.content.res.ColorStateList.valueOf(accent); visibility=View.GONE }
             root.addView(recoverySpinner,FrameLayout.LayoutParams(dp(56),dp(56),Gravity.CENTER))
             root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled=false; addView(hud) },FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
-            // 屏幕最底部 1dp 离线状态条：三段对应下 1/2/3 集
+            // 屏幕最底部缓存状态条：三段对应下 1/2/3 集
             cacheStripSegments=buildCacheStrip()
             root.addView(cacheStripHost(),FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
             refreshCacheStrip()
@@ -3718,7 +3718,7 @@ class MainActivity: Activity() {
         }
         refreshCacheStrip()
     }
-    /** 屏幕最底部 1dp 离线状态条：三段对应下 1/2/3 集，蓝色=已落盘比例，灰色=未离线。
+    /** 屏幕最底部缓存状态条：三段对应下 1/2/3 集，蓝色=已落盘比例，灰色=未离线。
      *  三段全灰时还要在条上方给一句人话原因：开关关了 / 移动网络 / 内存紧张 / 取址失败，
      *  否则用户只能看到三条永远不动的灰线，分不清是还没下还是压根没开始下。 */
     private fun refreshCacheStrip() {
@@ -3776,7 +3776,7 @@ class MainActivity: Activity() {
         if(stripKeyText!=text) { hint.text=text; stripKeyText=text }
         if(hint.visibility!=View.VISIBLE) hint.visibility=View.VISIBLE
     }
-    /** 构建 1dp 状态条（尚未挂载）：返回三段轨道（每段 tag 里存蓝色填充 View）。 */
+    /** 构建缓存状态条（尚未挂载）：返回三段轨道（每段 tag 里存蓝色填充 View）。 */
     private fun buildCacheStrip(): List<View> {
         val strip=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
@@ -3793,7 +3793,7 @@ class MainActivity: Activity() {
             }
         }
         segments.forEachIndexed { index,segment ->
-            strip.addView(segment,LinearLayout.LayoutParams(0,dp(cacheStripHeightDp),1f).apply {
+            strip.addView(segment,LinearLayout.LayoutParams(0,dp(cacheStripHeightDp).coerceAtLeast(1),1f).apply {
                 if(index>0) leftMargin=dp(1)
             })
         }
@@ -3814,7 +3814,7 @@ class MainActivity: Activity() {
         return column().apply {
             gravity=Gravity.BOTTOM
             addView(hint,LinearLayout.LayoutParams(-1,-2))
-            addView(strip,LinearLayout.LayoutParams(-1,dp(cacheStripHeightDp)))
+            addView(strip,LinearLayout.LayoutParams(-1,dp(cacheStripHeightDp).coerceAtLeast(1)))
         }
     }
     /** 整集落盘调度：上一集/当前集/下三集保留窗口，下载优先级下一集 > +2 > +3 > 当前集 > 上一集。 */

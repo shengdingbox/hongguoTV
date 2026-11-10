@@ -10,6 +10,7 @@ import org.json.JSONObject
 import org.json.JSONArray
 import java.io.IOException
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.ExecutionException
@@ -87,6 +88,8 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     /** 同一份取址缓存、另一套传输：预取需要更短的超时，但必须和正式播放看到同一个缓存。 */
     fun childTransport(http: OkHttpClient) = ContentRepository(http, clock, signer, modelCache)
     private val site = "https://hongguoduanju.com"
+    /** 红果官方 App 的 JSON 网关；签名与设备身份由 [RemoteSigner] 统一补齐。 */
+    private val API = "https://api5-normal-sinfonlinea.fqnovel.com"
     private data class SearchCursor(val searchId: String, val passback: String, val offset: Int?, val updatedAt: Long)
     private val searchCursors=linkedMapOf<Triple<ContentType,String,Int>,SearchCursor>()
     private val genreCache=mutableMapOf<ContentType,Pair<Long,List<Genre>>>()
@@ -420,28 +423,143 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         if(key.isEmpty() || key.length>20 || !key.matches(Regex("[a-z0-9]+"))) return emptyList()
         return suggestRaw(key)
     }
+    /**
+     * 剧集详情。改走红果官方 App 的 JSON 接口（移植自 openhongguo 的
+     * `video_detail`），不再抓整页 HTML：一次小 JSON 就拿回剧集信息、整份分集
+     * ID、热度与系列标记，返回速度快一个量级，也彻底摆脱「补季搜索」。
+     *
+     * 相关推荐与「系列剧」换用详情页自己的 plan feed，两个请求并行，失败时退回
+     * 详情接口里能拿到的同名季，绝不再走全网搜索。返回结构保持 [Detail] 不变，
+     * UI 与播放链路不需要任何改动。
+     */
     fun detail(id: String): Detail {
         require(id.matches(Regex("[0-9]{1,30}")))
-        val html=text("$site/detail?series_id=$id")
-        val loader=extractRouter(html).getJSONObject("loaderData")
-        val o=loader.optJSONObject("detail_page")?.optJSONObject("seriesDetail") ?: throw IOException("剧集详情暂不可用")
-        val raw=o.optJSONArray("vid_list") ?: throw IOException("分集暂不可用")
-        val episodes=(0 until raw.length()).map { raw.getString(it) }
-        if(episodes.isEmpty() || episodes.any { !it.matches(Regex("[0-9]{1,30}")) } || episodes.distinct().size!=episodes.size) throw IOException("分集数据异常")
-        val series=card(o).copy(id=id)
-        val related=related(html,series)
-        val social=social(loader.optJSONObject("detail_page")?.optJSONObject("seriesSocialInfo"))
-        return Detail(series,episodes,related,sameName(series,related),social)
+        val main = fetchSeriesDetail(id)
+        // 相关推荐与系列剧都来自 plan feed，独立请求；两个都失败也不影响已经拿到的详情。
+        val related = runCatching { planRelated(id, main.series) }.getOrDefault(emptyList())
+        val sameName = runCatching { planSeasons(id) }.getOrDefault(emptyList())
+            .map { it.toSeries() }
+            .filter { it.id != id }
+        val merged = (sameName + sameName(main.series, related)).distinctBy { it.id }
+            .sortedBy { seasonNumber(it.title).let { n -> if (n == Int.MAX_VALUE) 1 else n } }
+        return Detail(main.series, main.episodes, related, merged, main.social)
     }
-    // 评分与收藏数只在详情页 SSR 里下发，卡片数据源没有这些字段，因此只读取不追加请求。
-    private fun social(o: JSONObject?): SeriesSocial {
-        if(o==null) return SeriesSocial()
-        val favorite=compactCount(o.str("series_favorite_count"))
+
+    private data class SeriesPayload(val series: Series, val episodes: List<String>, val social: SeriesSocial)
+
+    /** `POST /novel/player/video_detail/v1/`：详情与整份分集列表。 */
+    private fun fetchSeriesDetail(id: String): SeriesPayload {
+        val body = JSONObject()
+            .put("series_id", id)
+            .put("biz_param", JSONObject()
+                .put("caller_scene", "single_col")
+                .put("detail_page_version", 0)
+                .put("from_video_id", "")
+                .put("need_all_video_definition", false)
+                .put("need_mp4_align", false)
+                .put("source", 4)
+                .put("video_id_type", 1))
+            .toString().toByteArray(Charsets.UTF_8)
+        val data = signedJson("$API/reading/player/video_detail/v1/", emptyMap(), body)
+        val v = data.optJSONObject("video_data") ?: throw IOException("剧集详情暂不可用")
+        val series = planCardSeries(v).copy(id = id)
+        val episodes = v.optJSONArray("video_list")?.objects()
+            ?.mapNotNull { it.str("vid").takeIf { vid -> vid.matches(Regex("[0-9]{1,30}")) } }
+            ?: throw IOException("分集暂不可用")
+        if (episodes.isEmpty() || episodes.distinct().size != episodes.size) throw IOException("分集数据异常")
+        return SeriesPayload(series, episodes, detailSocial(v))
+    }
+
+    /**
+     * `GET /reading/bookapi/plan/v1/` 的相关推荐 cell（show_type 160）。
+     * 匿名身份下服务端有时改发通用「更多好剧」cell（401），同样可用。
+     */
+    private fun planRelated(id: String, current: Series): List<Series> {
+        val data = planCells(id, "select_panel_recommend")
+        val cell = data.firstOrNull { it.optInt("show_type") == 160 }
+            ?: data.firstOrNull { planSeries(it).isNotEmpty() }
+            ?: return emptyList()
+        val items = valid(planSeries(cell)).filter { it.id != id }
+        val key = current.title.trim()
+        if (key.isEmpty()) return items
+        return items.sortedBy { item ->
+            when {
+                item.title.equals(key, ignoreCase = true) -> 0
+                item.title.startsWith(key) || key.startsWith(item.title) -> 1
+                else -> 2
+            }
+        }
+    }
+
+    /** `GET /reading/bookapi/plan/v1/` 的「系列剧」cell（show_type 547）：整季列表。 */
+    private fun planSeasons(id: String): List<Series> {
+        val cells = planCells(id, "single_col_same_ip_series", id)
+        val cell = cells.firstOrNull { it.optInt("show_type") == 547 } ?: return emptyList()
+        return valid(cell.optJSONArray("video_data")?.objects()?.map(::planCardSeries).orEmpty())
+    }
+
+    /** 统一打 plan feed；按 `from` 场景取回 data 下的 cell 数组。 */
+    private fun planCells(bookId: String, from: String, filterId: String? = null): List<JSONObject> {
+        val values = linkedMapOf(
+            "book_id" to bookId,
+            "from" to from,
+            "scene" to "10",
+            "session_uuid" to UUID.randomUUID().toString(),
+            "user_is_login" to "0",
+        )
+        if (filterId != null) values["filter_ids"] = filterId
+        val data = signedJson("$API/reading/bookapi/plan/v1/", values, null)
+        return data.optJSONArray("data")?.objects().orEmpty()
+    }
+
+    /** 签名 JSON 请求，统一处理 code != 0 与空响应。 */
+    private fun signedJson(url: String, values: Map<String, String>, body: ByteArray?): JSONObject {
+        val signed = signer.sign(url, values, body)
+        val raw = text(signed.url, signed)
+        val data = runCatching { JSONObject(raw) }.getOrElse { throw IOException("接口数据格式异常") }
+        val code = data.optString("code", "0")
+        if (code.isNotEmpty() && code != "0") throw IOException("接口返回错误（code=$code）")
+        return data
+    }
+
+    /** plan feed 卡片字段与详情页同构，统一从 video_data/series 字段还原。 */
+    private fun planSeries(cell: JSONObject): List<Series> {
+        val rows = cell.optJSONArray("video_data") ?: cell.optJSONArray("cell_data") ?: return emptyList()
+        return rows.objects().map(::planCardSeries)
+    }
+
+    /** 详情/推荐/系列剧共用的卡片解析：尽量凑齐 Series 需要的六个字段。 */
+    private fun planCardSeries(o: JSONObject): Series {
+        val id = o.str("series_id_str").ifEmpty { o.str("series_id") }.ifEmpty { o.str("vid") }
+        val title = o.str("series_title").ifEmpty { o.str("title") }
+        val cover = o.str("series_cover").ifEmpty { o.str("cover") }
+        val intro = o.str("series_intro").ifEmpty { o.str("description") }
+        val count = o.optInt("episode_cnt", 0)
+        val badge = o.str("episode_right_text").ifEmpty { if (count > 0) "全 $count 集" else "" }
+        // 题材标签取 secondary_infos 里 data_type=3 的可搜索标签；
+        // 没有时退回 sub_title，但滤掉与 badge/热度行重复的「全N集」「红果热度值…」。
+        val infoTags = o.optJSONArray("secondary_infos")?.objects()
+            ?.filter { it.optInt("data_type") == 3 }
+            ?.map { it.str("content") }
+            ?.filter { it.isNotEmpty() }
+            .orEmpty()
+        val fallbackTags = o.optJSONArray("series_sub_title_list")
+            ?.let { list -> (0 until list.length()).map { list.optString(it).trim() } }
+            ?.filter { it.isNotEmpty() && !it.startsWith("全") && !it.contains("热度") }
+            .orEmpty()
+        val tags = (infoTags.ifEmpty { fallbackTags }).distinct().take(3).joinToString(" · ")
+        return Series(id, seriesTitle(title), cleanUrl(cover), intro, badge, tags)
+    }
+
+    /** 详情接口自带的热度/收藏，替换原 SSR 里的评分区；没有评分字段就隐藏。 */
+    private fun detailSocial(v: JSONObject): SeriesSocial {
+        val favorite = compactCount(v.str("followed_cnt"))
+        val heat = v.optLong("hot_score", 0)
         return SeriesSocial(
-            rating=o.optDouble("rating",0.0).takeIf { it>0 } ?: 0.0,
-            ratingCount=compactCount(o.str("rating_count")),
-            favoriteText=if(favorite.isBlank()) "" else "${favorite}收藏",
-            heatText=o.optJSONObject("hot_score_data")?.str("text").orEmpty()
+            rating = 0.0,
+            ratingCount = "",
+            favoriteText = if (favorite.isBlank()) "" else "${favorite}收藏",
+            heatText = if (heat > 0) "红果热度值${compactCount(heat.toString())}" else "",
         )
     }
     private fun compactCount(raw: String): String {
@@ -466,31 +584,6 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             .sortedBy { seasonNumber(it.title).let { n -> if(n==Int.MAX_VALUE) 1 else n } }.take(20)
     }
     private fun baseName(title: String)=title.replace(SeasonPattern,"").trim().trim('：',':','-','·',' ')
-    // The detail page embeds its recommendation payload as an HTML-escaped JSON array inside the
-    // `data-fn-args` attribute, separate from _ROUTER_DATA. Same-name entries (other seasons) sort first.
-    private fun related(html: String,current: Series): List<Series> {
-        val marker="data-fn-args=\""
-        val start=html.indexOf(marker); if(start<0) return emptyList()
-        val from=start+marker.length; val end=html.indexOf('"',from); if(end<0) return emptyList()
-        val args=runCatching {
-            JSONArray(decodeEntities(html.substring(from,end)))
-                .optJSONArray(1)?.optJSONObject(0)?.optJSONArray("routerDataFnArgs")?.optString(0).orEmpty()
-        }.getOrNull() ?: return emptyList()
-        if(args.isEmpty()) return emptyList()
-        val groups=runCatching { JSONObject(args).optJSONObject("recommendationGroups") }.getOrNull() ?: return emptyList()
-        val rows=groups.optJSONArray("related_list") ?: groups.optJSONArray("hot_list") ?: return emptyList()
-        val items=valid(rows.objects().map(::card)).filter { it.id!=current.id }
-        val key=current.title.trim()
-        if(key.isEmpty()) return items
-        return items.sortedBy { item ->
-            when {
-                item.title.equals(key,ignoreCase=true) -> 0
-                item.title.startsWith(key) || key.startsWith(item.title) -> 1
-                else -> 2
-            }
-        }
-    }
-    private fun decodeEntities(value: String) = value.replace("&quot;","\"").replace("&lt;","<").replace("&gt;",">").replace("&#39;","'").replace("&amp;","&")
     /** 重试、缓存过期或播放会话重建时，移除可能含有失效地址的旧模型。 */
     fun invalidatePlayback(id: String) { modelCache.evict(id) }
 

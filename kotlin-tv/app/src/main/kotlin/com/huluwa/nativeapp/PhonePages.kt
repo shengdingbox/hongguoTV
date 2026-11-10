@@ -218,44 +218,7 @@ class PhonePages(
     }
 
     /** 账号卡片：圆形头像 + 昵称 + 登录状态，右侧是登录/管理按钮，整卡可点。 */
-    private fun profileCard(): LinearLayout {
-        val account = activity.phoneAccount
-        // accountLabel 形如「昵称 · 云端 N 部」，头像取昵称首字，未登录时兜底为「红」
-        val nickname = account.accountLabel.substringBefore(" · ").ifBlank { "红果账号" }
-        val card = row().apply {
-            setPadding(dp(16), dp(16), dp(14), dp(16))
-            background = TvStyle.shape(activity, TvStyle.raised, border = TvStyle.outline, radius = 16)
-            isClickable = true
-            setOnClickListener { account.showLoginDialog(activity) }
-        }
-        card.addView(text(nickname.take(1), 20f, TvStyle.background).apply {
-            gravity = Gravity.CENTER
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            background = TvStyle.shape(activity, TvStyle.accent, radius = 28)
-        }, PhoneUi.lp(dp(56), dp(56)).apply { rightMargin = dp(13) })
-
-        val info = column()
-        info.addView(text(nickname, 17f).apply {
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        })
-        val subtitle = when {
-            account.signedIn -> "已登录 · 云端 ${account.cloudRows().size} 部观看记录"
-            account.accountLabel.contains("验证中") -> "正在验证登录状态…"
-            else -> "登录后把观看进度同步到云端"
-        }
-        info.addView(text(subtitle, 12f, TvStyle.muted), PhoneUi.lp(0, -2).apply { topMargin = dp(3) })
-        card.addView(info, PhoneUi.lp(0, -2).apply { weight = 1f })
-
-        val action = text(if (account.signedIn) "管理" else "登录", 12f, if (account.signedIn) TvStyle.text else TvStyle.background).apply {
-            gravity = Gravity.CENTER
-            setPadding(dp(14), dp(7), dp(14), dp(7))
-            background = TvStyle.shape(activity, if (account.signedIn) TvStyle.raised else TvStyle.accent, radius = 14)
-        }
-        card.addView(action, PhoneUi.lp(-2, -2).apply { leftMargin = dp(10) })
-        return card
-    }
+    private fun profileCard(): View = AccountUi.profileCard(activity, activity.phoneAccount)
 
     /** 统计格：上方数字、下方名称，整格可点。
      *  子视图必须用 WRAP_CONTENT 宽度——Vertical LinearLayout 的默认布局参数是 MATCH_PARENT，

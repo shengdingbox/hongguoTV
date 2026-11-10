@@ -114,6 +114,12 @@ class AccountManager(
 
     val signedIn get() = credentials != null && profile != null
 
+    /** 账号卡与账号中心展示用的昵称；未登录时给出明确兜底，不把内部状态串进标题。 */
+    val displayName: String get() = profile?.nickname?.takeIf { it.isNotBlank() } ?: "红果用户"
+
+    /** 云端观看记录数量；只在账号 UI 读取，避免各页面重复解析 accountLabel。 */
+    val cloudCount: Int get() = cloudRows().size
+
     /** 云端历史是否已成功拉取过；手机遥控等外部只读方用它判断要不要顺手触发一次 refreshHistory。 */
     val cloudHistoryLoaded get() = historyLoaded
     val accountLabel: String get() {
@@ -125,6 +131,14 @@ class AccountManager(
         }
     }
     val syncStatus get() = status
+
+    /** 账号卡的简短状态文案，不改动内部 status 的详细进度说明。 */
+    val cardStatus: String get() = when {
+        signedIn -> "已登录"
+        busy || accountLabel.contains("验证中") -> "连接中"
+        status.contains("过期") -> "已过期"
+        else -> "未登录"
+    }
     val isBusy get() = busy
 
     init {
@@ -292,6 +306,12 @@ class AccountManager(
             toast("账号操作进行中，请稍候")
             return
         }
+        // 手机竖屏的「我的」和设置页共用新的账号中心；电视端仍保留原来的紧凑选项弹窗，
+        // 避免改变遥控器上的入口层级。
+        if (PhoneUi.shouldUse(activity)) {
+            showPhoneAccountDialog(activity)
+            return
+        }
         val choices = if (signedIn) listOf("刷新云端记录", "同步本机到云端", "退出红果账号") else listOf("扫码登录")
         TvDialog.choose(
             activity,
@@ -314,6 +334,33 @@ class AccountManager(
                     2 -> logout()
                 }
             },
+        ).show()
+    }
+
+    /** 手机账号中心。状态变化后由 MainActivity 重建当前页面；弹窗里的动作只负责触发。 */
+    fun showPhoneAccountDialog(activity: android.app.Activity) {
+        if (closed || busy) {
+            toast("账号操作进行中，请稍候")
+            return
+        }
+        AccountUi.accountDialog(
+            activity = activity,
+            name = displayName,
+            signedIn = signedIn,
+            cloudCount = cloudCount,
+            status = status,
+            onLogin = { qrLogin(activity) },
+            onRefresh = { refreshHistory() },
+            onSync = { syncLocalToCloud { pushed, skipped, failed ->
+                toast(
+                    when {
+                        failed > 0 -> "同步完成：上传 $pushed 部，失败 $failed 部"
+                        pushed > 0 -> "已上传 $pushed 部到云端${if (skipped > 0) "，$skipped 部云端已是最新" else ""}"
+                        else -> "云端已是最新，无需上传"
+                    }
+                )
+            } },
+            onLogout = { logout() },
         ).show()
     }
 
@@ -363,31 +410,8 @@ class AccountManager(
                     toast("登录二维码无法显示，请重试")
                     return@task
                 }
-                val size = (240 * activity.resources.displayMetrics.density).toInt()
-                val image = android.widget.ImageView(activity).apply {
-                    setImageBitmap(bitmap)
-                    adjustViewBounds = true
-                    setBackgroundColor(android.graphics.Color.WHITE)
-                    layoutParams = android.widget.LinearLayout.LayoutParams(size, size).apply {
-                        gravity = android.view.Gravity.CENTER_HORIZONTAL
-                    }
-                }
                 val dp = { v: Int -> (v * activity.resources.displayMetrics.density).toInt() }
-                val panel = android.widget.LinearLayout(activity).apply {
-                    orientation = android.widget.LinearLayout.VERTICAL
-                    addView(TvDialog.title(activity, "红果官方扫码登录"))
-                    addView(image)
-                    addView(
-                        android.widget.TextView(activity).apply {
-                            text = "用手机红果 App：我的 → 右上角菜单 → 扫一扫\n扫码后请在手机确认登录"
-                            textSize = 13f
-                            setTextColor(TvStyle.muted)
-                            gravity = android.view.Gravity.CENTER
-                            setLineSpacing(0f, 1.25f)
-                            setPadding(0, dp(14), 0, 0)
-                        }
-                    )
-                }
+                val panel = AccountUi.qrDialogBody(activity, bitmap)
                 val buttons = android.widget.LinearLayout(activity).apply {
                     orientation = android.widget.LinearLayout.HORIZONTAL
                     gravity = android.view.Gravity.END
@@ -399,7 +423,7 @@ class AccountManager(
                 val cancel = TvDialog.capsuleButton(activity, "取消") { dialog.dismiss() }
                 buttons.addView(cancel)
                 panel.addView(buttons)
-                TvDialog.styleWindow(activity, dialog, widthDp = 400) { cancel.requestFocus() }
+                TvDialog.styleWindow(activity, dialog, widthDp = 352, capPx = (activity.resources.displayMetrics.heightPixels * 0.9f).toInt()) { cancel.requestFocus() }
                 dialog.show()
                 val token = generation
                 val deadline = android.os.SystemClock.elapsedRealtime() + qr.expiresIn.coerceIn(1, 300) * 1000L

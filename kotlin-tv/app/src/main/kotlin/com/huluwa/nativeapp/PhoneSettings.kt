@@ -215,10 +215,11 @@ class PhoneSettings(private val activity: MainActivity) {
     private fun deviceSection(parent: LinearLayout) {
         heading(parent, "设备与数据", "本机记录、存储与快传文件")
         val account = activity.phoneAccount
-        // 账号昵称本身就带「云端 N 部」；登录态变化由 MainActivity.onAccountChanged 整页刷新
-        addRow(parent, row(account.accountLabel, if (account.signedIn) null else "点击登录") {
-            account.showLoginDialog(activity)
-        })
+        // 昵称与云端条数分开取，登录态变化由 MainActivity.onAccountChanged 整页刷新
+        addRow(parent, row(
+            if (account.signedIn) "红果账号 · ${account.displayName}" else "红果账号",
+            if (account.signedIn) "云端 ${account.cloudCount} 部" else "点击登录",
+        ) { account.showPhoneAccountDialog(activity) })
         addRow(parent, row("本地备份与恢复", if (library.localBackupEnabled) "已开启" else "已关闭", {
             if (library.localBackupEnabled) "已开启" else "已关闭"
         }) { activity.phoneLocalBackup() })

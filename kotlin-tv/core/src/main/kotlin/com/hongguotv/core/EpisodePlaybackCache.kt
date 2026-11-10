@@ -82,13 +82,21 @@ class EpisodePlaybackCache(
             var video: RemoteVideo? = null
             try {
                 val prepared = entry.scope.run {
-                    // 新任务重新取模型，避免窗口外遗留的模型解析出失效地址；窗口内直接复用完整结果。
-                    repository.invalidatePlayback(key.id)
-                    val info = repository.stream(key.id, key.quality)
+                    // 优先复用 modelCache 里的模型：详情页/相邻集预取已经取好地址时，这里应当零网络。
+                    // 只有解析出的地址即将过期才强制重取，避免把「预取」变成白做（每次多两跳网络）。
+                    var info = repository.stream(key.id, key.quality)
+                    if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
+                        info = repository.stream(key.id, key.quality, refreshModel = true)
+                    }
                     if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
                         throw IOException("播放地址即将过期，请重试")
                     }
-                    RemoteVideo(repository.http, info).also { video = it; it.preload() }
+                    // 正式播放只需要索引和首个分块（prepare）；相邻集预取才多读一块（preload），
+                    // 让真正切过去时首帧更快。正式播放多读这一块只会拖慢起播。
+                    RemoteVideo(repository.http, info).also {
+                        video = it
+                        if (speculative) it.preload() else it.prepare()
+                    }
                 }
                 val result = PreparedEpisode(prepared, clock())
                 synchronized(this) {

@@ -2827,10 +2827,54 @@ class MainActivity: Activity() {
                 ResumePlayback.target(result.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true)
             }
             episodeIndex=target.index; group=episodeIndex/20
-            if(resume) playEpisode(target.index,target.position,autoplay=detailAutoplay) else showDetail(false)
+            if(resume) playEpisode(target.index,target.position,autoplay=detailAutoplay)
+            else {
+                showDetail(false)
+                // 详情页停留期间就把「开始观看」要播的那一集及其下一集预热好：
+                // 用户点下去时地址、索引和首块已在缓存里，起播不再等两跳网络。
+                prefetchDetailWindow(target.index)
+            }
         }
         if(preloaded!=null) apply(preloaded)
         else work({ repository.detail(series.id) }, apply, { problem -> error(body,problem) { openDetail(series,resume,detailAutoplay,cloud) } })
+    }
+    /** 详情页驻留期间预热「即将播放的那集 + 下一集」。
+     *
+     *  只放进 EpisodePlaybackCache 的窗口，不启动播放；用户点「开始观看」时直接命中，
+     *  起播前不再需要两次网络往返（取模型 + 取清晰度）。预取失败由缓存自己退避，不影响页面。 */
+    private fun prefetchDetailWindow(vararg extra: Int) {
+        val data=detail ?: return
+        val quality=effectiveQuality()
+        // 「开始观看」实际会播的集，加上调用方明确关心的集（如跳转集数选中的那集）；
+        // 两者都预热，避免焦点所在集与按钮行为不一致时落空。
+        val starts=buildList {
+            add(startEpisodeIndex())
+            extra.forEach { add(it) }
+            add(episodeIndex)
+        }.map { it.coerceIn(0,data.episodes.lastIndex) }.distinct()
+        val ids=buildList {
+            starts.forEach { from ->
+                data.episodes.getOrNull(from)?.let(::add)
+                data.episodes.getOrNull(from+1)?.let(::add)
+            }
+        }.distinct()
+        if(ids.isEmpty()) return
+        // retain 决定哪些集允许预取；详情页还没有播放页的窗口，这里先自己设一个。
+        playbackCache.retain(ids.toSet(),quality)
+        ids.forEach { id -> playbackCache.prefetch(id,quality) }
+    }
+    /** 「开始观看」按钮实际会播的集号：与 showDetail 里播放按钮的取值口径一致。
+     *  已看完 → 第 1 集；有未完成进度 → 该集；否则第 1 集。 */
+    private fun startEpisodeIndex(): Int {
+        val data=detail ?: return 0
+        val progress=library.progress(data.series.id)
+        val resumeIndex=progress?.let { data.episodes.indexOf(it.episodeId).takeIf { n -> n>=0 } } ?: 0
+        return when {
+            library.watched(data.series.id) -> 0
+            progress!=null && !progress.completed -> resumeIndex
+            progress?.completed==true -> (resumeIndex+1).coerceAtMost(data.episodes.lastIndex)
+            else -> resumeIndex
+        }
     }
     /** focusPager：翻页后焦点留在翻页按钮上（-1=‹，1=›），0=按 focusEpisode 决定，见函数末尾。 */
     private fun showDetail(focusEpisode: Boolean, focusPager: Int = 0) {
@@ -2880,7 +2924,7 @@ class MainActivity: Activity() {
             synopsisButton.post { synopsisButton.requestRectangleOnScreen(android.graphics.Rect(0,0,synopsisButton.width,synopsisButton.height),false) }
         }
         lateinit var jump: TextView
-        jump=addButton(actions,"跳转集数") { tvTools.episodePicker(data.episodes.size,episodeIndex,jump) { target -> episodeIndex=target; group=target/20; showDetail(true) } }
+        jump=addButton(actions,"跳转集数") { tvTools.episodePicker(data.episodes.size,episodeIndex,jump) { target -> episodeIndex=target; group=target/20; showDetail(true); prefetchDetailWindow(target) } }
         content.addView(hero)
         // 系列剧季导航与集数网格收进海报右侧栏：一屏内完成「看点什么、从哪集看」的决定
         val seasons=(listOf(data.series)+data.sameName).distinctBy { it.id }
@@ -3286,9 +3330,12 @@ class MainActivity: Activity() {
         if(!foreground || !p.isPlaying || playError || sleepStopped || pausedForLifecycle) return
         if(!networkAvailable() || connectivity.isActiveNetworkMetered) return
         val now=android.os.SystemClock.elapsedRealtime()
-        // 与葫芦娃一样，先保障当前集稳定和至少三秒缓冲，再准备相邻集。
-        if(readySince==0L || now-readySince<3000 ||
-            (p.bufferedPosition-p.currentPosition<3000 && p.bufferedPercentage<100)) return
+        // 当前集刚 ready 就允许预取相邻集：门槛从 3 秒降到 1 秒。
+        // 预取走独立线程与独立连接，不会抢占当前集的解码与播放；等 3 秒反而让用户
+        // 在这段时间按「下一集」时无缓存可用，又要从零走两跳取址。
+        // 缓冲要求也放宽到 1 秒：首块到手后即可开始准备下一集。
+        if(readySince==0L || now-readySince<1000 ||
+            (p.bufferedPosition-p.currentPosition<1000 && p.bufferedPercentage<100)) return
         retainPlaybackWindow()
         val quality=effectiveQuality()
         val next=data.episodes.getOrNull(episodeIndex+1)
@@ -4420,7 +4467,8 @@ class MainActivity: Activity() {
         // 会把用户刚选的档位当场清掉。
         resetPlaybackSession()
         sleepTimer.cancel(); sleepStopped=false; saveProgress(); library.flush(); invalidatePage(); releasePlayer()
-        if(directPlayback && !forceDetail) showCatalog() else { directPlayback=false; showDetail(true) }
+        if(directPlayback && !forceDetail) showCatalog()
+        else { directPlayback=false; showDetail(true); prefetchDetailWindow(episodeIndex) }
     }
     // ================= 手机遥控 =================
 

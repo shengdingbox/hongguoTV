@@ -493,9 +493,12 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     fun invalidatePlayback(id: String) { modelCache.evict(id) }
 
     /** Fetch a direct MP4 URL for one episode.
-     *  播放接口只答注册过的匿名设备：设备档案与签名头统一取自 [RemoteSigner]，本机不再注册身份。 */
-    fun stream(id: String, maxQuality: Int = 1080): StreamInfo {
+     *  播放接口只答注册过的匿名设备：设备档案与签名头统一取自 [RemoteSigner]，本机不再注册身份。
+     *  [refreshModel] 为 true 时先丢弃缓存的播放模型再重取（地址即将过期时用）；
+     *  默认复用缓存，否则详情页/相邻集的预热会全部白做。 */
+    fun stream(id: String, maxQuality: Int = 1080, refreshModel: Boolean = false): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
+        if(refreshModel) modelCache.evict(id)
         try {
             return streamFromModel(videoModel(id),maxQuality)
         } catch (unplayable: UnplayableVideoException) {

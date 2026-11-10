@@ -159,6 +159,25 @@ class PhonePages(
 
     // ---- 我的页：观看记录 + 稍后看 + 账号 + 设置入口 ----
 
+    /** 「我的」页入口行：左标题 + 可选副标题 + 右箭头，整行可点。 */
+    private fun entryRow(title: String, subtitle: String = "", onClick: () -> Unit): LinearLayout {
+        val entry = row().apply {
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = TvStyle.shape(activity, TvStyle.surface)
+            setOnClickListener { onClick() }
+        }
+        val label = column()
+        // 昵称可能很长，限一行省略，避免把右箭头挤出可视区
+        label.addView(text(title, 15f).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+        if (subtitle.isNotBlank()) label.addView(text(subtitle, 12f, TvStyle.muted), PhoneUi.lp(0, -2).apply { topMargin = dp(2) })
+        entry.addView(label, PhoneUi.lp(0, -2).apply { weight = 1f })
+        entry.addView(text("›", 16f, TvStyle.muted))
+        return entry
+    }
+
+    /** 入口行布局参数：左右各留 14dp，宽度铺满。 */
+    private fun entryMargin(top: Int) = PhoneUi.lp(-1, -2).apply { leftMargin = dp(14); rightMargin = dp(14); topMargin = dp(top) }
+
     fun mine(scroll: LinearLayout) {
         val library = activity.phoneLibrary
         val head = row().apply { setPadding(dp(14), dp(10), dp(14), dp(4)) }
@@ -166,29 +185,16 @@ class PhonePages(
         scroll.addView(head, PhoneUi.lp(-1, -2))
 
         val account = activity.phoneAccount
-        val accountRow = row().apply {
-            setPadding(dp(14), dp(10), dp(14), dp(10))
-            background = TvStyle.shape(activity, TvStyle.surface)
-        }
-        val accountMargin = PhoneUi.lp(dp(14), -2).apply { topMargin = dp(6) }
-        accountRow.addView(text(if (account.signedIn) account.accountLabel else "红果账号 · 未登录", 15f), PhoneUi.lp(0, -2).apply { weight = 1f })
-        accountRow.addView(text("›", 16f, TvStyle.muted))
-        accountRow.setOnClickListener { account.showLoginDialog(activity) }
-        scroll.addView(accountRow, accountMargin)
+        val accountText = if (account.signedIn) account.accountLabel else "红果账号"
+        val accountDetail = if (account.signedIn) "" else "未登录"
+        scroll.addView(entryRow(accountText, accountDetail) { account.showLoginDialog(activity) }, entryMargin(top = 6))
 
         // 设置入口（复用 TV 设置弹层体系的入口子集：主题 / 清晰度 / 倍速 / 弹幕开关 / 账号）
-        val settingRow = row().apply {
-            setPadding(dp(14), dp(10), dp(14), dp(10))
-            background = TvStyle.shape(activity, TvStyle.surface)
-        }
-        settingRow.addView(text("播放与界面设置", 15f), PhoneUi.lp(0, -2).apply { weight = 1f })
-        settingRow.addView(text("›", 16f, TvStyle.muted))
-        settingRow.setOnClickListener { activity.showPhoneSettings() }
-        scroll.addView(settingRow, PhoneUi.lp(dp(14), -2).apply { topMargin = dp(8) })
+        scroll.addView(entryRow("播放与界面设置") { activity.showPhoneSettings() }, entryMargin(top = 8))
 
         val recent = library.history().filterNot { library.watched(it.series.id) }
         if (recent.isNotEmpty()) {
-            scroll.addView(shelfSeries("最近观看", recent.take(10).map { it.series }, more = { activity.openCollectionPhone("resume") }), PhoneUi.lp(-1, -2).apply { topMargin = dp(8) })
+            scroll.addView(shelfSeries("最近观看", recent.take(10).map { it.series }, more = { activity.openCollectionPhone("resume") }), PhoneUi.lp(-1, -2).apply { topMargin = dp(10) })
         }
         if (library.later().isNotEmpty()) {
             scroll.addView(shelfSeries("稍后看", library.later().take(10), more = { activity.openCollectionPhone("later") }), PhoneUi.lp(-1, -2))

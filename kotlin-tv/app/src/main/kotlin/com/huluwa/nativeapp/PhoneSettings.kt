@@ -112,6 +112,9 @@ class PhoneSettings(private val activity: MainActivity) {
         val line = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            // 标题、右侧值与箭头字号不同；关闭基线对齐后统一按行高垂直居中，
+            // 避免带右侧值的行（如「观看统计」）标题看起来偏上/偏下。
+            isBaselineAligned = false
             setPadding(dp(16), dp(13), dp(13), dp(13))
             background = TvStyle.shape(activity, TvStyle.surface)
             isClickable = true

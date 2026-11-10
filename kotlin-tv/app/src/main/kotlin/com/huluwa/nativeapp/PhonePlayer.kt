@@ -171,13 +171,13 @@ class PhonePlayer(
         statusText?.text = listOfNotNull(quality.ifBlank { null }, "弹幕 " + (if (danmakuOn) "开" else "关"))
             .joinToString("  ·  ")
         danmakuButton?.alpha = if (danmakuOn) 1f else .45f
-        // 播放中且用户没有操作时，自动收起控件（仅全屏）
-        if (fullscreen && playing && controls?.visibility == View.VISIBLE &&
-            !controlsHidByUser && android.os.SystemClock.elapsedRealtime() - lastInteraction > 3500
-        ) {
+        // 播放中且用户没在操作时自动收起控件（全屏与竖屏一致，参考葫芦娃红果播放页）；
+        // 暂停时保持常显，避免用户找不到播放按钮。
+        val idle = android.os.SystemClock.elapsedRealtime() - lastInteraction > AUTO_HIDE_MS
+        if (playing && idle && !controlsHidByUser && controls?.visibility == View.VISIBLE) {
             showControls(false)
         }
-        if (!fullscreen && !playing) showControls(true)
+        if (!playing) showControls(true)
     }
 
     fun isFullscreen() = fullscreen
@@ -373,9 +373,13 @@ class PhonePlayer(
             }
 
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                // 先判当前状态再 touch()：touch() 自己会把控件叫出来，
+                // 放在后面判的话永远是「已显示」，单击就永远在切播放状态。
+                val showing = controls?.visibility == View.VISIBLE
                 touch()
-                if (fullscreen) showControls(controls?.visibility != View.VISIBLE)
-                else activity.togglePlaybackPhone()
+                // 控件收起时第一下只管把控件叫回来；已经显示才执行播放/暂停，
+                // 否则用户想点进度条，第一下就把视频停了。
+                if (showing) activity.togglePlaybackPhone()
                 return true
             }
 
@@ -440,5 +444,10 @@ class PhonePlayer(
         introText = null; introToggle = null; danmakuButton = null; speedLabel = null
         fullscreenButton = null; centerPlay = null; buffering = null
         errorBlock = null; errorText = null; videoInfoLine = null
+    }
+
+    private companion object {
+        /** 播放中控件自动淡出的静默时长。 */
+        const val AUTO_HIDE_MS = 3500L
     }
 }

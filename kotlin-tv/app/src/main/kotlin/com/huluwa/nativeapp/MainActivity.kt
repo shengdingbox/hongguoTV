@@ -3155,6 +3155,9 @@ class MainActivity: Activity() {
         outroSkipSeconds=skipMark?.outroSeconds ?: 0; outroTriggered=false; ffActive=false
         if(autoplay) sleepStopped=false
         screen="player"; episodeIndex=selectedIndex; group=episodeIndex/20
+        // 手机播放页切集走相邻集交接（reuse），UI 不会重建；标题与集号必须手动刷新，
+        // 否则第 2 集起顶部一直停在第 1 集的编号。
+        if(phoneLayout()) phonePlayer?.updateEpisode(data)
         panel=false; playError=false; playbackReady=false; quality=""; pausedForLifecycle=!autoplay
         retainPlaybackWindow()
         playerScreenOn=true; refreshScreenOn()

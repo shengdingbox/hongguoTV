@@ -47,7 +47,8 @@ class FasterBrowsingTest {
         // 旧首页缓存没有 ranking 字段：照常解码且 ranking 为 null
         assertNull(CatalogSnapshot.decode(CatalogSnapshot.encode(items,false,1000),1100)!!.ranking)
         // 榜单缓存被篡改（非法剧 id / 名次结构坏掉）时整体拒绝，返回 null
-        val tampered=org.json.JSONObject(value).put("ranking",JSONObject().put("positions",JSONObject().put("bad-id",JSONObject().put("rank",1).put("heat","x")))))
+        val corruptPosition=JSONObject().put("rank",1).put("heat","x")
+        val tampered=org.json.JSONObject(value).put("ranking",JSONObject().put("positions",JSONObject().put("bad-id",corruptPosition)))
         assertNull(CatalogSnapshot.decode(tampered.toString(),1100))
         assertNull(CatalogSnapshot.decode(org.json.JSONObject(value).put("ranking",JSONObject().put("positions","bad")).toString(),1100))
     }

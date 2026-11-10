@@ -3707,9 +3707,10 @@ class MainActivity: Activity() {
             // 三集并发时每段完成都会回调一次，节流后再画：tick 本来也每秒刷一次条带
             cache.onProgress={ _,_,_ ->
                 val now=android.os.SystemClock.elapsedRealtime()
-                if(now-cacheStripPaintedAt<200) return@onProgress
-                cacheStripPaintedAt=now
-                main.post { if(!isDestroyed) refreshCacheStrip() }
+                if(now-cacheStripPaintedAt>=200) {
+                    cacheStripPaintedAt=now
+                    main.post { if(!isDestroyed) refreshCacheStrip() }
+                }
             }
             episodeDiskCache=cache
             playbackCache.onInvalidate={ id -> cache.invalidate(id) }

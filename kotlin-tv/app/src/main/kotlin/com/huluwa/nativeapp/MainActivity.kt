@@ -129,6 +129,9 @@ class MainActivity: Activity() {
     private var episodeCacheOn=false
     /** 播放中切换清晰度：落盘池整体换档重建，旧画质条目全部废弃。 */
     private var episodeCacheQuality=0
+    /** 屏幕最底部的 2px 离线状态条：三段依次对应下 1/2/3 集，null 表示当前页面未挂。 */
+    private var cacheStripSegments: List<View>?=null
+    private var cacheStripView: View?=null
     // 与页面取址状态分开：等待新集就绪时，旧媒体源仍可能在播放器线程中读取。
     private var playerVideo: RemoteVideo?=null
     private val switchingVideos=mutableSetOf<RemoteVideo>()
@@ -771,6 +774,7 @@ class MainActivity: Activity() {
         homeScreen?.let { homePosition=it.capturePosition() }
         (catalogRecycler?.layoutManager as? GridLayoutManager)?.let { scrollPositions[catalogPageKey]=it.findFirstVisibleItemPosition() }
         homeScreen=null; selectionPreview=null; catalogRecycler=null; catalogAdapter=null; loadingMore=false
+        cacheStripSegments=null; cacheStripView=null
         catalogFocusPos=RecyclerView.NO_POSITION; pendingCatalogFocusPos=RecyclerView.NO_POSITION; gridFocusOwned=false
         nav.clear(); segmentFirst=null; typeButtons.clear(); searchInput=null; searchButton=null; searchActions.clear()
         azFirst=null; azLastRow.clear(); suggestRow=null; suggestFirst=null; suggestTicket++; main.removeCallbacks(pendingSuggest)
@@ -3290,6 +3294,7 @@ class MainActivity: Activity() {
         outroSkipSeconds=skipMark?.outroSeconds ?: 0; outroTriggered=false; ffActive=false
         if(autoplay) sleepStopped=false
         screen="player"; episodeIndex=selectedIndex; group=episodeIndex/20
+        refreshCacheStrip()
         // 手机播放页切集走相邻集交接（reuse），UI 不会重建；标题与集号必须手动刷新，
         // 否则第 2 集起顶部一直停在第 1 集的编号。
         if(phoneLayout()) phonePlayer?.updateEpisode(data)
@@ -3315,6 +3320,10 @@ class MainActivity: Activity() {
                 danmakuLayer.setBlockedFilter { text -> extras.blocks(text) }
                 danmakuLayer.applyPrefs(library.danmakuOpacity,library.danmakuFont,library.danmakuSpeed,library.danmakuRows)
                 playerUi.attachDanmaku(danmakuLayer)
+                // 屏幕最底部 2px 离线状态条：三段对应下 1/2/3 集
+                cacheStripSegments=buildCacheStrip()
+                cacheStripView?.let { playerUi.attachCacheStrip(it) }
+                refreshCacheStrip()
                 // 手机版不需要 TV 的 hud/controls/转圈，但仍需初始化引用避免 tick 空指针
                 hud=column().apply { visibility=View.GONE }
                 playbackTitle=text("",15f).apply { visibility=View.GONE }
@@ -3373,6 +3382,10 @@ class MainActivity: Activity() {
             recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { indeterminateTintList=android.content.res.ColorStateList.valueOf(accent); visibility=View.GONE }
             root.addView(recoverySpinner,FrameLayout.LayoutParams(dp(56),dp(56),Gravity.CENTER))
             root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled=false; addView(hud) },FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
+            // 屏幕最底部 2px 离线状态条：三段对应下 1/2/3 集
+            cacheStripSegments=buildCacheStrip()
+            cacheStripView?.let { root.addView(it,FrameLayout.LayoutParams(-1,dp(2),Gravity.BOTTOM)) }
+            refreshCacheStrip()
             }
         }
         playbackTitle.text="${data.series.title}  ·  第 ${episodeIndex+1} 集"
@@ -3563,6 +3576,7 @@ class MainActivity: Activity() {
                 lowMemory={ (getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.let { it.isLowRamDevice || it.memoryClass<=128 } ?: false },
                 resolver={ id,q -> playbackCache.resolveStream(id,q) },
                 onLog={ android.util.Log.i("HongguoTV",it) })
+            cache.onProgress={ _,_,_ -> main.post { refreshCacheStrip() } }
             episodeDiskCache=cache
             playbackCache.onInvalidate={ id -> cache.invalidate(id) }
             // 播放中开启：当前集与已排队的下一集仍走内存模式，新创建的媒体源（手动切集/之后的连播）自动带磁盘缓存
@@ -3573,6 +3587,60 @@ class MainActivity: Activity() {
             episodeDiskCache=null
             playbackCache.onInvalidate={}
         }
+        refreshCacheStrip()
+    }
+    /** 屏幕最底部 2px 离线状态条：三段对应下 1/2/3 集，蓝色=已落盘比例，灰色=未离线。 */
+    private fun refreshCacheStrip() {
+        val segments=cacheStripSegments ?: return
+        val data=detail
+        if(!library.episodeCache || data==null || screen!="player") {
+            segments.forEach { it.visibility=View.GONE }
+            return
+        }
+        val quality=effectiveQuality()
+        val cache=episodeDiskCache
+        segments.forEachIndexed { offset,segment ->
+            val id=data.episodes.getOrNull(episodeIndex+offset+1)
+            val ratio=if(cache!=null && id!=null) cache.progress(id,quality) else 0f
+            if(id==null) {
+                segment.visibility=View.GONE
+            } else {
+                segment.visibility=View.VISIBLE
+                val fill=segment.tag as? View ?: return@forEachIndexed
+                val width=segment.width
+                if(width>0) {
+                    fill.layoutParams.width=(width*ratio).toInt()
+                    fill.requestLayout()
+                } else {
+                    // 首帧布局未完成：等测量后再刷新一次
+                    segment.post { refreshCacheStrip() }
+                }
+            }
+        }
+    }
+    /** 构建 2px 状态条（尚未挂载）：返回三段轨道（每段 tag 里存蓝色填充 View）。 */
+    private fun buildCacheStrip(): List<View> {
+        val strip=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+        }
+        val segments=(0 until 3).map {
+            val fill=View(this).apply {
+                setBackgroundColor(TvStyle.accent)
+                layoutParams=FrameLayout.LayoutParams(0,-1,Gravity.START)
+            }
+            FrameLayout(this).apply {
+                setBackgroundColor(Color.argb(70,255,255,255))
+                addView(fill)
+                tag=fill
+            }
+        }
+        segments.forEachIndexed { index,segment ->
+            strip.addView(segment,LinearLayout.LayoutParams(0,dp(2),1f).apply {
+                if(index>0) leftMargin=dp(1)
+            })
+        }
+        cacheStripView=strip
+        return segments
     }
     /** 整集落盘调度：上一集/当前集/下三集保留窗口，下载优先级下一集 > +2 > +3 > 当前集 > 上一集。 */
     private fun scheduleDiskCache() {
@@ -4792,7 +4860,7 @@ class MainActivity: Activity() {
         if(phoneLayout()) {
             // 手机竖屏：回到手机版详情页（resume 进来的回首页）
             if(directPlayback && !forceDetail) goBackPhone()
-            else { directPlayback=false; screen="detail"; detail?.let { phoneTab="detail"; phoneDetail.render(root,it) } ?: goBackPhone(); prefetchDetailWindow(episodeIndex) }
+            else { directPlayback=false; screen="detail"; cacheStripSegments=null; cacheStripView=null; detail?.let { phoneTab="detail"; phoneDetail.render(root,it) } ?: goBackPhone(); prefetchDetailWindow(episodeIndex) }
             return
         }
         if(directPlayback && !forceDetail) showCatalog()
@@ -6123,6 +6191,7 @@ class MainActivity: Activity() {
     fun goBackPhone() {
         val back=phoneDetailReturn
         phoneTab=back; phoneDetailCollection=false; leaveCollection(); screen="catalog"
+        cacheStripSegments=null; cacheStripView=null
         when {
             // 只有原始列表已经不在时才重新拉，否则直接退回原列表（保留滚动位置）
             back=="home" && (catalog.isEmpty() || phoneCatalogSource!="home") -> showPhoneHome(load=true)
@@ -6279,6 +6348,7 @@ class MainActivity: Activity() {
         // 设置页自己是一整屏，先把可能开着的弹窗收掉，避免它盖在新页面上
         tvTools.close()
         screen="settings"
+        cacheStripSegments=null; cacheStripView=null
         phoneSettings.render(root)
         if(phoneSettingsFromPlayer) {
             // 设置页是竖屏单列：先转回竖屏并恢复系统栏。screen 已改成 settings，

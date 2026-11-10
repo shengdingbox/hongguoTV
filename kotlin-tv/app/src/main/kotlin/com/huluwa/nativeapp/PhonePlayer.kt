@@ -138,6 +138,11 @@ class PhonePlayer(
         videoHost?.addView(view, FrameLayout.LayoutParams(-1, -1))
     }
 
+    /** 屏幕最底部 2px 离线状态条：挂在视频区底部，不挡控件。 */
+    fun attachCacheStrip(view: View) {
+        videoHost?.addView(view, FrameLayout.LayoutParams(-1, dp(2), Gravity.BOTTOM))
+    }
+
     /** 切集/详情刷新时更新标题与集号信息。 */
     fun updateEpisode(data: Detail) {
         currentDescription = data.series.description

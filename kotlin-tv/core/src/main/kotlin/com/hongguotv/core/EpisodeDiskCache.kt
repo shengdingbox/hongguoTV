@@ -30,6 +30,8 @@ class EpisodeDiskCache(
     private val resolver: (String, Int) -> StreamInfo,
     private val onLog: (String) -> Unit = {},
 ) : Closeable {
+    /** 落盘进度回调：每完成一个分段在主线程之外触发，参数为该集当前已落盘比例 0f–1f。 */
+    @Volatile var onProgress: (String, Int, Float) -> Unit = { _, _, _ -> }
     /** 元数据视图：播放端只需要这些，样本索引与区间列表不往上传。 */
     data class Meta(val id: String, val quality: Int, val url: String, val key: ByteArray?, val qualityLabel: String,
         val expiresAt: Long, val total: Long, val header: ByteArray, val samples: List<MediaCrypto.Sample>,
@@ -183,6 +185,13 @@ class EpisodeDiskCache(
         runCatching { covered(entry.ranges, offset, length) }.getOrDefault(false)
     }
 
+    /** 已落盘比例 0f–1f：状态栏/进度条用，没有该集条目时返回 0f。 */
+    fun progress(id: String, quality: Int): Float = synchronized(lock) {
+        val entry = entries[Key(id, quality)] ?: return 0f
+        val total = entry.meta.total
+        if (total <= 0) 0f else (entry.doneBytes.toFloat() / total).coerceIn(0f, 1f)
+    }
+
     /** 提取器会越过文件末尾多读一点：按总长截断，只答应真正落盘的部分。 */
     fun read(id: String, quality: Int, offset: Long, target: ByteArray, targetOffset: Int, length: Int): Int = synchronized(lock) {
         val entry = entries[Key(id, quality)] ?: return 0
@@ -255,6 +264,7 @@ class EpisodeDiskCache(
             entries.keys.filter { it.id == id }.toList().forEach { dropLocked(it) }
             queued = queued.filter { it.id != id }
         }
+        runCatching { onProgress(id, -1, 0f) }
     }
 
     override fun close() {
@@ -303,6 +313,7 @@ class EpisodeDiskCache(
                         onLog("Episode cached ${row.key.id} q${row.key.quality} ${row.entry.meta.total / 1048576}MB")
                     }
                 }
+                runCatching { onProgress(row.key.id, row.key.quality, 1f) }
             } catch (cancelled: InterruptedException) {
                 return
             } catch (problem: Throwable) {
@@ -385,6 +396,7 @@ class EpisodeDiskCache(
                     row.entry.ranges = mergeRanges(row.entry.ranges, longArrayOf(rangeStart, rangeEnd))
                     row.entry.doneBytes = row.entry.ranges.sumOf { it[1] - it[0] }
                 }
+                runCatching { onProgress(row.key.id, row.key.quality, progress(row.key.id, row.key.quality)) }
                 downloadedThisRun += bytes.size
                 if (++pendingMeta >= COMPACT_EVERY) { pendingMeta = 0; runCatching { saveMeta(row.key, row.entry) } }
                 at = end

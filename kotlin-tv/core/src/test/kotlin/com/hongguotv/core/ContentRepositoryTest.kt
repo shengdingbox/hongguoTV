@@ -498,15 +498,16 @@ class ContentRepositoryTest {
         assertEquals(3,paths.size)
     }
 
-    // 详情接口已改为红果官方 JSON（POST /reading/player/video_detail/v1/），
-    // 分集在 video_data.video_list[].vid；相关推荐与系列剧走 plan feed，用 from 参数区分。
-    private val detailPath="/reading/player/video_detail/v1/"
+    // 详情接口为红果官方 JSON（POST /novel/player/multi_video_detail/v1/），
+    // 分集在 data[series_id].video_data.video_list[].vid；相关推荐与系列剧走 plan feed，用 from 参数区分。
+    private val detailPath="/novel/player/multi_video_detail/v1/"
     private val planPath="/reading/bookapi/plan/v1/"
     private fun relatedItem(id: String,name: String)=JSONObject().put("series_id_str",id).put("series_title",name)
         .put("series_cover","https://example.com/$id.jpg").put("episode_cnt",10).put("episode_right_text","全 10 集")
     private fun detailVideo(id: String,name: String,vids: List<String>)=JSONObject().put("code",0)
-        .put("video_data",JSONObject().put("series_id_str",id).put("series_title",name)
-            .put("video_list",JSONArray().apply { vids.forEach { put(JSONObject().put("vid",it)) } }))
+        .put("data",JSONObject().put(id,JSONObject().put("video_data",
+            JSONObject().put("series_id_str",id).put("series_title",name)
+                .put("video_list",JSONArray().apply { vids.forEach { put(JSONObject().put("vid",it)) } }))))
     private fun planPayload(showType: Int,items: List<JSONObject>)=JSONObject().put("code",0)
         .put("data",JSONArray().put(JSONObject().put("show_type",showType)
             .put("video_data",JSONArray().apply { items.forEach { put(it) } })))
@@ -519,6 +520,33 @@ class ContentRepositoryTest {
     }
     private fun isPlanFrom(request: Request,from: String)=
         request.url.encodedPath==planPath && request.url.queryParameter("from")==from
+
+    @Test fun detailUsesMultiVideoEndpointAndUnwrapsSeriesPayload() {
+        var detailRequests=0
+        val repo=repository { request ->
+            when {
+                request.url.encodedPath==detailPath -> {
+                    detailRequests++
+                    assertEquals("POST",request.method)
+                    assertEquals("123",detailBodyId(request))
+                    detailVideo("123","测试剧",listOf("900","901")).toString()
+                }
+                request.url.encodedPath==planPath -> emptyPlan()
+                else -> throw IOException("不应再请求旧详情页或补季接口：${request.url}")
+            }
+        }
+        assertEquals(listOf("900","901"),repo.detail("123").episodes)
+        assertEquals(1,detailRequests)
+    }
+
+    @Test fun detailSortsEpisodesByOfficialIndex() {
+        val raw=detailVideo("123","测试剧",listOf("901","900")).toString()
+        val repo=repository { request ->
+            if(request.url.encodedPath==detailPath) raw else emptyPlan()
+        }
+        // 官方按 vid_index 给出播放顺序，不能沿用响应数组的偶然顺序。
+        assertEquals(listOf("900","901"),repo.detail("123").episodes)
+    }
 
     @Test fun detailRelatedHoistsSameNameSeasonsAndSkipsCurrentSeries() {
         val related=arrayListOf(

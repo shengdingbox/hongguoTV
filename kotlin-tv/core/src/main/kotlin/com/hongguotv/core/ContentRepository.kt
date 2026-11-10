@@ -446,7 +446,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
 
     private data class SeriesPayload(val series: Series, val episodes: List<String>, val social: SeriesSocial)
 
-    /** `POST /novel/player/video_detail/v1/`：详情与整份分集列表。 */
+    /** `POST /novel/player/multi_video_detail/v1/`：详情与整份分集列表。 */
     private fun fetchSeriesDetail(id: String): SeriesPayload {
         val body = JSONObject()
             .put("series_id", id)
@@ -459,11 +459,14 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
                 .put("source", 4)
                 .put("video_id_type", 1))
             .toString().toByteArray(Charsets.UTF_8)
-        val data = signedJson("$API/reading/player/video_detail/v1/", emptyMap(), body)
-        val v = data.optJSONObject("video_data") ?: throw IOException("剧集详情暂不可用")
+        val data = signedJson("$API/novel/player/multi_video_detail/v1/", emptyMap(), body)
+        // multi_video_detail 按 series_id 包装每部剧，真正的卡片与分集在其 video_data 内。
+        val v = data.optJSONObject("data")?.optJSONObject(id)?.optJSONObject("video_data")
+            ?: throw IOException("剧集详情暂不可用")
         val series = planCardSeries(v).copy(id = id)
         val episodes = v.optJSONArray("video_list")?.objects()
-            ?.mapNotNull { it.str("vid").takeIf { vid -> vid.matches(Regex("[0-9]{1,30}")) } }
+            ?.mapNotNull { row -> row.str("vid").takeIf { vid -> vid.matches(Regex("[0-9]{1,30}")) }?.let { row.optInt("vid_index", Int.MAX_VALUE) to it } }
+            ?.sortedBy { it.first }?.map { it.second }
             ?: throw IOException("分集暂不可用")
         if (episodes.isEmpty() || episodes.distinct().size != episodes.size) throw IOException("分集数据异常")
         return SeriesPayload(series, episodes, detailSocial(v))

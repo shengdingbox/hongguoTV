@@ -1438,7 +1438,8 @@ class MainActivity: Activity() {
                     homeScreen?.refresh?.setOnClickListener { catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; showCatalog() }
                 } else if(requestTab==2 && requestPage==1 && !requestAi && rankFromCache) {
                     // 用户正看着上次榜单：不打断焦点与滚动，刷新按钮换成查看新榜，按确认一次性换上
-                    rankRefresh?.text="榜单已更新 · 按确认查看"
+                    // rankRefresh 字段按 View 持有（焦点链只用 View 语义），改文字前先转回 TextView
+                    (rankRefresh as? TextView)?.text="榜单已更新 · 按确认查看"
                     rankRefresh?.setOnClickListener {
                         // 缓存展示期间可能已翻页，换新后从第 1 页重新起算，避免续页跳页
                         catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; page=1; rankFromCache=false

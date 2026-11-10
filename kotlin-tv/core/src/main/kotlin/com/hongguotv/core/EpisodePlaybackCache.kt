@@ -27,6 +27,8 @@ class EpisodePlaybackCache(
     private val entries = mutableMapOf<Key, Entry>()
     private val attempts = mutableMapOf<Key, Attempts>()
     private var retained = emptySet<Key>()
+    private var protectedVideos = emptySet<RemoteVideo>()
+    private val retiredVideos = mutableSetOf<RemoteVideo>()
     private val executor = Executors.newFixedThreadPool(2) { action ->
         Thread(action, "episode-playback").apply { isDaemon = true }
     }
@@ -133,10 +135,21 @@ class EpisodePlaybackCache(
         repository.invalidatePlayback(id)
     }
 
+    /** 播放中、正在切换和已挂入队列的资源由播放器持有，过期换址时延后关闭。 */
+    @Synchronized fun protect(videos: Set<RemoteVideo>) {
+        protectedVideos = videos.toSet()
+        retiredVideos.filter { it !in protectedVideos }.forEach {
+            retiredVideos.remove(it)
+            it.close()
+        }
+    }
+
     private fun cancel(entry: Entry) {
         entry.scope.cancel()
         entry.task.cancel(true)
-        entry.prepared?.video?.close()
+        entry.prepared?.video?.let { video ->
+            if (video in protectedVideos) retiredVideos += video else video.close()
+        }
     }
 
     @Synchronized fun clear() {
@@ -146,5 +159,5 @@ class EpisodePlaybackCache(
         attempts.clear()
     }
 
-    override fun close() { clear(); executor.shutdownNow() }
+    override fun close() { clear(); protect(emptySet()); executor.shutdownNow() }
 }

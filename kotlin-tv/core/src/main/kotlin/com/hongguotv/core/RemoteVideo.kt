@@ -117,7 +117,7 @@ class RemoteVideo(
         synchronized(lock) { lastRead=0; playbackActive=true; readAheadEnabled=true; ensureAheadLocked(); lock.notifyAll() }
         return this
     }
-    /** 相邻集的读取由 Media3 的 3/5 秒样本目标限制，不启动额外的 8 MiB 后台预读。 */
+    /** 相邻集的读取由 Media3 的样本时长目标限制，不启动额外的 8 MiB 后台预读。 */
     fun setPlaybackActive(active: Boolean) {
         synchronized(lock) {
             if(playbackActive==active) return

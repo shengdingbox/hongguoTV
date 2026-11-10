@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.huluwa.nativeapp
 
+import android.app.ActivityManager
 import android.content.Context
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -26,6 +27,12 @@ internal class EpisodePlaybackSession(context: Context) {
     )
     private data class Source(val episode: Episode, val item: MediaItem)
 
+    // 同时参考系统低内存标记与应用堆预算，避免小堆电视因长预加载挤压解码内存。
+    private val memoryManager = context.applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+    private val lowMemoryDevice = memoryManager?.let { it.isLowRamDevice || it.memoryClass <= 128 } ?: true
+    private val nextPreloadMs = if (lowMemoryDevice) 5_000L else 15_000L
+    private val previousPreloadMs = if (lowMemoryDevice) 3_000L else 5_000L
+    private val targetBufferBytes = (if (lowMemoryDevice) 16 else 24) * 1024 * 1024
     private val sources = mutableMapOf<String, Source>()
     private var currentId: String? = null
     private var currentRanking = 0
@@ -37,14 +44,14 @@ internal class EpisodePlaybackSession(context: Context) {
             sources.values.firstOrNull { it.episode.index * 2 == ranking }?.let { source ->
                 DefaultPreloadManager.PreloadStatus.specifiedRangeLoaded(
                     source.episode.startPositionMs,
-                    if (ranking >= currentRanking) 5_000L else 3_000L,
+                    if (ranking >= currentRanking) nextPreloadMs else previousPreloadMs,
                 )
             }
         }
     }.setRenderersFactory(DefaultRenderersFactory(context).setEnableDecoderFallback(true))
         .setLoadControl(DefaultLoadControl.Builder()
             .setBufferDurationsMs(10_000, 25_000, 250, 750)
-            .setTargetBufferBytes(16 * 1024 * 1024)
+            .setTargetBufferBytes(targetBufferBytes)
             .build())
     private val preloadManager = builder.build()
     val player = builder.buildExoPlayer().apply {

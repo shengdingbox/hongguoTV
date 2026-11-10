@@ -2,6 +2,7 @@
 package com.huluwa.nativeapp
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.AlertDialog
 import android.os.Build
 import android.os.Bundle
@@ -118,6 +119,11 @@ class MainActivity: Activity() {
         })
     }
     private var playbackSession: EpisodePlaybackSession?=null
+    // 与页面取址状态分开：等待新集就绪时，旧媒体源仍可能在播放器线程中读取。
+    private var playerVideo: RemoteVideo?=null
+    private val switchingVideos=mutableSetOf<RemoteVideo>()
+    private var prefetchMemoryPausedUntil=0L
+    private var nextPrefetchMemoryCheckAt=0L
     // 已提前挂进 ExoPlayer 播放列表的下一集；资源继续归相邻集缓存持有，手动切集也能复用。
     private var queuedNextId=""
     private var queuedIndex=-1
@@ -2848,6 +2854,7 @@ class MainActivity: Activity() {
      *  起播前不再需要两次网络往返（取模型 + 取清晰度）。预取失败由缓存自己退避，不影响页面。 */
     private fun prefetchDetailWindow(vararg extra: Int) {
         val data=detail ?: return
+        if(!prefetchMemoryReady()) return
         val quality=effectiveQuality()
         // 「开始观看」实际会播的集，加上调用方明确关心的集（如跳转集数选中的那集）；
         // 两者都预热，避免焦点所在集与按钮行为不一致时落空。
@@ -3195,6 +3202,8 @@ class MainActivity: Activity() {
                         return
                     }
                     playbackReady=true; incompatibleSkips=0
+                    // 新媒体源已被播放器接管，旧集才允许从过期资源列表回收。
+                    switchingVideos.clear(); protectPlaybackVideos()
                     if(firstReady) {
                         firstReady=false; readySince=android.os.SystemClock.elapsedRealtime()
                         android.util.Log.w("HongguoTV","Playback ready episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${readySince-episodeStartedAt}")
@@ -3231,7 +3240,7 @@ class MainActivity: Activity() {
                     val nextVideo=queuedVideo
                     val oldVideo=video
                     episodeIndex=queuedIndex.coerceIn(0,data.episodes.lastIndex); group=episodeIndex/20
-                    video=nextVideo; quality=nextVideo?.info?.quality.orEmpty()
+                    video=nextVideo; playerVideo=nextVideo; quality=nextVideo?.info?.quality.orEmpty()
                     queuedNextId=""; queuedIndex=-1; queuedVideo=null; queuedFromIndex=-1; queuedFromDuration=0
                     if(p.currentMediaItemIndex>0) runCatching { p.removeMediaItem(0) }
                     stopDanmaku()
@@ -3274,6 +3283,8 @@ class MainActivity: Activity() {
             playerListener=listener; p.addListener(listener)
             val introSkip=episodeStartPosition(selectedIndex,position)
             val source=session.mediaSource(EpisodePlaybackSession.Episode(requestedId,selectedIndex,maxQuality,remote,introSkip))
+            playerVideo?.let { switchingVideos+=it }
+            playerVideo=remote; protectPlaybackVideos()
             p.setMediaSource(source,introSkip); p.prepare(); p.playWhenReady=foreground && requestedAutoplay && !pausedForLifecycle && episodePanel==null
             if(introSkip>0 && position<=0) Toast.makeText(this,"已跳过片头 ${skipMark!!.introSeconds} 秒",Toast.LENGTH_SHORT).show()
             // 地址到手即准备相邻集；媒体样本仍等当前集积累三秒缓冲后再预加载。
@@ -3286,13 +3297,39 @@ class MainActivity: Activity() {
     }
     private fun episodeStartPosition(index: Int,position: Long=savedPosition(index)): Long =
         if(position>0) position else (detail?.series?.id?.let { library.skipMark(it)?.introSeconds } ?: 0)*1000L
+    private fun protectPlaybackVideos() {
+        playbackCache.protect(switchingVideos+listOfNotNull(playerVideo,queuedVideo))
+    }
+    private fun pausePrefetchForMemory(delayMillis: Long) {
+        prefetchMemoryPausedUntil=maxOf(prefetchMemoryPausedUntil,android.os.SystemClock.elapsedRealtime()+delayMillis)
+        cancelPrefetch()
+    }
+    /** 冷却期覆盖所有自动预取入口，恢复前再检查系统内存，避免一秒后又重新占满。 */
+    private fun prefetchMemoryReady(): Boolean {
+        val now=android.os.SystemClock.elapsedRealtime()
+        if(now<prefetchMemoryPausedUntil) return false
+        if(now>=nextPrefetchMemoryCheckAt) {
+            val manager=getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
+            nextPrefetchMemoryCheckAt=now+5_000L
+            val info=ActivityManager.MemoryInfo()
+            manager.getMemoryInfo(info)
+            if(info.lowMemory) { pausePrefetchForMemory(60_000L); return false }
+        }
+        return true
+    }
     /** 取消相邻集预取，但不打断当前视频的数据源。 */
     private fun cancelPrefetch() {
         dropQueuedNext()
         playbackSession?.setPreloadingEnabled(false)
         video?.setPlaybackActive(false)
         val current=detail?.episodes?.getOrNull(episodeIndex)
-        val ids=if(current==null) emptySet() else setOf(current)
+        if(current==null) {
+            // 启动阶段网络/内存回调可能早于本机设置加载；空窗口不读取清晰度设置。
+            playbackSession?.retain(emptySet(),0)
+            playbackCache.clear()
+            return
+        }
+        val ids=setOf(current)
         playbackSession?.retain(ids,effectiveQuality())
         playbackCache.retain(ids,effectiveQuality())
     }
@@ -3301,6 +3338,7 @@ class MainActivity: Activity() {
         val from=(episodeIndex-1).coerceAtLeast(0)
         val to=(episodeIndex+2).coerceAtMost(data.episodes.size)
         val ids=data.episodes.subList(from,to).toSet()
+        protectPlaybackVideos()
         playbackSession?.retain(ids,effectiveQuality())
         playbackCache.retain(ids,effectiveQuality())
     }
@@ -3318,6 +3356,7 @@ class MainActivity: Activity() {
         if(queuedVideo!==video) queuedVideo?.setPlaybackActive(false)
         queuedVideo=null
         queuedNextId=""; queuedIndex=-1; queuedFromIndex=-1; queuedFromDuration=0
+        protectPlaybackVideos()
     }
     /** 自然连播沿用队列；有续播位置或片头跳过时交给同一预加载媒体源按目标位置起播。 */
     private fun handOffPrefetched(id: String,quality: Int) {
@@ -3334,6 +3373,7 @@ class MainActivity: Activity() {
         val source=session.mediaSource(EpisodePlaybackSession.Episode(id,episodeIndex+1,quality,remote,0))
         queuedNextId=id; queuedIndex=episodeIndex+1; queuedVideo=remote
         queuedFromIndex=episodeIndex; queuedFromDuration=p.duration.coerceAtLeast(0)
+        protectPlaybackVideos()
         p.addMediaSource(source)
         android.util.Log.i("HongguoTV","Next episode queued episode=${queuedIndex+1} quality=$quality")
     }
@@ -3343,21 +3383,23 @@ class MainActivity: Activity() {
         if(queuedNextId.isNotEmpty() && (!library.autoNext || sleepStopped)) dropQueuedNext()
         if(!foreground || !p.playWhenReady || playError || sleepStopped || pausedForLifecycle || video==null) return
         if(!networkAvailable() || connectivity.isActiveNetworkMetered) return
+        if(!prefetchMemoryReady()) return
         if(data.episodes.getOrNull(episodeIndex)!=p.currentMediaItem?.mediaId) return
         retainPlaybackWindow()
         val quality=effectiveQuality()
         val next=data.episodes.getOrNull(episodeIndex+1)
         val previous=data.episodes.getOrNull(episodeIndex-1)
-        // 先准备下一集地址，再准备上一集；样本队列按真实续播/跳片头位置预加载。
-        if(next!=null) playbackCache.prefetch(next,quality)
-        if(previous!=null && (next==null || !playbackCache.isLoading(next,quality))) {
+        // 队列已持有的下一集保持原地址与媒体源，不因十分钟缓存时限到达而重取、关闭。
+        // 其他相邻集仍优先下一集，并按真实续播/跳片头位置预加载。
+        if(next!=null && next!=queuedNextId) playbackCache.prefetch(next,quality)
+        if(previous!=null && (next==null || next==queuedNextId || !playbackCache.isLoading(next,quality))) {
             playbackCache.prefetch(previous,quality)
         }
         video?.setPlaybackActive(true)
         session.setPreloadingEnabled(true)
         val neighbors=listOf(episodeIndex+1,episodeIndex-1).mapNotNull { index ->
             val id=data.episodes.getOrNull(index) ?: return@mapNotNull null
-            val remote=playbackCache.peek(id,quality)?.video ?: return@mapNotNull null
+            val remote=(if(id==queuedNextId) queuedVideo else playbackCache.peek(id,quality)?.video) ?: return@mapNotNull null
             EpisodePlaybackSession.Episode(id,index,quality,remote,episodeStartPosition(index))
         }
         session.updatePreloads(neighbors)
@@ -4473,6 +4515,7 @@ class MainActivity: Activity() {
         video?.pauseReadAhead(cancelReads=true)
         playerView?.player=null; playerView=null
         playbackSession?.release(); playbackSession=null; player=null; playbackReady=false; transportPlay=null; sleepButton=null
+        playerVideo=null; switchingVideos.clear(); protectPlaybackVideos()
         video=null
         if(!preservePlaybackCache) playbackCache.clear()
         stopDanmaku(); danmakuView=null
@@ -5629,7 +5672,12 @@ class MainActivity: Activity() {
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         if(::artwork.isInitialized) artwork.trimMemory(level)
-        if(level>=android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) cancelPrefetch()
+        val memoryPressure=level in android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW..android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+            level>=android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND
+        if(memoryPressure) {
+            val severe=level==android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL || level>=android.content.ComponentCallbacks2.TRIM_MEMORY_MODERATE
+            pausePrefetchForMemory(if(severe) 120_000L else 60_000L)
+        }
     }
     override fun onDestroy() {
         generation++; cancelWork()

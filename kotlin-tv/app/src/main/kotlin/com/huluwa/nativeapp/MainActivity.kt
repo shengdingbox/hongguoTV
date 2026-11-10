@@ -133,17 +133,13 @@ class MainActivity: Activity() {
     private var lastScheduleIdle=""
     /** 最近一次的调度阻塞原因（不受去重影响）：日志弹窗的现场摘要直接读它。 */
     private var lastIdleForSummary=""
-    /** 状态条当前对应的「集号 + 画质」：换集后要立刻按新邻接集重算三段比例。 */
-    private var cacheStripKey: Pair<Int,Int>?=null
     /** 三段缓存条的高度（dp）：轨道与容器共用，避免只改一处导致填充条被裁掉。 */
     private val cacheStripHeightDp=0.5f
-    /** 上一次写进提示行的文案：每秒刷新时只在文案变化时才 setText，避免无谓重排。 */
-    private var stripKeyText: String?=null
+    /** 上一次按 onProgress 重画条带的时间（elapsedRealtime）：三集并发时用来节流。 */
+    @Volatile private var cacheStripPaintedAt=0L
     /** 屏幕最底部的缓存状态条：三段依次对应下 1/2/3 集，null 表示当前页面未挂。 */
     private var cacheStripSegments: List<View>?=null
     private var cacheStripView: View?=null
-    /** 状态条下方的原因提示：三段全灰时告诉用户是哪一步没跑起来，而不是只留一条灰线。 */
-    private var cacheStripHint: TextView?=null
     // 与页面取址状态分开：等待新集就绪时，旧媒体源仍可能在播放器线程中读取。
     private var playerVideo: RemoteVideo?=null
     private val switchingVideos=mutableSetOf<RemoteVideo>()
@@ -3394,6 +3390,9 @@ class MainActivity: Activity() {
         val playbackStarted=android.os.SystemClock.elapsedRealtime()
         // 从详情页重新进播放器时丢弃上一轮的临时设置；自动连播保持在同一条降档链上。
         if(screen!="player") { resetPlaybackSession(); downgradeEpisode=""; downgradeCount=0 }
+        // 从别的页面进播放页才算新会话：复位整集预载的本轮下载预算
+        //（上一会话可能已下满上限停手）。播放页内切集不复位，避免「每集一轮」把上限架空。
+        if(screen!="player") episodeDiskCache?.resetBudget()
         val reuse=screen=="player" && player!=null && playerView!=null && !recovering && !playError
         library.setWatched(data.series.id,false)
         val selectedIndex=index.coerceIn(0,data.episodes.lastIndex)
@@ -3705,7 +3704,13 @@ class MainActivity: Activity() {
                     RuntimeLog.add(if(reason.isEmpty()) "cache state: 调度正常" else "cache state: 未下载 · $reason")
                 },
                 onLog={ message -> RuntimeLog.add(message) })
-            cache.onProgress={ _,_,_ -> main.post { refreshCacheStrip() } }
+            // 三集并发时每段完成都会回调一次，节流后再画：tick 本来也每秒刷一次条带
+            cache.onProgress={ _,_,_ ->
+                val now=android.os.SystemClock.elapsedRealtime()
+                if(now-cacheStripPaintedAt<200) return@onProgress
+                cacheStripPaintedAt=now
+                main.post { if(!isDestroyed) refreshCacheStrip() }
+            }
             episodeDiskCache=cache
             playbackCache.onInvalidate={ id -> cache.invalidate(id) }
             // 播放中开启：当前集与已排队的下一集仍走内存模式，新创建的媒体源（手动切集/之后的连播）自动带磁盘缓存
@@ -3719,25 +3724,16 @@ class MainActivity: Activity() {
         refreshCacheStrip()
     }
     /** 屏幕最底部缓存状态条：三段对应下 1/2/3 集，蓝色=已落盘比例，灰色=未离线。
-     *  三段全灰时还要在条上方给一句人话原因：开关关了 / 移动网络 / 内存紧张 / 取址失败，
-     *  否则用户只能看到三条永远不动的灰线，分不清是还没下还是压根没开始下。 */
+     *  只画条，不再在条上方显示任何文字提示。 */
     private fun refreshCacheStrip() {
         val segments=cacheStripSegments ?: return
         val data=detail
-        // 集号变了要重画一遍：三段对应「当前集之后第 1/2/3 集」，
-        // 从第 4 集换到第 5 集时条带应跟着变成 6/7/8，而不是停在旧的三集
-        val key=episodeIndex to effectiveQuality()
-        if(key!=cacheStripKey) { cacheStripKey=key; stripKeyText=null }
         if(!library.episodeCache || data==null || screen!="player") {
             segments.forEach { it.visibility=View.GONE }
-            cacheStripHint?.visibility=View.GONE
-            stripKeyText=null
             return
         }
         val quality=effectiveQuality()
         val cache=episodeDiskCache
-        var anyVisible=false
-        var anyFilled=false
         segments.forEachIndexed { offset,segment ->
             val id=data.episodes.getOrNull(episodeIndex+offset+1)
             val ratio=if(cache!=null && id!=null) cache.progress(id,quality) else 0f
@@ -3745,8 +3741,6 @@ class MainActivity: Activity() {
                 segment.visibility=View.GONE
             } else {
                 segment.visibility=View.VISIBLE
-                anyVisible=true
-                if(ratio>0f) anyFilled=true
                 val fill=segment.tag as? View ?: return@forEachIndexed
                 val width=segment.width
                 if(width>0) {
@@ -3758,23 +3752,6 @@ class MainActivity: Activity() {
                 }
             }
         }
-        val hint=cacheStripHint ?: return
-        if(!anyVisible || anyFilled) {
-            // 至少有一段开始缓存后就不再提示原因；换集回到全灰时会重新显示
-            if(hint.visibility!=View.GONE) { hint.visibility=View.GONE; stripKeyText=null }
-            return
-        }
-        // 全灰：把最关键的一条原因挑出来，网络/内存是调度前置条件，先于池内状态判断
-        val reason=when {
-            cache==null -> "整集预载缓存未启动（可在设置里开关一次）"
-            !networkAvailable() -> "当前无网络，联网后自动开始预载"
-            !prefetchMemoryReady() -> "内存紧张，预载已暂停"
-            else -> cache.skipReason.ifBlank { "正在排队，稍等几秒" }
-        }
-        // 这段文本每秒都会重算：内容没变就不 setText，避免条带每秒重建布局
-        val text="下 1–3 集均未缓存 · $reason"
-        if(stripKeyText!=text) { hint.text=text; stripKeyText=text }
-        if(hint.visibility!=View.VISIBLE) hint.visibility=View.VISIBLE
     }
     /** 构建缓存状态条（尚未挂载）：返回三段轨道（每段 tag 里存蓝色填充 View）。 */
     private fun buildCacheStrip(): List<View> {
@@ -3800,20 +3777,11 @@ class MainActivity: Activity() {
         cacheStripView=strip
         return segments
     }
-    /** 状态条 + 原因提示一起挂进播放页：提示压在条正上方，条本身贴底且不挡控件。 */
+    /** 状态条挂进播放页：条本身贴底且不挡控件，上方不再有任何文字提示。 */
     private fun cacheStripHost(): View {
         val strip=cacheStripView ?: LinearLayout(this)
-        val hint=TextView(this).apply {
-            textSize=11f
-            setTextColor(Color.argb(200,255,255,255))
-            setPadding(dp(10),dp(3),dp(10),dp(3))
-            setBackgroundColor(Color.argb(120,0,0,0))
-            visibility=View.GONE
-        }
-        cacheStripHint=hint
         return column().apply {
             gravity=Gravity.BOTTOM
-            addView(hint,LinearLayout.LayoutParams(-1,-2))
             addView(strip,LinearLayout.LayoutParams(-1,dp(cacheStripHeightDp).coerceAtLeast(1)))
         }
     }
@@ -3885,6 +3853,10 @@ class MainActivity: Activity() {
         android.util.Log.i("HongguoTV","Next episode queued episode=${queuedIndex+1} quality=$quality")
     }
     private fun maybePrefetch() {
+        // 整集落盘独立于播放器实例与播放状态：它走自己的线程池，边播边下，
+        // 暂停/缓冲/地址还在路上时也继续。以前它挂在下面的播放条件之后，
+        // 第一次进播放页（player 尚为 null）、缓冲或暂停时整段空窗，用户看到的就是「一直卡在排队」。
+        if(foreground && screen=="player") scheduleDiskCache()
         val p=player ?: return; val data=detail ?: return
         val session=playbackSession ?: return
         if(queuedNextId.isNotEmpty() && (!library.autoNext || sleepStopped)) dropQueuedNext()
@@ -3910,7 +3882,6 @@ class MainActivity: Activity() {
             EpisodePlaybackSession.Episode(id,index,quality,remote,episodeStartPosition(index))
         }
         session.updatePreloads(neighbors)
-        scheduleDiskCache()
         if(next!=null && library.autoNext && PrefetchPolicy.nearEnd(p.currentPosition,p.duration,p.playbackParameters.speed)) {
             handOffPrefetched(next,quality)
         }
@@ -5043,8 +5014,7 @@ class MainActivity: Activity() {
         episodeDiskCache?.clear()
         // 三段状态条随播放页一起作废：releaseCatalogViews() 已经不再清这两处引用
         //（切集场景要保留，否则复用播放器时条子会停在上一次画出的宽度）。
-        // 另外把提示行的文案缓存一起清掉，下次进播放页换集后能重新显示原因。
-        cacheStripSegments=null; cacheStripView=null; cacheStripHint=null; cacheStripKey=null; stripKeyText=null
+        cacheStripSegments=null; cacheStripView=null
         stopDanmaku(); danmakuView=null
         playerScreenOn=false; refreshScreenOn()
     }

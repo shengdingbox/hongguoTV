@@ -86,7 +86,7 @@ class PhonePlayer(
             setImageResource(R.drawable.ic_play_circle)
             setColorFilter(Color.WHITE)
             background = GradientDrawable().apply {
-                color = Color.argb(96, 0, 0, 0); shape = GradientDrawable.OVAL
+                setColor(Color.argb(96, 0, 0, 0)); shape = GradientDrawable.OVAL
             }
             setPadding(dp(12), dp(12), dp(12), dp(12))
             setOnClickListener { activity.togglePlaybackPhone(); touch() }
@@ -341,8 +341,8 @@ class PhonePlayer(
     /** 同一次手势内只切一集。 */
     private var strokeLocked = false
 
-    private val gesture by lazy {
-        object : GestureDetector.SimpleOnGestureListener() {
+    private val gesture: GestureDetector by lazy {
+        GestureDetector(activity, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean {
                 strokeTotal = 0f
                 strokeLocked = false
@@ -384,7 +384,7 @@ class PhonePlayer(
                 activity.togglePlaybackPhone()
                 return true
             }
-        }
+        })
     }
 
     private fun touch() {

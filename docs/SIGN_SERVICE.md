@@ -18,7 +18,9 @@
 
 算法移植自 [openhongguo](https://github.com/beilunyang/openhongguo) 的
 `internal/protocol/sign/`，用其 `sign_test.go` 的官方测试向量逐项校验
-（`LocalSignerTest.kt`）。SM3 另外用 `"abc"` 的标准摘要校验，AES S 盒用 FIPS-197 校验。
+（`LocalSignerTest.kt`）。SM3 另外用 `"abc"` 的标准摘要校验。注意 **AES-V3 的 S 盒不是
+标准 AES S 盒**，而是上游硬编码的 4×256 字节定制表（按 `khronos & 3` 取窗口）；
+不能按 FIPS-197 算法生成，否则 Medusa 签名与真机不一致。
 
 ## 工作方式
 

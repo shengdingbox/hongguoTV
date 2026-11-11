@@ -58,10 +58,8 @@ object PortraitUi {
         val root = FrameLayout(activity).apply { setBackgroundColor(PortraitStyle.background) }
         val content = column(activity)
         root.addView(content, FrameLayout.LayoutParams(-1, -1))
-        val nav = row(activity).apply {
+        val nav = PortraitGlassNavigation(activity, content).apply {
             gravity = Gravity.CENTER_VERTICAL
-            background = PortraitStyle.shape(activity, Color.argb(240, 250, 250, 250), radius = 32, border = PortraitStyle.outline)
-            elevation = dp(activity, 5).toFloat()
             setPadding(dp(activity, 4), dp(activity, 3), dp(activity, 4), dp(activity, 3))
         }
         TABS.forEach { tab ->
@@ -70,7 +68,7 @@ object PortraitUi {
                 contentDescription = tab.label
                 isFocusable = true
                 tag = "nav-item:${tab.key}"
-                background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 28)
+                background = PortraitStyle.navigationItem(activity, selected = false)
                 setOnClickListener { onTab(tab.key) }
             }
             item.addView(ImageView(activity).apply {
@@ -106,7 +104,7 @@ object PortraitUi {
             val color = if (selected) PortraitStyle.accent else PortraitStyle.text
             nav.findViewWithTag<View>("nav-item:${tab.key}")?.apply {
                 isSelected = selected
-                background = PortraitStyle.selectable(context, if (selected) Color.rgb(234, 233, 228) else Color.TRANSPARENT, radius = 28)
+                background = PortraitStyle.navigationItem(context, selected)
             }
             (nav.findViewWithTag<View>("nav-icon:${tab.key}") as? ImageView)?.setColorFilter(color)
             (nav.findViewWithTag<View>("nav-label:${tab.key}") as? TextView)?.apply {
@@ -116,9 +114,9 @@ object PortraitUi {
         }
     }
 
-    fun pageTitle(activity: Activity, label: String, top: Int = 28) = text(activity, label, 30f).apply {
+    fun pageTitle(activity: Activity, label: String) = text(activity, label, 30f).apply {
         setTypeface(null, Typeface.BOLD)
-        setPadding(dp(activity, 16), dp(activity, top), dp(activity, 16), dp(activity, 10))
+        setPadding(dp(activity, 16), dp(activity, 16), dp(activity, 16), dp(activity, 10))
         androidx.core.view.ViewCompat.setAccessibilityHeading(this, true)
     }
 
@@ -175,7 +173,7 @@ object PortraitUi {
         }
     }
 
-    /** 按 iOS 最小卡片宽度自适应的海报网格（含加载更多 footer）。点击卡片进详情。
+    /** 强制竖屏统一使用三列海报网格（含加载更多 footer）。点击卡片进详情。
      *  [scrollParent] 是页面外层的竖向滚动容器：网格放进 NestedScrollView 时高度随内容展开、
      *  自身不滚，拖动由外层接管，所以「加载更多」也要改看外层的滚动位置。 */
     class PosterGrid(
@@ -279,12 +277,7 @@ object PortraitUi {
         }
 
         fun attach(recycler: RecyclerView) {
-            fun columnCount(width: Int): Int {
-                val minimum = if (width >= dp(activity, 600)) 150 else 104
-                val available = width - dp(activity, 20)
-                return (available / (dp(activity, minimum) + dp(activity, 12))).coerceAtLeast(1)
-            }
-            val layoutManager = GridLayoutManager(activity, columnCount(activity.resources.displayMetrics.widthPixels))
+            val layoutManager = GridLayoutManager(activity, 3)
             layoutManager.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
                 override fun getSpanSize(position: Int) = if (getItemViewType(position) == 1) layoutManager.spanCount else 1
             }
@@ -309,9 +302,7 @@ object PortraitUi {
                     if (nearEnd) more()
                 }
             }
-            recycler.addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
-                val columns = columnCount(view.width)
-                if (layoutManager.spanCount != columns) layoutManager.spanCount = columns
+            recycler.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
                 // 布局结束后再判断，内容不足一屏时也能继续分页。
                 recycler.post { checkLoadMore() }
             }

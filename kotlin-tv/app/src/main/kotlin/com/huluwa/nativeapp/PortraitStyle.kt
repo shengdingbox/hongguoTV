@@ -27,6 +27,17 @@ object PortraitStyle {
             if (border != Color.TRANSPARENT) setStroke((context.resources.displayMetrics.density).toInt().coerceAtLeast(1), border)
         }
 
+    fun navigationItem(context: Context, selected: Boolean): RippleDrawable {
+        val density = context.resources.displayMetrics.density
+        val glass = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (selected) intArrayOf(
+            Color.argb(160, 255, 255, 255), Color.argb(70, 255, 255, 255), Color.argb(100, 215, 222, 208),
+        ) else intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT)).apply {
+            cornerRadius = 28f * density
+            if (selected) setStroke(density.toInt().coerceAtLeast(1), Color.argb(170, 255, 255, 255))
+        }
+        return RippleDrawable(ColorStateList.valueOf(Color.argb(35, 90, 110, 80)), glass, shape(context, Color.WHITE, 28))
+    }
+
     fun selectable(context: Context, color: Int, radius: Int = 10) = RippleDrawable(
         ColorStateList.valueOf(Color.argb(28, 0, 0, 0)),
         shape(context, color, radius),

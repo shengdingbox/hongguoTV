@@ -41,7 +41,7 @@ class PortraitPages(
     private var selectedDay = ""
 
     fun home(body: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
-        body.addView(PortraitUi.pageTitle(activity, "推荐", top = 88), lp())
+        body.addView(PortraitUi.pageTitle(activity, "推荐"), lp())
         val empty = PortraitUi.emptyHint(activity, "正在加载推荐…")
         body.addView(empty, lp())
         val grid = RecyclerView(activity)
@@ -59,7 +59,7 @@ class PortraitPages(
     }
 
     fun rank(body: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
-        body.addView(PortraitUi.pageTitle(activity, "排行榜", top = 88), lp())
+        body.addView(PortraitUi.pageTitle(activity, "排行榜"), lp())
         val types = row().apply {
             background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 9)
             setPadding(dp(3), dp(3), dp(3), dp(3))
@@ -93,7 +93,7 @@ class PortraitPages(
 
     /** 本项目没有新剧日历接口，日期筛选可用，列表保持空数据。 */
     fun newReleases(body: LinearLayout) {
-        body.addView(PortraitUi.pageTitle(activity, "新剧上线", top = 88), lp())
+        body.addView(PortraitUi.pageTitle(activity, "新剧上线"), lp())
         val format = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA)
         val today = Calendar.getInstance()
         val todayKey = format.format(today.time)
@@ -144,7 +144,7 @@ class PortraitPages(
 
     fun mine(body: LinearLayout, scrollRoot: NestedScrollView? = null) {
         val head = row()
-        head.addView(PortraitUi.pageTitle(activity, "我的", top = 88), lp(0, -2).apply { weight = 1f })
+        head.addView(PortraitUi.pageTitle(activity, "我的"), lp(0, -2).apply { weight = 1f })
         head.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_more)
             setColorFilter(PortraitStyle.text)
@@ -200,7 +200,7 @@ class PortraitPages(
     }
 
     fun favorites(body: LinearLayout, scrollRoot: NestedScrollView? = null) {
-        body.addView(PortraitUi.pageTitle(activity, "收藏", top = 88), lp())
+        body.addView(PortraitUi.pageTitle(activity, "收藏"), lp())
         favoritesGrid(body, scrollRoot)
     }
 
@@ -220,7 +220,7 @@ class PortraitPages(
 
     fun search(body: LinearLayout, submit: (String) -> Unit, scrollRoot: NestedScrollView? = null) {
         val query = activity.phoneQueryText
-        body.addView(PortraitUi.pageTitle(activity, if (query.isBlank()) "热搜" else "“$query”", top = 88), lp())
+        body.addView(PortraitUi.pageTitle(activity, if (query.isBlank()) "热搜" else "“$query”"), lp())
         val suggestions = column()
         val handler = Handler(Looper.getMainLooper())
         var pending: Runnable? = null

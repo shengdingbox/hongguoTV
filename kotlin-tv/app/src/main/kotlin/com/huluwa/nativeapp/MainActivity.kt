@@ -6685,6 +6685,8 @@ class MainActivity: Activity() {
             }
         },previewAspectRatio=playerUi?.episodePreviewAspectRatio(),onPanelTopChanged={ top ->
             if(phoneEpisodeSheet===sheet) playerUi?.setEpisodeSheetTop(top)
+        },onAnimationProgress={ progress ->
+            if(phoneEpisodeSheet===sheet) playerUi?.setEpisodeSheetProgress(progress)
         })
         phoneEpisodeSheet=sheet
         sheet.show()

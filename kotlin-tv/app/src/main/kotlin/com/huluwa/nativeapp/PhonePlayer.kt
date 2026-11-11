@@ -3,6 +3,7 @@ package com.huluwa.nativeapp
 
 import android.annotation.SuppressLint
 import android.graphics.Color
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.text.TextUtils
@@ -56,6 +57,8 @@ class PhonePlayer(
     private var playerView: View? = null
     private var videoAspectRatio = 0f
     private var episodeSheetTopOnScreen: Int? = null
+    private var episodeSheetProgress = 0f
+    private var episodePreviewOrigin: RectF? = null
     private var previewDocked = false
     /** 顶部栏 + 底部面板。轻点画面切换显隐，隐藏后即沉浸式观看。 */
     private var controls: FrameLayout? = null
@@ -116,7 +119,9 @@ class PhonePlayer(
         val page = FrameLayout(activity)
         host = page
 
-        videoHost = FrameLayout(activity)
+        videoHost = FrameLayout(activity).apply {
+            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyEpisodeSheetTransform() }
+        }
         page.addView(videoHost, FrameLayout.LayoutParams(-1, -1))
 
         // 暂停时居中显示的大播放按钮（葫芦娃红果播放页同款）
@@ -201,8 +206,60 @@ class PhonePlayer(
     fun episodePreviewAspectRatio(): Float? = videoAspectRatio.takeIf { !fullscreen && it > 1f }
 
     fun setEpisodeSheetTop(topOnScreen: Int?) {
+        if (topOnScreen == null || episodeSheetTopOnScreen == null) {
+            episodePreviewOrigin = null
+            episodeSheetProgress = 0f
+        }
         episodeSheetTopOnScreen = topOnScreen
         updateVideoLayout()
+    }
+
+    fun setEpisodeSheetProgress(progress: Float) {
+        episodeSheetProgress = progress.coerceIn(0f, 1f)
+        applyEpisodeSheetTransform()
+    }
+
+    /** 记录画面实际位置，避免从整屏黑边的边缘开始移动。 */
+    private fun captureEpisodePreviewOrigin(): RectF? {
+        val page = host ?: return null
+        val view = playerView ?: return null
+        val frame = view.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame) ?: view
+        if (frame.width <= 0 || frame.height <= 0) return null
+        val pageLocation = IntArray(2)
+        val frameLocation = IntArray(2)
+        page.getLocationOnScreen(pageLocation)
+        frame.getLocationOnScreen(frameLocation)
+        val left = (frameLocation[0] - pageLocation[0]).toFloat()
+        val top = (frameLocation[1] - pageLocation[1]).toFloat()
+        return RectF(left, top, left + frame.width, top + frame.height)
+    }
+
+    private fun applyEpisodeSheetTransform() {
+        val page = host ?: return
+        val video = videoHost ?: return
+        val params = video.layoutParams as FrameLayout.LayoutParams
+        val targetWidth = if (params.width > 0) params.width else page.width
+        val targetHeight = if (params.height > 0) params.height else page.height
+        // 新视口完成布局后再应用位移，避免首帧仍按旧的整屏尺寸绘制造成跳动。
+        if (video.width != targetWidth || video.height != targetHeight || video.top != params.topMargin) return
+        playerView?.translationY = if (!previewDocked && episodePreviewAspectRatio() != null) -dp(25).toFloat() else 0f
+        val origin = episodePreviewOrigin
+        if (previewDocked && origin != null && params.width > 0 && params.height > 0) {
+            val remaining = 1f - episodeSheetProgress
+            video.pivotX = params.width / 2f
+            video.pivotY = 0f
+            video.scaleX = 1f + (origin.width() / params.width - 1f) * remaining
+            video.scaleY = 1f + (origin.height() / params.height - 1f) * remaining
+            video.translationX = (origin.centerX() - page.width / 2f) * remaining
+            video.translationY = (origin.top - params.topMargin) * remaining
+        } else {
+            video.scaleX = 1f; video.scaleY = 1f
+            video.translationX = 0f; video.translationY = 0f
+        }
+        if (previewDocked) controls?.apply {
+            alpha = if (uiHidden) 0f else 1f - episodeSheetProgress
+            visibility = if (uiHidden || episodeSheetProgress == 1f) View.INVISIBLE else View.VISIBLE
+        }
     }
 
     private fun updateVideoLayout() {
@@ -224,13 +281,14 @@ class PhonePlayer(
         } else {
             FrameLayout.LayoutParams(-1, -1)
         }
+        if (docked && !previewDocked && episodePreviewOrigin == null) {
+            episodePreviewOrigin = captureEpisodePreviewOrigin()
+        }
         val previous = video.layoutParams as FrameLayout.LayoutParams
         if (previous.width != params.width || previous.height != params.height ||
             previous.gravity != params.gravity || previous.topMargin != params.topMargin) {
             video.layoutParams = params
         }
-        // 收起选集后恢复原有的全屏视频区及 25dp 上移位置。
-        playerView?.translationY = if (!docked && episodePreviewAspectRatio() != null) -dp(25).toFloat() else 0f
         if (previewDocked != docked) {
             previewDocked = docked
             controls?.apply {
@@ -243,6 +301,7 @@ class PhonePlayer(
                 view.requestLayout()
             }
         }
+        applyEpisodeSheetTransform()
     }
 
     /**
@@ -741,6 +800,7 @@ class PhonePlayer(
     private fun clearRefs() {
         host = null; videoHost = null; playerView = null; controls = null
         videoAspectRatio = 0f; episodeSheetTopOnScreen = null; previewDocked = false
+        episodeSheetProgress = 0f; episodePreviewOrigin = null
         topInsetPx = 0
         topBar = null; bottom = null; titleText = null; speedLabel = null
         seriesTitleText = null; introText = null; introToggle = null; episodePickerText = null

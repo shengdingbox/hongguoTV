@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.huluwa.nativeapp
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.Dialog
 import android.graphics.Color
@@ -11,6 +14,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.Window
 import android.view.WindowManager
+import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -18,6 +22,8 @@ import android.widget.Space
 import android.widget.TextView
 import androidx.core.view.WindowCompat
 import com.hongguotv.core.Detail
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * 手机竖屏选集弹层，对齐葫芦娃红果播放页的 HongguoEpisodeSheet：
@@ -36,22 +42,39 @@ class PhoneEpisodeSheet(
     private val onDismiss: () -> Unit,
     private var previewAspectRatio: Float? = null,
     private val onPanelTopChanged: (Int) -> Unit = {},
+    private val onAnimationProgress: (Float) -> Unit = {},
 ) {
     private fun dp(v: Int) = PhoneUi.dp(activity, v)
     private fun text(v: String, size: Float, color: Int = Color.WHITE) = PhoneUi.text(activity, v, size, color)
 
-    private val dialog = Dialog(activity)
+    private val dialog = object : Dialog(activity) {
+        override fun dismiss() = requestDismiss()
+        fun dismissImmediately() = super.dismiss()
+    }
     private var content: FrameLayout? = null
+    private var panel: View? = null
+    private var backdrop: View? = null
+    private var motion: ValueAnimator? = null
+    private var motionProgress = 0f
+    private var entranceStarted = false
+    private var closing = false
+    private var pendingSelection: Int? = null
 
     fun show() {
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
         dialog.setOnDismissListener {
-            content = null
+            cancelMotion()
+            val selected = pendingSelection
+            pendingSelection = null
+            content = null; panel = null; backdrop = null
             onDismiss()
+            // 先完成收起和位置恢复，再切集，避免重建播放器打断动画。
+            if (selected != null) onSelect(selected)
         }
         dialog.setContentView(build())
         dialog.window?.apply {
             setBackgroundDrawableResource(android.R.color.transparent)
+            setWindowAnimations(0)
             WindowCompat.setDecorFitsSystemWindows(this, false)
             decorView.setPadding(0, 0, 0, 0)
             // 背景只由内容遮罩控制，避免系统调暗与自绘遮罩叠加。
@@ -64,12 +87,69 @@ class PhoneEpisodeSheet(
         TvDialog.register(dialog)
     }
 
-    fun dismiss() { if (dialog.isShowing) dialog.dismiss() }
+    /** 页面退出或旧弹框替换时立即清理，不让动画继续持有旧播放器。 */
+    fun dismiss() {
+        pendingSelection = null
+        closing = true
+        cancelMotion()
+        applyMotion(0f)
+        if (dialog.isShowing) dialog.dismissImmediately()
+    }
+
+    private fun requestDismiss(selection: Int? = null) {
+        if (!dialog.isShowing || closing) return
+        if (activity.isFinishing || activity.isDestroyed) { dismiss(); return }
+        closing = true
+        pendingSelection = selection
+        if (panel?.isLaidOut == true) {
+            animateMotion(0f)
+        } else {
+            cancelMotion()
+            applyMotion(0f)
+            dialog.dismissImmediately()
+        }
+    }
+
+    private fun cancelMotion() {
+        val previous = motion
+        motion = null
+        previous?.cancel()
+    }
+
+    private fun animateMotion(target: Float) {
+        cancelMotion()
+        if (motionProgress == target) {
+            applyMotion(target)
+            if (target == 0f) dialog.dismissImmediately()
+            return
+        }
+        val animator = ValueAnimator.ofFloat(motionProgress, target)
+        motion = animator
+        animator.duration = (300 * abs(target - motionProgress)).toLong().coerceAtLeast(1L)
+        animator.interpolator = PathInterpolator(0.22f, 0f, 0.2f, 1f)
+        animator.addUpdateListener { applyMotion(it.animatedValue as Float) }
+        animator.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: Animator) {
+                if (motion !== animation) return
+                motion = null
+                if (target == 0f) dialog.dismissImmediately()
+            }
+        })
+        animator.start()
+    }
+
+    private fun applyMotion(progress: Float) {
+        motionProgress = progress.coerceIn(0f, 1f)
+        panel?.let { it.translationY = it.height * (1f - motionProgress) }
+        backdrop?.alpha = motionProgress
+        // 弹框和视频使用同一个动画进度，避免先后启动产生错位。
+        onAnimationProgress(motionProgress)
+    }
 
     fun updatePreviewAspectRatio(aspectRatio: Float?) {
         if (previewAspectRatio == aspectRatio) return
         previewAspectRatio = aspectRatio
-        content?.setBackgroundColor(backdropColor())
+        backdrop?.setBackgroundColor(backdropColor())
         content?.requestLayout()
     }
 
@@ -79,11 +159,14 @@ class PhoneEpisodeSheet(
     private fun build(): View {
         // 点击面板外关闭；横向视频预览区不覆盖深色遮罩。
         val root = FrameLayout(activity).apply {
-            setBackgroundColor(backdropColor())
             isClickable = true
-            setOnClickListener { dismiss() }
+            setOnClickListener { requestDismiss() }
         }
-
+        backdrop = View(activity).apply {
+            setBackgroundColor(backdropColor())
+            alpha = 0f
+        }
+        root.addView(backdrop, FrameLayout.LayoutParams(-1, -1))
         content = root
         var topInsetPx = 0
         val panel = object : LinearLayout(activity) {
@@ -108,6 +191,7 @@ class PhoneEpisodeSheet(
             setOnClickListener { }
         }
 
+        this.panel = panel
         PhoneInsets.listen(root) { topInset, bottomInset, _ ->
             topInsetPx = topInset
             panel.setPadding(0, 0, 0, bottomInset)
@@ -116,7 +200,13 @@ class PhoneEpisodeSheet(
         panel.addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
             val location = IntArray(2)
             view.getLocationOnScreen(location)
-            onPanelTopChanged(location[1])
+            // 回传最终停靠位置，排除面板当前的动画位移。
+            onPanelTopChanged((location[1] - view.translationY).roundToInt())
+            applyMotion(motionProgress)
+            if (!entranceStarted && !closing) {
+                entranceStarted = true
+                animateMotion(1f)
+            }
         }
 
         // 标题行：剧名 + 「共N集 · 自动连播」+ 关闭
@@ -131,7 +221,7 @@ class PhoneEpisodeSheet(
         head.addView(text("✕", 18f, Color.WHITE).apply {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            setOnClickListener { dismiss() }
+            setOnClickListener { requestDismiss() }
         }, LinearLayout.LayoutParams(-2, -2))
         panel.addView(head, LinearLayout.LayoutParams(-1, -2))
 
@@ -171,9 +261,7 @@ class PhoneEpisodeSheet(
             background = TvStyle.shape(activity, if (selected) Color.rgb(0xE4, 0x4B, 0x40) else Color.rgb(0x29, 0x29, 0x29), radius = 10)
             contentDescription = "第 ${index + 1} 集" + if (selected) "，当前播放" else ""
             setOnClickListener {
-                if (index == current) { dismiss(); return@setOnClickListener }
-                dismiss()
-                onSelect(index)
+                requestDismiss(if (index == current) null else index)
             }
         }
     }

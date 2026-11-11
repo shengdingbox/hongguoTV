@@ -147,6 +147,57 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         require(page in 1..100)
         return ComicRank.parse(text("$site/rank/${board.path}?page=$page"),page,board)
     }
+    /** 与开心果 iOS 的 Discover 对齐：首屏合并频道预加载和首批猜你喜欢，之后沿游标加载。 */
+    open fun recommendations(cursor: RecommendationCursor? = null): RecommendationPage {
+        require(cursor == null || (cursor.cellId.isNotBlank() && cursor.sessionId.isNotBlank() &&
+            cursor.showType.isNotBlank() && cursor.offset >= 0)) { "推荐分页信息已过期，请下拉刷新" }
+        fun change(next: RecommendationCursor): RecommendationPage {
+            val values = linkedMapOf(
+                "cell_id" to next.cellId,
+                "offset" to next.offset.toString(),
+                "limit" to "20",
+                "change_type" to "0",
+                "tab_type" to "16",
+                "show_type" to next.showType,
+                "client_req_type" to "2",
+                "session_id" to next.sessionId,
+            )
+            if (next.clientTemplate.isNotBlank()) values["client_template"] = next.clientTemplate
+            return RecommendationParser.next(catalogJson("$API/reading/bookapi/bookmall/cell/change/v", values), next)
+        }
+        var result = if (cursor != null) change(cursor) else {
+            val values = linkedMapOf(
+                "tab_type" to "-1",
+                "offset" to "0",
+                "client_req_type" to "3",
+                "bottom_tab_type" to "7",
+                "bottom_tab_type_list" to "7,0,1,2,3,4",
+            )
+            val initial = RecommendationParser.initial(catalogJson("$API/reading/bookapi/bookmall/tab/v", values))
+            initial.cursor?.let { next ->
+                val more = change(next)
+                RecommendationPage((initial.items + more.items).distinctBy { it.id }, more.cursor)
+            } ?: initial
+        }
+        // 服务端偶尔夹有空页：最多越过两页，单次加载不超过三页，避免空列表卡住或无限请求。
+        repeat(2) {
+            val next = result.cursor
+            if (result.items.isNotEmpty() || next == null) return result
+            result = change(next)
+        }
+        if (result.items.isEmpty() && result.cursor != null) throw IOException("推荐暂时没有内容，请稍后重试")
+        return result
+    }
+
+    private fun catalogJson(url: String, values: Map<String, String>): JSONObject {
+        val signed = signer.signCatalog(url, values)
+        val raw = text(signed.url, signed)
+        val root = runCatching { JSONObject(raw) }.getOrElse { throw IOException("推荐接口数据格式异常", it) }
+        val code = root.str("code")
+        if (code.isNotBlank() && code != "0") throw IOException("推荐接口返回错误（code=$code）")
+        return root
+    }
+
     /** 公开上新日历，与开心果 iOS 的 NewReleases 使用同一签名接口。 */
     open fun newReleases(date: String = "", cursor: NewReleaseCursor? = null): NewReleasePage {
         require(date.isEmpty() || NewReleaseCalendar.valid(date)) { "新剧日期必须为 YYYYMMDD" }

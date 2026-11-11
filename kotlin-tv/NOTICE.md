@@ -24,6 +24,14 @@ X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios 与魔改 AES-V3）与匿名�
 - 原始 Go 实现与测试向量以 Apache-2.0 发布；本仓库改写为 Kotlin，保留相同的信封、轮函数和请求绑定字段。
 - 上游许可证随 APK 打包于 `app/src/main/assets/licenses/openhongguo-LICENSE.txt`。
 
+手机推荐流（`Recommendations.kt`、`ContentRepository.recommendations`）对照开心果 iOS 所用
+openhongguo `02437b6286956e8239d54581e3cdaccda817a7fb` 的 `Discover`、
+`SignedDiscoverPairsIn`、`SignedCellChangePairs`、`ParseDiscoverTab` 和 `ParseCellChange`（Apache-2.0）：
+
+- https://github.com/kadaliao/openhongguo/tree/02437b6286956e8239d54581e3cdaccda817a7fb
+- Kotlin 实现合并推荐频道预加载与猜你喜欢首批卡片，按服务端会话游标分页并跨页去重；
+  匿名注册 Cookie 单独持久化，推荐缓存与网站榜单、分类缓存分别保存。
+
 新剧日历接口的请求参数与响应字段（`NewReleases.kt`、`ContentRepository.newReleases`）参考：
 
 - 开心果 iOS：https://github.com/kadaliao/kaixinguo-ios ，`KaixinguoKit/Sources/KaixinguoKit/AppModel.swift` 中的 `newFeed`。

@@ -21,6 +21,8 @@ class Library(context: Context) {
         val retiredWrites = mutableListOf<LatestWriteQueue<String, () -> Any?>>()
         /** 普通进度变更的备份节流窗口：播放中每 5 秒就有一次进度落盘，没必要跟着整包重写。 */
         const val PROGRESS_BACKUP_INTERVAL_MS = 5 * 60_000L
+        // 独立版本键：旧 home-comic/home-short 存的是网站榜单或分类，不能当作推荐流。
+        const val RECOMMENDATION_CACHE_KEY = "phone-recommendation-feed-v1"
     }
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
@@ -44,6 +46,8 @@ class Library(context: Context) {
     private var index: LibraryIndex? = null
     private val homes = mutableMapOf<ContentType, CatalogPage>()
     private val homeSavedAt = mutableMapOf<ContentType, Long>()
+    private var recommendationCache: CatalogPage? = null
+    private var recommendationSavedAt = 0L
     // 榜单缓存：漫剧/短剧/AI 三个榜各自独立一条，与首页缓存同存同有效期
     private val ranks = mutableMapOf<RankBoard, CatalogPage>()
     private val rankSavedAt = mutableMapOf<RankBoard, Long>()
@@ -51,7 +55,8 @@ class Library(context: Context) {
     /** 启动加载时一次性带进内存的缓存包：首页与榜单快照 + 各自的落盘时间。 */
     private data class DiskCaches(
         val homes: Map<ContentType, CatalogPage>, val homeStamps: Map<ContentType, Long>,
-        val ranks: Map<RankBoard, CatalogPage>, val rankStamps: Map<RankBoard, Long>
+        val ranks: Map<RankBoard, CatalogPage>, val rankStamps: Map<RankBoard, Long>,
+        val recommendations: CatalogPage?, val recommendationStamp: Long,
     )
     private var loading = false
     private var closed = false
@@ -110,7 +115,10 @@ class Library(context: Context) {
                         }
                     }
                 }
-                Pair(loaded, DiskCaches(cached, stamps, rankCached, rankStamps))
+                val recommendationRaw = homePrefs.getString(RECOMMENDATION_CACHE_KEY, null).orEmpty()
+                val recommendations = CatalogSnapshot.decode(recommendationRaw, now)
+                val recommendationStamp = if (recommendations != null) org.json.JSONObject(recommendationRaw).getLong("savedAt") else 0L
+                Pair(loaded, DiskCaches(cached, stamps, rankCached, rankStamps, recommendations, recommendationStamp))
             }
             main.post {
                 loading = false
@@ -121,6 +129,7 @@ class Library(context: Context) {
                     index = loaded
                     homes.putAll(boot.homes); homeSavedAt.putAll(boot.homeStamps)
                     ranks.putAll(boot.ranks); rankSavedAt.putAll(boot.rankStamps)
+                    recommendationCache = boot.recommendations; recommendationSavedAt = boot.recommendationStamp
                     ready.forEach { it() }
                 }.onFailure { failure -> errors.forEach { it(failure) } }
             }
@@ -195,6 +204,22 @@ class Library(context: Context) {
         homes[type] = CatalogPage(retained, hasMore)
         homeSavedAt[type] = now
         homeWrites.submit(mapOf("home-${type.storedValue}" to { CatalogSnapshot.encode(retained, hasMore, now) }))
+    }
+
+    /** 手机推荐缓存只保存卡片；每次冷启动重新请求首屏获取当前设备的分页会话。 */
+    fun cachedRecommendations(): List<Series> {
+        state()
+        val age = System.currentTimeMillis() - recommendationSavedAt
+        return recommendationCache?.items?.takeIf { age in 0..7 * 24 * 60 * 60 * 1000L }.orEmpty()
+    }
+    fun cacheRecommendations(items: List<Series>) {
+        state()
+        if (items.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val retained = items.take(30).map { it.copy(description = it.description.take(1500)) }
+        recommendationCache = CatalogPage(retained, true)
+        recommendationSavedAt = now
+        homeWrites.submit(mapOf(RECOMMENDATION_CACHE_KEY to { CatalogSnapshot.encode(retained, true, now) }))
     }
 
     /** 榜单缓存读取：与首页同款 7 天有效期，过期或从未缓存返回 null。 */

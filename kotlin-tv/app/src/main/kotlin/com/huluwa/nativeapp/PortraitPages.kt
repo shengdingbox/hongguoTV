@@ -50,12 +50,22 @@ class PortraitPages(
         val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
             { activity.loadMorePhone() }, scrollRoot)
         adapter.attach(grid)
+        val error = text("", 14f, PortraitStyle.muted).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(16), dp(24), dp(16), dp(24))
+            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 10)
+            setOnClickListener { activity.retryRecommendationsPhone() }
+        }
+        body.addView(error, lp())
         return { loading ->
-            val items = activity.catalog.filterNot { it.id in activity.phoneLibrary.hidden() }
+            val items = activity.recommendationItemsPhone.filterNot { it.id in activity.phoneLibrary.hidden() }
+            val problem = activity.recommendationErrorPhone
             empty.text = if (loading) "正在加载推荐…" else "暂时没有推荐，下拉可重新加载"
-            empty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+            empty.visibility = if (items.isEmpty() && problem.isBlank()) View.VISIBLE else View.GONE
             grid.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
-            adapter.submitItems(items, !loading && activity.hasMore)
+            error.text = problem
+            error.visibility = if (problem.isNotBlank()) View.VISIBLE else View.GONE
+            adapter.submitItems(items, !loading && problem.isBlank() && activity.recommendationHasMorePhone)
         }
     }
 

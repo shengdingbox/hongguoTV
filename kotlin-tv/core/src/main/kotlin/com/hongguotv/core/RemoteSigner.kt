@@ -19,7 +19,12 @@ class SignatureException(message: String, cause: Throwable? = null) : IOExceptio
 data class SignedRequest(val url: String, val headers: Map<String, String>, val body: ByteArray? = null)
 
 /** 本机持有的匿名设备档案。 */
-data class SignerProfile(val params: Map<String, String>, val userAgent: String) {
+data class SignerProfile(
+    val params: Map<String, String>,
+    val userAgent: String,
+    /** 匿名注册响应的游客 Cookie，单独保存，绝不并入签名查询串。 */
+    val cookies: Map<String, String> = emptyMap(),
+) {
     val deviceId get() = params["device_id"].orEmpty()
     val installId get() = params["iid"].orEmpty()
     /** 档案声明的客户端版本；查询串与 X-Ladon 都按它签名。 */
@@ -141,6 +146,31 @@ open class RemoteSigner(
         return SignedRequest(signedUrl, headers, body)
     }
 
+    /** 书城推荐复用本机签名，并按 iOS SDK 带上同一设备的游客票据。 */
+    @Synchronized
+    open fun signCatalog(url: String, values: Map<String, String>): SignedRequest {
+        val saved = profile()
+        // 老版本只保存了设备 ID，没有保存 ttreq；首次进入推荐时重新注册补齐。
+        val profile = if (saved.cookies["ttreq"].isNullOrBlank()) register() else saved
+        if (profile.cookies["ttreq"].isNullOrBlank()) {
+            throw SignatureException("匿名设备缺少游客票据，请稍后重试")
+        }
+        val signed = sign(url, values)
+        val headers = signed.headers.toMutableMap()
+        headers["lc"] = "101"
+        headers["x-ss-dp"] = profile.params["aid"].orEmpty().ifBlank { "8662" }
+        headers["x-vc-bdturing-sdk-version"] = "4.0.3.cn"
+        val ticket = signed.headers["x-ss-req-ticket"].orEmpty().ifBlank { clock().toString() }
+        headers["x-reading-request"] = "$ticket-${random.nextInt().toLong().let { if (it < 0) -it else it }}"
+        if (!profile.cookies["ttreq"].isNullOrBlank()) {
+            headers["Cookie"] = "passport_csrf_token=; passport_csrf_token_default=; " +
+                "store-region=${profile.cookies["store-region"].orEmpty()}; " +
+                "store-region-src=${profile.cookies["store-region-src"].orEmpty()}; " +
+                "install_id=${profile.installId}; ttreq=${profile.cookies["ttreq"]}"
+        }
+        return signed.copy(headers = headers)
+    }
+
     /**
      * 组装查询串与六个签名头。
      *
@@ -223,7 +253,7 @@ open class RemoteSigner(
     @Synchronized
     private fun register(): SignerProfile {
         if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
-        val device = VendorConstants.device
+        val device = VendorConstants.device + mapOf("openudid" to UUID.randomUUID().toString().replace("-", "").take(16))
         val body = DeviceRegister.payload(device + mapOf("cdid" to cdid), clock())
         val request = Request.Builder().url(REGISTER_URL).apply {
             DeviceRegister.headers(body, device, clock()).forEach { (key, value) -> header(key, value) }
@@ -255,7 +285,8 @@ open class RemoteSigner(
         params["update_version_code"] = APP_VERSION_CODE
         params["pv_player"] = APP_VERSION_CODE
         params["version_name"] = APP_VERSION_NAME
-        val profile = SignerProfile(params, DEFAULT_USER_AGENT)
+        val guestCookies = registered.cookies.filterKeys { it in setOf("ttreq", "store-region", "store-region-src", "install_id") }
+        val profile = SignerProfile(params, DEFAULT_USER_AGENT, guestCookies)
         profileCache = profile
         store.save(profile)
         return profile

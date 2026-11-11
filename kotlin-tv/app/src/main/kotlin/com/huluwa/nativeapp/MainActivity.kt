@@ -826,6 +826,7 @@ class MainActivity: Activity() {
         artwork.load(view,url,if(focused) ArtworkLoader.PRIORITY_FOCUSED else ArtworkLoader.PRIORITY_VISIBLE)
     }
     private fun cancelWork() {
+        phoneHomeLoading=false
         phoneNewReleaseLoading=false
         deferredWork?.discard?.invoke(); deferredWork=null
         workScope?.cancel(); workScope=null
@@ -6211,9 +6212,8 @@ class MainActivity: Activity() {
     private var phoneSearching=false
     val phoneQueryText get() = phoneQuery
     val phoneSearchActive get() = phoneSearching
-    /** 当前 catalog 归属哪个手机页签：home/rank/search 共用同一份数据变量，
-     *  切页签时必须按归属判断，否则会把首页数据当榜单、把搜索结果当首页渲染。 */
-    private var phoneCatalogSource="home"
+    /** 排行/搜索共用 catalog，按归属恢复；推荐持有独立的卡片和游标。 */
+    private var phoneCatalogSource=""
     /** 打开手机合集页时的来源页签，关闭时回到原处。 */
     private var phoneCollectionTab="home"
     /** 打开手机详情页前的页签，返回时回到原处（首页/排行/收藏/搜索）。 */
@@ -6363,8 +6363,9 @@ class MainActivity: Activity() {
         retainedPhoneTheme==TvStyle.theme && retainedPhoneConfiguration==resources.configuration &&
         retainedPhoneCatalogs.values.all { it.frame.parent===root }
 
-    private fun capturePhoneCatalog()=CatalogState(
-        if(phoneTab=="rank") phoneRankPage else page,catalog,hasMore,rankingPhone,rankBoardPhone)
+    private fun capturePhoneCatalog()=if(phoneTab=="home")
+        CatalogState(1,phoneRecommendationItems,phoneRecommendationCursor!=null,null)
+        else CatalogState(if(phoneTab=="rank") phoneRankPage else page,catalog,hasMore,rankingPhone,rankBoardPhone)
 
     /** 手机底部导航渲染总入口：按 phoneTab 渲染对应页面。 */
     private fun renderPhone() {
@@ -6373,6 +6374,14 @@ class MainActivity: Activity() {
         if(screen=="settings") return
         // detail/player 有各自的渲染入口，误调进来会把正在看的页面清成空骨架
         if(phoneTab=="detail" || phoneTab=="player") return
+        screen="catalog"
+        if(phoneTab=="home") {
+            preparePhoneRecommendations()
+            if(!phoneRecommendationStarted && !phoneHomeLoading && phoneRecommendationError.isBlank()) {
+                loadPhoneRecommendations()
+                return
+            }
+        }
         if(phoneTab=="new") {
             prepareNewReleaseCalendarPhone()
             if(!phoneNewReleaseLoading && phoneNewReleasePages[newReleaseDatePhone]==null && phoneNewReleaseError.isBlank()) {
@@ -6383,7 +6392,6 @@ class MainActivity: Activity() {
         markPageShown()
         // 从播放页（黑底白图标）返回或切换主题后，状态栏图标外观跟当前主题对齐
         phoneStatusBarFollowTheme()
-        screen="catalog"
         if(!phoneCatalogViewsValid()) retainedPhoneCatalogs.clear()
         retainedPhoneCatalogs[phoneTab]?.let { retained ->
             // 联网刷新和翻页只更新差异卡片；页签切换只改变可见性，不触发 detach。
@@ -6433,8 +6441,23 @@ class MainActivity: Activity() {
         }
     }
 
-    /** 手机首页是否有正在进行的首页请求。 */
-    private var phoneHomeLoading=true
+    /** 手机推荐与 iOS 一样是独立的推荐流，不受本地内容类型或 TV catalog 影响。 */
+    private var phoneHomeLoading=false
+    private var phoneRecommendationItems=emptyList<Series>()
+    private var phoneRecommendationCursor: RecommendationCursor?=null
+    private var phoneRecommendationCacheReady=false
+    private var phoneRecommendationStarted=false
+    private var phoneRecommendationError=""
+    private var phoneRecommendationFailedMore=false
+    val recommendationItemsPhone get() = phoneRecommendationItems
+    val recommendationHasMorePhone get() = phoneRecommendationCursor!=null
+    val recommendationErrorPhone get() = phoneRecommendationError
+
+    private fun preparePhoneRecommendations() {
+        if(phoneRecommendationCacheReady) return
+        phoneRecommendationItems=library.cachedRecommendations()
+        phoneRecommendationCacheReady=true
+    }
 
     fun switchPhoneTab(next: String) {
         if(next==phoneTab && !phoneDetailCollection) { screen="catalog"; renderPhone(); return }
@@ -6444,24 +6467,18 @@ class MainActivity: Activity() {
         if(!phoneCatalogViewsValid()) retainedPhoneCatalogs.clear()
         val retained=retainedPhoneCatalogs[next]
         phoneTab=next; phoneScrollY=retained?.scroll?.scrollY ?: 0; screen="catalog"
-        // 新剧使用按日期保存的独立数据，不能恢复成首页或榜单共用的 catalog。
-        if(next=="new") { renderPhone(); return }
+        // 推荐和新剧各自保存数据，避免把共用 catalog 的榜单/搜索结果恢复进来。
+        if(next=="home" || next=="new") { renderPhone(); return }
         if(retained!=null) {
             val saved=retained.state
             catalog=saved.items; hasMore=saved.hasMore; rankingPhone=saved.ranking; phoneCatalogSource=next
             if(next=="rank") phoneRankPage=saved.page else page=saved.page
             renderPhone()
             // 首次加载被快速切页取消时，回来仍要继续请求。
-            if(catalog.isEmpty()) {
-                if(next=="home") showPhoneHome(load=true) else showPhoneRank()
-            } else if(next=="home") phoneHomeLoading=false
+            if(next=="rank" && catalog.isEmpty()) showPhoneRank()
             return
         }
         when(next) {
-            "home" -> when {
-                catalog.isNotEmpty() && phoneCatalogSource=="home" -> renderPhone()
-                else -> showPhoneHome(load=true)
-            }
             "rank" -> if(catalog.isNotEmpty() && phoneCatalogSource=="rank") {
                 renderPhone()
             } else {
@@ -6474,40 +6491,61 @@ class MainActivity: Activity() {
         }
     }
 
-    /** 手机首页数据加载：直接复用 repository.home 与 library.cachedHome。
-     *  调用它的语义就是「回到首页」：切换内容类型、冷启动、详情页目标丢失都会走这里。 */
+    /** 回到手机推荐页；刷新合并新卡片，已有分页会话与滚动位置继续保留。 */
     private fun showPhoneHome(load: Boolean=false) {
         if(!phoneLayout()) return
-        screen="catalog"; phoneTab="home"; phoneCatalogSource="home"
+        screen="catalog"; phoneTab="home"
+        preparePhoneRecommendations()
         if(load) {
-            val cached=library.cachedHome(library.contentType)
-            catalog=cached?.items ?: emptyList(); hasMore=cached?.hasMore ?: false
-            // 首页永远从第 1 页起算：电视页可能把共用变量 page 推到过后面，
-            // 不重置的话「加载更多」会跳过中间几页。
-            page=1
-            phoneHomeLoading=true
-        }
-        renderPhone()
-        if(!load && catalog.isNotEmpty()) { phoneHomeLoading=false; return }
-        val ticket=generation; val type=library.contentType
-        work({ repository.home(1,type,null) }, { result ->
-            if(phoneLayout() && ticket==generation && library.contentType==type) {
-                // 结果回来时用户可能已经切走：只在 home 仍持有 catalog 时落地，
-                // 否则会把榜单/搜索结果覆盖成首页内容。
+            cancelWork()
+            loadPhoneRecommendations()
+        } else renderPhone()
+    }
+
+    private fun loadPhoneRecommendations(more: Boolean=false) {
+        if(!phoneLayout() || screen!="catalog" || phoneTab!="home" || phoneHomeLoading || phoneDetailCollection) return
+        preparePhoneRecommendations()
+        val previous=phoneRecommendationItems
+        val previousCursor=phoneRecommendationCursor
+        val cursor=if(more) previousCursor ?: return else null
+        val keepCursor=!more && phoneRecommendationStarted && phoneRecommendationError.isBlank()
+        val ticket=generation
+        phoneRecommendationError=""; phoneRecommendationFailedMore=more
+        work({ repository.recommendations(cursor) }, { result ->
+            if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="home" && !phoneDetailCollection) {
                 phoneHomeLoading=false
-                if(screen=="catalog" && phoneTab=="home" && phoneCatalogSource=="home" && !phoneDetailCollection) {
-                    catalog=result.items; hasMore=result.hasMore; phoneCatalogSource="home"
-                    library.cacheHome(type,result.items,result.hasMore)
-                    renderPhone()
+                // 初次联网和下拉刷新都把新推荐放前面，旧卡片留在后面，跨页始终按 ID 去重。
+                val combined=if(more) previous+result.items else result.items+previous
+                phoneRecommendationItems=combined.distinctBy { it.id }
+                phoneRecommendationCursor=when {
+                    more && phoneRecommendationItems.size==previous.size -> null
+                    keepCursor -> previousCursor
+                    else -> result.cursor
                 }
+                phoneRecommendationStarted=true
+                library.cacheRecommendations(phoneRecommendationItems)
+                renderPhone()
             }
         }, { problem ->
-            if(phoneLayout() && ticket==generation) {
+            if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="home" && !phoneDetailCollection) {
                 phoneHomeLoading=false
-                if(catalog.isEmpty() && phoneTab=="home") renderPhone()
-                android.util.Log.w("HongguoTV","Phone home failed: ${problem.message}")
+                val reason=problem.message?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim()?.take(160)
+                phoneRecommendationError=buildString {
+                    append(if(more) "更多推荐加载失败" else "推荐加载失败")
+                    if(!reason.isNullOrBlank()) append("：").append(reason)
+                    append("\n点此重试")
+                }
+                renderPhone()
+                android.util.Log.w("HongguoTV","Phone recommendations failed",problem)
             }
         })
+        // work 先取消旧请求；完成取消后才标记本次加载，防止重渲染重复发起首屏。
+        phoneHomeLoading=true
+        renderPhone()
+    }
+
+    fun retryRecommendationsPhone() {
+        loadPhoneRecommendations(more=phoneRecommendationFailedMore && phoneRecommendationCursor!=null)
     }
 
     /** 手机排行榜数据加载：先用上次榜单缓存顶上冷启动，联网结果回来后覆盖并更新缓存。 */
@@ -6614,7 +6652,7 @@ class MainActivity: Activity() {
         // leaveCollection 已把 catalog 还原成进入合集前的数据；回哪个页签由打开时的来源决定。
         phoneTab=back; screen="catalog"
         when {
-            back=="home" && catalog.isEmpty() -> showPhoneHome(load=true)
+            back=="home" -> showPhoneHome()
             back=="rank" && (catalog.isEmpty() || phoneCatalogSource!="rank") -> { phoneRankPage=1; renderPhone(); showPhoneRank() }
             else -> renderPhone()
         }
@@ -6680,17 +6718,16 @@ class MainActivity: Activity() {
     /** 手机搜索结果翻页页码。 */
     private var phoneSearchPage=1
 
-    /** 手机加载更多（排行/搜索/首页翻页）。 */
+    /** 推荐使用服务端游标；排行榜和搜索沿用各自页码。 */
     fun loadMorePhone() {
-        if(loadingMore || !hasMore || screen!="catalog" || phoneDetailCollection || phoneTab !in listOf("home","rank","search")) return
+        if(phoneTab=="home") {
+            if(phoneRecommendationError.isBlank()) loadPhoneRecommendations(more=true)
+            return
+        }
+        if(loadingMore || !hasMore || screen!="catalog" || phoneDetailCollection || phoneTab !in listOf("rank","search")) return
         loadingMore=true
         val ticket=generation
-        // 页码按当前页签自己的进度推进；首页用 page、榜单用 phoneRankPage、搜索用 phoneSearchPage
-        val nextPage=when(phoneTab) {
-            "rank" -> phoneRankPage+1
-            "search" -> phoneSearchPage+1
-            else -> page+1
-        }
+        val nextPage=if(phoneTab=="rank") phoneRankPage+1 else phoneSearchPage+1
         val tab=phoneTab; val board=rankBoardPhone; val keyword=phoneQuery; val type=library.contentType
         // 网络请求必须放进 work 的 action 里执行：写成 `val request=repository.xxx()` 再
         // `work({ request })` 会在主线程（RecyclerView 滚动回调里）当场发起请求，直接
@@ -6698,8 +6735,7 @@ class MainActivity: Activity() {
         work({
             when(tab) {
                 "rank" -> repository.ranking(board,nextPage)
-                "search" -> repository.search(keyword,nextPage,type)
-                else -> repository.home(nextPage,type,null)
+                else -> repository.search(keyword,nextPage,type)
             }
         }, { result ->
             if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab==tab &&
@@ -6709,8 +6745,7 @@ class MainActivity: Activity() {
                 if(result.items.isNotEmpty()) {
                     when(tab) {
                         "rank" -> { phoneRankPage=nextPage; catalog=catalog+result.items }
-                        "search" -> { phoneSearchPage=nextPage; catalog=catalog+result.items }
-                        else -> { page=nextPage; catalog=catalog+result.items }
+                        else -> { phoneSearchPage=nextPage; catalog=catalog+result.items }
                     }
                     hasMore=result.hasMore
                     renderPhone()
@@ -6723,12 +6758,12 @@ class MainActivity: Activity() {
         })
     }
 
-    /** 手机内容类型切换（漫剧/短剧）：复用 library.contentType，重新拉首页。 */
+    /** 内容类型用于搜索与电视片库；手机推荐始终使用与 iOS 相同的综合推荐频道。 */
     fun switchContentTypePhone(type: com.hongguotv.core.ContentType) {
         if(library.contentType==type) return
         cancelWork(); loadingMore=false; retainedPhoneCatalogs.clear()
         library.contentType=type
-        catalog=emptyList(); hasMore=false; phoneScrollY=0; phoneHomeLoading=true
+        catalog=emptyList(); hasMore=false; phoneScrollY=0
         showPhoneHome(load=true)
     }
 
@@ -6790,7 +6825,7 @@ class MainActivity: Activity() {
         cacheStripSegments=null; cacheStripView=null
         when {
             // 只有原始列表已经不在时才重新拉，否则直接退回原列表（保留滚动位置）
-            back=="home" && (catalog.isEmpty() || phoneCatalogSource!="home") -> showPhoneHome(load=true)
+            back=="home" -> showPhoneHome()
             back=="rank" && (catalog.isEmpty() || phoneCatalogSource!="rank") -> {
                 phoneRankPage=1; renderPhone(); showPhoneRank()
             }
@@ -7437,7 +7472,7 @@ class MainActivity: Activity() {
             }
             // 详情页要按新方向重建成对应的皮肤；这里必须先判断方向，不能沿用旧的 phoneTab
             "detail" -> when {
-                detail==null -> if(phoneLayout()) showPhoneHome(load=catalog.isEmpty()) else showCatalog()
+                detail==null -> if(phoneLayout()) showPhoneHome(load=!phoneRecommendationStarted) else showCatalog()
                 phoneLayout() -> openDetailPhone(detail!!.series)
                 else -> showDetail(false)
             }

@@ -6241,8 +6241,11 @@ class MainActivity: Activity() {
     var rankingPhone: ComicRanking?=null
         private set
     private var phoneRankLoading=false
+    private var phoneRankReady=false
     /** 新剧日历独立于首页/榜单的 catalog，按服务端日期缓存列表和游标。 */
     private val phoneNewReleasePages=mutableMapOf<String,NewReleasePage>()
+    /** SP 快照只用于展示，每个日期首次进入仍联网更新列表和游标。 */
+    private val phoneNewReleaseLoadedDates=mutableSetOf<String>()
     private var phoneNewReleaseDay=""
     private var phoneNewReleaseCalendarDay=""
     private var phoneNewReleaseDates=emptyList<String>()
@@ -6263,7 +6266,7 @@ class MainActivity: Activity() {
         phoneNewReleaseDates=NewReleaseCalendar.nearbyDates()
         phoneNewReleaseDay=saved.takeIf { it in phoneNewReleaseDates }.orEmpty()
         phoneNewReleaseCalendarDay=today
-        phoneNewReleasePages.clear(); phoneNewReleaseError=""
+        phoneNewReleasePages.clear(); phoneNewReleaseLoadedDates.clear(); phoneNewReleaseError=""
     }
 
     fun chooseNewReleaseDayPhone(date: String) {
@@ -6288,11 +6291,15 @@ class MainActivity: Activity() {
                 phoneNewReleaseDay==date && !phoneDetailCollection) {
                 phoneNewReleaseLoading=false
                 val items=if(more && previous?.date==result.date) (previous.items+result.items).distinctBy { it.series.id } else result.items
-                phoneNewReleasePages[result.date]=result.copy(items=items)
+                val loadedPage=result.copy(items=items)
+                phoneNewReleasePages[result.date]=loadedPage
+                phoneNewReleaseLoadedDates+=result.date
                 phoneNewReleaseDay=result.date; library.newReleaseDay=result.date
                 if(result.dates.isNotEmpty()) phoneNewReleaseDates=result.dates
                 if(result.date !in phoneNewReleaseDates) phoneNewReleaseDates=(phoneNewReleaseDates+result.date).sorted()
                 phoneNewReleasePages.keys.retainAll(phoneNewReleaseDates.toSet())
+                phoneNewReleaseLoadedDates.retainAll(phoneNewReleaseDates.toSet())
+                library.cacheNewReleases(loadedPage.copy(dates=phoneNewReleaseDates))
                 renderPhone()
             }
         }, { problem ->
@@ -6409,7 +6416,9 @@ class MainActivity: Activity() {
         }
         if(phoneTab=="new") {
             prepareNewReleaseCalendarPhone()
-            if(!phoneNewReleaseLoading && phoneNewReleasePages[newReleaseDatePhone]==null && phoneNewReleaseError.isBlank()) {
+            val date=newReleaseDatePhone
+            if(phoneNewReleasePages[date]==null) library.cachedNewReleases(date)?.let { phoneNewReleasePages[date]=it }
+            if(!phoneNewReleaseLoading && date !in phoneNewReleaseLoadedDates && phoneNewReleaseError.isBlank()) {
                 loadNewReleasesPhone()
                 return
             }
@@ -6515,11 +6524,11 @@ class MainActivity: Activity() {
             if(next=="rank") phoneRankPage=saved.page else page=saved.page
             renderPhone()
             // 首次加载被快速切页取消时，回来仍要继续请求。
-            if(next=="rank" && catalog.isEmpty()) showPhoneRank()
+            if(next=="rank" && !phoneRankReady) showPhoneRank()
             return
         }
         when(next) {
-            "rank" -> if(catalog.isNotEmpty() && phoneCatalogSource=="rank") {
+            "rank" -> if(phoneRankReady && catalog.isNotEmpty() && phoneCatalogSource=="rank") {
                 renderPhone()
             } else {
                 phoneRankPage=1; catalog=emptyList(); hasMore=false; rankingPhone=null; phoneCatalogSource="rank"
@@ -6567,7 +6576,8 @@ class MainActivity: Activity() {
             phoneRecommendationDiagnostic=result.diagnostic
             RuntimeLog.add("recommendations ${result.diagnostic} total=${phoneRecommendationItems.size} " +
                 "visible=${phoneRecommendationItems.count { it.id !in library.hidden() }} finished=$finished")
-            if(finished) library.cacheRecommendations(phoneRecommendationItems)
+            // 分批返回和追加分页都写入 SP；离页取消时仍保留已经展示的数据。
+            library.cacheRecommendations(phoneRecommendationItems)
             renderPhone()
         }
         work({
@@ -6618,21 +6628,23 @@ class MainActivity: Activity() {
 
     /** 手机排行榜数据加载：先用上次榜单缓存顶上冷启动，联网结果回来后覆盖并更新缓存。 */
     private fun showPhoneRank() {
+        if(phoneRankLoading) return
         val board=rankBoardPhone; val rankPage=phoneRankPage; val ticket=generation
+        // 冷启动缓存可包含多页，先重新获取首屏，成功后才开放新的分页。
+        if(rankPage<=1) { phoneRankReady=false; hasMore=false }
         if(catalog.isEmpty()) {
-            val cached=library.cachedRank(board)
-            if(cached!=null) { catalog=cached.items; hasMore=cached.hasMore; rankingPhone=cached.ranking }
+            val cached=library.cachedPhoneRank(board)
+            if(cached!=null) { catalog=cached.items; rankingPhone=cached.ranking }
         }
         work({ repository.ranking(board,rankPage) }, { result ->
             if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="rank" &&
                 phoneCatalogSource=="rank" && rankBoardPhone==board && !phoneDetailCollection) {
-                phoneRankLoading=false
-                if(rankPage<=1) {
-                    catalog=result.items; rankingPhone=result.ranking
-                    library.cacheRank(board,result.items,result.hasMore,result.ranking)
-                }
-                else catalog=catalog+result.items
-                hasMore=result.hasMore; renderPhone()
+                phoneRankLoading=false; phoneRankReady=true
+                if(rankPage<=1) { catalog=result.items; rankingPhone=result.ranking }
+                else catalog=(catalog+result.items).distinctBy { it.id }
+                hasMore=result.hasMore
+                library.cachePhoneRank(board,catalog,hasMore,rankingPhone)
+                renderPhone()
             }
         }, { problem ->
             if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="rank" &&
@@ -6816,12 +6828,19 @@ class MainActivity: Activity() {
                 loadingMore=false
                 if(result.items.isNotEmpty()) {
                     when(tab) {
-                        "rank" -> { phoneRankPage=nextPage; catalog=catalog+result.items }
+                        "rank" -> {
+                            phoneRankPage=nextPage
+                            catalog=(catalog+result.items).distinctBy { it.id }
+                            result.ranking?.let { latest ->
+                                rankingPhone=latest.copy(positions=rankingPhone?.positions.orEmpty()+latest.positions)
+                            }
+                        }
                         else -> { phoneSearchPage=nextPage; catalog=catalog+result.items }
                     }
                     hasMore=result.hasMore
-                    renderPhone()
-                } else { hasMore=false; renderPhone() }
+                } else hasMore=false
+                if(tab=="rank") library.cachePhoneRank(board,catalog,hasMore,rankingPhone)
+                renderPhone()
             }
         }, { problem ->
             loadingMore=false

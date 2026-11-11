@@ -23,6 +23,10 @@ class Library(context: Context) {
         const val PROGRESS_BACKUP_INTERVAL_MS = 5 * 60_000L
         // 独立版本键：旧 home-comic/home-short 存的是网站榜单或分类，不能当作推荐流。
         const val RECOMMENDATION_CACHE_KEY = "phone-recommendation-feed-v1"
+        const val PHONE_CACHE_ITEMS = 120
+        const val PHONE_RANK_CACHE_PREFIX = "phone-rank-v1-"
+        const val NEW_RELEASE_CACHE_PREFIX = "phone-new-releases-v1-"
+        const val NEW_RELEASE_CACHE_DAYS = 15
     }
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
@@ -48,15 +52,20 @@ class Library(context: Context) {
     private val homeSavedAt = mutableMapOf<ContentType, Long>()
     private var recommendationCache: CatalogPage? = null
     private var recommendationSavedAt = 0L
+    private val phoneRanks = mutableMapOf<RankBoard, CatalogPage>()
+    private val phoneRankSavedAt = mutableMapOf<RankBoard, Long>()
+    private val newReleaseCaches = mutableMapOf<String, CachedNewReleases>()
     // 榜单缓存：漫剧/短剧/AI 三个榜各自独立一条，与首页缓存同存同有效期
     private val ranks = mutableMapOf<RankBoard, CatalogPage>()
     private val rankSavedAt = mutableMapOf<RankBoard, Long>()
 
-    /** 启动加载时一次性带进内存的缓存包：首页与榜单快照 + 各自的落盘时间。 */
+    /** 启动时在后台读取首页、推荐、榜单和按日期保存的新剧快照。 */
     private data class DiskCaches(
         val homes: Map<ContentType, CatalogPage>, val homeStamps: Map<ContentType, Long>,
         val ranks: Map<RankBoard, CatalogPage>, val rankStamps: Map<RankBoard, Long>,
         val recommendations: CatalogPage?, val recommendationStamp: Long,
+        val phoneRanks: Map<RankBoard, CatalogPage>, val phoneRankStamps: Map<RankBoard, Long>,
+        val newReleases: Map<String, CachedNewReleases>,
     )
     private var loading = false
     private var closed = false
@@ -116,9 +125,28 @@ class Library(context: Context) {
                     }
                 }
                 val recommendationRaw = homePrefs.getString(RECOMMENDATION_CACHE_KEY, null).orEmpty()
-                val recommendations = CatalogSnapshot.decode(recommendationRaw, now)
+                val recommendations = CatalogSnapshot.decode(recommendationRaw, now, maxItems = PHONE_CACHE_ITEMS)
                 val recommendationStamp = if (recommendations != null) org.json.JSONObject(recommendationRaw).getLong("savedAt") else 0L
-                Pair(loaded, DiskCaches(cached, stamps, rankCached, rankStamps, recommendations, recommendationStamp))
+                val phoneRankCached = mutableMapOf<RankBoard, CatalogPage>()
+                val phoneRankStamps = mutableMapOf<RankBoard, Long>()
+                RankBoard.entries.forEach { board ->
+                    val raw = homePrefs.getString(PHONE_RANK_CACHE_PREFIX + board.rankKey, null).orEmpty()
+                    CatalogSnapshot.decode(raw, now, maxItems = PHONE_CACHE_ITEMS)?.let { page ->
+                        phoneRankCached[board] = page
+                        phoneRankStamps[board] = org.json.JSONObject(raw).getLong("savedAt")
+                    }
+                }
+                val releaseValues = homePrefs.all.filterKeys { it.startsWith(NEW_RELEASE_CACHE_PREFIX) }
+                val newReleases = releaseValues.mapNotNull { (key, value) ->
+                    NewReleaseSnapshot.decode(value as? String ?: return@mapNotNull null, now)
+                        ?.takeIf { key == NEW_RELEASE_CACHE_PREFIX + it.page.date }
+                }.sortedByDescending { it.savedAt }.take(NEW_RELEASE_CACHE_DAYS).associateBy { it.page.date }
+                val staleReleaseKeys = releaseValues.keys - newReleases.keys.map { NEW_RELEASE_CACHE_PREFIX + it }.toSet()
+                if (staleReleaseKeys.isNotEmpty()) {
+                    homePrefs.edit().also { edit -> staleReleaseKeys.forEach(edit::remove) }.commit()
+                }
+                Pair(loaded, DiskCaches(cached, stamps, rankCached, rankStamps, recommendations, recommendationStamp,
+                    phoneRankCached, phoneRankStamps, newReleases))
             }
             main.post {
                 loading = false
@@ -130,6 +158,8 @@ class Library(context: Context) {
                     homes.putAll(boot.homes); homeSavedAt.putAll(boot.homeStamps)
                     ranks.putAll(boot.ranks); rankSavedAt.putAll(boot.rankStamps)
                     recommendationCache = boot.recommendations; recommendationSavedAt = boot.recommendationStamp
+                    phoneRanks.putAll(boot.phoneRanks); phoneRankSavedAt.putAll(boot.phoneRankStamps)
+                    newReleaseCaches.putAll(boot.newReleases)
                     ready.forEach { it() }
                 }.onFailure { failure -> errors.forEach { it(failure) } }
             }
@@ -214,12 +244,57 @@ class Library(context: Context) {
     }
     fun cacheRecommendations(items: List<Series>) {
         state()
-        if (items.isEmpty()) return
         val now = System.currentTimeMillis()
-        val retained = items.take(30).map { it.copy(description = it.description.take(1500)) }
+        val retained = phoneCacheItems(items)
         recommendationCache = CatalogPage(retained, true)
         recommendationSavedAt = now
-        homeWrites.submit(mapOf(RECOMMENDATION_CACHE_KEY to { CatalogSnapshot.encode(retained, true, now) }))
+        homeWrites.submit(mapOf(RECOMMENDATION_CACHE_KEY to { CatalogSnapshot.encode(retained, true, now, maxItems = PHONE_CACHE_ITEMS) }))
+    }
+
+    private fun phoneCacheItems(items: List<Series>) = items.distinctBy { it.id }.take(PHONE_CACHE_ITEMS)
+        .map { it.copy(description = it.description.take(500)) }
+
+    /** 手机榜单独立保存多页快照；升级时仍可读取原有首屏缓存。 */
+    fun cachedPhoneRank(board: RankBoard): CatalogPage? {
+        state()
+        val age = System.currentTimeMillis() - (phoneRankSavedAt[board] ?: return cachedRank(board))
+        return phoneRanks[board].takeIf { age in 0..7 * 24 * 60 * 60 * 1000L } ?: cachedRank(board)
+    }
+    fun cachePhoneRank(board: RankBoard, items: List<Series>, hasMore: Boolean, ranking: ComicRanking?) {
+        state()
+        val now = System.currentTimeMillis()
+        val retained = phoneCacheItems(items)
+        val retainedRanking = ranking?.copy(positions = ranking.positions.filterKeys { id -> retained.any { it.id == id } })
+        phoneRanks[board] = CatalogPage(retained, hasMore, retainedRanking)
+        phoneRankSavedAt[board] = now
+        homeWrites.submit(mapOf(PHONE_RANK_CACHE_PREFIX + board.rankKey to {
+            CatalogSnapshot.encode(retained, hasMore, now, retainedRanking, maxItems = PHONE_CACHE_ITEMS)
+        }))
+    }
+
+    fun cachedNewReleases(date: String): NewReleasePage? {
+        state()
+        val cached = newReleaseCaches[date] ?: return null
+        return cached.page.takeIf { System.currentTimeMillis() - cached.savedAt in 0..NewReleaseSnapshot.MAX_AGE }
+    }
+    fun cacheNewReleases(page: NewReleasePage) {
+        state()
+        if (!NewReleaseCalendar.valid(page.date)) return
+        val now = System.currentTimeMillis()
+        val retained = page.copy(items = page.items.distinctBy { it.series.id }.take(NewReleaseSnapshot.MAX_ITEMS).map {
+            it.copy(series = it.series.copy(description = it.series.description.take(500)), note = it.note.take(500))
+        }, cursor = null)
+        newReleaseCaches[page.date] = CachedNewReleases(retained, now)
+        val stale = newReleaseCaches.filterValues { now - it.savedAt !in 0..NewReleaseSnapshot.MAX_AGE }.keys +
+            newReleaseCaches.entries.filter { it.key != page.date }.sortedByDescending { it.value.savedAt }
+                .drop(NEW_RELEASE_CACHE_DAYS - 1).map { it.key }
+        val batch = linkedMapOf<String, () -> Any?>(
+            NEW_RELEASE_CACHE_PREFIX + page.date to { NewReleaseSnapshot.encode(retained, now) })
+        stale.forEach { date ->
+            newReleaseCaches.remove(date)
+            batch[NEW_RELEASE_CACHE_PREFIX + date] = { null }
+        }
+        homeWrites.submit(batch)
     }
 
     /** 榜单缓存读取：与首页同款 7 天有效期，过期或从未缓存返回 null。 */

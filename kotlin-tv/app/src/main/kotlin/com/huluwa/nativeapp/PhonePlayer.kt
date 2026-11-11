@@ -681,10 +681,10 @@ class PhonePlayer(
             setImageResource(R.drawable.ic_screen_rotate)
             setColorFilter(Color.WHITE)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }, rowLp(dp(16), dp(16)).apply { rightMargin = dp(6) })
-        watchFullscreen.addView(text("全屏观看", 11f).apply { maxLines = 1 }, rowLp(-2, -2))
+        }, rowLp(dp(14), dp(14)).apply { rightMargin = dp(6) })
+        watchFullscreen.addView(text("全屏观看", 9f).apply { maxLines = 1 }, rowLp(-2, -2))
         portraitFullscreenButton = watchFullscreen
-        layer.addView(watchFullscreen, FrameLayout.LayoutParams(-2, dp(36), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        layer.addView(watchFullscreen, FrameLayout.LayoutParams(-2, dp(30), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
     }
 
     /**

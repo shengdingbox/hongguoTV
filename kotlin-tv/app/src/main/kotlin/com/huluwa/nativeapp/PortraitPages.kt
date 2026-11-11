@@ -11,6 +11,7 @@ import android.text.TextWatcher
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewTreeObserver
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -86,32 +87,102 @@ class PortraitPages(
     fun rankPager(refresh: () -> Unit): PortraitFeedPager {
         lateinit var feed: PortraitFeedPager
         val tabs=column()
-        var shownContents=""
-        fun chips(parent: LinearLayout, values: List<Pair<String,String>>, selected: String, choose: (String)->Unit, segmented: Boolean=false) {
-            val strip=HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false }
-            val line=row().apply { setPadding(dp(16),dp(3),dp(16),dp(10)) }
-            values.forEach { (id,label) ->
-                val on=id==selected
-                line.addView(text(label,13f,if(on) PortraitStyle.onChipSelected else PortraitStyle.text).apply {
-                    gravity=Gravity.CENTER
-                    setPadding(dp(14),dp(8),dp(14),dp(8))
+        // 两行保持各自的滚动容器，切换子榜只更新选中态，不重建类型行。
+        class RankTabs(private val segmented: Boolean,private val choose: (String)->Unit): HorizontalScrollView(activity) {
+            private val line=row().apply { setPadding(dp(16),dp(3),dp(16),dp(10)) }
+            private var values=emptyList<Pair<String,String>>()
+            private val buttons=linkedMapOf<String,TextView>()
+            private var selected=""
+            private var pendingCenter: ViewTreeObserver.OnPreDrawListener?=null
+            private var pendingObserver: ViewTreeObserver?=null
+
+            init {
+                isHorizontalScrollBarEnabled=false
+                addView(line)
+                addOnLayoutChangeListener { _,left,_,right,_,oldLeft,_,oldRight,_ ->
+                    if(right-left!=oldRight-oldLeft) centerAfterLayout(false)
+                }
+            }
+
+            private fun cancelCenter() {
+                pendingCenter?.let { listener ->
+                    val observer=pendingObserver?.takeIf { it.isAlive } ?: viewTreeObserver
+                    if(observer.isAlive) observer.removeOnPreDrawListener(listener)
+                }
+                pendingCenter=null; pendingObserver=null
+            }
+
+            private fun centerAfterLayout(animate: Boolean) {
+                cancelCenter()
+                val observer=viewTreeObserver
+                val listener=object: ViewTreeObserver.OnPreDrawListener {
+                    override fun onPreDraw(): Boolean {
+                        if(pendingCenter!==this) return true
+                        cancelCenter()
+                        val button=buttons[selected] ?: return true
+                        val viewport=width-paddingLeft-paddingRight
+                        if(viewport<=0 || button.width<=0) return true
+                        val maxScroll=(line.width-viewport).coerceAtLeast(0)
+                        val target=(line.left+button.left+button.width/2-paddingLeft-viewport/2).coerceIn(0,maxScroll)
+                        if(animate) smoothScrollTo(target,0) else scrollTo(target,0)
+                        return true
+                    }
+                }
+                pendingCenter=listener; pendingObserver=observer
+                observer.addOnPreDrawListener(listener)
+                invalidate()
+            }
+
+            fun update(nextValues: List<Pair<String,String>>,nextSelected: String) {
+                val rebuilt=values!=nextValues
+                if(!rebuilt && selected==nextSelected) return
+                val animate=!rebuilt && selected.isNotEmpty() && isShown
+                if(rebuilt) {
+                    values=nextValues
+                    line.removeAllViews(); buttons.clear()
+                    values.forEach { (key,label) ->
+                        val button=text(label,13f).apply {
+                            gravity=Gravity.CENTER
+                            setPadding(dp(14),dp(8),dp(14),dp(8))
+                            setOnClickListener { choose(key) }
+                        }
+                        buttons[key]=button
+                        line.addView(button,lp(-2,-2).apply { rightMargin=dp(6) })
+                    }
+                }
+                selected=nextSelected
+                values.forEach { (key,label) -> buttons[key]?.apply {
+                    val on=key==selected
+                    setTextColor(if(on) PortraitStyle.onChipSelected else PortraitStyle.text)
                     background=PortraitStyle.selectable(activity,if(on) PortraitStyle.chipSelected else PortraitStyle.raised,radius=if(segmented) 9 else 20)
                     setTypeface(null,if(on) Typeface.BOLD else Typeface.NORMAL)
                     isSelected=on
                     contentDescription="$label，${if(on) "已选择" else "查看榜单"}"
-                    setOnClickListener { choose(id) }
-                },lp(-2,-2).apply { rightMargin=dp(6) })
+                } }
+                centerAfterLayout(animate)
             }
-            strip.addView(line); parent.addView(strip,lp())
+
+            override fun onAttachedToWindow() {
+                super.onAttachedToWindow()
+                centerAfterLayout(false)
+            }
+
+            override fun onDetachedFromWindow() {
+                cancelCenter()
+                super.onDetachedFromWindow()
+            }
         }
+        val contentTabs=RankTabs(true,activity::switchRankContentPhone)
+        val boardTabs=RankTabs(false) { feed.selectPage(it) }
+        tabs.addView(contentTabs,lp())
+        tabs.addView(boardTabs,lp())
         fun updateTabs(key: String) {
             val contents=activity.mobileRankContentsPhone
-            val signature=contents.toString()+activity.phoneRankContentId+key
-            if(shownContents==signature) return
-            shownContents=signature; tabs.removeAllViews()
-            if(contents.size>1) chips(tabs,contents.map { it.id to it.name },activity.phoneRankContentId,activity::switchRankContentPhone,true)
+            contentTabs.visibility=if(contents.size>1) View.VISIBLE else View.GONE
+            contentTabs.update(contents.map { it.id to it.name },activity.phoneRankContentId)
             val boards=activity.mobileRankBoardsPhone
-            if(boards.isNotEmpty()) chips(tabs,boards.map { it.id to it.name },key,{ feed.selectPage(it) })
+            boardTabs.visibility=if(boards.isNotEmpty()) View.VISIBLE else View.GONE
+            boardTabs.update(boards.map { it.id to it.name },key)
         }
         feed=PortraitFeedPager(activity,"排行榜",tabs,
             keys={ activity.mobileRankBoardsPhone.map { it.id }.ifEmpty { listOf("_default") } },

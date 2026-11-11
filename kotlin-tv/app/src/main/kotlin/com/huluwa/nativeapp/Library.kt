@@ -22,6 +22,8 @@ class Library(context: Context) {
         const val RECOMMENDATION_CACHE_KEY = "phone-recommendation-feed-v1"
         const val PHONE_CACHE_ITEMS = 120
         const val PHONE_RANK_CACHE_PREFIX = "phone-rank-v1-"
+        const val MOBILE_RANK_CACHE_PREFIX = "phone-mobile-rank-v1-"
+        const val HOT_SEARCH_CACHE_KEY = "phone-hot-search-v1"
         const val NEW_RELEASE_CACHE_PREFIX = "phone-new-releases-v1-"
         const val NEW_RELEASE_CACHE_DAYS = 15
     }
@@ -42,6 +44,8 @@ class Library(context: Context) {
     private val phoneRanks = mutableMapOf<RankBoard, CatalogPage>()
     private val phoneRankSavedAt = mutableMapOf<RankBoard, Long>()
     private val newReleaseCaches = mutableMapOf<String, CachedNewReleases>()
+    private val mobileRankCaches = mutableMapOf<String, CachedMobileRank>()
+    private var hotSearchCache: CachedHotSearch? = null
     // 榜单缓存：漫剧/短剧/AI 三个榜各自独立一条，与首页缓存同存同有效期
     private val ranks = mutableMapOf<RankBoard, CatalogPage>()
     private val rankSavedAt = mutableMapOf<RankBoard, Long>()
@@ -53,6 +57,8 @@ class Library(context: Context) {
         val recommendations: CatalogPage?, val recommendationStamp: Long,
         val phoneRanks: Map<RankBoard, CatalogPage>, val phoneRankStamps: Map<RankBoard, Long>,
         val newReleases: Map<String, CachedNewReleases>,
+        val mobileRanks: Map<String, CachedMobileRank>,
+        val hotSearch: CachedHotSearch?,
     )
     private var loading = false
     private var closed = false
@@ -127,8 +133,21 @@ class Library(context: Context) {
                 if (staleReleaseKeys.isNotEmpty()) {
                     homePrefs.edit().also { edit -> staleReleaseKeys.forEach(edit::remove) }.commit()
                 }
+                val mobileRankValues = homePrefs.all.filterKeys { it.startsWith(MOBILE_RANK_CACHE_PREFIX) }
+                val mobileRanks = mobileRankValues.mapNotNull { (key, value) ->
+                    MobileRankSnapshot.decode(value as? String ?: return@mapNotNull null, now)
+                        ?.takeIf { key == MOBILE_RANK_CACHE_PREFIX + MobileRankSnapshot.key(it.page.contentId, it.page.boardId) }
+                }.sortedByDescending { it.savedAt }.take(MobileRankSnapshot.MAX_BOARDS)
+                    .associateBy { MobileRankSnapshot.key(it.page.contentId, it.page.boardId)!! }
+                val staleMobileRankKeys = mobileRankValues.keys - mobileRanks.keys.map { MOBILE_RANK_CACHE_PREFIX + it }.toSet()
+                if (staleMobileRankKeys.isNotEmpty()) {
+                    homePrefs.edit().also { edit -> staleMobileRankKeys.forEach(edit::remove) }.commit()
+                }
+                val hotValue = homePrefs.all[HOT_SEARCH_CACHE_KEY]
+                val hotSearch = (hotValue as? String)?.let { HotSearchSnapshot.decode(it, now) }
+                if (hotValue != null && hotSearch == null) homePrefs.edit().remove(HOT_SEARCH_CACHE_KEY).commit()
                 Pair(loaded, DiskCaches(cached, stamps, rankCached, rankStamps, recommendations, recommendationStamp,
-                    phoneRankCached, phoneRankStamps, newReleases))
+                    phoneRankCached, phoneRankStamps, newReleases, mobileRanks, hotSearch))
             }
             main.post {
                 loading = false
@@ -142,6 +161,8 @@ class Library(context: Context) {
                     recommendationCache = boot.recommendations; recommendationSavedAt = boot.recommendationStamp
                     phoneRanks.putAll(boot.phoneRanks); phoneRankSavedAt.putAll(boot.phoneRankStamps)
                     newReleaseCaches.putAll(boot.newReleases)
+                    mobileRankCaches.putAll(boot.mobileRanks)
+                    hotSearchCache = boot.hotSearch
                     ready.forEach { it() }
                 }.onFailure { failure -> errors.forEach { it(failure) } }
             }
@@ -251,6 +272,51 @@ class Library(context: Context) {
         homeWrites.submit(mapOf(PHONE_RANK_CACHE_PREFIX + board.rankKey to {
             CatalogSnapshot.encode(retained, hasMore, now, retainedRanking, maxItems = PHONE_CACHE_ITEMS)
         }))
+    }
+
+    /** 完整目录和各内容/子榜的展示快照；不复用落盘前的分页会话。 */
+    fun cachedMobileRanks(): List<MobileRankPage> {
+        state()
+        val now = System.currentTimeMillis()
+        return mobileRankCaches.values.filter { now - it.savedAt in 0..MobileRankSnapshot.MAX_AGE }
+            .sortedByDescending { it.savedAt }.map { it.page }
+    }
+
+    fun cacheMobileRank(page: MobileRankPage) {
+        state()
+        val key = MobileRankSnapshot.key(page.contentId, page.boardId) ?: return
+        val now = System.currentTimeMillis()
+        val directory = page.contents.ifEmpty { mobileRankCaches.values.maxByOrNull { it.savedAt }?.page?.contents.orEmpty() }
+        val retained = MobileRankSnapshot.retain(page.copy(contents = directory))
+        // 无目录的续页不替换可用快照；等首屏提供有效目录后再保存。
+        if (directory.isEmpty() || directory.none { it.id == retained.contentId && it.boards.any { board -> board.id == retained.boardId } }) return
+        mobileRankCaches[key] = CachedMobileRank(retained, now)
+        val stale = mobileRankCaches.filterValues { now - it.savedAt !in 0..MobileRankSnapshot.MAX_AGE }.keys +
+            mobileRankCaches.entries.filter { it.key != key }.sortedByDescending { it.value.savedAt }
+                .drop(MobileRankSnapshot.MAX_BOARDS - 1).map { it.key }
+        val batch = linkedMapOf<String, () -> Any?>(
+            MOBILE_RANK_CACHE_PREFIX + key to { MobileRankSnapshot.encode(retained, now) })
+        stale.forEach { old ->
+            mobileRankCaches.remove(old)
+            batch[MOBILE_RANK_CACHE_PREFIX + old] = { null }
+        }
+        homeWrites.submit(batch)
+    }
+
+    /** 热搜的分榜、名次与话题快照；调用方展示后仍发起联网刷新。 */
+    fun cachedHotSearch(): HotSearchPage? {
+        state()
+        val cached = hotSearchCache ?: return null
+        return cached.page.takeIf { System.currentTimeMillis() - cached.savedAt in 0..HotSearchSnapshot.MAX_AGE }
+    }
+
+    fun cacheHotSearch(page: HotSearchPage) {
+        state()
+        val retained = HotSearchSnapshot.retain(page)
+        if (retained.guesses.isEmpty() && retained.boards.isEmpty()) return
+        val now = System.currentTimeMillis()
+        hotSearchCache = CachedHotSearch(retained, now)
+        homeWrites.submit(mapOf(HOT_SEARCH_CACHE_KEY to { HotSearchSnapshot.encode(retained, now) }))
     }
 
     fun cachedNewReleases(date: String): NewReleasePage? {

@@ -717,6 +717,8 @@ class MainActivity: Activity() {
         phoneRecommendationRetry?.let { main.removeCallbacks(it) }; phoneRecommendationRetry=null
         phoneHomeLoading=false
         phoneRankLoading=false
+        // 取消的热搜刷新回到页面后应继续请求，已有缓存保留展示。
+        if(phoneHotLoading) phoneHotAttempted=false
         phoneHotLoading=false
         phoneSearching=false
         phoneNewReleaseLoading=false
@@ -5866,6 +5868,9 @@ class MainActivity: Activity() {
     private var phoneRankContents=emptyList<MobileRankContent>()
     private val phoneMobileRankPages=mutableMapOf<String,MobileRankPage>()
     private val phoneMobileRankErrors=mutableMapOf<String,String>()
+    private var phoneMobileRankCacheReady=false
+    /** SP 只有展示快照，每个榜首次进入仍需联网建立本进程的分页会话。 */
+    private val phoneMobileRankLoadedKeys=mutableSetOf<String>()
     private var phoneRankFailedMore=false
     val phoneRankContentId get()=phoneRankContent
     val phoneRankBoardId get()=phoneRankBoard
@@ -5884,6 +5889,7 @@ class MainActivity: Activity() {
     private var phoneHotLoading=false
     private var phoneHotError=""
     private var phoneHotAttempted=false
+    private var phoneHotCacheReady=false
     private var phoneHotBoard=""
     val hotSearchPhone get()=phoneHotSearch
     val hotSearchLoadingPhone get()=phoneHotLoading
@@ -6076,6 +6082,14 @@ class MainActivity: Activity() {
                 return
             }
         }
+        if(phoneTab=="rank") {
+            prepareMobileRankCachePhone()
+            val key=mobileRankCacheKey()
+            if(!phoneRankLoading && key !in phoneMobileRankLoadedKeys && phoneMobileRankErrors[key].isNullOrBlank()) {
+                showPhoneRank()
+                return
+            }
+        }
         if(phoneTab=="new") {
             prepareNewReleaseCalendarPhone()
             val date=newReleaseDatePhone
@@ -6085,9 +6099,12 @@ class MainActivity: Activity() {
                 return
             }
         }
-        if(phoneTab=="search" && phoneQuery.isBlank() && !phoneHotAttempted && !phoneHotLoading) {
-            loadHotSearchPhone()
-            return
+        if(phoneTab=="search" && phoneQuery.isBlank()) {
+            prepareHotSearchPhone()
+            if(!phoneHotAttempted && !phoneHotLoading) {
+                loadHotSearchPhone()
+                return
+            }
         }
         markPageShown()
         // 从播放页（黑底白图标）返回或切换主题后，状态栏图标外观跟当前主题对齐
@@ -6216,6 +6233,7 @@ class MainActivity: Activity() {
         val retained=retainedPhoneCatalogs[next]
         phoneTab=next; phoneScrollY=retained?.position ?: phoneSessionPositions[next] ?: 0; screen="catalog"
         if(next=="rank") {
+            prepareMobileRankCachePhone()
             phoneCatalogSource="rank"
             val cached=rankPagePhone(mobileRankSelectedKeyPhone)
             catalog=cached?.items.orEmpty(); hasMore=cached?.cursor!=null; rankingPhone=null
@@ -6328,9 +6346,35 @@ class MainActivity: Activity() {
         loadPhoneRecommendations(more=phoneRecommendationFailedMore && phoneRecommendationCursor!=null)
     }
 
+    /** 冷启动先从 SP 恢复最新目录与各子榜展示数据，分页游标只取联网结果。 */
+    private fun prepareMobileRankCachePhone() {
+        if(phoneMobileRankCacheReady) return
+        phoneMobileRankCacheReady=true
+        val pages=library.cachedMobileRanks()
+        val latest=pages.firstOrNull() ?: return
+        phoneRankContents=latest.contents
+        pages.forEach { cached ->
+            val valid=phoneRankContents.any { content ->
+                content.id==cached.contentId && content.boards.any { it.id==cached.boardId }
+            }
+            if(valid) phoneMobileRankPages[mobileRankCacheKey(cached.contentId,cached.boardId)]=cached.copy(contents=phoneRankContents,cursor=null)
+        }
+        val content=phoneRankContents.firstOrNull { it.id==phoneRankContent }
+            ?: phoneRankContents.firstOrNull { it.id==latest.contentId } ?: phoneRankContents.firstOrNull() ?: return
+        phoneRankContent=content.id
+        phoneRankBoard=content.boards.firstOrNull { it.id==phoneRankBoard }?.id
+            ?: pages.firstOrNull { it.contentId==content.id && content.boards.any { board -> board.id==it.boardId } }?.boardId
+            ?: content.boards.firstOrNull { it.selected }?.id ?: content.boards.firstOrNull()?.id.orEmpty()
+        phoneMobileRankPages[mobileRankCacheKey()]?.let { cached ->
+            catalog=cached.items; hasMore=false; rankingPhone=null; phoneCatalogSource="rank"
+            phoneRankReady=true
+        }
+    }
+
     /** 手机榜单按内容与子榜缓存；续页只接受当前榜单返回的游标。 */
     private fun showPhoneRank(more: Boolean=false) {
         if(phoneRankLoading || !phoneLayout() || phoneTab!="rank") return
+        prepareMobileRankCachePhone()
         val content=phoneRankContent; val board=phoneRankBoard
         val key=mobileRankCacheKey(content,board)
         val previous=phoneMobileRankPages[key]
@@ -6345,11 +6389,14 @@ class MainActivity: Activity() {
                 if(result.contents.isNotEmpty()) phoneRankContents=result.contents
                 phoneRankContent=result.contentId; phoneRankBoard=result.boardId
                 val items=if(more) (previous!!.items+result.items).distinctBy { it.id } else result.items
-                val loaded=result.copy(items=items)
+                val loaded=result.copy(items=items,contents=phoneRankContents)
+                phoneMobileRankLoadedKeys+=key
+                phoneMobileRankLoadedKeys+=mobileRankCacheKey()
                 phoneMobileRankPages[key]=loaded
                 phoneMobileRankPages[mobileRankCacheKey()]=loaded
                 phoneMobileRankErrors.remove(mobileRankCacheKey())
                 catalog=items; hasMore=loaded.cursor!=null; rankingPhone=null
+                library.cacheMobileRank(loaded)
                 renderPhone()
             }
         }, { problem ->
@@ -6379,7 +6426,12 @@ class MainActivity: Activity() {
     private fun changeMobileRankPhone(content: String,board: String) {
         pendingPhoneScrolls.remove("rank")
         cancelWork(); loadingMore=false
-        phoneRankContent=content; phoneRankBoard=board; phoneCatalogSource="rank"
+        phoneRankContent=content
+        phoneRankBoard=board.ifBlank {
+            val boards=phoneRankContents.firstOrNull { it.id==content }?.boards.orEmpty()
+            boards.firstOrNull { it.selected }?.id ?: boards.firstOrNull()?.id.orEmpty()
+        }
+        phoneCatalogSource="rank"
         val cached=phoneMobileRankPages[mobileRankCacheKey()]
         catalog=cached?.items.orEmpty(); hasMore=cached?.cursor!=null; rankingPhone=null
         phoneRankReady=cached!=null
@@ -6387,13 +6439,25 @@ class MainActivity: Activity() {
     }
     fun retryRankPhone()=showPhoneRank(more=phoneRankFailedMore && rankPagePhone(mobileRankSelectedKeyPhone)?.cursor!=null)
 
+    /** SP 快照只用于首帧展示，每次进程的首次进入仍联网刷新。 */
+    private fun prepareHotSearchPhone() {
+        if(phoneHotCacheReady) return
+        phoneHotCacheReady=true
+        phoneHotSearch=library.cachedHotSearch()
+        phoneHotSearch?.let { cached ->
+            if(cached.boards.none { it.name==phoneHotBoard }) phoneHotBoard=cached.boards.firstOrNull()?.name.orEmpty()
+        }
+    }
+
     private fun loadHotSearchPhone() {
         if(!phoneLayout() || screen!="catalog" || phoneTab!="search" || phoneQuery.isNotBlank() || phoneHotLoading) return
+        prepareHotSearchPhone()
         val ticket=generation
         phoneHotError=""
         work({ repository.hotSearch() }, { result ->
             if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="search" && phoneQuery.isBlank()) {
                 phoneHotLoading=false; phoneHotAttempted=true; phoneHotSearch=result
+                library.cacheHotSearch(result)
                 if(result.boards.none { it.name==phoneHotBoard }) phoneHotBoard=result.boards.firstOrNull()?.name.orEmpty()
                 renderPhone()
             }

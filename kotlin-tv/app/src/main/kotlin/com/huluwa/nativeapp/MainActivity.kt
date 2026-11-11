@@ -801,6 +801,7 @@ class MainActivity: Activity() {
         }
     }
     private fun base(title: String?=null): LinearLayout {
+        retainedPhoneCatalogs.clear()
         catalogSwitcher=null; catalogContainer=null; retainedCatalogs.clear()
         root.removeAllViews(); root.setBackgroundColor(bg)
         backdropView?.takeIf { backdropBitmap!=null }?.let { root.addView(it,FrameLayout.LayoutParams(-1,-1)) }
@@ -830,6 +831,7 @@ class MainActivity: Activity() {
         generation++; cancelWork(); artwork.cancelPage()
     }
     private fun releaseCatalogViews() {
+        retainedPhoneCatalogs.clear()
         retainedCatalogs.clear(); catalogSwitcher=null; catalogContainer=null
         homeScreen?.let { homePosition=it.capturePosition() }
         (catalogRecycler?.layoutManager as? GridLayoutManager)?.let { scrollPositions[catalogPageKey]=it.findFirstVisibleItemPosition() }
@@ -6213,6 +6215,25 @@ class MainActivity: Activity() {
     private var pendingPhoneSettings=false
     private val phoneDetail by lazy { PhoneDetail(this,::loadCover) }
 
+    /** 竖版首页、排行各持有列表和滚动容器，互切时始终留在窗口内。 */
+    private data class RetainedPhoneCatalog(
+        val frame: FrameLayout,
+        val scroll: androidx.core.widget.NestedScrollView,
+        val update: (Boolean) -> Unit,
+        var state: CatalogState,
+    )
+    private val retainedPhoneCatalogs=mutableMapOf<String,RetainedPhoneCatalog>()
+    private var retainedPhoneType: ContentType?=null
+    private var retainedPhoneTheme=TvStyle.theme
+    private var retainedPhoneConfiguration: android.content.res.Configuration?=null
+
+    private fun phoneCatalogViewsValid() = retainedPhoneType==library.contentType &&
+        retainedPhoneTheme==TvStyle.theme && retainedPhoneConfiguration==resources.configuration &&
+        retainedPhoneCatalogs.values.all { it.frame.parent===root }
+
+    private fun capturePhoneCatalog()=CatalogState(
+        if(phoneTab=="rank") phoneRankPage else page,catalog,hasMore,rankingPhone,rankBoardPhone)
+
     /** 手机底部导航渲染总入口：按 phoneTab 渲染对应页面。 */
     private fun renderPhone() {
         if(!phoneLayout() || !library.isLoaded) return
@@ -6224,26 +6245,50 @@ class MainActivity: Activity() {
         // 从播放页（黑底白图标）返回或切换主题后，状态栏图标外观跟当前主题对齐
         phoneStatusBarFollowTheme()
         screen="catalog"
+        if(!phoneCatalogViewsValid()) retainedPhoneCatalogs.clear()
+        retainedPhoneCatalogs[phoneTab]?.let { retained ->
+            // 联网刷新和翻页只更新差异卡片；页签切换只改变可见性，不触发 detach。
+            retained.update(phoneHomeLoading)
+            retained.state=capturePhoneCatalog()
+            retainedPhoneCatalogs.forEach { (key,value) -> value.frame.visibility=if(key==phoneTab) View.VISIBLE else View.GONE }
+            phoneScrollY=retained.scroll.scrollY
+            return
+        }
+        val renderedTab=phoneTab
         val (frame,content,nav)=PhoneUi.scaffold(this,phoneTab,{ switchPhoneTab(it) },{ switchPhoneTab("search") })
         PhoneUi.paintNav(nav,phoneTab)
-        // 用 NestedScrollView 而不是普通 ScrollView：里面的海报网格是 RecyclerView，
-        // 只有嵌套滚动才肯把竖向拖动让给整页，否则手指落在「热门发现」上整页不动。
+        // 用 NestedScrollView 接管海报网格的整页拖动。
         val scroll=androidx.core.widget.NestedScrollView(this).apply { isVerticalScrollBarEnabled=false; isFillViewport=true }
         val body=column()
         scroll.addView(body)
-        when(phoneTab) {
-            "home" -> phonePages.home(body,loading=phoneHomeLoading,scrollRoot=scroll)
+        val update: ((Boolean) -> Unit)?=when(phoneTab) {
+            "home" -> phonePages.home(body,scrollRoot=scroll)
             "rank" -> phonePages.rank(body,scrollRoot=scroll)
-            "fav" -> phonePages.favorites(body,scrollRoot=scroll)
-            "mine" -> phonePages.mine(body)
-            "search" -> renderPhoneSearch(body,scroll)
+            "fav" -> { phonePages.favorites(body,scrollRoot=scroll); null }
+            "mine" -> { phonePages.mine(body); null }
+            "search" -> { renderPhoneSearch(body,scroll); null }
+            else -> null
         }
+        update?.invoke(phoneHomeLoading)
         content.addView(scroll,lp(-1,0).apply { weight=1f })
-        root.removeAllViews(); root.addView(frame,android.widget.FrameLayout.LayoutParams(-1,-1))
-        // 每页滚动位置各记各的：只恢复本页签离开时的位置，避免从别的页签串过来
+        if(update!=null) {
+            if(retainedPhoneCatalogs.isEmpty()) {
+                root.removeAllViews()
+                retainedPhoneType=library.contentType; retainedPhoneTheme=TvStyle.theme
+                retainedPhoneConfiguration=android.content.res.Configuration(resources.configuration)
+            }
+            retainedPhoneCatalogs.values.forEach { it.frame.visibility=View.GONE }
+            retainedPhoneCatalogs[phoneTab]=RetainedPhoneCatalog(frame,scroll,update,capturePhoneCatalog())
+        } else {
+            retainedPhoneCatalogs.clear()
+            root.removeAllViews()
+        }
+        root.addView(frame,android.widget.FrameLayout.LayoutParams(-1,-1))
         val restoreY=phoneScrollY
-        scroll.post { if(scroll.scrollY!=restoreY) scroll.scrollTo(0,restoreY) }
-        scroll.viewTreeObserver.addOnScrollChangedListener { phoneScrollY=scroll.scrollY }
+        scroll.post { if(scroll.isShown && phoneTab==renderedTab && scroll.scrollY!=restoreY) scroll.scrollTo(0,restoreY) }
+        scroll.viewTreeObserver.addOnScrollChangedListener {
+            if(scroll.isShown && phoneTab==renderedTab && screen=="catalog") phoneScrollY=scroll.scrollY
+        }
     }
 
     /** 手机搜索页：输入框 + 历史/结果。 */
@@ -6257,14 +6302,25 @@ class MainActivity: Activity() {
     private var phoneHomeLoading=true
 
     private fun switchPhoneTab(next: String) {
-        // 同一个页签也要允许重入：合集页的「返回」会回到当前页签，
-        // 那里已经先 leaveCollection 并把 catalog 还原好，直接重画即可。
-        if(next==phoneTab) { screen="catalog"; renderPhone(); return }
-        // 离开合集页：把来源页数据还回去，否则 home 会显示合集里的条目
-        if(phoneDetailCollection) { phoneDetailCollection=false; leaveCollection() }
-        phoneTab=next; phoneScrollY=0; screen="catalog"
+        if(next==phoneTab && !phoneDetailCollection) { screen="catalog"; renderPhone(); return }
+        if(phoneDetailCollection) { phoneDetailCollection=false; leaveCollection(); retainedPhoneCatalogs.clear() }
+        // 页签共用 work 管线：离开时取消旧请求，并释放分页锁，避免回调串写另一页。
+        cancelWork(); loadingMore=false
+        if(!phoneCatalogViewsValid()) retainedPhoneCatalogs.clear()
+        val retained=retainedPhoneCatalogs[next]
+        phoneTab=next; phoneScrollY=retained?.scroll?.scrollY ?: 0; screen="catalog"
+        if(retained!=null) {
+            val saved=retained.state
+            catalog=saved.items; hasMore=saved.hasMore; rankingPhone=saved.ranking; phoneCatalogSource=next
+            if(next=="rank") phoneRankPage=saved.page else page=saved.page
+            renderPhone()
+            // 首次加载被快速切页取消时，回来仍要继续请求。
+            if(catalog.isEmpty()) {
+                if(next=="home") showPhoneHome(load=true) else showPhoneRank()
+            } else if(next=="home") phoneHomeLoading=false
+            return
+        }
         when(next) {
-            // 首页/排行各自持有数据；catalog 被别的页签占用过就重新拉，避免串数据
             "home" -> when {
                 catalog.isNotEmpty() && phoneCatalogSource=="home" -> renderPhone()
                 else -> showPhoneHome(load=true)
@@ -6272,12 +6328,10 @@ class MainActivity: Activity() {
             "rank" -> if(catalog.isNotEmpty() && phoneCatalogSource=="rank") {
                 renderPhone()
             } else {
-                phoneRankPage=1; catalog=emptyList(); rankingPhone=null; phoneCatalogSource="rank"
-                renderPhone(); showPhoneRank()
+                phoneRankPage=1; catalog=emptyList(); hasMore=false; rankingPhone=null; phoneCatalogSource="rank"
+                showPhoneRank()
             }
             "fav" -> { favoriteGroupFilterPhone=null; renderPhone() }
-            // 搜索页签：catalog 可能还留着首页/榜单的结果。搜索页靠 phoneQueryText
-            // 决定展示历史还是结果，这里把旧结果清掉，避免「刚进搜索页就显示上一次的搜索结果」。
             "search" -> { if(phoneQuery.isBlank()) { catalog=emptyList(); hasMore=false }; renderPhone() }
             else -> renderPhone()
         }
@@ -6298,15 +6352,15 @@ class MainActivity: Activity() {
         }
         renderPhone()
         if(!load && catalog.isNotEmpty()) { phoneHomeLoading=false; return }
-        val ticket=generation
-        work({ repository.home(1,library.contentType,null) }, { result ->
-            if(phoneLayout() && ticket==generation) {
+        val ticket=generation; val type=library.contentType
+        work({ repository.home(1,type,null) }, { result ->
+            if(phoneLayout() && ticket==generation && library.contentType==type) {
                 // 结果回来时用户可能已经切走：只在 home 仍持有 catalog 时落地，
                 // 否则会把榜单/搜索结果覆盖成首页内容。
                 phoneHomeLoading=false
-                if(phoneTab=="home") {
+                if(screen=="catalog" && phoneTab=="home" && phoneCatalogSource=="home" && !phoneDetailCollection) {
                     catalog=result.items; hasMore=result.hasMore; phoneCatalogSource="home"
-                    library.cacheHome(library.contentType,result.items,result.hasMore)
+                    library.cacheHome(type,result.items,result.hasMore)
                     renderPhone()
                 }
             }
@@ -6321,24 +6375,26 @@ class MainActivity: Activity() {
 
     /** 手机排行榜数据加载：先用上次榜单缓存顶上冷启动，联网结果回来后覆盖并更新缓存。 */
     private fun showPhoneRank() {
-        // catalog 为空说明是首次进入该榜单：先渲染缓存，避免整页空转
+        val board=rankBoardPhone; val rankPage=phoneRankPage; val ticket=generation
         if(catalog.isEmpty()) {
-            val cached=library.cachedRank(rankBoardPhone)
-            if(cached!=null) { catalog=cached.items; hasMore=cached.hasMore; rankingPhone=cached.ranking; renderPhone() }
+            val cached=library.cachedRank(board)
+            if(cached!=null) { catalog=cached.items; hasMore=cached.hasMore; rankingPhone=cached.ranking }
         }
-        val ticket=generation
-        work({ repository.ranking(rankBoardPhone,phoneRankPage) }, { result ->
-            if(phoneLayout() && ticket==generation && phoneTab=="rank") {
-                if(phoneRankPage<=1) {
-                    catalog=result.items; rankingPhone=result.ranking; phoneCatalogSource="rank"
-                    library.cacheRank(rankBoardPhone,result.items,result.hasMore,result.ranking)
+        // 缓存和空态只渲染一次；新结果回来沿用同一套卡片。
+        renderPhone()
+        work({ repository.ranking(board,rankPage) }, { result ->
+            if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="rank" &&
+                phoneCatalogSource=="rank" && rankBoardPhone==board && !phoneDetailCollection) {
+                if(rankPage<=1) {
+                    catalog=result.items; rankingPhone=result.ranking
+                    library.cacheRank(board,result.items,result.hasMore,result.ranking)
                 }
                 else catalog=catalog+result.items
                 hasMore=result.hasMore; renderPhone()
             }
         }, { problem ->
-            if(phoneLayout() && ticket==generation && phoneTab=="rank") {
-                // 上次榜单还在展示时不清空，只在无缓存首进时回空态
+            if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="rank" &&
+                rankBoardPhone==board && !phoneDetailCollection) {
                 if(catalog.isEmpty()) { hasMore=false; rankingPhone=null; renderPhone() }
                 android.util.Log.w("HongguoTV","Phone rank failed: ${problem.message}")
             }
@@ -6350,8 +6406,11 @@ class MainActivity: Activity() {
 
     fun switchRankBoardPhone(board: com.hongguotv.core.RankBoard) {
         if(rankBoardPhone==board && catalog.isNotEmpty()) return
-        rankBoardPhone=board; phoneRankPage=1; catalog=emptyList(); rankingPhone=null; phoneCatalogSource="rank"
-        renderPhone(); showPhoneRank()
+        cancelWork(); loadingMore=false
+        retainedPhoneCatalogs.remove("rank")?.let { root.removeView(it.frame) }
+        rankBoardPhone=board; phoneRankPage=1; phoneScrollY=0
+        catalog=emptyList(); hasMore=false; rankingPhone=null; phoneCatalogSource="rank"
+        showPhoneRank()
     }
 
     /** 「我的」页统计格跳转到收藏页签（switchPhoneTab 是私有的，这里给页面一个公开入口）。 */
@@ -6446,7 +6505,7 @@ class MainActivity: Activity() {
 
     /** 手机加载更多（排行/搜索/首页翻页）。 */
     fun loadMorePhone() {
-        if(loadingMore) return
+        if(loadingMore || !hasMore || screen!="catalog" || phoneDetailCollection || phoneTab !in listOf("home","rank","search")) return
         loadingMore=true
         val ticket=generation
         // 页码按当前页签自己的进度推进；首页用 page、榜单用 phoneRankPage、搜索用 phoneSearchPage
@@ -6466,7 +6525,9 @@ class MainActivity: Activity() {
                 else -> repository.home(nextPage,type,null)
             }
         }, { result ->
-            if(phoneLayout() && ticket==generation) {
+            if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab==tab &&
+                library.contentType==type && (tab!="rank" || rankBoardPhone==board) &&
+                (tab!="search" || phoneQuery==keyword) && !phoneDetailCollection) {
                 loadingMore=false
                 if(result.items.isNotEmpty()) {
                     when(tab) {
@@ -6480,7 +6541,7 @@ class MainActivity: Activity() {
             }
         }, { problem ->
             loadingMore=false
-            if(phoneLayout() && ticket==generation) renderPhone()
+            if(phoneLayout() && ticket==generation && phoneTab==tab && !phoneDetailCollection) renderPhone()
             android.util.Log.w("HongguoTV","Phone loadMore failed: ${problem.message}")
         })
     }
@@ -6488,6 +6549,7 @@ class MainActivity: Activity() {
     /** 手机内容类型切换（漫剧/短剧）：复用 library.contentType，重新拉首页。 */
     fun switchContentTypePhone(type: com.hongguotv.core.ContentType) {
         if(library.contentType==type) return
+        cancelWork(); loadingMore=false; retainedPhoneCatalogs.clear()
         library.contentType=type
         catalog=emptyList(); hasMore=false; phoneScrollY=0; phoneHomeLoading=true
         showPhoneHome(load=true)
@@ -7289,6 +7351,7 @@ class MainActivity: Activity() {
                 cancelPrefetch()
             }
         } else playbackKeptOnStop=false
+        retainedPhoneCatalogs.clear()
         artwork.cancelPage(clearMemory=true); library.flush()
         remotePublish(true)
         super.onStop()

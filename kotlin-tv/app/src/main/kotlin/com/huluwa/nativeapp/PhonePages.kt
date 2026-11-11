@@ -32,12 +32,11 @@ class PhonePages(
 
     // ---- 首页：接着看 + 收藏有更新 + 热门发现（两列网格） ----
 
-    fun home(scroll: LinearLayout, loading: Boolean, scrollRoot: NestedScrollView? = null) {
+    fun home(scroll: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
         val library = activity.phoneLibrary
         val recent = library.history().filterNot { library.watched(it.series.id) }
         val updates = library.favorites().filter { library.favoriteUpdate(it.id)?.hasUpdate == true }
         val later = library.later()
-        val hot = activity.catalog.filterNot { it.id in library.hidden() }
 
         // 内容类型切换：漫剧 / 短剧
         val typeRow = row().apply { setPadding(dp(14), dp(6), dp(14), dp(2)) }
@@ -64,10 +63,9 @@ class PhonePages(
             scroll.addView(shelfSeries("稍后看", later.take(10), more = { activity.openCollectionPhone("later") }), PhoneUi.lp(-1, -2))
         }
 
-        if (hot.isEmpty()) {
-            scroll.addView(PhoneUi.messageBlock(activity, if (loading) "正在加载热门…" else "暂时没有内容，下拉刷新或稍后再试。"), PhoneUi.lp(-1, -2))
-            return
-        }
+        // 空态与网格各建一次；缓存刷新回来只更新内容，不移除已显示的海报。
+        val message = text("", 15f, TvStyle.muted).apply { setPadding(dp(14), dp(28), dp(14), dp(18)) }
+        scroll.addView(message, PhoneUi.lp(-1, -2))
         // 热门两列网格
         val head = row().apply { setPadding(dp(14), dp(10), dp(14), dp(4)) }
         head.addView(View(activity).apply { background = TvStyle.shape(activity, TvStyle.accent, radius = 2) }, PhoneUi.lp(dp(3), dp(13)).apply { rightMargin = dp(7) })
@@ -76,9 +74,16 @@ class PhonePages(
         val grid = RecyclerView(activity)
         scroll.addView(grid, PhoneUi.lp(-1, -2))
         val adapter = PhoneUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
-            if (activity.hasMore) { { activity.loadMorePhone() } } else null, scrollRoot)
-        adapter.items = hot
+            { activity.loadMorePhone() }, scrollRoot)
         adapter.attach(grid)
+        return { loading ->
+            val hot = activity.catalog.filterNot { it.id in library.hidden() }
+            message.text = if (loading) "正在加载热门…" else "暂时没有内容，下拉刷新或稍后再试。"
+            message.visibility = if (hot.isEmpty()) View.VISIBLE else View.GONE
+            head.visibility = if (hot.isEmpty()) View.GONE else View.VISIBLE
+            grid.visibility = if (hot.isEmpty()) View.GONE else View.VISIBLE
+            adapter.submitItems(hot, activity.hasMore)
+        }
     }
 
     /** 横向条带包装：标题行 + 可滑动卡片行。 */
@@ -90,7 +95,7 @@ class PhonePages(
 
     // ---- 排行榜页 ----
 
-    fun rank(scroll: LinearLayout, scrollRoot: NestedScrollView? = null) {
+    fun rank(scroll: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
         val head = row().apply { setPadding(dp(14), dp(10), dp(14), dp(4)) }
         head.addView(text("排行榜", 20f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) }, PhoneUi.lp(0, -2).apply { weight = 1f })
         // 榜单切换：漫剧 / 真人 / AI
@@ -106,21 +111,23 @@ class PhonePages(
         }
         scroll.addView(head, PhoneUi.lp(-1, -2))
 
-        val items = activity.catalog
-        if (activity.rankingPhone != null && items.isNotEmpty()) {
-            val subtitle = activity.rankingPhone?.updatedText?.ifBlank { null } ?: "来源：红果${activity.rankBoardPhone.label}热播榜"
-            scroll.addView(text(subtitle, 12f, TvStyle.muted).apply { setPadding(dp(14), 0, dp(14), dp(6)) }, PhoneUi.lp(-1, -2))
-        }
-        if (items.isEmpty()) {
-            scroll.addView(PhoneUi.messageBlock(activity, "正在读取最新榜单…"), PhoneUi.lp(-1, -2))
-            return
-        }
+        val subtitle = text("", 12f, TvStyle.muted).apply { setPadding(dp(14), 0, dp(14), dp(6)) }
+        scroll.addView(subtitle, PhoneUi.lp(-1, -2))
+        val message = PhoneUi.messageBlock(activity, "正在读取最新榜单…")
+        scroll.addView(message, PhoneUi.lp(-1, -2))
         val grid = RecyclerView(activity)
         scroll.addView(grid, PhoneUi.lp(-1, -2))
         val adapter = PhoneUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
-            if (activity.hasMore) { { activity.loadMorePhone() } } else null, scrollRoot)
-        adapter.items = items
+            { activity.loadMorePhone() }, scrollRoot)
         adapter.attach(grid)
+        return { _ ->
+            val items = activity.catalog
+            subtitle.text = activity.rankingPhone?.updatedText?.ifBlank { null } ?: "来源：红果${activity.rankBoardPhone.label}热播榜"
+            subtitle.visibility = if (activity.rankingPhone != null && items.isNotEmpty()) View.VISIBLE else View.GONE
+            message.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+            grid.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
+            adapter.submitItems(items, activity.hasMore)
+        }
     }
 
     // ---- 收藏页 ----

@@ -18,6 +18,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.widget.NestedScrollView
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.hongguotv.core.Series
@@ -214,11 +215,34 @@ object PhoneUi {
     ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         var items: List<Series> = emptyList()
         var loading = false
+        private var hasMore = more != null
         private val cols = 2
+
+        /** 保留未变化的卡片与 ImageView；刷新、追加分页都不再重建整张网格。 */
+        fun submitItems(next: List<Series>, nextHasMore: Boolean) {
+            val previous = items
+            val previousFooter = hasMore || loading
+            val nextFooter = (nextHasMore && more != null) || loading
+            val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+                override fun getOldListSize() = previous.size + if (previousFooter) 1 else 0
+                override fun getNewListSize() = next.size + if (nextFooter) 1 else 0
+                override fun areItemsTheSame(oldPosition: Int, newPosition: Int): Boolean {
+                    if (oldPosition == previous.size || newPosition == next.size) {
+                        return oldPosition == previous.size && newPosition == next.size
+                    }
+                    return previous[oldPosition].id == next[newPosition].id
+                }
+                override fun areContentsTheSame(oldPosition: Int, newPosition: Int): Boolean =
+                    if (oldPosition == previous.size) true else previous[oldPosition] == next[newPosition]
+            })
+            items = next
+            hasMore = nextHasMore && more != null
+            diff.dispatchUpdatesTo(this)
+        }
 
         private class Holder(val card: PosterCard) : RecyclerView.ViewHolder(card)
 
-        override fun getItemCount() = items.size + if (more != null || loading) 1 else 0
+        override fun getItemCount() = items.size + if (hasMore || loading) 1 else 0
         override fun getItemViewType(position: Int) = if (position == items.size) 1 else 0
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
@@ -242,7 +266,7 @@ object PhoneUi {
                 val label = (holder.itemView as FrameLayout).getChildAt(0) as TextView
                 label.text = if (loading) "正在加载…" else "加载更多…"
                 // 每次绑定都要重设：复用的 footer 会把上一页的点击监听带过来
-                holder.itemView.setOnClickListener { if (!loading && more != null) more() }
+                holder.itemView.setOnClickListener { if (!loading && hasMore && more != null) more() }
                 return
             }
             val card = (holder as Holder).card
@@ -265,7 +289,7 @@ object PhoneUi {
             // 否则手指落在网格上会被 RecyclerView 吞掉，整页一动不动。
             recycler.isNestedScrollingEnabled = false
             val checkLoadMore = {
-                if (more != null && !loading) {
+                if (more != null && hasMore && !loading) {
                     val grid = recycler.layoutManager as? GridLayoutManager
                     val last = grid?.findLastVisibleItemPosition() ?: RecyclerView.NO_POSITION
                     if (last != RecyclerView.NO_POSITION && last >= itemCount - 4) more()
@@ -277,7 +301,7 @@ object PhoneUi {
                 // 用 NestedScrollView 自己的监听接口：View.setOnScrollChangeListener 要 API 23，
                 // 而本项目还有 minSdk 21 的兼容包。
                 scrollParent.setOnScrollChangeListener(NestedScrollView.OnScrollChangeListener { _, _, _, _, _ ->
-                    if (more == null || loading) return@OnScrollChangeListener
+                    if (more == null || !hasMore || loading || !scrollParent.isShown) return@OnScrollChangeListener
                     val content = scrollParent.getChildAt(0) ?: return@OnScrollChangeListener
                     val remaining = content.height - (scrollParent.scrollY + scrollParent.height)
                     if (remaining <= (240 * activity.resources.displayMetrics.density).toInt()) more()
@@ -285,7 +309,7 @@ object PhoneUi {
             } else {
                 recycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
                     override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
-                        if (dy <= 0 || loading || more == null) return
+                        if (dy <= 0 || loading || !hasMore || more == null || !rv.isShown) return
                         checkLoadMore()
                     }
                 })

@@ -5207,7 +5207,7 @@ class MainActivity: Activity() {
         if(phoneLayout()) {
             // 手机竖屏：回到手机版详情页（resume 进来的回首页）
             if(directPlayback && !forceDetail) goBackPhone()
-            else { directPlayback=false; screen="detail"; cacheStripSegments=null; cacheStripView=null; detail?.let { phoneTab="detail"; phoneDetail.render(root,it) } ?: goBackPhone(); prefetchDetailWindow(episodeIndex) }
+            else { directPlayback=false; screen="detail"; cacheStripSegments=null; cacheStripView=null; detail?.let { phoneTab="detail"; renderPhoneDetail(it) } ?: goBackPhone(); prefetchDetailWindow(episodeIndex) }
             return
         }
         if(directPlayback && !forceDetail) showCatalog()
@@ -6200,7 +6200,7 @@ class MainActivity: Activity() {
         initialCatalogPending=false
     }
 
-    /** 手机页签：home / rank / fav / mine / search / detail / player。 */
+    /** 手机页签：强制竖屏额外提供 new；其余页签沿用原有状态。 */
     private var phoneTab="home"
     /** 手机页面滚动位置：切页签/横竖屏后恢复。 */
     private var phoneScrollY=0
@@ -6216,6 +6216,7 @@ class MainActivity: Activity() {
     private var phoneCollectionTab="home"
     /** 打开手机详情页前的页签，返回时回到原处（首页/排行/收藏/搜索）。 */
     private var phoneDetailReturn="home"
+    val phoneDetailOriginTab get() = phoneDetailReturn
     /** 手机排行的当前榜单与结果（独立于 TV 排行榜状态，互不覆盖）。 */
     var rankBoardPhone=com.hongguotv.core.RankBoard.COMIC
         private set
@@ -6247,6 +6248,13 @@ class MainActivity: Activity() {
     private var phonePlayerRenderedFullscreen=false
     // 手机页面实例：首次使用时创建后缓存（lazy 不能修饰 var）
     private val phonePages by lazy { PhonePages(this,::loadCover) }
+    private val portraitPages by lazy { PortraitPages(this,::loadCover) }
+    private val portraitDetail by lazy { PortraitDetail(this,::loadCover) }
+
+    /** 新界面只用于强制竖屏，播放页继续使用原生 PhonePlayer。 */
+    private fun renderPhoneDetail(data: Detail) {
+        if(PortraitUi.shouldUse(this)) portraitDetail.render(root,data) else phoneDetail.render(root,data)
+    }
     /** 手机端完整设置页（竖屏可调全部设置，不必再转到横屏）。 */
     private val phoneSettings by lazy { PhoneSettings(this) }
     /** 播放中点进手机设置页时记下的进度与全屏态，退出设置后原样恢复。 */
@@ -6269,10 +6277,11 @@ class MainActivity: Activity() {
     private val retainedPhoneCatalogs=mutableMapOf<String,RetainedPhoneCatalog>()
     private var retainedPhoneType: ContentType?=null
     private var retainedPhoneTheme=TvStyle.theme
+    private var retainedPhoneRedesigned=false
     private var retainedPhoneConfiguration: android.content.res.Configuration?=null
 
     private fun phoneCatalogViewsValid() = retainedPhoneType==library.contentType &&
-        retainedPhoneTheme==TvStyle.theme && retainedPhoneConfiguration==resources.configuration &&
+        retainedPhoneRedesigned==PortraitUi.shouldUse(this) && retainedPhoneTheme==TvStyle.theme && retainedPhoneConfiguration==resources.configuration &&
         retainedPhoneCatalogs.values.all { it.frame.parent===root }
 
     private fun capturePhoneCatalog()=CatalogState(
@@ -6285,6 +6294,7 @@ class MainActivity: Activity() {
         if(screen=="settings") return
         // detail/player 有各自的渲染入口，误调进来会把正在看的页面清成空骨架
         if(phoneTab=="detail" || phoneTab=="player") return
+        if(!PortraitUi.shouldUse(this) && phoneTab=="new") { showPhoneHome(load=true); return }
         markPageShown()
         // 从播放页（黑底白图标）返回或切换主题后，状态栏图标外观跟当前主题对齐
         phoneStatusBarFollowTheme()
@@ -6299,13 +6309,29 @@ class MainActivity: Activity() {
             return
         }
         val renderedTab=phoneTab
-        val (frame,content,nav)=PhoneUi.scaffold(this,phoneTab,{ switchPhoneTab(it) })
-        PhoneUi.paintNav(nav,phoneTab)
+        val redesigned=PortraitUi.shouldUse(this)
+        val (frame,content,nav)=if(redesigned) PortraitUi.scaffold(this,phoneTab,::switchPhoneTab)
+            else PhoneUi.scaffold(this,phoneTab,::switchPhoneTab)
+        if(!redesigned) PhoneUi.paintNav(nav,phoneTab)
         // 用 NestedScrollView 接管海报网格的整页拖动。
-        val scroll=androidx.core.widget.NestedScrollView(this).apply { isVerticalScrollBarEnabled=false; isFillViewport=true }
+        val scroll=if(redesigned) PortraitUi.RefreshScrollView(this,::refreshPortraitFeed)
+            else androidx.core.widget.NestedScrollView(this)
+        scroll.isVerticalScrollBarEnabled=false; scroll.isFillViewport=true
+        if(redesigned) {
+            scroll.clipToPadding=false
+            PhoneInsets.listen(scroll) { _,bottomInset,_ -> scroll.setPadding(0,0,0,dp(92)+bottomInset) }
+        }
         val body=column()
         scroll.addView(body)
-        val update: ((Boolean) -> Unit)?=when(phoneTab) {
+        val update: ((Boolean) -> Unit)?=if(redesigned) when(phoneTab) {
+            "home" -> portraitPages.home(body,scrollRoot=scroll)
+            "rank" -> portraitPages.rank(body,scrollRoot=scroll)
+            "new" -> { portraitPages.newReleases(body); null }
+            "fav" -> { portraitPages.favorites(body,scrollRoot=scroll); null }
+            "mine" -> { portraitPages.mine(body,scroll); null }
+            "search" -> { portraitPages.search(body,::runPhoneSearch,scroll); null }
+            else -> null
+        } else when(phoneTab) {
             "home" -> phonePages.home(body,scrollRoot=scroll) { switchPhoneTab("search") }
             "rank" -> phonePages.rank(body,scrollRoot=scroll)
             "fav" -> { phonePages.favorites(body,scrollRoot=scroll); null }
@@ -6318,7 +6344,7 @@ class MainActivity: Activity() {
         if(update!=null) {
             if(retainedPhoneCatalogs.isEmpty()) {
                 root.removeAllViews()
-                retainedPhoneType=library.contentType; retainedPhoneTheme=TvStyle.theme
+                retainedPhoneType=library.contentType; retainedPhoneTheme=TvStyle.theme; retainedPhoneRedesigned=redesigned
                 retainedPhoneConfiguration=android.content.res.Configuration(resources.configuration)
             }
             retainedPhoneCatalogs.values.forEach { it.frame.visibility=View.GONE }
@@ -6345,7 +6371,7 @@ class MainActivity: Activity() {
     /** 手机首页是否有正在进行的首页请求。 */
     private var phoneHomeLoading=true
 
-    private fun switchPhoneTab(next: String) {
+    fun switchPhoneTab(next: String) {
         if(next==phoneTab && !phoneDetailCollection) { screen="catalog"; renderPhone(); return }
         if(phoneDetailCollection) { phoneDetailCollection=false; leaveCollection(); retainedPhoneCatalogs.clear() }
         // 页签共用 work 管线：离开时取消旧请求，并释放分页锁，避免回调串写另一页。
@@ -6544,6 +6570,35 @@ class MainActivity: Activity() {
         })
     }
 
+    private fun refreshPortraitFeed() {
+        if(!PortraitUi.shouldUse(this) || screen!="catalog") return
+        cancelWork(); loadingMore=false
+        when(phoneTab) {
+            "home" -> showPhoneHome(load=true)
+            "rank" -> { phoneRankPage=1; catalog=emptyList(); showPhoneRank() }
+            "search" -> if(phoneQuery.isNotBlank()) runPhoneSearch(phoneQuery) else renderPhone()
+            else -> renderPhone()
+        }
+    }
+
+    fun clearPortraitSearch() {
+        if(!PortraitUi.shouldUse(this) || phoneTab!="search") return
+        cancelWork(); loadingMore=false
+        phoneQuery=""; phoneSearching=false; phoneScrollY=0
+        catalog=emptyList(); hasMore=false
+        renderPhone()
+    }
+
+    fun loadPortraitSuggestions(prefix: String, done: (List<String>) -> Unit) {
+        if(!PortraitUi.shouldUse(this)) return
+        io.submit {
+            val words=repository.suggest(prefix)
+            main.post {
+                if(!isDestroyed && PortraitUi.shouldUse(this) && screen=="catalog" && phoneTab=="search") done(words)
+            }
+        }
+    }
+
     /** 手机搜索结果翻页页码。 */
     private var phoneSearchPage=1
 
@@ -6610,28 +6665,37 @@ class MainActivity: Activity() {
         invalidatePage(); releaseCatalogViews(); screen="detail"; detail=null; synopsisExpanded=false; phoneTab="detail"
         markPageShown()
         root.removeAllViews()
-        message(column().also { body -> root.addView(body,android.widget.FrameLayout.LayoutParams(-1,-1)) },"正在加载剧集…")
+        if(PortraitUi.shouldUse(this)) portraitDetail.renderState(root,"正在加载剧集…")
+        else message(column().also { body -> root.addView(body,android.widget.FrameLayout.LayoutParams(-1,-1)) },"正在加载剧集…")
         val apply: (Detail) -> Unit = { result ->
             // done lambda 同样是非内联的，不能 return：用 if/else 表达「已转回横屏就交给 TV 版」
             if(!phoneLayout()) {
                 openDetail(series,resume,preloaded=result)
             } else {
-                detail=result; library.observeFavorite(series.id,result.episodes.size,System.currentTimeMillis(),acknowledge=true)
-                val progress=library.progress(series.id)
-                val target=ResumePlayback.target(result.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true)
-                episodeIndex=target.index; group=episodeIndex/20
-                if(resume) playEpisodePhone(target.index,target.position)
-                else {
-                    phoneDetail.render(root,result)
-                    prefetchDetailWindow(target.index)
+                detail=result
+                if(PortraitUi.shouldUse(this) && result.episodes.isEmpty()) {
+                    renderPhoneDetail(result)
+                } else {
+                    library.observeFavorite(series.id,result.episodes.size,System.currentTimeMillis(),acknowledge=true)
+                    val progress=library.progress(series.id)
+                    val target=ResumePlayback.target(result.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true)
+                    episodeIndex=target.index; group=episodeIndex/20
+                    if(resume) playEpisodePhone(target.index,target.position)
+                    else {
+                        renderPhoneDetail(result)
+                        prefetchDetailWindow(target.index)
+                    }
                 }
             }
         }
         repository.cachedDetail(series.id)?.let(apply) ?: work({ repository.seriesDetail(series.id) }, apply, { problem ->
             // 失败回调是普通的非内联 lambda，里面不能写裸 return
             if(phoneLayout()) {
-                val body=column(); error(body,problem) { openDetailPhone(series,resume) }
-                root.removeAllViews(); root.addView(body,android.widget.FrameLayout.LayoutParams(-1,-1))
+                if(PortraitUi.shouldUse(this)) portraitDetail.renderState(root,problem.message ?: "加载失败") { openDetailPhone(series,resume) }
+                else {
+                    val body=column(); error(body,problem) { openDetailPhone(series,resume) }
+                    root.removeAllViews(); root.addView(body,android.widget.FrameLayout.LayoutParams(-1,-1))
+                }
             }
         })
     }
@@ -6755,8 +6819,10 @@ class MainActivity: Activity() {
         }
     }
 
-    /** 普通手机页面（目录/详情）顶栏背景跟随主题，状态栏图标也跟着切。 */
-    fun phoneStatusBarFollowTheme()=phoneStatusBarLight(TvStyle.theme==TvStyle.Theme.PORCELAIN)
+    /** 强制竖屏内容页使用白底深色图标，其余页面沿用原主题。 */
+    fun phoneStatusBarFollowTheme()=phoneStatusBarLight(
+        if(PortraitUi.shouldUse(this) && screen!="settings" && screen!="player") true
+        else TvStyle.theme==TvStyle.Theme.PORCELAIN)
 
     /**
      * 进入手机全屏播放：隐藏系统栏并锁成横屏。
@@ -6942,7 +7008,7 @@ class MainActivity: Activity() {
         }
         screen="catalog"
         when {
-            phoneTab=="detail" && detail!=null -> { screen="detail"; phoneDetail.render(root,detail!!) }
+            phoneTab=="detail" && detail!=null -> { screen="detail"; renderPhoneDetail(detail!!) }
             phoneLayout() -> renderPhone()
             // 横屏下没有手机设置页：落到电视版设置页签，用户不会「转完就找不到设置」
             else -> { tab=5; showCatalog() }
@@ -7168,10 +7234,14 @@ class MainActivity: Activity() {
                 // 手机没有遥控器：搜索结果页的返回先退到搜索页签的初始态，
                 // 再按一次才走退出确认，和用户的预期一致。
                 "search" -> {
-                    if(phoneQuery.isNotBlank()) { phoneQuery=""; catalog=emptyList(); hasMore=false; renderPhoneSearch(); return }
+                    if(phoneQuery.isNotBlank()) {
+                        if(PortraitUi.shouldUse(this)) clearPortraitSearch()
+                        else { phoneQuery=""; catalog=emptyList(); hasMore=false; renderPhoneSearch() }
+                        return
+                    }
                     switchPhoneTab("home"); return
                 }
-                "home","rank","fav","mine" -> { showExitConfirm(); return }
+                "home","rank","new","fav","mine" -> { showExitConfirm(); return }
                 else -> {}
             }
         }

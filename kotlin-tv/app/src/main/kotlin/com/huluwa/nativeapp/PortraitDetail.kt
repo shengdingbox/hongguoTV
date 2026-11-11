@@ -102,7 +102,11 @@ class PortraitDetail(
             visibility = View.INVISIBLE
         }
         top.addView(titleInBar, lp(0, -2).apply { weight = 1f; leftMargin = dp(14) })
-        page.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        // 顶栏覆盖到状态栏安全区，让两个区域随滚动共用同一背景。
+        frame.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        PhoneInsets.listen(top) { topInset, _, _ ->
+            top.setPadding(dp(18), dp(16) + topInset, dp(18), dp(20))
+        }
         scroll.viewTreeObserver.addOnScrollChangedListener {
             val pastHero = scroll.scrollY > dp(170)
             titleInBar.visibility = if (pastHero) View.VISIBLE else View.INVISIBLE

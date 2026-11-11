@@ -174,6 +174,7 @@ class Library(context: Context) {
     fun queued(id: String) = state().queued(id)
     fun history(): List<WatchProgress> = state().history()
     fun progress(id: String): WatchProgress? = state().progress(id)
+    fun watchedEpisodes(id: String): Set<String> = state().watchedEpisodes(id)
     fun searches() = state().searches()
     fun watched(id: String) = state().watched(id)
     fun hidden() = state().hidden()

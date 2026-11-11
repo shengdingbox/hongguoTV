@@ -34,10 +34,20 @@ class PortraitDetail(
 
     private data class PageBinding(
         val frame: View,
+        val scroll: ScrollView,
         val update: (Detail) -> Unit,
         val loading: (String?) -> Unit,
     )
     private var pageBinding: PageBinding? = null
+
+    fun captureScrollY(): Int = pageBinding?.scroll?.scrollY ?: 0
+
+    fun restoreScrollY(position: Int) {
+        val binding = pageBinding ?: return
+        binding.scroll.post {
+            if (pageBinding === binding) binding.scroll.scrollTo(0, position.coerceAtLeast(0))
+        }
+    }
 
     fun hasPage(root: FrameLayout) = pageBinding?.frame?.parent === root
 
@@ -53,8 +63,7 @@ class PortraitDetail(
 
     private data class Playback(
         val currentIndex: Int,
-        val watched: Boolean,
-        val completed: Boolean,
+        val watchedEpisodeIds: Set<String>,
         val playIndex: Int,
         val resumePosition: Long,
         val label: String,
@@ -78,7 +87,7 @@ class PortraitDetail(
             index >= 0 -> "继续看第 ${playIndex + 1} 集"
             else -> "开始观看"
         }
-        return Playback(index, watched, progress?.completed == true, playIndex, position, label)
+        return Playback(index, library.watchedEpisodes(data.series.id), playIndex, position, label)
     }
 
     private fun metadata(data: Detail) = listOf(
@@ -90,7 +99,7 @@ class PortraitDetail(
     fun renderState(root: FrameLayout, label: String, retry: (() -> Unit)? = null) {
         pageBinding = null
         root.removeAllViews()
-        activity.phoneStatusBarLight(true)
+        activity.phoneStatusBarLight(!PortraitStyle.isDark)
         val (frame, body, _) = PortraitUi.scaffold(activity, activity.phoneDetailOriginTab, activity::switchPhoneTab)
         val back = ImageView(activity).apply {
             setImageResource(R.drawable.ic_page_back)
@@ -115,12 +124,12 @@ class PortraitDetail(
         var loadingSeasonId: String? = null
         var playback = playbackState(data)
         val library = activity.phoneLibrary
-        activity.phoneStatusBarLight(true)
+        activity.phoneStatusBarLight(!PortraitStyle.isDark)
         root.removeAllViews()
         val (frame, body, _) = PortraitUi.scaffold(activity, activity.phoneDetailOriginTab, activity::switchPhoneTab)
         val backdrop = FrameLayout(activity).apply {
             background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(PortraitStyle.heroTop, PortraitStyle.heroMiddle, Color.WHITE))
+                intArrayOf(PortraitStyle.heroTop, PortraitStyle.heroMiddle, PortraitStyle.background))
         }
         val backdropCover = ImageView(activity).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
@@ -133,7 +142,7 @@ class PortraitDetail(
         loadCover(backdropCover, data.series.cover)
         backdrop.addView(View(activity).apply {
             background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(Color.argb(20, 255, 255, 255), Color.WHITE))
+                intArrayOf(if (PortraitStyle.isDark) Color.argb(55, 0, 0, 0) else Color.argb(20, 255, 255, 255), PortraitStyle.background))
         }, FrameLayout.LayoutParams(-1, -1))
         frame.addView(backdrop, 0, FrameLayout.LayoutParams(-1, dp(340)))
         root.addView(frame, FrameLayout.LayoutParams(-1, -1))
@@ -149,7 +158,7 @@ class PortraitDetail(
         content.setPadding(0, dp(78), 0, 0)
         PhoneInsets.listen(scroll) { _, bottomInset, _ -> scroll.setPadding(0, 0, 0, dp(92) + bottomInset) }
 
-        val topBackground = ColorDrawable(Color.WHITE).apply { alpha = 0 }
+        val topBackground = ColorDrawable(PortraitStyle.background).apply { alpha = 0 }
         val top = PortraitUi.row(activity).apply {
             background = topBackground
             setPadding(dp(18), dp(16), dp(18), dp(20))
@@ -158,7 +167,7 @@ class PortraitDetail(
             setImageResource(R.drawable.ic_page_back)
             setColorFilter(PortraitStyle.text)
             setPadding(dp(13), dp(13), dp(13), dp(13))
-            background = PortraitStyle.selectable(activity, Color.argb(145, 255, 255, 255), radius = 24)
+            background = PortraitStyle.selectable(activity, PortraitStyle.translucentSurface, radius = 24)
             contentDescription = "返回"
             isFocusable = true
             setOnClickListener { activity.goBackPhone() }
@@ -216,7 +225,7 @@ class PortraitDetail(
         content.addView(hero, lp())
 
         var expanded = false
-        val synopsis = text(data.series.description.ifBlank { "暂无简介" }, 14f, Color.rgb(60, 60, 60)).apply {
+        val synopsis = text(data.series.description.ifBlank { "暂无简介" }, 14f, PortraitStyle.secondaryText).apply {
             maxLines = 3
             ellipsize = TextUtils.TruncateAt.END
             setLineSpacing(dp(4).toFloat(), 1f)
@@ -242,10 +251,10 @@ class PortraitDetail(
         }
         play.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_play_arrow)
-            setColorFilter(Color.WHITE)
+            setColorFilter(PortraitStyle.onAccent)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }, lp(dp(22), dp(22)).apply { rightMargin = dp(5) })
-        val playText = text(playback.label, 15f, Color.WHITE).apply { setTypeface(null, Typeface.BOLD) }
+        val playText = text(playback.label, 15f, PortraitStyle.onAccent).apply { setTypeface(null, Typeface.BOLD) }
         play.addView(playText, lp(-2, -2))
         actions.addView(play, lp(0, dp(54)).apply { weight = 1f })
 
@@ -257,7 +266,7 @@ class PortraitDetail(
         val favoriteLabel = text(if (library.favorite(data.series.id)) "已收藏" else "收藏", 15f)
         val favorite = PortraitUi.row(activity).apply {
             gravity = Gravity.CENTER
-            background = PortraitStyle.selectable(activity, Color.rgb(215, 215, 215), radius = 28)
+            background = PortraitStyle.selectable(activity, PortraitStyle.subtleButton, radius = 28)
             isSelected = library.favorite(data.series.id)
             contentDescription = favoriteLabel.text
             setOnClickListener {
@@ -291,8 +300,8 @@ class PortraitDetail(
                 val selected = id == data.series.id
                 if (button.isSelected != selected) {
                     button.isSelected = selected
-                    button.setTextColor(if (selected) Color.WHITE else PortraitStyle.text)
-                    button.background = PortraitStyle.selectable(activity, if (selected) Color.BLACK else PortraitStyle.raised, radius = 20)
+                    button.setTextColor(if (selected) PortraitStyle.onChipSelected else PortraitStyle.text)
+                    button.background = PortraitStyle.selectable(activity, if (selected) PortraitStyle.chipSelected else PortraitStyle.raised, radius = 20)
                 }
                 button.alpha = if (id == loadingSeasonId) .5f else 1f
             }
@@ -361,7 +370,7 @@ class PortraitDetail(
                     val end = minOf((page + 1) * pageSize, data.episodes.size)
                     rangeRow.addView(text("$start–$end", 12f).apply {
                         gravity = Gravity.CENTER
-                        background = PortraitStyle.selectable(activity, if (page == episodePage) Color.WHITE else Color.TRANSPARENT, radius = 18)
+                        background = PortraitStyle.selectable(activity, if (page == episodePage) PortraitStyle.selectedSurface else Color.TRANSPARENT, radius = 18)
                         isSelected = page == episodePage
                         setOnClickListener { episodePage = page; renderEpisodes() }
                     }, lp(dp(64), dp(26)))
@@ -380,7 +389,7 @@ class PortraitDetail(
                 val line = PortraitUi.row(activity)
                 numbers.forEachIndexed { column, index ->
                     val selected = index == playback.currentIndex
-                    val seen = playback.watched || (playback.completed && selected)
+                    val seen = data.episodes[index] in playback.watchedEpisodeIds
                     val cell = FrameLayout(activity).apply {
                         background = PortraitStyle.selectable(activity, if (selected) PortraitStyle.accent else PortraitStyle.raised, radius = 9)
                         isSelected = selected
@@ -390,10 +399,10 @@ class PortraitDetail(
                         }
                     }
                     cell.addView(text("${index + 1}", 15f,
-                        if (selected) Color.WHITE else if (seen) PortraitStyle.muted else PortraitStyle.text).apply {
+                        if (selected) PortraitStyle.onAccent else if (seen) PortraitStyle.muted else PortraitStyle.text).apply {
                         gravity = Gravity.CENTER
                     }, FrameLayout.LayoutParams(-1, -1))
-                    if (seen) cell.addView(text("✓", 9f, if (selected) Color.WHITE else PortraitStyle.accent),
+                    if (seen) cell.addView(text("✓", 9f, if (selected) PortraitStyle.onAccent else PortraitStyle.accent),
                         FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { topMargin = dp(3); rightMargin = dp(4) })
                     line.addView(cell, lp(0, dp(40)).apply {
                         weight = 1f
@@ -426,7 +435,7 @@ class PortraitDetail(
             episodeStatus?.text = if (seasonId == null) "共 ${data.episodes.size} 集" else "正在切换…"
             updateSeasonSelection()
         }
-        pageBinding = PageBinding(frame, { next ->
+        pageBinding = PageBinding(frame, scroll, { next ->
             val previousCover = data.series.cover
             val oldScrollY = scroll.scrollY
             val oldSeasonTop = seasonHost.top

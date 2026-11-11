@@ -5,8 +5,21 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
 
-data class BackupProgress(val series: Series,val episodeId: String,val episodeIndex: Int,val position: Long,val duration: Long,val completed: Boolean,val updatedAt: Long) {
+data class BackupProgress(val series: Series,val episodeId: String,val episodeIndex: Int,val position: Long,val duration: Long,val completed: Boolean,val updatedAt: Long,
+    val watchedEpisodeIds: Set<String> = emptySet()) {
+    companion object {
+        const val MAX_WATCHED_EPISODES = 10_000
+    }
+
+    /** Keep actual episode IDs: skipped episodes and other seasons are never inferred as watched. */
+    fun completedEpisodes(): Set<String> = if (completed || (duration > 0 && position >= duration - duration / 10))
+        watchedEpisodeIds + episodeId else watchedEpisodeIds
+
+    fun withWatchedEpisodes(previous: Set<String> = emptySet()) = copy(
+        watchedEpisodeIds = (previous + completedEpisodes()).toList().takeLast(MAX_WATCHED_EPISODES).toSet())
+
     fun json()=JSONObject().put("series",LibraryBackup.seriesJson(series)).put("episodeId",episodeId).put("episodeIndex",episodeIndex).put("position",position).put("duration",duration).put("completed",completed).put("updatedAt",updatedAt)
+        .put("watchedEpisodeIds",JSONArray(watchedEpisodeIds.sorted()))
 }
 data class BackupSettings(val quality: Int=1080,val speed: Float=1f,val autoNext: Boolean=true,val type: ContentType=ContentType.COMIC,val frame: VideoFrameMode=VideoFrameMode.FIT,val autoSeason: Boolean=true,val danmaku: Boolean=true,
     val danmakuOpacity: Int=DanmakuPrefs.OPACITY_DEFAULT,val danmakuFont: Int=DanmakuPrefs.FONT_DEFAULT,val danmakuSpeed: Int=DanmakuPrefs.SPEED_DEFAULT,val danmakuRows: Int=DanmakuPrefs.ROWS_DEFAULT,
@@ -82,7 +95,14 @@ object LibraryBackup {
         }
         val history=o.rows("history",200).map { row ->
             val duration=row.number("duration",604_800_000)
-            BackupProgress(series(row.getJSONObject("series")),id(row.string("episodeId",30)),row.number("episodeIndex",100_000).toInt(),row.number("position",604_800_000).let { if(duration>0) minOf(it,duration) else it },duration,row.get("completed").also { require(it is Boolean) } as Boolean,row.number("updatedAt",4_102_444_800_000))
+            val seen = if (row.has("watchedEpisodeIds")) row.getJSONArray("watchedEpisodeIds") else JSONArray()
+            require(seen.length() <= BackupProgress.MAX_WATCHED_EPISODES) { "逐集观看记录超过上限" }
+            val watchedEpisodeIds = (0 until seen.length()).map { i ->
+                val episode = seen.get(i)
+                require(episode is String) { "分集标识无效" }
+                id(episode)
+            }.toSet()
+            BackupProgress(series(row.getJSONObject("series")),id(row.string("episodeId",30)),row.number("episodeIndex",100_000).toInt(),row.number("position",604_800_000).let { if(duration>0) minOf(it,duration) else it },duration,row.get("completed").also { require(it is Boolean) } as Boolean,row.number("updatedAt",4_102_444_800_000),watchedEpisodeIds)
         }
         require(favorites.distinctBy { it.id }.size==favorites.size && history.distinctBy { it.series.id }.size==history.size) { "备份包含重复剧集" }
         val watched=o.getJSONArray("watched"); require(watched.length()<=500)
@@ -113,8 +133,11 @@ object LibraryBackup {
         incoming.history.forEach { candidate ->
             val id=candidate.series.id; val prior=records[id]
             if(prior==null || candidate.updatedAt>prior.updatedAt) {
-                records[id]=candidate
+                records[id]=candidate.withWatchedEpisodes(prior?.completedEpisodes().orEmpty())
                 if(id in incoming.watched) watched.add(id) else watched.remove(id)
+            } else {
+                // Older progress may still carry episodes absent from the newer checkpoint.
+                records[id]=prior.withWatchedEpisodes(candidate.completedEpisodes())
             }
         }
         incoming.watched.filter { id -> id !in records && local.favorites.none { it.id==id } }.forEach { watched.add(it) }

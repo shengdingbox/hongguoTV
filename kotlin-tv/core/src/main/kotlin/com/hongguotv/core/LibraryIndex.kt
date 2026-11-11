@@ -11,6 +11,7 @@ class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = empt
     private var laterRows = data.later.distinctBy { it.id }.take(100)
     private var laterIds = laterRows.map { it.id }.toSet()
     private var historyRows = data.history.sortedByDescending { it.updatedAt }.distinctBy { it.series.id }.take(200)
+        .map { it.withWatchedEpisodes() }
     private val progressById = historyRows.associateBy { it.series.id }.toMutableMap()
     private var watchedIds = data.watched.toSet()
     private var hiddenIds = data.hidden.take(500).toSet()
@@ -26,6 +27,7 @@ class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = empt
     fun queued(id: String) = id in laterIds
     fun history() = historyRows
     fun progress(id: String) = progressById[id]
+    fun watchedEpisodes(id: String): Set<String> = progressById[id]?.watchedEpisodeIds.orEmpty()
     fun watched(id: String) = id in watchedIds
     fun watched() = watchedIds
     fun hidden() = hiddenIds
@@ -68,8 +70,9 @@ class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = empt
     /** A paused player's identical checkpoint does not refresh its timestamp or trigger a write. */
     fun save(progress: BackupProgress): Boolean {
         val previous = progressById[progress.series.id]
-        if (previous != null && previous.copy(updatedAt = progress.updatedAt) == progress) return false
-        historyRows = (listOf(progress) + historyRows.filterNot { it.series.id == progress.series.id }).take(200).sortedByDescending { it.updatedAt }
+        val next = progress.withWatchedEpisodes(previous?.watchedEpisodeIds.orEmpty())
+        if (previous != null && previous.copy(updatedAt = next.updatedAt) == next) return false
+        historyRows = (listOf(next) + historyRows.filterNot { it.series.id == next.series.id }).take(200).sortedByDescending { it.updatedAt }
         progressById.clear()
         historyRows.forEach { progressById[it.series.id] = it }
         return true
@@ -114,8 +117,12 @@ object LibraryDisk {
         val history = rows("progress").let { rows ->
             (0 until rows.length()).mapNotNull { i -> runCatching {
                 val o = rows.getJSONObject(i)
+                val seen = o.optJSONArray("watchedEpisodeIds") ?: JSONArray()
+                val watchedEpisodeIds = (0 until minOf(seen.length(), BackupProgress.MAX_WATCHED_EPISODES)).mapNotNull { index ->
+                    (seen.opt(index) as? String)?.takeIf { it.matches(Regex("[0-9]{1,30}")) }
+                }.toSet()
                 BackupProgress(Series.fromJson(o.getJSONObject("series")), o.getString("episodeId"), o.getInt("episodeIndex"),
-                    o.getLong("position"), o.getLong("duration"), o.optBoolean("completed"), o.getLong("updatedAt"))
+                    o.getLong("position"), o.getLong("duration"), o.optBoolean("completed"), o.getLong("updatedAt"), watchedEpisodeIds)
             }.getOrNull() }
         }
         val rawUpdates = runCatching { JSONObject(values["favoriteUpdates"] as? String ?: "{}") }.getOrDefault(JSONObject())
@@ -139,6 +146,7 @@ object LibraryDisk {
     fun history(rows: List<BackupProgress>) = JSONArray(rows.map { p ->
         JSONObject().put("series", p.series.toJson()).put("episodeId", p.episodeId).put("episodeIndex", p.episodeIndex)
             .put("position", p.position).put("duration", p.duration).put("completed", p.completed).put("updatedAt", p.updatedAt)
+            .put("watchedEpisodeIds", JSONArray(p.watchedEpisodeIds.sorted()))
     }).toString()
     fun updates(rows: Map<String, FavoriteUpdate>) = JSONObject().also { result -> rows.forEach { (id, update) -> result.put(id, update.json()) } }.toString()
     fun groups(rows: Map<String, String>) = JSONObject().also { result -> rows.forEach { (id, name) -> result.put(id, name) } }.toString()

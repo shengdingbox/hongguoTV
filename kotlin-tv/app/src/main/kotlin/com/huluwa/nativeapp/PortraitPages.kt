@@ -23,7 +23,6 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.core.widget.NestedScrollView
 import androidx.recyclerview.widget.RecyclerView
-import com.hongguotv.core.RankBoard
 import com.hongguotv.core.Series
 import com.hongguotv.core.NewReleaseCalendar
 import java.text.SimpleDateFormat
@@ -86,56 +85,63 @@ class PortraitPages(
 
     fun rankPager(refresh: () -> Unit): PortraitFeedPager {
         lateinit var feed: PortraitFeedPager
-        val boards = RankBoard.values()
-        val types = row().apply {
-            background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 9)
-            setPadding(dp(3), dp(3), dp(3), dp(3))
-        }
-        val buttons = boards.map { board ->
-            val button = text(board.label, 13f).apply {
-                gravity = Gravity.CENTER
-                setOnClickListener { feed.selectPage(board.name) }
+        val tabs=column()
+        var shownContents=""
+        fun chips(parent: LinearLayout, values: List<Pair<String,String>>, selected: String, choose: (String)->Unit, segmented: Boolean=false) {
+            val strip=HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false }
+            val line=row().apply { setPadding(dp(16),dp(3),dp(16),dp(10)) }
+            values.forEach { (id,label) ->
+                val on=id==selected
+                line.addView(text(label,13f,if(on) PortraitStyle.onChipSelected else PortraitStyle.text).apply {
+                    gravity=Gravity.CENTER
+                    setPadding(dp(14),dp(8),dp(14),dp(8))
+                    background=PortraitStyle.selectable(activity,if(on) PortraitStyle.chipSelected else PortraitStyle.raised,radius=if(segmented) 9 else 20)
+                    setTypeface(null,if(on) Typeface.BOLD else Typeface.NORMAL)
+                    isSelected=on
+                    contentDescription="$label，${if(on) "已选择" else "查看榜单"}"
+                    setOnClickListener { choose(id) }
+                },lp(-2,-2).apply { rightMargin=dp(6) })
             }
-            types.addView(button, lp(0, dp(32)).apply { weight = 1f })
-            board to button
+            strip.addView(line); parent.addView(strip,lp())
         }
-        val tabs = column().apply {
-            addView(types, lp().apply { leftMargin = dp(16); rightMargin = dp(16); bottomMargin = dp(14) })
+        fun updateTabs(key: String) {
+            val contents=activity.mobileRankContentsPhone
+            val signature=contents.toString()+activity.phoneRankContentId+key
+            if(shownContents==signature) return
+            shownContents=signature; tabs.removeAllViews()
+            if(contents.size>1) chips(tabs,contents.map { it.id to it.name },activity.phoneRankContentId,activity::switchRankContentPhone,true)
+            val boards=activity.mobileRankBoardsPhone
+            if(boards.isNotEmpty()) chips(tabs,boards.map { it.id to it.name },key,{ feed.selectPage(it) })
         }
-        feed = PortraitFeedPager(activity, "排行榜", tabs,
-            keys = { boards.map { it.name } },
-            selected = { activity.rankBoardPhone.name },
-            select = { activity.switchRankBoardPhone(RankBoard.valueOf(it)) },
-            updateTabs = { key ->
-                buttons.forEach { (board, button) ->
-                    val selected = board.name == key
-                    button.isSelected = selected
-                    button.background = PortraitStyle.selectable(activity, if (selected) Color.WHITE else Color.TRANSPARENT, radius = 7)
-                    button.setTypeface(null, if (selected) Typeface.BOLD else Typeface.NORMAL)
-                    button.contentDescription = "${board.label}，${if (selected) "已选择" else "查看榜单"}"
-                }
-            },
-            loading = { activity.rankLoadingPhone },
-            refresh = refresh,
-        ) { key, body, scroll ->
-            val board = RankBoard.valueOf(key)
-            val empty = PortraitUi.emptyHint(activity, "正在读取榜单…").apply {
-                setOnClickListener { if (feed.isCurrent(key)) refresh() }
-            }
-            body.addView(empty, lp())
-            val grid = RecyclerView(activity)
-            body.addView(grid, lp())
-            val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
-                { if (feed.isCurrent(key)) activity.loadMorePhone() }, scroll, ranked = true)
+        feed=PortraitFeedPager(activity,"排行榜",tabs,
+            keys={ activity.mobileRankBoardsPhone.map { it.id }.ifEmpty { listOf("_default") } },
+            selected={ activity.mobileRankSelectedKeyPhone },
+            select=activity::switchRankBoardPhone,
+            updateTabs=::updateTabs,
+            loading={ activity.rankLoadingPhone },refresh=refresh,
+        ) { key,body,scroll ->
+            val empty=PortraitUi.emptyHint(activity,"正在读取榜单…")
+            body.addView(empty,lp())
+            val grid=RecyclerView(activity); body.addView(grid,lp())
+            val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },
+                { if(feed.isCurrent(key)) activity.loadMorePhone() },scroll,ranked=true)
             adapter.attach(grid)
-            val update: () -> Unit = {
-                val page = activity.rankPagePhone(board)
-                val items = page?.items.orEmpty()
-                val busy = if (activity.rankBoardPhone == board) activity.rankLoadingPhone else page == null
-                empty.text = if (busy) "正在读取榜单…" else "这个榜单暂时是空的，下拉可重新加载"
-                empty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
-                grid.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
-                adapter.submitItems(items, page?.hasMore == true)
+            val error=text("",14f,PortraitStyle.muted).apply {
+                gravity=Gravity.CENTER; setPadding(dp(16),dp(24),dp(16),dp(24))
+                setOnClickListener { if(feed.isCurrent(key)) activity.retryRankPhone() }
+            }
+            body.addView(error,lp())
+            val update: ()->Unit={
+                val page=activity.rankPagePhone(key)
+                val items=page?.items.orEmpty()
+                val current=key==activity.mobileRankSelectedKeyPhone
+                val busy=current && activity.rankLoadingPhone
+                val problem=activity.rankErrorPhone(key)
+                empty.text=if(busy) "正在读取榜单…" else "这个榜单暂时是空的，下拉可重新加载"
+                empty.visibility=if(items.isEmpty() && problem.isBlank()) View.VISIBLE else View.GONE
+                grid.visibility=if(items.isEmpty()) View.GONE else View.VISIBLE
+                error.text=problem; error.visibility=if(problem.isBlank()) View.GONE else View.VISIBLE
+                adapter.submitItems(items,page?.cursor!=null && !busy && problem.isBlank())
             }
             update
         }
@@ -170,10 +176,10 @@ class PortraitPages(
                     tomorrow -> "明天"
                     else -> "${key.substring(4, 6).toInt()}月${key.substring(6, 8).toInt()}日"
                 }
-                val chip = text(label, 13f, if (selected) Color.WHITE else PortraitStyle.text).apply {
+                val chip = text(label, 13f, if (selected) PortraitStyle.onChipSelected else PortraitStyle.text).apply {
                     gravity = Gravity.CENTER
                     setPadding(dp(13), dp(8), dp(13), dp(8))
-                    background = PortraitStyle.selectable(activity, if (selected) Color.BLACK else PortraitStyle.raised, radius = 20)
+                    background = PortraitStyle.selectable(activity, if (selected) PortraitStyle.chipSelected else PortraitStyle.raised, radius = 20)
                     isSelected = selected
                     contentDescription = "$label，${if (selected) "已选择" else "查看新剧"}"
                     setOnClickListener { feed.selectPage(key) }
@@ -287,7 +293,7 @@ class PortraitPages(
                 card.contentDescription = "${watch.series.title}，${card.badge.text}"
                 card.setOnClickListener { activity.openDetailPhone(watch.series) }
                 card.setOnLongClickListener {
-                    val menu = PopupMenu(activity, card)
+                    val menu = PopupMenu(PortraitStyle.popupContext(activity), card)
                     menu.menu.add(0, 0, 0, "继续播放")
                     menu.menu.add(0, 1, 1, "从最近观看中移除")
                     menu.setOnMenuItemClickListener { item ->
@@ -325,7 +331,7 @@ class PortraitPages(
         }
     }
 
-    fun search(body: LinearLayout, submit: (String) -> Unit, scrollRoot: NestedScrollView? = null) {
+    fun search(body: LinearLayout, submit: (String) -> Unit, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
         val query = activity.phoneQueryText
         body.addView(PortraitUi.pageTitle(activity, if (query.isBlank()) "热搜" else "“$query”"), lp())
         val suggestions = column()
@@ -340,7 +346,7 @@ class PortraitPages(
             background = null
             setPadding(0, dp(11), dp(12), dp(11))
             imeOptions = EditorInfo.IME_ACTION_SEARCH
-            setText(query)
+            setText(activity.phoneSearchDraft)
         }
         fun search(value: String) {
             val clean = value.trim()
@@ -380,6 +386,7 @@ class PortraitPages(
                 pending?.let { handler.removeCallbacks(it) }
                 pending = null
                 suggestions.removeAllViews()
+                activity.phoneSearchDraft=s?.toString().orEmpty()
                 val prefix = s?.toString()?.trim().orEmpty()
                 if (prefix.isEmpty()) {
                     if (query.isNotBlank()) activity.clearPortraitSearch()
@@ -409,32 +416,90 @@ class PortraitPages(
             override fun onViewAttachedToWindow(v: View) = Unit
             override fun onViewDetachedFromWindow(v: View) { pending?.let { handler.removeCallbacks(it) } }
         })
-        if (query.isNotBlank()) {
-            if (activity.catalog.isEmpty()) body.addView(PortraitUi.emptyHint(activity,
-                if (activity.phoneSearchActive) "正在搜索…" else "没有找到“$query”相关的短剧，换个词试试"), lp())
-            else {
-                val grid = RecyclerView(activity)
-                body.addView(grid, lp())
-                PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
-                    { activity.loadMorePhone() }, scrollRoot).apply {
-                    items = activity.catalog
-                    attach(grid)
-                    submitItems(activity.catalog, activity.hasMore)
+        val results=column()
+        body.addView(results,lp())
+        var shown=""
+        return { _ ->
+            val signature=listOf(activity.catalog,activity.hasMore,activity.phoneSearchActive,activity.phoneSearchErrorPhone,
+                activity.hotSearchPhone,activity.hotSearchLoadingPhone,activity.hotSearchErrorPhone,activity.phoneHotBoardName).toString()
+            if(signature!=shown) {
+                shown=signature; results.removeAllViews()
+                if(query.isNotBlank()) {
+                    val error=activity.phoneSearchErrorPhone
+                    if(error.isNotBlank()) results.addView(PortraitUi.messageBlock(activity,error) { submit(query) },lp())
+                    if(activity.catalog.isEmpty() && error.isBlank()) results.addView(PortraitUi.emptyHint(activity,
+                        if(activity.phoneSearchActive) "正在搜索…" else "没有找到“$query”相关的短剧，换个词试试"),lp())
+                    if(activity.catalog.isNotEmpty()) {
+                        val grid=RecyclerView(activity); results.addView(grid,lp())
+                        PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },{ activity.loadMorePhone() },scrollRoot).apply {
+                            items=activity.catalog; attach(grid); submitItems(activity.catalog,activity.hasMore && error.isBlank())
+                        }
+                    }
+                } else {
+                    renderHotSearch(results,scrollRoot,::search)
+                    val history=activity.phoneLibrary.searches().take(12)
+                    if(history.isNotEmpty()) {
+                        section(results,"搜索历史")
+                        history.forEach { recent ->
+                            results.addView(text(recent.query,14f).apply {
+                                setPadding(dp(16),dp(13),dp(16),dp(13))
+                                background=PortraitStyle.selectable(activity,Color.TRANSPARENT)
+                                setOnClickListener { search(recent.query) }
+                            },lp())
+                        }
+                    }
                 }
             }
-        } else {
-            body.addView(PortraitUi.emptyState(activity, R.drawable.ic_search, "暂无热搜数据", "输入名称，搜索想看的剧"), lp())
-            val history = activity.phoneLibrary.searches().take(12)
-            if (history.isNotEmpty()) {
-                section(body, "搜索历史")
-                history.forEach { recent ->
-                    body.addView(text(recent.query, 14f).apply {
-                        setPadding(dp(16), dp(13), dp(16), dp(13))
-                        background = PortraitStyle.selectable(activity, Color.TRANSPARENT)
-                        setOnClickListener { search(recent.query) }
-                    }, lp())
-                }
+        }
+    }
+
+    private fun renderHotSearch(body: LinearLayout,scrollRoot: NestedScrollView?,search: (String)->Unit) {
+        val hot=activity.hotSearchPhone
+        if(activity.hotSearchLoadingPhone && hot==null) body.addView(PortraitUi.emptyHint(activity,"正在加载热搜…"),lp())
+        val error=activity.hotSearchErrorPhone
+        if(error.isNotBlank()) body.addView(PortraitUi.messageBlock(activity,error,activity::retryHotSearchPhone),lp())
+        if(hot==null) return
+        fun grid(items: List<com.hongguotv.core.HotSearchItem>,ranked: Boolean) {
+            if(items.isEmpty()) return
+            val view=RecyclerView(activity); body.addView(view,lp())
+            PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },null,scrollRoot,ranked=ranked).apply {
+                this.items=items.map { it.series }; attach(view)
             }
+        }
+        if(hot.guesses.isNotEmpty()) {
+            section(body,"猜你想搜")
+            grid(hot.guesses,false)
+        }
+        if(hot.boards.isEmpty()) return
+        val strip=HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false }
+        val choices=row().apply { setPadding(dp(16),dp(12),dp(16),dp(8)) }
+        val selected=hot.boards.firstOrNull { it.name==activity.phoneHotBoardName } ?: hot.boards.first()
+        var selectedView: View?=null
+        hot.boards.forEach { board ->
+            val on=board==selected
+            val chip=text(board.name,13f,if(on) PortraitStyle.onChipSelected else PortraitStyle.text).apply {
+                gravity=Gravity.CENTER; setPadding(dp(14),dp(9),dp(14),dp(9))
+                background=PortraitStyle.selectable(activity,if(on) PortraitStyle.chipSelected else PortraitStyle.raised,radius=20)
+                isSelected=on
+                setOnClickListener { activity.chooseHotBoardPhone(board.name) }
+            }
+            choices.addView(chip,lp(-2,-2).apply { rightMargin=dp(6) })
+            if(on) selectedView=chip
+        }
+        strip.addView(choices);body.addView(strip,lp())
+        strip.post { selectedView?.let { strip.scrollTo((it.left-strip.width/2+it.width/2).coerceAtLeast(0),0) } }
+        grid(selected.items,true)
+        selected.topics.forEachIndexed { index,topic ->
+            val line=row().apply {
+                setPadding(dp(16),dp(14),dp(16),dp(14))
+                background=PortraitStyle.selectable(activity,Color.TRANSPARENT)
+                setOnClickListener { search(topic.query) }
+                contentDescription="第 ${index+1} 名，${topic.title}，${topic.heat}"
+            }
+            line.addView(text("${index+1}",15f,PortraitStyle.accent),lp(dp(28),-2))
+            line.addView(text(topic.title,14f),lp(0,-2).apply { weight=1f })
+            if(topic.heat.isNotBlank()) line.addView(text(topic.heat,12f,PortraitStyle.muted),lp(-2,-2))
+            body.addView(line,lp())
         }
     }
 }

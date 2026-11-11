@@ -3,24 +3,55 @@ package com.huluwa.nativeapp
 
 import android.content.Context
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.view.ContextThemeWrapper
 
-/** 竖屏页面独立配色，横屏和电视继续使用 TvStyle。 */
+/** 竖屏内容独立跟随系统深浅色；不改变电视和播放器使用的 TvStyle。 */
 object PortraitStyle {
-    val background = Color.WHITE
-    val surface = Color.rgb(247, 247, 247)
-    val raised = Color.rgb(239, 239, 239)
-    val accent = Color.rgb(78, 141, 43)
-    // 开心果 iOS 的 AccentColor；仅用于底部导航选中态。
-    val navigationSelected = Color.rgb(74, 140, 42)
-    val text = Color.rgb(17, 17, 17)
-    val muted = Color.rgb(145, 145, 145)
-    val outline = Color.rgb(228, 228, 228)
-    val heroTop = Color.rgb(187, 167, 159)
-    val heroMiddle = Color.rgb(232, 226, 220)
+    var isDark = false
+        private set
+    /** 用于淘汰使用旧配色构造的页面缓存。 */
+    var revision = 0L
+        private set
+
+    /** 在启动、系统外观变化和恢复前台时调用；返回是否需要重建内容页。 */
+    fun refresh(context: Context): Boolean = refresh(context.resources.configuration)
+
+    fun refresh(configuration: Configuration): Boolean {
+        val next = configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+        if (next == isDark) return false
+        isDark = next
+        revision++
+        return true
+    }
+
+    val background get() = if (isDark) Color.rgb(18, 18, 18) else Color.WHITE
+    val surface get() = if (isDark) Color.rgb(27, 27, 29) else Color.rgb(247, 247, 247)
+    val raised get() = if (isDark) Color.rgb(43, 43, 46) else Color.rgb(239, 239, 239)
+    val accent get() = if (isDark) Color.rgb(143, 191, 105) else Color.rgb(78, 141, 43)
+    val onAccent get() = if (isDark) Color.rgb(18, 30, 12) else Color.WHITE
+    // 开心果 iOS 的 AccentColor；深色下提高亮度，保持图标及文字清晰。
+    val navigationSelected get() = if (isDark) Color.rgb(151, 201, 110) else Color.rgb(74, 140, 42)
+    val text get() = if (isDark) Color.rgb(241, 241, 243) else Color.rgb(17, 17, 17)
+    val muted get() = if (isDark) Color.rgb(165, 165, 173) else Color.rgb(145, 145, 145)
+    val secondaryText get() = if (isDark) Color.rgb(207, 207, 212) else Color.rgb(60, 60, 60)
+    val outline get() = if (isDark) Color.rgb(61, 61, 65) else Color.rgb(228, 228, 228)
+    val heroTop get() = if (isDark) Color.rgb(68, 56, 53) else Color.rgb(187, 167, 159)
+    val heroMiddle get() = if (isDark) Color.rgb(37, 32, 31) else Color.rgb(232, 226, 220)
+    val selectedSurface get() = if (isDark) Color.rgb(75, 75, 80) else Color.WHITE
+    val chipSelected get() = if (isDark) Color.rgb(231, 231, 235) else Color.BLACK
+    val onChipSelected get() = if (isDark) Color.rgb(20, 20, 22) else Color.WHITE
+    val subtleButton get() = if (isDark) Color.rgb(59, 59, 63) else Color.rgb(215, 215, 215)
+    val translucentSurface get() = if (isDark) Color.argb(185, 34, 34, 37) else Color.argb(145, 255, 255, 255)
+    val ripple get() = if (isDark) Color.argb(35, 255, 255, 255) else Color.argb(28, 0, 0, 0)
     const val POSTER_ASPECT = .75f
+
+    /** 原生菜单使用与竖屏内容一致的系统外观，不沿用固定的电视 Activity 主题。 */
+    fun popupContext(context: Context): Context = ContextThemeWrapper(context,
+        if (isDark) android.R.style.Theme_Material else android.R.style.Theme_Material_Light)
 
     fun shape(context: Context, color: Int, radius: Int = 10, border: Int = Color.TRANSPARENT) =
         GradientDrawable().apply {
@@ -31,13 +62,13 @@ object PortraitStyle {
 
     /** 选中胶囊统一由导航底板绘制，菜单项仅保留中性的触摸反馈。 */
     fun navigationItem(context: Context) = RippleDrawable(
-        ColorStateList.valueOf(Color.argb(24, 0, 0, 0)),
+        ColorStateList.valueOf(ripple),
         null,
         shape(context, Color.WHITE, 28),
     )
 
     fun selectable(context: Context, color: Int, radius: Int = 10) = RippleDrawable(
-        ColorStateList.valueOf(Color.argb(28, 0, 0, 0)),
+        ColorStateList.valueOf(ripple),
         shape(context, color, radius),
         shape(context, Color.WHITE, radius),
     )

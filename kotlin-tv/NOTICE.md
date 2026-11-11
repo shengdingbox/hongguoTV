@@ -38,6 +38,10 @@ openhongguo `02437b6286956e8239d54581e3cdaccda817a7fb` 的 `Discover`、
 - openhongguo：https://github.com/beilunyang/openhongguo ，`SignedNewReleasePairs` / `ParseNewReleases`（Apache-2.0）。
 - 本仓库以 Kotlin 接入相同的公开日历协议，复用本机匿名设备签名；日历、预告和分页在安卓端展示。
 
+手机热搜与排行榜（`MobileDiscovery.kt`、`ContentRepository.hotSearch/mobileRanking`）的请求参数和响应字段参考
+openhongguo 的 `SignedHotSearchPairs` / `ParseHotSearch`、`ShortRank` / `ParseShortRank`（Apache-2.0）。
+安卓端按服务端目录展示热搜分组、内容类型和子榜，游标独立于电视榜单。
+
 `kotlin-tv/` 原生应用源码和派生实现以 GPL-3.0-only 发布，许可证全文见 `LICENSE`。发布 APK 时同时提供本分支对应源码、Gradle 包装器和构建说明。APK 不包含 Node、React Native、JavaScript 引擎或该 JavaScript 源文件。
 
 其他依赖：

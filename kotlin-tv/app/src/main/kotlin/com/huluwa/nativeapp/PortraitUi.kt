@@ -55,6 +55,7 @@ object PortraitUi {
 
     /** 内容铺满页面，胶囊导航悬浮于内容之上。滚动页自行预留底部空间。 */
     fun scaffold(activity: Activity, activeTab: String, onTab: (String) -> Unit, previousTab: String? = null): Triple<FrameLayout, LinearLayout, LinearLayout> {
+        PortraitStyle.refresh(activity)
         val root = FrameLayout(activity).apply { setBackgroundColor(PortraitStyle.background) }
         val content = column(activity)
         root.addView(content, FrameLayout.LayoutParams(-1, -1))
@@ -351,7 +352,7 @@ object PortraitUi {
     }
 
     private fun favoriteMenu(activity: MainActivity, anchor: View, series: Series, changed: () -> Unit) {
-        val menu = PopupMenu(activity, anchor)
+        val menu = PopupMenu(PortraitStyle.popupContext(activity), anchor)
         menu.menu.add(if (activity.phoneLibrary.favorite(series.id)) "取消收藏" else "收藏")
         menu.setOnMenuItemClickListener {
             activity.phoneFavoriteMonitor.stop()
@@ -442,7 +443,7 @@ object PortraitUi {
         val block = column(activity).apply { setPadding(dp(activity, 14), dp(activity, 28), dp(activity, 14), dp(activity, 18)) }
         block.addView(text(activity, label, 15f, PortraitStyle.muted))
         if (retry != null) {
-            val btn = text(activity, "重试", 15f, PortraitStyle.background).apply {
+            val btn = text(activity, "重试", 15f, PortraitStyle.onAccent).apply {
                 gravity = Gravity.CENTER
                 setPadding(dp(activity, 20), dp(activity, 9), dp(activity, 20), dp(activity, 9))
                 background = PortraitStyle.shape(activity, PortraitStyle.accent)

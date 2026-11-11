@@ -47,6 +47,7 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
     private val backdropPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
         colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(1.2f) })
     }
+    private var paletteRevision = -1L
     private val tintPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val sheenPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val innerRimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -165,31 +166,43 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
         // 轻微放大后方色块，配合弧面高光形成玻璃透镜的观感。
         backdropBounds.set(-blurPadding - w * .015f, -blurPadding - h * .025f,
             w + blurPadding + w * .015f, h + blurPadding + h * .025f)
-        // 白底上也保留中下部的冷色折射，避免白色遮罩与页面融为一体。
+        updateGlassPaint(w, h)
+    }
+
+    private fun updateGlassPaint(w: Int, h: Int) {
+        paletteRevision = PortraitStyle.revision
+        val dark = PortraitStyle.isDark
+        // 深色玻璃降低白色高光并加深透射层，浅色继续保留原来的冷色折射。
         tintPaint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(),
-            intArrayOf(Color.argb(90, 255, 255, 255), Color.argb(54, 236, 243, 247),
+            if (dark) intArrayOf(Color.argb(178, 38, 40, 44), Color.argb(155, 28, 31, 35),
+                Color.argb(176, 24, 29, 35), Color.argb(190, 35, 41, 47))
+            else intArrayOf(Color.argb(90, 255, 255, 255), Color.argb(54, 236, 243, 247),
                 Color.argb(78, 180, 198, 212), Color.argb(94, 216, 228, 237)),
             floatArrayOf(0f, .26f, .72f, 1f), Shader.TileMode.CLAMP)
         sheenPaint.shader = LinearGradient(0f, 0f, 0f, h * .65f,
-            Color.argb(100, 255, 255, 255), Color.TRANSPARENT, Shader.TileMode.CLAMP)
-        // 外沿偏冷、内沿偏亮，形成有厚度的玻璃边缘；下沿加强与浅色背景的分离。
+            Color.argb(if (dark) 25 else 100, 255, 255, 255), Color.TRANSPARENT, Shader.TileMode.CLAMP)
         rimPaint.shader = LinearGradient(0f, 0f, w.toFloat(), h.toFloat(),
-            intArrayOf(Color.argb(68, 119, 139, 155), Color.argb(36, 139, 161, 178), Color.argb(98, 104, 126, 145)),
+            if (dark) intArrayOf(Color.argb(82, 174, 187, 199), Color.argb(35, 122, 140, 155), Color.argb(85, 107, 125, 143))
+            else intArrayOf(Color.argb(68, 119, 139, 155), Color.argb(36, 139, 161, 178), Color.argb(98, 104, 126, 145)),
             floatArrayOf(0f, .35f, 1f), Shader.TileMode.CLAMP)
         innerRimPaint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(),
-            intArrayOf(Color.argb(230, 255, 255, 255), Color.argb(55, 255, 255, 255), Color.argb(130, 255, 255, 255)),
+            if (dark) intArrayOf(Color.argb(75, 230, 237, 243), Color.argb(12, 255, 255, 255), Color.argb(35, 195, 209, 220))
+            else intArrayOf(Color.argb(230, 255, 255, 255), Color.argb(55, 255, 255, 255), Color.argb(130, 255, 255, 255)),
             floatArrayOf(0f, .5f, 1f), Shader.TileMode.CLAMP)
-        // iOS 的选中底板为中性浅灰玻璃，绿色只用于图标与文字。
+        // 选中底板保持中性玻璃，绿色仅用于选中项的图标与文字。
         selectionPaint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(),
-            intArrayOf(Color.argb(42, 97, 102, 109), Color.argb(50, 117, 122, 129), Color.argb(58, 139, 144, 151)),
+            if (dark) intArrayOf(Color.argb(35, 204, 212, 221), Color.argb(28, 191, 201, 211), Color.argb(42, 177, 190, 203))
+            else intArrayOf(Color.argb(42, 97, 102, 109), Color.argb(50, 117, 122, 129), Color.argb(58, 139, 144, 151)),
             floatArrayOf(0f, .5f, 1f), Shader.TileMode.CLAMP)
         selectionRimPaint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(),
-            intArrayOf(Color.argb(95, 255, 255, 255), Color.argb(10, 255, 255, 255), Color.argb(12, 0, 0, 0)),
+            if (dark) intArrayOf(Color.argb(50, 255, 255, 255), Color.argb(8, 255, 255, 255), Color.argb(22, 0, 0, 0))
+            else intArrayOf(Color.argb(95, 255, 255, 255), Color.argb(10, 255, 255, 255), Color.argb(12, 0, 0, 0)),
             floatArrayOf(0f, .5f, 1f), Shader.TileMode.CLAMP)
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        if (paletteRevision != PortraitStyle.revision) updateGlassPaint(width, height)
         blurred?.let { canvas.drawBitmap(it, null, backdropBounds, backdropPaint) }
         val radius = height / 2f
         canvas.drawRoundRect(glassBounds, radius, radius, tintPaint)

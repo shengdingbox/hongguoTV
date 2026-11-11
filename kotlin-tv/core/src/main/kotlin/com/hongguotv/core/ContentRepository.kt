@@ -255,6 +255,32 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         if (selectedDate.isNotEmpty()) values["target_date"] = selectedDate
         return NewReleaseParser.parse(signedJson("$API/reading/user/subscribe/list/v1/", values, null), selectedDate, cursor)
     }
+    /** 搜索首页真实热搜，包含短剧、漫剧、新剧与热点话题等服务端分组。 */
+    open fun hotSearch(): HotSearchPage {
+        val values = linkedMapOf("user_is_login" to "0", "bookstore_tab" to "16", "bookstore_tab_type" to "16",
+            "scene" to "10", "limit" to "0", "tab_name" to "feed", "from" to "search_input_page",
+            "query_history_removed" to "false", "offset" to "0", "search_middle_page_version" to "4",
+            "search_source" to "1", "new_search_middle_page" to "true", "hot_word_exchange" to "false")
+        return MobileDiscoveryParser.hot(catalogJson("$API/reading/bookapi/plan/v1/", values))
+    }
+
+    /** 手机榜单使用官方动态目录；电视仍保留原有网站三类热播榜。 */
+    open fun mobileRanking(contentId: String = "", boardId: String = "", cursor: MobileRankCursor? = null): MobileRankPage {
+        require(cursor == null || ((contentId.isBlank() || cursor.contentId == contentId) &&
+            (boardId.isBlank() || cursor.boardId == boardId) && cursor.offset > 0 && cursor.seen.size <= 2000)) { "榜单游标已过期，请下拉刷新" }
+        val content = cursor?.contentId ?: contentId.ifBlank { "all" }
+        val board = cursor?.boardId ?: boardId
+        val values = linkedMapOf("cell_id" to "7470092475068071998", "tab_type" to "26", "selected_items" to content,
+            "offset" to (cursor?.offset ?: 0).toString(), "limit" to "0", "client_req_type" to "2",
+            "client_template" to "2", "unlimited_selector_change_type" to if (cursor == null) "1" else "2",
+            "user_is_login" to "0")
+        if (board.isNotBlank()) values["sub_selected_items"] = board
+        if (cursor != null) {
+            values["filter_ids"] = cursor.seen.joinToString(",")
+            if (cursor.sessionId.isNotBlank()) values["session_id"] = cursor.sessionId
+        }
+        return MobileDiscoveryParser.rank(catalogJson("$API/reading/bookapi/bookmall/cell/change/v1/", values), content, board, cursor)
+    }
     fun comicRanking(page: Int = 1)=ranking(RankBoard.COMIC,page)
     fun realRanking(page: Int = 1)=ranking(RankBoard.REAL,page)
     /** Genre selectors from the website's category page; cached briefly because they rarely change. */

@@ -32,14 +32,14 @@ class PhoneSettings(private val activity: MainActivity) {
     private var lastScrollY = 0
 
     private fun dp(v: Int) = PhoneUi.dp(activity, v)
-    private fun text(v: String, size: Float, color: Int = TvStyle.text) = PhoneUi.text(activity, v, size, color)
+    private fun text(v: String, size: Float, color: Int = PortraitStyle.text) = PhoneUi.text(activity, v, size, color)
 
     fun render(root: FrameLayout) {
         if (!library.isLoaded) return
-        // 顶栏是浅色时状态栏图标要跟着变深，否则暖玉白主题下白图标看不见
-        activity.phoneStatusBarFollowTheme()
+        PortraitStyle.refresh(activity)
+        activity.phoneStatusBarLight(!PortraitStyle.isDark)
         root.removeAllViews()
-        root.setBackgroundColor(TvStyle.background)
+        root.setBackgroundColor(PortraitStyle.background)
         bindings.clear()
 
         val shell = PhoneUi.column(activity)
@@ -47,7 +47,11 @@ class PhoneSettings(private val activity: MainActivity) {
         val baseHorizontal = dp(14)
         val baseBottom = dp(18)
         val top = PhoneUi.row(activity).apply { setPadding(baseHorizontal, topBaseTop, dp(14), dp(8)) }
-        PageBackButton.addTo(top) { activity.closePhoneSettings() }
+        PageBackButton.addTo(top) { activity.closePhoneSettings() }.apply {
+            setTextColor(PortraitStyle.text)
+            compoundDrawablesRelative.filterNotNull().forEach { it.mutate().setTint(PortraitStyle.text) }
+            background = PortraitStyle.selectable(activity, android.graphics.Color.TRANSPARENT, radius = 6)
+        }
         top.addView(text("设置", 20f).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         }, PhoneUi.lp(0, -2).apply { weight = 1f })
@@ -87,12 +91,12 @@ class PhoneSettings(private val activity: MainActivity) {
     // ---- 分组与行 ----
 
     private fun heading(parent: LinearLayout, title: String, subtitle: String? = null) {
-        parent.addView(text(title, 13f, TvStyle.muted).apply {
+        parent.addView(text(title, 13f, PortraitStyle.muted).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setPadding(dp(4), dp(16), dp(4), dp(2))
         }, PhoneUi.lp(-1, -2))
         if (subtitle != null) {
-            parent.addView(text(subtitle, 11f, TvStyle.muted).apply { setPadding(dp(4), 0, dp(4), dp(8)) }, PhoneUi.lp(-1, -2))
+            parent.addView(text(subtitle, 11f, PortraitStyle.muted).apply { setPadding(dp(4), 0, dp(4), dp(8)) }, PhoneUi.lp(-1, -2))
         }
     }
 
@@ -100,7 +104,7 @@ class PhoneSettings(private val activity: MainActivity) {
      * 一行设置：左标题 + 右当前值 + 箭头，整行可点。
      * [value] 传 null 表示右侧不显示值（如「开源许可」）；[provider] 用于弹窗关闭后就地刷新。
      */
-    private fun row(label: String, value: String?, provider: (() -> String?)? = null, onClick: () -> Unit): LinearLayout {
+    private fun row(label: String, value: String?, provider: (() -> String?)? = null, onClick: (() -> Unit)? = null): LinearLayout {
         val line = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -108,10 +112,10 @@ class PhoneSettings(private val activity: MainActivity) {
             // 避免带右侧值的行（如「观看统计」）标题看起来偏上/偏下。
             isBaselineAligned = false
             setPadding(dp(16), dp(13), dp(13), dp(13))
-            background = TvStyle.shape(activity, TvStyle.surface)
-            isClickable = true
-            isFocusable = true
-            setOnClickListener { onClick() }
+            background = PortraitStyle.selectable(activity, PortraitStyle.surface)
+            isClickable = onClick != null
+            isFocusable = onClick != null
+            if (onClick != null) setOnClickListener { onClick() }
             // 弹窗改完焦点回到这一行：顺手把整页取值刷一遍（遥控键盘/电视遥控走这条）
             setOnFocusChangeListener { _, focused -> if (focused) refreshValues() }
         }
@@ -120,7 +124,7 @@ class PhoneSettings(private val activity: MainActivity) {
             gravity = Gravity.CENTER_VERTICAL
         }, PhoneUi.lp(0, -2).apply { weight = 1f })
         if (value != null) {
-            val valueView = text(value, 13f, TvStyle.muted).apply {
+            val valueView = text(value, 13f, PortraitStyle.muted).apply {
                 maxLines = 1
                 maxWidth = dp(160)
                 ellipsize = TextUtils.TruncateAt.END
@@ -128,7 +132,7 @@ class PhoneSettings(private val activity: MainActivity) {
             line.addView(valueView)
             provider?.let { bindings += Binding(it, valueView) }
         }
-        line.addView(text("›", 16f, TvStyle.muted), PhoneUi.lp(-2, -2).apply { leftMargin = dp(7) })
+        if (onClick != null) line.addView(text("›", 16f, PortraitStyle.muted), PhoneUi.lp(-2, -2).apply { leftMargin = dp(7) })
         return line
     }
 
@@ -196,9 +200,12 @@ class PhoneSettings(private val activity: MainActivity) {
 
     // ---- 外观与界面 ----
 
+    private fun systemAppearance() = "跟随系统 · " + if (PortraitStyle.isDark) "深色" else "浅色"
+
     private fun lookSection(parent: LinearLayout) {
-        heading(parent, "外观与界面", "主题与屏幕方向")
-        addRow(parent, row("系统风格", TvStyle.theme.label, { TvStyle.theme.label }) { activity.phoneThemeToggle() })
+        heading(parent, "外观与界面", "手机跟随系统深浅色，横屏主题独立设置")
+        addRow(parent, row("手机外观", systemAppearance(), { systemAppearance() }))
+        addRow(parent, row("横屏与电视风格", TvStyle.theme.label, { TvStyle.theme.label }) { activity.phoneThemeToggle() })
         addRow(parent, row("界面缩放", UiScale.label(activity), { UiScale.label(activity) }) { activity.phoneUiScalePicker() })
         addRow(parent, row("启动方向", OrientationMode.of(library.orientationMode).label, {
             OrientationMode.of(library.orientationMode).label
@@ -237,11 +244,11 @@ class PhoneSettings(private val activity: MainActivity) {
             TvDialog.info(activity, "开源许可", "本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\n请求签名算法移植自 openhongguo（GPL-3.0），在本机完成计算与匿名设备注册。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\n完整源码和许可证见 GitHub：jycao2/hongguoTV。").show()
         })
 
-        parent.addView(text("红果  /  ${BuildConfig.VERSION_NAME}    ·    收藏与本机记录保存在设备 · 登录后可同步到红果账号", 12f, TvStyle.muted).apply {
+        parent.addView(text("红果  /  ${BuildConfig.VERSION_NAME}    ·    收藏与本机记录保存在设备 · 登录后可同步到红果账号", 12f, PortraitStyle.muted).apply {
             gravity = Gravity.CENTER
             setPadding(dp(8), dp(18), dp(8), dp(4))
         }, PhoneUi.lp(-1, -2))
-        parent.addView(text("本应用仅用于技术交流与学习，不提供、不存储、不传播任何视频内容，内容版权归原平台所有。", 11f, TvStyle.muted).apply {
+        parent.addView(text("本应用仅用于技术交流与学习，不提供、不存储、不传播任何视频内容，内容版权归原平台所有。", 11f, PortraitStyle.muted).apply {
             gravity = Gravity.CENTER
             setPadding(dp(8), 0, dp(8), dp(8))
         }, PhoneUi.lp(-1, -2))

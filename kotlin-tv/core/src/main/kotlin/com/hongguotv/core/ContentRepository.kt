@@ -168,7 +168,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             "user_is_login" to "0",
         )
         if (selectedDate.isNotEmpty()) values["target_date"] = selectedDate
-        return NewReleaseParser.parse(signedJson("$API/reading/user/subscribe/list/", values, null), selectedDate, cursor)
+        return NewReleaseParser.parse(signedJson("$API/reading/user/subscribe/list/v1/", values, null), selectedDate, cursor)
     }
     fun comicRanking(page: Int = 1)=ranking(RankBoard.COMIC,page)
     fun realRanking(page: Int = 1)=ranking(RankBoard.REAL,page)

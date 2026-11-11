@@ -6281,9 +6281,14 @@ class MainActivity: Activity() {
         }, { problem ->
             if(phoneLayout() && ticket==generation && phoneTab=="new" && phoneNewReleaseDay==date) {
                 phoneNewReleaseLoading=false
-                phoneNewReleaseError=if(more) "更多新剧加载失败，点此重试" else "新剧加载失败，点此重试"
+                val reason=problem.message?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim()?.take(160)
+                phoneNewReleaseError=buildString {
+                    append(if(more) "更多新剧加载失败" else "新剧加载失败")
+                    if(!reason.isNullOrBlank()) append("：").append(reason)
+                    append("\n点此重试")
+                }
                 renderPhone()
-                android.util.Log.w("HongguoTV","Phone new releases failed: ${problem.message}")
+                android.util.Log.w("HongguoTV","Phone new releases failed (date=${date.ifBlank { "default" }}, offset=${cursor?.offset ?: 0})",problem)
             }
         })
         // work 会先取消上一请求；在它完成取消后再标记，避免新请求被当作空闲而重复加载。

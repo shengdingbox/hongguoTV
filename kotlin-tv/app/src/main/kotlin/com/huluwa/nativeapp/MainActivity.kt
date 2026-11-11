@@ -4270,12 +4270,13 @@ class MainActivity: Activity() {
             }
         })
     }
-    /** 弹幕屏蔽词：常用词多选 + 保留用户已添加的自定义词；确认后立即对正在播放的弹幕生效。 */
+    /** 弹幕屏蔽词：常用词多选 + 手动添加自定义词；确认后立即对正在播放的弹幕生效。 */
     private fun showBlockedWordDialog(anchor: TextView) {
         val presets=listOf("加群","微信","公众号","QQ群","QQ","广告","私聊","代看","抖音","快手")
         val current=extras.blockedWords
-        val words=(presets+current.filterNot { it in presets }).distinct()
-        val checked=BooleanArray(words.size) { words[it] in current }
+        // words/checked 用可变列表：手动添加后要就地插入一行，索引也跟着变长
+        val words=(presets+current.filterNot { it in presets }).distinct().toMutableList()
+        val checked=words.map { it in current }.toMutableList()
         val content=column()
         content.addView(TvDialog.title(this,"弹幕屏蔽词"))
         // 选项用可聚焦的按钮行：多选 ListView 的 performClick 触发不了 OnItemClickListener，
@@ -4291,34 +4292,89 @@ class MainActivity: Activity() {
             row.setTypeface(null,if(focus||checked[index]) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
         }
         val dialog=AlertDialog.Builder(this).create()
-        val rows=words.mapIndexed { index,word ->
-            Button(this).apply {
-                id=View.generateViewId()
-                textSize=16f
-                minHeight=dp(46)
-                gravity=Gravity.START or Gravity.CENTER_VERTICAL
-                setPadding(dp(20),0,dp(20),0)
-                paint(this,index,false)
-                setOnFocusChangeListener { _,has -> paint(this,index,has) }
-                setOnClickListener { checked[index]=!checked[index]; paint(this,index,isFocused) }
-            }
-        }
-        val scroll=ScrollView(this).apply { isVerticalScrollBarEnabled=false }
-        val list=column()
-        rows.forEachIndexed { index,row ->
-            row.nextFocusUpId=rows.getOrNull(index-1)?.id ?: row.id
-            row.nextFocusDownId=rows.getOrNull(index+1)?.id ?: row.id
-            list.addView(row,lp(-1,-2).apply { bottomMargin=dp(8) })
-        }
-        scroll.addView(list,lp(-1,-2))
-        TvDialog.capHeight(this,scroll)
-        content.addView(scroll,lp(-1,-2))
-        val buttons=row().apply { gravity=Gravity.END; setPadding(0,dp(14),0,0) }
+        // rows 与 bottomFocusId 要在 clear 之前声明：清空回调要按索引重绘每一行，
+        // 末行的向下焦点则要等底部按钮建好后才知道
+        var rows: List<Button> = emptyList()
+        var bottomFocusId=View.NO_ID
         val clear=TvDialog.capsuleButton(this,"清空") {
             extras.blockedWords=emptySet(); applyBlockedWords(); anchor.text="弹幕屏蔽词  ·  0 个"
             for(i in checked.indices) checked[i]=false
             rows.forEachIndexed { i,r -> paint(r,i,r.isFocused) }
         }
+        // 手动添加：输入框 + 添加按钮。加完只重建列表，不动已勾选的其他词。
+        val input=EditText(this).apply {
+            id=View.generateViewId()
+            hint="输入要屏蔽的词，如「刷屏」"
+            textSize=16f
+            setTextColor(white); setHintTextColor(muted)
+            isSingleLine=true; maxLines=1
+            filters=arrayOf(android.text.InputFilter.LengthFilter(20))
+            imeOptions=android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            background=GradientDrawable().apply {
+                setColor(TvStyle.surface); cornerRadius=dp(12).toFloat(); setStroke(dp(1),TvStyle.outline)
+            }
+            setPadding(dp(14),dp(10),dp(14),dp(10))
+        }
+        val inputRow=row()
+        inputRow.addView(input,lp(0,dp(46)).apply { weight=1f; rightMargin=dp(10) })
+        val add=TvDialog.capsuleButton(this,"添加") {}
+        inputRow.addView(add,lp(-2,-2))
+        content.addView(inputRow,lp(-1,-2).apply { bottomMargin=dp(10) })
+        val scroll=ScrollView(this).apply { isVerticalScrollBarEnabled=false }
+        val list=column()
+        fun rebuild() {
+            list.removeAllViews()
+            rows=words.mapIndexed { index,word ->
+                Button(this).apply {
+                    id=View.generateViewId()
+                    textSize=16f
+                    minHeight=dp(46)
+                    gravity=Gravity.START or Gravity.CENTER_VERTICAL
+                    setPadding(dp(20),0,dp(20),0)
+                    paint(this,index,false)
+                    setOnFocusChangeListener { _,has -> paint(this,index,has) }
+                    setOnClickListener { checked[index]=!checked[index]; paint(this,index,isFocused) }
+                }
+            }
+            rows.forEachIndexed { index,row ->
+                row.nextFocusUpId=rows.getOrNull(index-1)?.id ?: input.id
+                row.nextFocusDownId=rows.getOrNull(index+1)?.id ?: bottomFocusId
+                list.addView(row,lp(-1,-2).apply { bottomMargin=dp(8) })
+            }
+            // 输入框 ↔ 添加按钮 ↔ 首行列表之间的上下焦点接上，遥控器不至于卡在输入框里
+            add.nextFocusDownId=rows.firstOrNull()?.id ?: bottomFocusId
+            input.nextFocusDownId=add.id
+        }
+        fun commitInput() {
+            val word=input.text.toString().trim()
+            if(word.isEmpty()) { Toast.makeText(this@MainActivity,"请输入要屏蔽的词",Toast.LENGTH_SHORT).show(); return }
+            val existing=words.indexOfFirst { it.equals(word,ignoreCase=true) }
+            if(existing>=0) {
+                // 已存在：直接勾上并提示，不重复插入
+                if(!checked[existing]) { checked[existing]=true; paint(rows[existing],existing,rows[existing].isFocused) }
+                Toast.makeText(this@MainActivity,"「${words[existing]}」已在列表中",Toast.LENGTH_SHORT).show()
+            } else {
+                words.add(word); checked.add(true)
+                rebuild()
+                (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken,0)
+                // 新词追加在列表末尾，滚到底才能看到它已勾选
+                scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+                Toast.makeText(this@MainActivity,"已添加「$word」，点「保存」生效",Toast.LENGTH_SHORT).show()
+            }
+            input.setText("")
+        }
+        add.setOnClickListener { commitInput() }
+        input.setOnEditorActionListener { _,_,_-> commitInput(); true }
+        // EditText 自己会吃掉方向键（移动光标），遥控器按 ↓ 出不去；这里显式交给「添加」按钮
+        input.setOnKeyListener { _,key,event ->
+            if(key==KeyEvent.KEYCODE_DPAD_DOWN && event.action==KeyEvent.ACTION_DOWN) { add.requestFocus(); true } else false
+        }
+        add.nextFocusUpId=input.id
+        rebuild()
+        scroll.addView(list,lp(-1,-2))
+        TvDialog.capHeight(this,scroll)
+        content.addView(scroll,lp(-1,-2))
+        val buttons=row().apply { gravity=Gravity.END; setPadding(0,dp(14),0,0) }
         val save=TvDialog.capsuleButton(this,"保存") {
             extras.blockedWords=words.filterIndexed { index,_ -> checked[index] }.toSet()
             applyBlockedWords(); anchor.text="弹幕屏蔽词  ·  ${extras.blockedWords.size} 个"
@@ -4327,8 +4383,16 @@ class MainActivity: Activity() {
         buttons.addView(clear,lp(-2,-2).apply { rightMargin=dp(12) })
         buttons.addView(save,lp(-2,-2))
         content.addView(buttons)
+        // 底部按钮建好后才确定末行的向下焦点，回填到已建好的行上
+        bottomFocusId=clear.id
+        rows.forEachIndexed { index,row -> row.nextFocusDownId=rows.getOrNull(index+1)?.id ?: bottomFocusId }
+        add.nextFocusDownId=rows.firstOrNull()?.id ?: bottomFocusId
         dialog.setView(TvDialog.card(this,content)) // setView 必须在 styleWindow 前：自然测宽要读到卡片
-        TvDialog.styleWindow(this,dialog) { rows.firstOrNull()?.requestFocus() }
+        // 输入框用 weight 占满剩余宽度，自然测宽会把它量成 0 宽，这里固定弹窗宽度
+        TvDialog.styleWindow(this,dialog,widthDp=440) { rows.firstOrNull()?.requestFocus() }
+        // 初始不弹软键盘（默认焦点在列表首行）；点输入框弹起时整体上移，避免遮住「添加」
+        dialog.window?.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN or WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN)
         dialog.setOnDismissListener { if(anchor.isAttachedToWindow) anchor.requestFocus() }
         dialog.show()
     }

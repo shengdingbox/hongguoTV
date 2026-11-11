@@ -9,13 +9,20 @@
 
 `core` 中的请求签名算法（`SignPrimitives.kt`、`SignAlgorithms.kt`、`AesV3.kt`，含 SM3、
 X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios 与魔改 AES-V3）与匿名设备注册协议
-（`DeviceRegister.kt`）是以下 GPL-3.0 源码的 Kotlin 移植，均在设备本地离线计算，
+（`DeviceRegister.kt`）是以下开源源码的 Kotlin 移植，均在设备本地离线计算，
 不依赖任何外部签名服务：
 
 - openhongguo, `internal/protocol/sign/`、`internal/protocol/register.go`
 - https://github.com/beilunyang/openhongguo
 - 对照版本见 `docs/SIGN_SERVICE.md`；测试向量取自其 `sign_test.go`，见 `LocalSignerTest.kt`。
 - 本版改动：仅保留实际在用的签名路径；hash 分支通过调整 `_rticket` 选取；设备档案落在应用私有目录。
+
+`PlaybackSigning.kt` 的 Argus 551 / Ladon 实现移植自 openhongguo PR #7：
+
+- https://github.com/beilunyang/openhongguo/pull/7
+- 固定提交：`bed14595d35b02e0d550270621812ca7386c4108`。
+- 原始 Go 实现与测试向量以 Apache-2.0 发布；本仓库改写为 Kotlin，保留相同的信封、轮函数和请求绑定字段。
+- 上游许可证随 APK 打包于 `app/src/main/assets/licenses/openhongguo-LICENSE.txt`。
 
 `kotlin-tv/` 原生应用源码和派生实现以 GPL-3.0-only 发布，许可证全文见 `LICENSE`。发布 APK 时同时提供本分支对应源码、Gradle 包装器和构建说明。APK 不包含 Node、React Native、JavaScript 引擎或该 JavaScript 源文件。
 

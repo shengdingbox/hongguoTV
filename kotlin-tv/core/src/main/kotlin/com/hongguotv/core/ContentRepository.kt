@@ -663,6 +663,8 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
     }
     private fun streamFromModel(model: JSONObject, maxQuality: Int): StreamInfo {
+        // PR #7's player endpoint returns direct streams, with no fallback_api hop.
+        directStreamFromModel(model,maxQuality)?.let { return it }
         val raw=model.opt("fallback_api")
         val fallback=when(raw) { is JSONObject -> raw.str("fallback_api"); is JSONArray -> raw.optString(0); else -> runCatching { JSONObject(raw.toString()).str("fallback_api") }.getOrDefault(raw.toString()) }
         if(!fallback.startsWith("https://")) throw IOException("播放地址格式异常")
@@ -690,6 +692,38 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             .filter { it>0 }.map { if(it<1_000_000_000_000L) it*1000 else it }.minOrNull() ?: 0L
         return StreamInfo(url,key,quality,expires)
     }
+    /** 新播放模型的 video_list 可为数组或对象，元数据和 CENC 密钥材料分开存放。 */
+    private fun directStreamFromModel(model: JSONObject, maxQuality: Int): StreamInfo? {
+        val list=model.opt("video_list") ?: return null
+        val items=when(list) {
+            is JSONArray -> list.objects()
+            is JSONObject -> list.keys().asSequence().mapNotNull { list.optJSONObject(it) }.toList()
+            else -> return null
+        }
+        val rows=items.mapNotNull { item ->
+            val meta=item.optJSONObject("video_meta") ?: item
+            val encryption=item.optJSONObject("encrypt_info") ?: JSONObject()
+            if(meta.str("codec_type").lowercase() in setOf("bytevc2","bvc2")) return@mapNotNull null
+            val encrypted=encryption.optBoolean("encrypt")
+            if(encrypted && (encryption.str("encryption_method")!="cenc-aes-ctr" || encryption.str("spade_a").isEmpty())) return@mapNotNull null
+            val url=listOf(item.str("main_url"),item.str("backup_url")).map(::cleanUrl)
+                .firstOrNull { it.startsWith("https://") || it.startsWith("http://") } ?: return@mapNotNull null
+            val height=qualityNumber(meta.str("definition").ifEmpty { meta.str("vheight").ifEmpty { meta.str("height") } })
+            Triple(height,url,if(encrypted) encryption.str("spade_a") else "")
+        }.sortedByDescending { it.first }
+        if(rows.isEmpty() && model.has("fallback_api")) return null
+        val selected=rows.firstOrNull { it.first<=maxQuality } ?: rows.lastOrNull()
+            ?: throw UnplayableVideoException("本集片源暂不兼容，请播放下一集", "route="+model.optString(ROUTE_KEY)+" direct video_list has no supported streams")
+        val key=selected.third.takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
+        val quality=if(selected.first>0) "${selected.first}P"+(if(selected.first>maxQuality) "（兼容资源）" else "") else "自动"
+        return StreamInfo(selected.second,key,quality,playbackExpiry(model,selected.second))
+    }
+    private fun playbackExpiry(model: JSONObject, url: String): Long {
+        val parsed=url.toHttpUrlOrNull()
+        return (listOf(model.optLong("expire_time"),model.optLong("url_expire"))+
+            listOf("x-expires","expires","expire","expire_time").mapNotNull { parsed?.queryParameter(it)?.toLongOrNull() })
+            .filter { it>0 }.map { if(it<1_000_000_000_000L) it*1000 else it }.minOrNull() ?: 0L
+    }
     /** 诊断用：每条清晰度给 `key:codec:高度:main_url形态/backup形态` 的紧凑摘要，条目间用分号，不再整段截断。 */
     private fun compactVideoList(videoList: JSONObject): String = videoList.keys().asSequence().mapNotNull { k ->
         val o=videoList.optJSONObject(k) ?: return@mapNotNull null
@@ -705,10 +739,8 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     }
     /** 预热一整窗剧集的播放模型：命中缓存的不再请求。
      *
-     *  2026-11-09 起只走稳定可重复的单集接口 [videoTabSingleModel]，最多预热 [WARM_LIMIT] 集。
-     *  原来的 `multi_video_model` 批量请求对匿名设备近乎一次性配额，每预热一集就吃掉一次配额，
-     *  导致用户真正点播放（或切下一集）时配额已经见底——这正是卡住问题的一部分。
-     *  失败不上抛——播放时按需取址仍是兜底，预取只负责把后续切集变成 0 次网络。 */
+     *  与正式播放共用 PR #7 的单集 POST 和模型缓存，最多预热 [WARM_LIMIT] 集。
+     *  失败不上抛，播放时按需取址仍是兜底。 */
     fun warm(episodes: List<String>): WarmReport {
         val ids=episodes.filter { it.matches(Regex("[0-9]{1,30}")) }.distinct()
         if(ids.isEmpty()) return WarmReport(0,0,0,null)
@@ -720,20 +752,20 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         for(id in missing) {
             if(Thread.currentThread().isInterrupted) break
             // 取消信号必须原样上抛：被 runCatching 吞掉后，预取线程会继续把剩余集数全拉一遍。
-            val model=try { videoTabSingleModel(id) } catch(problem: java.io.InterruptedIOException) { throw problem } catch(_: Exception) { null } ?: continue
+            val model=try { videoModel(id) } catch(problem: java.io.InterruptedIOException) { throw problem } catch(_: Exception) { null } ?: continue
             modelCache.put(id,model.put(LEVEL_KEY,1),clock())
             filled++; route=model.optString(ROUTE_KEY).ifEmpty { route }
         }
         return WarmReport(ids.size,cached+filled,filled,route)
     }
-    /** 播放请求：签名头由本机算法生成，UA 与本机设备档案一致。 */
+    /** 播放请求：签名头由本机播放算法生成，UA 与本机设备档案一致。 */
     private fun signedBuilder(signed: SignedRequest): Request.Builder =
         Request.Builder().url(signed.url).apply {
             header("User-Agent", signer.profile().userAgent)
             signed.headers.forEach { (key,value) -> header(key,value) }
         }
     private fun playerRequest(path: String,payload: ByteArray): Request {
-        val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com$path", linkedMapOf(), payload)
+        val signed=signer.sign("$API$path", linkedMapOf(), payload)
         return signedBuilder(signed)
             .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
@@ -760,7 +792,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         val ordered=if(preferAlt) hosts.reversed() else hosts
         var allBlank=true
         for(base in ordered) {
-            val signed=signer.sign(base,extra)
+            val signed=signer.sign(base,extra,null)
             val request=signedBuilder(signed).get().build()
             val body=try {
                 RequestScope.execute(http.newCall(request)) { response ->
@@ -802,7 +834,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // preferAlt：重试诊断用，优先探测备用主机（两个主机可能落在不同后端集群）。
         val ordered=if(preferAlt) hosts.reversed() else hosts
         for(base in ordered) {
-            val signed=signer.sign(base,extra)
+            val signed=signer.sign(base,extra,null)
             val request=signedBuilder(signed).get().build()
             val body=try {
                 RequestScope.execute(http.newCall(request)) { response ->
@@ -826,10 +858,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
         return null
     }
-    /** 播放模型：先走单集 `video_model/v`（对匿名设备可重复请求），
-     *  再试 `multi_video_model`（近乎一次性配额），最后才扫 `/novel/player/` 旧 POST 路由。
-     *  旧接口按「旧路径 → 新路径 → 带场景段」依次尝试，第一个能取到 `video_model` 的用；
-     *  记住上次成功的路由优先复用、其余路由各试一次，避免把请求量放大。 */
+    /** 播放模型优先走 PR #7 的单集 POST；video_tab 与其他播放器路由作为兼容回退。 */
     private fun videoModel(id: String, level: Int = 1, preferAlt: Boolean = false): JSONObject {
         modelCache.get(id,clock())?.let { return it }
         val model=fetchVideoModel(id,level,preferAlt).put(LEVEL_KEY,level)
@@ -837,7 +866,15 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return model
     }
     private fun fetchVideoModel(id: String, level: Int = 1, preferAlt: Boolean = false): JSONObject {
-        // 单集接口是稳定主力：失败（空体或非 0 码）只换备用主机再试一次，不在这里耗在满窗扫描上。
+        val primaryPayload="""{"video_id":"$id","biz_param":{"video_id_type":0,"need_all_video_definition":true,"video_platform":3}}""".toByteArray(Charsets.UTF_8)
+        val primary=try {
+            sweepRoutes(listOf(PLAYER_PATH to primaryPayload))
+        } catch(problem: java.io.InterruptedIOException) {
+            throw problem
+        } catch(problem: IOException) {
+            Sweep(null,null,false,problem)
+        }
+        primary.model?.let { return it }
         val singleTab=videoTabSingle(id,preferAlt)
         singleTab.model?.let { return it }
         val multiTab=videoTabModel(id,level,preferAlt)
@@ -845,11 +882,9 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // 与 video_tab 保持同一 device_level（可诊断轮换）：部分剧集在 3 下会把 360P–720P 全发成
         // bytevc2（MP4 提取器读不出视频轨），只剩超出电视解码上限的 1080P bytevc1，降档无路可走。
         val biz="""{"detail_page_version":0,"device_level":$level,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024}"""
-        val single="""{"video_id":"$id","biz_param":$biz}""".toByteArray()
         val map="""{"biz_param":$biz,"mixed_video_id_map":{"1004":["$id"]}}""".toByteArray()
         val routes=linkedMapOf(
             "/novel/player/multi_video_model/v1/" to map,
-            "/novel/player/video_model/v1/" to single,
             "/novel/player/multi_video_model/preload/v1/" to map,
             "/novel/player/multi_video_model/default/v1/" to map,
             "/novel/player/multi_video_model/detail/v1/" to map,
@@ -862,12 +897,12 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         val first=sweepRoutes(ordered)
         first.model?.let { model -> goodRoute=first.path; return model }
         // 只有两个 GET 接口（单集/多集）都空、且旧 POST 路由也全空，才算「身份被用尽」。
-        val allBlank=first.allBlank && singleTab.blank && multiTab==null
+        val allBlank=primary.allBlank && first.allBlank && singleTab.blank && multiTab==null
         // 空体基本都发生在「当前匿名身份已经被站方用尽」之后：只在这种情况下换一台匿名设备再扫一轮。
         // 非空体（有明确错误码）重扫没有意义，直接快速失败，避免界面上长时间停在「正在获取播放地址」。
-        if(!allBlank) throw first.failure ?: IOException("播放信息为空")
+        if(!allBlank) throw first.failure ?: primary.failure ?: IOException("播放信息为空")
         signer.recover()
-        val healed=sweepRoutes(ordered)
+        val healed=sweepRoutes(listOf(PLAYER_PATH to primaryPayload)+ordered)
         healed.model?.let { model -> goodRoute=healed.path; return model }
         if(healed.allBlank) throw EmptyPlaybackResponseException()
         throw healed.failure ?: IOException("播放信息为空")
@@ -907,7 +942,10 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     /** 新路由的播放模型在 `data.video_model`，旧路由在 `data[<vid>].video_model`；两种都可能被序列化成字符串。 */
     private fun videoModelOf(data: JSONObject): JSONObject? {
         val root=data.optJSONObject("data") ?: return null
-        modelOf(root.opt("video_model"))?.let { return it }
+        modelOf(root.opt("video_model"))?.let {
+            if(!it.has("expire_time") && root.has("expire_time")) it.put("expire_time",root.optLong("expire_time"))
+            return it
+        }
         val entry=root.keys().asSequence().mapNotNull { root.optJSONObject(it) }.firstOrNull() ?: return null
         return modelOf(entry.opt("video_model"))
     }
@@ -917,6 +955,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         else -> null
     }
     companion object {
+        private const val PLAYER_PATH="/novel/player/video_model/v1/"
         // 推荐与系列剧在主详情显示后并行补齐，共享两秒预算。
         private const val DETAIL_AUX_TIMEOUT=2_000L
         private const val DETAIL_CACHE_TTL=600_000L

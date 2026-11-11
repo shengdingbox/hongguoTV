@@ -1,6 +1,6 @@
 # 请求签名与匿名设备
 
-更新日期：2026-11-09。
+更新日期：2026-11-11。
 
 红果官方接口（搜索、联想、分类筛选、播放取址、弹幕、账号）都要求请求携带签名头，
 且只答**平台注册过的匿名设备**。本版起这两件事都在 App 本机完成，**不再依赖任何签名服务**。
@@ -11,6 +11,7 @@
 | --- | --- |
 | `SignPrimitives.kt` | SM3、GF(2^8)、protobuf 编码、IV 派生、AES S 盒 |
 | `SignAlgorithms.kt` | X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios 与 f13 hash 分支 |
+| `PlaybackSigning.kt` | 播放专用 Argus 551 / Ladon，移植自 openhongguo PR #7 |
 | `AesV3.kt` | 魔改 AES-V3（X-Medusa 封装用） |
 | `DeviceRegister.kt` | 匿名设备注册（ttEncrypt = GZIP + AES-CBC） |
 | `RemoteSigner.kt` | 对外接口：`profile()` / `sign()` / `recover()` |
@@ -29,8 +30,14 @@
    `HTTP 200 + 0 字节`，因此这一步不可省。
 2. **持久化**：档案写进 `SharedPreferences("native-signer-v1")`，冷启动直接复用，
    不必每次开机重新注册。
-3. **签名**：每次请求本地算出六个签名头；`_rticket` 从当前毫秒开始递增，
-   直到 f13 的 hash 分支落在可直接计算的一支上（分支 0 / 1 / 2 均支持）。
+3. **签名**：普通请求继续用六头签名。播放 POST 按
+   [openhongguo PR #7](https://github.com/beilunyang/openhongguo/pull/7)
+   （`bed14595d35b02e0d550270621812ca7386c4108`）生成完整 Argus 551 与 34 轮 Ladon，
+   绑定最终查询串、原始请求体及同一份匿名档案，并移除 `X-Medusa`。
+   `ContentRepository` 优先调用 `POST /novel/player/video_model/v1/`，
+   使用 `video_platform=3`，直接解析 `video_list / video_meta / encrypt_info`，
+   复用既有 CENC 密钥解包与播放；预热和正式播放共用此路径及模型缓存。
+   旧 `video_tab` / `fallback_api` 仅保留为兼容回退。
 4. **恢复**：持续空响应说明当前身份被限制，`recover()` 重新注册一台匿名设备。
 
 所有模块（内容、播放、弹幕、账号）共用同一个 `RemoteSigner` 实例——平台按
@@ -50,9 +57,9 @@
 
 ## 已知边界
 
-- **接口配额与签名方式无关**：`multi_video_model` 对匿名设备近乎一次性配额
-  （见 `docs/SIGN_SERVICE.md` 旧记录与 `ContentRepository` 注释）。本版取址主路由是
-  `GET video_tab/video_model/v`，同一设备可重复请求；多集接口仅作兜底。
+- **播放空响应需要区分签名与设备限制**：2026-11-10 起旧的 Argus/Ladon 时间戳占位
+  无法通过播放 POST 校验。先使用 PR #7 专用签名，不能仅凭空响应认定设备配额用尽；
+  所有兼容路由仍为空时，才按现有策略有限次更换匿名设备。
 - **平台改算法时需要发版**：内置算法不像服务端那样可以热更新。若红果升级风控，
   需要跟进 openhongguo 的上游实现后重新发版。
 - **匿名设备仍可能被限制**：注册是无成本的匿名流程，平台若整体收紧匿名访问，

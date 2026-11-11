@@ -200,6 +200,17 @@ open class RemoteSigner(
             ),
             "x-tt-dt" to "",
         )
+        if (PlaybackSigning.isPlayerPath(path.substringBefore('?'))) {
+            // Bind the envelope to the final query and the same profile used
+            // above; reading profile() again could race with device recovery.
+            headers.remove("x-medusa")
+            headers["lc"] = "101"
+            headers["x-ss-dp"] = profile.params["aid"].orEmpty().ifBlank { "8662" }
+            headers.putAll(PlaybackSigning.headers(
+                query, body, khronos, profile.deviceId, profile.installId,
+                versionName = profile.versionName.ifBlank { APP_VERSION_NAME },
+            ))
+        }
         if (hasBody) {
             headers["Content-Type"] = "application/json; charset=UTF-8"
             headers["x-ss-stub"] = digest("MD5", body!!).hex().uppercase()

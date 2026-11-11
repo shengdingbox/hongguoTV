@@ -126,10 +126,14 @@ class PhoneDetail(
         content.addView(synopsis, lp(-1, -2))
         content.addView(toggle, lp(-2, -2))
 
-        // 系列剧季导航
-        val seasons = (listOf(data.series) + data.sameName).distinctBy { it.id }
-            .sortedBy { val number = seasonNumber(it.title); if (number == Int.MAX_VALUE) 0 else number }
-        if (seasons.size > 1) {
+        // 主详情先显示，季导航由辅助请求补齐，只刷新这个容器。
+        val seasonHost = PhoneUi.column(activity)
+        content.addView(seasonHost, lp(-1, -2))
+        fun renderSeasons(current: Detail) {
+            seasonHost.removeAllViews()
+            val seasons = (listOf(current.series) + current.sameName).distinctBy { it.id }
+                .sortedBy { val number = seasonNumber(it.title); if (number == Int.MAX_VALUE) 0 else number }
+            if (seasons.size <= 1) return
             val seasonRow = PhoneUi.row(activity).apply { setPadding(dp(14), dp(8), dp(14), dp(2)) }
             seasonRow.addView(text("系列 ${seasons.size} 季", 13f, TvStyle.accent))
             val strip = android.widget.HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
@@ -138,16 +142,16 @@ class PhoneDetail(
             seasons.forEach { season ->
                 val number = seasonNumber(season.title)
                 val title = if (number == Int.MAX_VALUE) season.title.take(12) else "第 ${number} 季"
-                val chip = text(title, 13f, if (season.id == data.series.id) TvStyle.background else TvStyle.text).apply {
+                val chip = text(title, 13f, if (season.id == current.series.id) TvStyle.background else TvStyle.text).apply {
                     gravity = Gravity.CENTER
                     setPadding(dp(12), dp(7), dp(12), dp(7))
-                    background = TvStyle.shape(activity, if (season.id == data.series.id) TvStyle.accent else TvStyle.raised)
-                    setOnClickListener { if (season.id != data.series.id) activity.openDetailPhone(season) }
+                    background = TvStyle.shape(activity, if (season.id == current.series.id) TvStyle.accent else TvStyle.raised)
+                    setOnClickListener { if (season.id != current.series.id) activity.openDetailPhone(season) }
                 }
                 line.addView(chip, lp(-2, -2).apply { rightMargin = dp(10) })
             }
             seasonRow.addView(strip, lp(0, -2).apply { weight = 1f })
-            content.addView(seasonRow, lp(-1, -2))
+            seasonHost.addView(seasonRow, lp(-1, -2))
         }
 
         // 集数网格：每页 5 列 × 6 行 = 30 集；已看降透明度、当前集高亮
@@ -199,9 +203,16 @@ class PhoneDetail(
         content.addView(episodeHost, lp(-1, -2))
         renderEpisodes()
 
-        // 相关推荐
-        if (data.related.isNotEmpty()) {
-            content.addView(PhoneUi.shelf(activity, "相关推荐", data.related.take(10), loadCover, { activity.openDetailPhone(it) }), lp(-1, -2).apply { topMargin = dp(6) })
+        val recommendationHost = PhoneUi.column(activity)
+        content.addView(recommendationHost, lp(-1, -2))
+        fun renderExtras(current: Detail) {
+            renderSeasons(current)
+            recommendationHost.removeAllViews()
+            if (current.related.isNotEmpty()) {
+                recommendationHost.addView(PhoneUi.shelf(activity, "相关推荐", current.related.take(10), loadCover, { activity.openDetailPhone(it) }), lp(-1, -2).apply { topMargin = dp(6) })
+            }
         }
+        renderExtras(data)
+        activity.loadDetailExtras(data, ::renderExtras)
     }
 }

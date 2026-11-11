@@ -77,6 +77,8 @@ class MainActivity: Activity() {
     private val gold by lazy { TvStyle.gold }
     private val main=Handler(Looper.getMainLooper())
     private val io=Executors.newFixedThreadPool(3)
+    // 页面请求独占线程，不排在随机推荐补池、云同步等后台任务之后。
+    private val pageIo=Executors.newFixedThreadPool(1)
     // 签名完全在本机完成：设备档案落在应用私有目录，冷启动直接复用，不再依赖签名服务。
     // 注意：这些必须用 by lazy。Activity 的字段初始化器在构造阶段执行，
     // 那时 attachBaseContext 还没跑，this 作为 Context 是空的，
@@ -167,6 +169,8 @@ class MainActivity: Activity() {
     private var localPermissionContinuation: (() -> Unit)?=null
     private var workScope: RequestScope?=null
     private var workJob: java.util.concurrent.Future<*>?=null
+    private var detailExtrasScope: RequestScope?=null
+    private var detailExtrasJob: java.util.concurrent.Future<*>?=null
     private var playerListener: Player.Listener?=null
     private lateinit var playbackTitle: TextView
     private var directPlayback=false
@@ -825,10 +829,10 @@ class MainActivity: Activity() {
         deferredWork?.discard?.invoke(); deferredWork=null
         workScope?.cancel(); workScope=null
         workJob?.cancel(true); workJob=null
-        (io as? java.util.concurrent.ThreadPoolExecutor)?.purge()
+        (pageIo as? java.util.concurrent.ThreadPoolExecutor)?.purge()
     }
     private fun invalidatePage() {
-        generation++; cancelWork(); artwork.cancelPage()
+        generation++; cancelWork(); cancelDetailExtras(); artwork.cancelPage()
     }
     private fun releaseCatalogViews() {
         retainedPhoneCatalogs.clear()
@@ -852,7 +856,7 @@ class MainActivity: Activity() {
     private fun <T> work(action: ()->T,done: (T)->Unit,failed: (Throwable)->Unit) {
         cancelWork()
         val ticket=generation; val scope=RequestScope(); workScope=scope
-        workJob=io.submit {
+        workJob=pageIo.submit {
             try {
                 val result=scope.run(action)
                 main.post {
@@ -3145,6 +3149,7 @@ class MainActivity: Activity() {
      *   那时详情已经拉过一次，这里复用，不再重复请求（电视上多一次往返就是多等一秒）。
      */
     private fun openDetail(series: Series,resume: Boolean=false,autoplay: Boolean=true,cloud: CloudProgress?=null,preloaded: Detail?=null) {
+        favoriteMonitor.stop()
         pendingDetail=series; detailAutoplay=autoplay; pendingCloudResume=cloud
         invalidatePage(); releaseCatalogViews(); screen="detail"; directPlayback=resume; detail=null; synopsisExpanded=false; detailEpisodePage=-1
         val body=base(series.title); message(body,"正在加载剧集…")
@@ -3171,7 +3176,28 @@ class MainActivity: Activity() {
         val cached=if(cloud==null) repository.cachedDetail(series.id) else null
         if(preloaded!=null) apply(preloaded)
         else if(cached!=null) apply(cached)
-        else work({ repository.detail(series.id) }, apply, { problem -> error(body,problem) { openDetail(series,resume,detailAutoplay,cloud) } })
+        else work({ repository.seriesDetail(series.id) }, apply, { problem -> error(body,problem) { openDetail(series,resume,detailAutoplay,cloud) } })
+    }
+    private fun cancelDetailExtras() {
+        detailExtrasScope?.cancel(); detailExtrasScope=null
+        detailExtrasJob?.cancel(true); detailExtrasJob=null
+        (io as? java.util.concurrent.ThreadPoolExecutor)?.purge()
+    }
+    /** 主内容显示后再补辅助区域；独立于 work，不会取消主详情或播放预热。 */
+    fun loadDetailExtras(data: Detail, render: (Detail)->Unit = {}) {
+        cancelDetailExtras()
+        if(!repository.needsDetailExtras(data.series.id)) return
+        val ticket=generation
+        val scope=RequestScope(); detailExtrasScope=scope
+        detailExtrasJob=io.submit {
+            val result=runCatching { scope.run { repository.detail(data.series.id) } }.getOrNull() ?: return@submit
+            main.post {
+                if(isDestroyed || generation!=ticket || scope.isCancelled || detailExtrasScope!==scope || (screen!="detail" && screen!="player") || detail?.series?.id!=data.series.id) return@post
+                detailExtrasScope=null; detailExtrasJob=null
+                detail=result
+                if(screen=="detail") render(result)
+            }
+        }
     }
     /** 详情页驻留期间预热「即将播放的那集 + 下一集」。
      *
@@ -3263,10 +3289,14 @@ class MainActivity: Activity() {
         jump=addButton(actions,"跳转集数") { tvTools.episodePicker(data.episodes.size,episodeIndex,jump) { target -> episodeIndex=target; group=target/20; showDetail(true); prefetchDetailWindow(target) } }
         content.addView(hero)
         // 系列剧季导航与集数网格收进海报右侧栏：一屏内完成「看点什么、从哪集看」的决定
-        val seasons=(listOf(data.series)+data.sameName).distinctBy { it.id }
-            .sortedBy { val number=seasonNumber(it.title); if(number==Int.MAX_VALUE) 0 else number }
+        val seasonHost=column()
+        info.addView(seasonHost)
         val seasonButtons=mutableListOf<TextView>()
-        if(seasons.size>1) {
+        fun renderSeasons(current: Detail) {
+            seasonHost.removeAllViews(); seasonButtons.clear()
+            val seasons=(listOf(current.series)+current.sameName).distinctBy { it.id }
+                .sortedBy { val number=seasonNumber(it.title); if(number==Int.MAX_VALUE) 0 else number }
+            if(seasons.size<=1) return
             val seasonRow=row(); seasonRow.setPadding(0,dp(10),0,dp(2))
             seasonRow.addView(text("系列 ${seasons.size} 季",13f,accent).apply { gravity=Gravity.CENTER },lp(dp(78),dp(42)))
             val strip=HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled=false; clipToPadding=false }
@@ -3275,10 +3305,10 @@ class MainActivity: Activity() {
                 val number=seasonNumber(season.title)
                 val seen=library.progress(season.id)?.let { " · 看到${it.episodeIndex+1}集" }.orEmpty()
                 val title=if(number==Int.MAX_VALUE) season.title.take(12) else "第 ${number} 季"
-                seasonButtons+=addButton(line,title+seen,season.id==data.series.id) { if(season.id!=data.series.id) openDetail(season) }
+                seasonButtons+=addButton(line,title+seen,season.id==current.series.id) { if(season.id!=current.series.id) openDetail(season) }
             }
             seasonRow.addView(strip,lp(0,dp(42)).apply { weight=1f })
-            info.addView(seasonRow)
+            seasonHost.addView(seasonRow)
         }
         // 集数分页：每页 4 行 × 8 列 = 32 集，避免长剧一次性渲染上百按钮；已看降透明度、当前集高亮
         val episodeCols=8
@@ -3313,81 +3343,89 @@ class MainActivity: Activity() {
             repeat(episodeCols-numbers.size) { line.addView(Space(this),lp(0,dp(42)).apply { weight=1f; rightMargin=dp(6) }) }
             info.addView(line,lp(-1,dp(49)))
         }
-        val extraRows=mutableListOf<MutableList<View>>()
-        fun recommendationRow(title: String,items: List<Series>) {
-            if(items.isEmpty()) return
-            val section=column()
-            val heading=row(); heading.setPadding(0,dp(20),0,dp(9))
-            heading.addView(View(this).apply { background=TvStyle.shape(this@MainActivity,TvStyle.accent,radius=2) },lp(dp(3),dp(14)).apply { rightMargin=dp(8) })
-            heading.addView(text(title,16f).apply { setTypeface(null,Typeface.BOLD) },lp(0,-2).apply { weight=1f })
-            heading.addView(text("左右查看更多",10f,muted))
-            section.addView(heading)
-            val horizontal=HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled=false; clipToPadding=false }
-            val line=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.TOP }
-            val width=((resources.displayMetrics.widthPixels*.9f-dp(70))/6).toInt().coerceAtLeast(dp(100))
-            val posterHeight=((width-dp(8))/TvStyle.POSTER_ASPECT).toInt()
-            val cards=mutableListOf<View>()
-            items.take(12).forEach { series ->
-                val card=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; id=View.generateViewId(); isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(4),dp(4),dp(4),dp(8)); background=TvStyle.card(this@MainActivity,false); contentDescription="$title，${series.title}" }
-                val image=ImageView(this).apply { scaleType=ImageView.ScaleType.CENTER_CROP; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }
-                card.addView(image,lp(-1,posterHeight))
-                card.addView(text(series.title,14f).apply { minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(5),dp(3),0) })
-                card.addView(text(series.badge.ifBlank { series.tags },12f,muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(2),0,0) })
-                card.setOnFocusChangeListener { _,focused -> card.background=TvStyle.card(this@MainActivity,focused); if(focused) loadCover(image,series.cover) }
-                card.setOnClickListener { openDetail(series) }
-                if(cards.size<6) loadCover(image,series.cover)
-                line.addView(card,lp(width,-2).apply { rightMargin=dp(14) })
-                cards+=card
+        val recommendationHost=column()
+        content.addView(recommendationHost,lp(-1,-2))
+        fun renderExtras(current: Detail) {
+            renderSeasons(current)
+            recommendationHost.removeAllViews()
+            val extraRows=mutableListOf<MutableList<View>>()
+            fun recommendationRow(title: String,items: List<Series>) {
+                if(items.isEmpty()) return
+                val section=column()
+                val heading=row(); heading.setPadding(0,dp(20),0,dp(9))
+                heading.addView(View(this).apply { background=TvStyle.shape(this@MainActivity,TvStyle.accent,radius=2) },lp(dp(3),dp(14)).apply { rightMargin=dp(8) })
+                heading.addView(text(title,16f).apply { setTypeface(null,Typeface.BOLD) },lp(0,-2).apply { weight=1f })
+                heading.addView(text("左右查看更多",10f,muted))
+                section.addView(heading)
+                val horizontal=HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled=false; clipToPadding=false }
+                val line=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.TOP }
+                val width=((resources.displayMetrics.widthPixels*.9f-dp(70))/6).toInt().coerceAtLeast(dp(100))
+                val posterHeight=((width-dp(8))/TvStyle.POSTER_ASPECT).toInt()
+                val cards=mutableListOf<View>()
+                items.take(12).forEach { series ->
+                    val card=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; id=View.generateViewId(); isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(4),dp(4),dp(4),dp(8)); background=TvStyle.card(this@MainActivity,false); contentDescription="$title，${series.title}" }
+                    val image=ImageView(this).apply { scaleType=ImageView.ScaleType.CENTER_CROP; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }
+                    card.addView(image,lp(-1,posterHeight))
+                    card.addView(text(series.title,14f).apply { minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(5),dp(3),0) })
+                    card.addView(text(series.badge.ifBlank { series.tags },12f,muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(2),0,0) })
+                    card.setOnFocusChangeListener { _,focused -> card.background=TvStyle.card(this@MainActivity,focused); if(focused) loadCover(image,series.cover) }
+                    card.setOnClickListener { openDetail(series) }
+                    if(cards.size<6) loadCover(image,series.cover)
+                    line.addView(card,lp(width,-2).apply { rightMargin=dp(14) })
+                    cards+=card
+                }
+                horizontal.addView(line); section.addView(horizontal)
+                recommendationHost.addView(section,lp(-1,-2).apply { topMargin=dp(4) })
+                extraRows+=cards
             }
-            horizontal.addView(line); section.addView(horizontal)
-            content.addView(section,lp(-1,-2).apply { topMargin=dp(4) })
-            extraRows+=cards
-        }
-        recommendationRow("系列剧推荐",data.sameName)
-        recommendationRow("相关推荐",data.related)
-        val lastRowStart=((episodes.size-1)/episodeCols)*episodeCols
-        val firstRow=extraRows.firstOrNull()
-        val pagerRow: View?=prevPager ?: nextPager
-        val aboveEpisodes: View=pagerRow ?: seasonButtons.lastOrNull() ?: jump
-        episodes.forEachIndexed { i,v ->
-            v.nextFocusLeftId=when {
-                i%episodeCols==0 -> prevPager?.id ?: v.id
-                else -> episodes[i-1].id
+            recommendationRow("系列剧推荐",current.sameName)
+            recommendationRow("相关推荐",current.related)
+            val lastRowStart=((episodes.size-1)/episodeCols)*episodeCols
+            val firstRow=extraRows.firstOrNull()
+            val pagerRow: View?=prevPager ?: nextPager
+            val aboveEpisodes: View=pagerRow ?: seasonButtons.lastOrNull() ?: jump
+            episodes.forEachIndexed { i,v ->
+                v.nextFocusLeftId=when {
+                    i%episodeCols==0 -> prevPager?.id ?: v.id
+                    else -> episodes[i-1].id
+                }
+                v.nextFocusRightId=when {
+                    i==episodes.lastIndex -> nextPager?.id ?: v.id
+                    i%episodeCols==episodeCols-1 -> v.id
+                    else -> episodes[i+1].id
+                }
+                v.nextFocusUpId=if(i>=episodeCols) episodes[i-episodeCols].id else aboveEpisodes.id
+                v.nextFocusDownId=when {
+                    i+episodeCols<episodes.size -> episodes[i+episodeCols].id
+                    firstRow!=null && i>=lastRowStart -> firstRow[(i-lastRowStart).coerceAtMost(firstRow.lastIndex)].id
+                    else -> v.id
+                }
             }
-            v.nextFocusRightId=when {
-                i==episodes.lastIndex -> nextPager?.id ?: v.id
-                i%episodeCols==episodeCols-1 -> v.id
-                else -> episodes[i+1].id
+            // 翻页按钮（集数上方）：↑ 回季条/操作行，↓ 进集数第一行；左右互连
+            val abovePager: View=seasonButtons.lastOrNull() ?: jump
+            prevPager?.let { it.nextFocusUpId=abovePager.id; it.nextFocusDownId=episodes.firstOrNull()?.id ?: it.id; it.nextFocusRightId=nextPager?.id ?: it.id }
+            nextPager?.let { it.nextFocusUpId=abovePager.id; it.nextFocusDownId=episodes.firstOrNull()?.id ?: it.id; it.nextFocusLeftId=prevPager?.id ?: it.id }
+            // 季条 ↑ 回操作行、↓ 进翻页/集数；操作行 ↓ 优先进季条，否则直达翻页或第一集
+            seasonButtons.forEachIndexed { index,view ->
+                view.nextFocusUpId=jump.id
+                view.nextFocusDownId=pagerRow?.id ?: episodes.getOrNull(index.coerceAtMost(episodes.lastIndex))?.id ?: View.NO_ID
             }
-            v.nextFocusUpId=if(i>=episodeCols) episodes[i-episodeCols].id else aboveEpisodes.id
-            v.nextFocusDownId=when {
-                i+episodeCols<episodes.size -> episodes[i+episodeCols].id
-                firstRow!=null && i>=lastRowStart -> firstRow[(i-lastRowStart).coerceAtMost(firstRow.lastIndex)].id
-                else -> v.id
+            episodes.firstOrNull()?.let { first ->
+                val down=seasonButtons.firstOrNull()?.id ?: pagerRow?.id ?: first.id
+                listOf(play,favorite,synopsisButton,jump).forEach { it.nextFocusDownId=down }
             }
-        }
-        // 翻页按钮（集数上方）：↑ 回季条/操作行，↓ 进集数第一行；左右互连
-        val abovePager: View=seasonButtons.lastOrNull() ?: jump
-        prevPager?.let { it.nextFocusUpId=abovePager.id; it.nextFocusDownId=episodes.firstOrNull()?.id ?: it.id; it.nextFocusRightId=nextPager?.id ?: it.id }
-        nextPager?.let { it.nextFocusUpId=abovePager.id; it.nextFocusDownId=episodes.firstOrNull()?.id ?: it.id; it.nextFocusLeftId=prevPager?.id ?: it.id }
-        // 季条 ↑ 回操作行、↓ 进翻页/集数；操作行 ↓ 优先进季条，否则直达翻页或第一集
-        seasonButtons.forEachIndexed { index,view ->
-            view.nextFocusUpId=jump.id
-            view.nextFocusDownId=pagerRow?.id ?: episodes.getOrNull(index.coerceAtMost(episodes.lastIndex))?.id ?: View.NO_ID
-        }
-        episodes.firstOrNull()?.let { first ->
-            val down=seasonButtons.firstOrNull()?.id ?: pagerRow?.id ?: first.id
-            listOf(play,favorite,synopsisButton,jump).forEach { it.nextFocusDownId=down }
-        }
-        extraRows.forEachIndexed { rowIndex,cards ->
-            cards.forEachIndexed { i,v ->
-                v.nextFocusLeftId=cards[(i-1).coerceAtLeast(0)].id
-                v.nextFocusRightId=cards[(i+1).coerceAtMost(cards.lastIndex)].id
-                v.nextFocusUpId=if(rowIndex>0) extraRows[rowIndex-1].getOrNull(i.coerceAtMost(extraRows[rowIndex-1].lastIndex))?.id ?: (pagerRow?.id ?: play.id)
-                    else episodes.getOrNull((lastRowStart+i).coerceAtMost(episodes.lastIndex))?.id ?: (pagerRow?.id ?: play.id)
-                v.nextFocusDownId=if(rowIndex<extraRows.lastIndex) extraRows[rowIndex+1].getOrNull(i.coerceAtMost(extraRows[rowIndex+1].lastIndex))?.id ?: v.id else v.id
+            extraRows.forEachIndexed { rowIndex,cards ->
+                cards.forEachIndexed { i,v ->
+                    v.nextFocusLeftId=cards[(i-1).coerceAtLeast(0)].id
+                    v.nextFocusRightId=cards[(i+1).coerceAtMost(cards.lastIndex)].id
+                    v.nextFocusUpId=if(rowIndex>0) extraRows[rowIndex-1].getOrNull(i.coerceAtMost(extraRows[rowIndex-1].lastIndex))?.id ?: (pagerRow?.id ?: play.id)
+                        else episodes.getOrNull((lastRowStart+i).coerceAtMost(episodes.lastIndex))?.id ?: (pagerRow?.id ?: play.id)
+                    v.nextFocusDownId=if(rowIndex<extraRows.lastIndex) extraRows[rowIndex+1].getOrNull(i.coerceAtMost(extraRows[rowIndex+1].lastIndex))?.id ?: v.id else v.id
+                }
             }
         }
+        renderExtras(data)
+        loadDetailExtras(data,::renderExtras)
         // 翻页后焦点留在翻页按钮上，方便连按继续翻；翻到头/尾时落到另一个仍能用的按钮，
         // 避免焦点停在一个按下没反应的按钮上。
         val pagerTarget=when {
@@ -3583,6 +3621,8 @@ class MainActivity: Activity() {
                         android.util.Log.w("HongguoTV","Playback ready episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${readySince-episodeStartedAt}")
                         startDanmaku()
                         maybePrefetch()
+                        // 起播后再补系列信息，继续观看和语音开播同样保留跨季连播。
+                        detail?.let { loadDetailExtras(it) }
                     } else if(rebufferStart>0) {
                         android.util.Log.w("HongguoTV","Rebuffer end episode=${episodeIndex+1} stalledMs=${android.os.SystemClock.elapsedRealtime()-rebufferStart}")
                         rebufferStart=0
@@ -5900,7 +5940,7 @@ class MainActivity: Activity() {
             // 没有剧集就进播放器等于把人扔进一个黑屏。这里把详情先取回来验一次，
             // 验不过就停在搜索页——结果已经摆在屏幕上了，点一下比猜可靠。
             val ready=hit?.let { (type,series) ->
-                runCatching { repository.detail(series.id) }.getOrNull()
+                runCatching { repository.seriesDetail(series.id) }.getOrNull()
                     ?.takeIf { it.episodes.isNotEmpty() }
                     ?.let { Triple(type,series,it) }
             }
@@ -6561,6 +6601,7 @@ class MainActivity: Activity() {
         // 记住从哪个页签进来的：详情返回时回到原处（从排行/收藏点进去不该被丢回首页）。
         // 同剧切季（openDetailPhone 在详情页内再次调用）沿用原来的返回目标。
         if(phoneTab!="detail") phoneDetailReturn=phoneTab
+        favoriteMonitor.stop()
         pendingDetail=series; detailAutoplay=true
         invalidatePage(); releaseCatalogViews(); screen="detail"; detail=null; synopsisExpanded=false; phoneTab="detail"
         markPageShown()
@@ -6582,7 +6623,7 @@ class MainActivity: Activity() {
                 }
             }
         }
-        repository.cachedDetail(series.id)?.let(apply) ?: work({ repository.detail(series.id) }, apply, { problem ->
+        repository.cachedDetail(series.id)?.let(apply) ?: work({ repository.seriesDetail(series.id) }, apply, { problem ->
             // 失败回调是普通的非内联 lambda，里面不能写裸 return
             if(phoneLayout()) {
                 val body=column(); error(body,problem) { openDetailPhone(series,resume) }
@@ -7333,7 +7374,7 @@ class MainActivity: Activity() {
         super.onPause()
     }
     override fun onStop() {
-        restoreStoppedPage=true; generation++; cancelWork(); tvTools.close()
+        restoreStoppedPage=true; generation++; cancelWork(); cancelDetailExtras(); tvTools.close()
         stopXiaoAi()
         third?.stop()
         // 播放页留在屏幕上但被切到后台（切 App / 锁屏 / 下拉通知栏）：只暂停，不拆播放器。
@@ -7367,7 +7408,7 @@ class MainActivity: Activity() {
         }
     }
     override fun onDestroy() {
-        generation++; cancelWork()
+        generation++; cancelWork(); cancelDetailExtras()
         // 全屏播放中点着返回退出 App：方向已经交给「启动方向」，别把横屏留给下一次启动
         if(phoneFullscreenPlayback) requestedOrientation=PhoneUi.requestedOrientation(this)
         phoneFullscreenPlayback=false; phonePlayerRenderedFullscreen=false
@@ -7377,7 +7418,7 @@ class MainActivity: Activity() {
         xiaoAi?.destroy()
         third?.release()
         artwork.close(); releaseCatalogViews(); mediaSession.release(); main.removeCallbacksAndMessages(null)
-        io.shutdownNow(); playbackCache.close(); episodeDiskCache?.close(); episodeDiskCache=null
+        pageIo.shutdownNow(); io.shutdownNow(); playbackCache.close(); episodeDiskCache?.close(); episodeDiskCache=null
         Thread({ repository.http.dispatcher.cancelAll(); repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() },"hongguotv-network-cleanup").start()
         super.onDestroy()
         if(killOnDestroy) android.os.Process.killProcess(android.os.Process.myPid())

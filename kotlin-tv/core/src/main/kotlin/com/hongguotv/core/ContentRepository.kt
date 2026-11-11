@@ -91,6 +91,14 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     private val site = "https://hongguoduanju.com"
     /** 红果官方 App 的 JSON 网关；签名与设备身份由 [RemoteSigner] 统一补齐。 */
     private val API = "https://api5-normal-sinfonlinea.fqnovel.com"
+    // 点击卡片后的关键请求独立限时，复用连接池；不继承普通内容请求最长 45 秒的等待。
+    private val detailHttp by lazy {
+        http.newBuilder()
+            .connectTimeout(minOf(http.connectTimeoutMillis.toLong(), 4_000L), TimeUnit.MILLISECONDS)
+            .readTimeout(minOf(http.readTimeoutMillis.toLong(), 6_000L), TimeUnit.MILLISECONDS)
+            .callTimeout(if(http.callTimeoutMillis>0) minOf(http.callTimeoutMillis.toLong(), 8_000L) else 8_000L, TimeUnit.MILLISECONDS)
+            .build()
+    }
     private data class SearchCursor(val searchId: String, val passback: String, val offset: Int?, val updatedAt: Long)
     private val searchCursors=linkedMapOf<Triple<ContentType,String,Int>,SearchCursor>()
     private val genreCache=mutableMapOf<ContentType,Pair<Long,List<Genre>>>()
@@ -108,12 +116,12 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     private fun text(url: String): String = text(url, null)
 
     /** [signed] 非空时用本机签名给出的地址与请求头；为空时按普通网页请求处理。 */
-    private fun text(url: String, signed: SignedRequest?): String {
+    private fun text(url: String, signed: SignedRequest?, transport: OkHttpClient = http): String {
         val request = Request.Builder().url(signed?.url ?: url).header("Accept-Language","zh-CN,zh;q=0.9")
         request.header("User-Agent", if (signed != null) signer.profile().userAgent else VendorConstants.VIDEO_UA)
         signed?.headers?.forEach { (k,v) -> request.header(k,v) }
         signed?.body?.let { request.post(it.toRequestBody("application/json; charset=utf-8".toMediaType())) }
-        return RequestScope.execute(http.newCall(request.build())) { response ->
+        return RequestScope.execute(transport.newCall(request.build())) { response ->
             if (!response.isSuccessful) throw IOException("内容请求失败（HTTP ${response.code}）")
             val body = response.body ?: throw IOException("内容响应为空")
             if (body.contentLength() > 16*1024*1024) throw IOException("内容响应过大")
@@ -424,39 +432,59 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         if(key.isEmpty() || key.length>20 || !key.matches(Regex("[a-z0-9]+"))) return emptyList()
         return suggestRaw(key)
     }
-    /** 剧集详情优先保证主接口与分集尽快回来，推荐/系列剧只给很短的并行等待预算。 */
-    private data class DetailCache(val at: Long, val main: SeriesPayload, val related: List<Series>, val seasons: List<Series>)
+    /** 主详情与辅助信息分开缓存，首页点击只等待标题和完整分集。 */
+    private data class DetailCache(val at: Long, val detail: Detail, val extrasLoaded: Boolean = false)
     private val detailCache=linkedMapOf<String,DetailCache>()
 
-    fun detail(id: String): Detail {
+    /** 仅请求一次主接口；推荐、系列剧由页面展示后再补齐。 */
+    fun seriesDetail(id: String): Detail {
         require(id.matches(Regex("[0-9]{1,30}")))
         cachedDetail(id)?.let { return it }
         val main=fetchSeriesDetail(id)
+        val result=Detail(main.series,main.episodes,social=main.social)
+        return synchronized(detailCache) {
+            detailCache[id]?.takeIf { clock()-it.at<DETAIL_CACHE_TTL }?.detail ?: result.also {
+                detailCache[id]=DetailCache(clock(),it)
+                while(detailCache.size>30) detailCache.remove(detailCache.keys.first())
+            }
+        }
+    }
+
+    /** 完整详情保留给补季、收藏更新等需要系列信息的调用方。 */
+    fun detail(id: String): Detail {
+        val main=seriesDetail(id)
+        if(!needsDetailExtras(id)) return cachedDetail(id) ?: main
         val scope=RequestScope.current()?.child() ?: RequestScope()
-        // plan feed 只用于辅助展示，绝不能像旧网页补季那样串行拖住整个详情页。
-        // 两个请求共用取消作用域，超时就同时取消，不留下还在跑的无主网络任务。
+        // 两个辅助请求共用取消作用域与等待预算，页面离开后一起取消。
         val relatedTask=FutureTask(Callable { scope.run { runCatching { planRelated(id,main.series) }.getOrDefault(emptyList()) } })
         val seasonsTask=FutureTask(Callable { scope.run { runCatching { planSeasons(id) }.getOrDefault(emptyList()).filter { it.id!=id } } })
         val threads=listOf(relatedTask,seasonsTask).map { task -> Thread(task,"hongguotv-detail-extra").apply { isDaemon=true; start() } }
-        val deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(DETAIL_AUX_TIMEOUT)
-        fun <T> getAux(task: Future<T>): T? = try { task.get((deadline-System.nanoTime()).coerceAtLeast(0),TimeUnit.NANOSECONDS) }
-        catch(_: TimeoutException) { null } catch(_: ExecutionException) { null } catch(_: InterruptedException) { Thread.currentThread().interrupt(); null }
-        val related=getAux(relatedTask).orEmpty()
-        val sameName=getAux(seasonsTask).orEmpty().distinctBy { it.id }.sortedBy { seasonNumber(it.title).let { n -> if(n==Int.MAX_VALUE) 1 else n } }
-        scope.cancel()
-        threads.forEach { it.interrupt() }
-        synchronized(detailCache) {
-            detailCache[id]=DetailCache(clock(),main,related,sameName)
-            while(detailCache.size>30) detailCache.remove(detailCache.keys.first())
+        try {
+            val deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(DETAIL_AUX_TIMEOUT)
+            fun <T> getAux(task: Future<T>): T? = try { task.get((deadline-System.nanoTime()).coerceAtLeast(0),TimeUnit.NANOSECONDS) }
+            catch(_: TimeoutException) { null } catch(_: ExecutionException) { null } catch(_: InterruptedException) { Thread.currentThread().interrupt(); null }
+            val related=getAux(relatedTask).orEmpty()
+            val sameName=getAux(seasonsTask).orEmpty().distinctBy { it.id }.sortedBy { seasonNumber(it.title).let { n -> if(n==Int.MAX_VALUE) 1 else n } }
+            if(scope.isCancelled || Thread.currentThread().isInterrupted) throw IOException("请求已取消")
+            val result=main.copy(related=related,sameName=sameName)
+            synchronized(detailCache) {
+                val cached=detailCache[id]
+                if(cached!=null && cached.detail==main) detailCache[id]=cached.copy(detail=result,extrasLoaded=true)
+            }
+            return result
+        } finally {
+            scope.cancel()
+            threads.forEach { it.interrupt() }
         }
-        return Detail(main.series,main.episodes,related,sameName,main.social)
     }
 
-    /** 已打开的详情留在内存里，播放页返回和同季切换不再重新拉整份分集。 */
+    fun needsDetailExtras(id: String): Boolean = synchronized(detailCache) {
+        detailCache[id]?.takeIf { clock()-it.at<DETAIL_CACHE_TTL }?.extrasLoaded!=true
+    }
+
+    /** 已打开的主详情立即复用，辅助请求未完成也不重新拉分集。 */
     fun cachedDetail(id: String): Detail? = synchronized(detailCache) {
-        detailCache[id]?.takeIf { clock()-it.at<DETAIL_CACHE_TTL }?.let {
-            Detail(it.main.series,it.main.episodes,it.related,it.seasons,it.main.social)
-        }
+        detailCache[id]?.takeIf { clock()-it.at<DETAIL_CACHE_TTL }?.detail
     }
 
     private data class SeriesPayload(val series: Series, val episodes: List<String>, val social: SeriesSocial)
@@ -474,7 +502,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
                 .put("source", 4)
                 .put("video_id_type", 1))
             .toString().toByteArray(Charsets.UTF_8)
-        val data = signedJson("$API/novel/player/multi_video_detail/v1/", emptyMap(), body)
+        val data = signedJson("$API/novel/player/multi_video_detail/v1/", emptyMap(), body, detailHttp)
         // multi_video_detail 按 series_id 包装每部剧，真正的卡片与分集在其 video_data 内。
         val v = data.optJSONObject("data")?.optJSONObject(id)?.optJSONObject("video_data")
             ?: throw IOException("剧集详情暂不可用")
@@ -530,9 +558,9 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     }
 
     /** 签名 JSON 请求，统一处理 code != 0 与空响应。 */
-    private fun signedJson(url: String, values: Map<String, String>, body: ByteArray?): JSONObject {
+    private fun signedJson(url: String, values: Map<String, String>, body: ByteArray?, transport: OkHttpClient = http): JSONObject {
         val signed = signer.sign(url, values, body)
-        val raw = text(signed.url, signed)
+        val raw = text(signed.url, signed, transport)
         val data = runCatching { JSONObject(raw) }.getOrElse { throw IOException("接口数据格式异常") }
         val code = data.optString("code", "0")
         if (code.isNotEmpty() && code != "0") throw IOException("接口返回错误（code=$code）")
@@ -889,7 +917,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         else -> null
     }
     companion object {
-        // 推荐与系列剧共享两秒预算，详情主接口不会因辅助内容慢而无限等待。
+        // 推荐与系列剧在主详情显示后并行补齐，共享两秒预算。
         private const val DETAIL_AUX_TIMEOUT=2_000L
         private const val DETAIL_CACHE_TTL=600_000L
         // 网站搜索混合两类内容：video_data.genre 205 是漫剧，203 是短剧

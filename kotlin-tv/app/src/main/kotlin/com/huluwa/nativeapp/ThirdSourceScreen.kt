@@ -817,9 +817,9 @@ class ThirdSourceScreen(private val activity: Activity, private val rebuild: () 
         }
         val body = column().apply { setPadding(0, dp(4), 0, 0) }
         val head = row()
-        val back = addButton(head, "‹ 返回") { onBack() }
+        val back = PageBackButton.addTo(head) { onBack() }
         head.addView(text("观看历史  ·  ${historyEntries.size} 条", 20f).apply {
-            setTypeface(null, android.graphics.Typeface.BOLD); setPadding(dp(8), 0, 0, 0); gravity = Gravity.CENTER_VERTICAL
+            setTypeface(null, android.graphics.Typeface.BOLD); gravity = Gravity.CENTER_VERTICAL
         }, lp(0, dp(46)).apply { weight = 1f })
         if(historyEntries.isNotEmpty()) addButton(head, "清空历史") { confirmClearHistory() }
         body.addView(head, lp(-1, -2).apply { bottomMargin = dp(6) })
@@ -939,9 +939,9 @@ class ThirdSourceScreen(private val activity: Activity, private val rebuild: () 
         }
         val body = column().apply { setPadding(0, dp(4), 0, 0) }
         val head = row()
-        val back = addButton(head, "‹ 返回") { onBack() }
+        val back = PageBackButton.addTo(head) { onBack() }
         head.addView(text("我的收藏  ·  ${favoriteEntries.size} 条", 20f).apply {
-            setTypeface(null, android.graphics.Typeface.BOLD); setPadding(dp(8), 0, 0, 0); gravity = Gravity.CENTER_VERTICAL
+            setTypeface(null, android.graphics.Typeface.BOLD); gravity = Gravity.CENTER_VERTICAL
         }, lp(0, dp(46)).apply { weight = 1f })
         body.addView(head, lp(-1, -2).apply { bottomMargin = dp(6) })
         if(favoriteEntries.isEmpty()) {
@@ -1953,7 +1953,7 @@ class ThirdSourceScreen(private val activity: Activity, private val rebuild: () 
 
         // 顶栏：返回 + 输入回显 + 手机扫码
         val head = row()
-        addButton(head, "‹ 返回") { onBack() }
+        PageBackButton.addTo(head) { onBack() }
         val display = text(searchInput.ifEmpty { "输入片名或关键词" }, 19f, if(searchInput.isEmpty()) muted else TvStyle.text).apply {
             setPadding(dp(14), 0, dp(14), 0); gravity = Gravity.CENTER_VERTICAL; maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.START
@@ -2200,10 +2200,10 @@ class ThirdSourceScreen(private val activity: Activity, private val rebuild: () 
 
         // 顶栏：返回按钮与片名同行、垂直居中对齐
         val head = row()
-        val back = addButton(head, "‹ 返回") { onBack() }
+        val back = PageBackButton.addTo(head) { onBack() }
         head.addView(text(data.video.name, 20f).apply {
             setTypeface(null, android.graphics.Typeface.BOLD); maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END; setPadding(dp(6), 0, 0, 0)
+            ellipsize = android.text.TextUtils.TruncateAt.END
         }, lp(0, -2).apply { weight = 1f; gravity = Gravity.CENTER_VERTICAL })
         body.addView(head, lp(-1, -2).apply { bottomMargin = dp(8) })
 

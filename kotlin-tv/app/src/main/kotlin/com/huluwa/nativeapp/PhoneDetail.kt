@@ -40,13 +40,8 @@ class PhoneDetail(
         root.addView(scroll, android.widget.FrameLayout.LayoutParams(-1, -1))
 
         // 顶部返回条
-        val top = PhoneUi.row(activity).apply { setPadding(dp(10), dp(10), dp(10), dp(4)) }
-        val back = text("‹ 返回", 15f).apply {
-            setPadding(dp(10), dp(6), dp(10), dp(6))
-            background = TvStyle.shape(activity, TvStyle.raised)
-            setOnClickListener { activity.goBackPhone() }
-        }
-        top.addView(back)
+        val top = PhoneUi.row(activity).apply { setPadding(dp(14), dp(8), dp(14), dp(8)) }
+        PageBackButton.addTo(top) { activity.goBackPhone() }
         content.addView(top, lp(-1, -2))
         // 整页可滚动：内容区底部让出手势导航条的高度，最后一行才不会被系统手势条盖住
         PhoneInsets.listen(scroll) { topInset, bottomInset, _ ->

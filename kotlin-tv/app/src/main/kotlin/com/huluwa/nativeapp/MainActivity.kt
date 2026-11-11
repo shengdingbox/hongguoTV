@@ -813,7 +813,7 @@ class MainActivity: Activity() {
         container.setPadding(horizontal,vertical,horizontal,vertical)
         root.addView(container,FrameLayout.LayoutParams(-1,-1))
         catalogContainer=container
-        if(title!=null) { val heading=row(); addButton(heading,"‹ 返回") { goBack() }; heading.addView(text(title,22f).apply { setTypeface(null,Typeface.BOLD); gravity=Gravity.CENTER_VERTICAL },lp(0,dp(44)).apply { weight=1f }); container.addView(heading) }
+        if(title!=null) { val heading=row(); PageBackButton.addTo(heading) { goBack() }; heading.addView(text(title,22f).apply { setTypeface(null,Typeface.BOLD); gravity=Gravity.CENTER_VERTICAL },lp(0,dp(44)).apply { weight=1f }); container.addView(heading) }
         return container
     }
     private fun loadCover(view: ImageView,url: String) {
@@ -1376,7 +1376,7 @@ class MainActivity: Activity() {
             rankSwitch=null; rankRefresh=null
             heading.addView(text(when { newRelease -> "新剧上新"; aiCatalog -> "AI剧 · 全部分类"; else -> "${rankBoard.label}热播榜" },25f).apply { setTypeface(null,Typeface.BOLD) },lp(0,-2).apply { weight=1f })
             if(newRelease) {
-                newReleaseBack=addButton(heading,"‹ 返回${rankBoard.label}榜") {
+                newReleaseBack=PageBackButton.addTo(heading,"返回${rankBoard.label}榜") {
                     newRelease=false; page=1; catalog=emptyList(); hasMore=false; ranking=null; catalogFocus=""
                     discoveryCursor=null; discoverySelection=DiscoverySelection()
                     tabState.remove(2); tabFocus.remove(2); pendingNewReleaseFocus="back"; showCatalog(true)
@@ -1388,7 +1388,7 @@ class MainActivity: Activity() {
                     pendingNewReleaseFocus="refresh"; showCatalog(true)
                 }.apply { nextFocusUpId=nav[tab].id }
             } else if(aiCatalog) {
-                aiBack=addButton(heading,"‹ 返回AI剧榜") {
+                aiBack=PageBackButton.addTo(heading,"返回AI剧榜") {
                     aiCatalog=false; aiGenre=null; page=1; catalogFocus=""; tabState.remove(2); tabFocus.remove(2); showCatalog(true)
                     aiBack?.post { if(aiBack?.isAttachedToWindow==true) aiBack?.requestFocus() }
                 }.apply { nextFocusUpId=nav[tab].id }
@@ -1651,7 +1651,7 @@ class MainActivity: Activity() {
         collectionBack=null; genreClear=null
         if(collection!=null) {
             val heading=row()
-            collectionBack=addButton(heading,"‹ 返回首页") { leaveCollection(); showCatalog() }.apply {
+            collectionBack=PageBackButton.addTo(heading,"返回首页") { leaveCollection(); showCatalog() }.apply {
                 nextFocusUpId=typeButtons[library.contentType]?.id ?: nav[tab].id
                 nextFocusDownId=id
             }
@@ -6483,8 +6483,8 @@ class MainActivity: Activity() {
         val body=column()
         scroll.addView(body)
         val title=when(kind) { "later" -> "稍后看"; "updates" -> "收藏有更新"; "resume" -> "接着看"; else -> "接着看" }
-        val head=row().apply { setPadding(dp(14),dp(10),dp(14),dp(4)) }
-        head.addView(button("‹ 返回") { closePhoneCollection() },lp(-2,-2).apply { rightMargin=dp(12) })
+        val head=row().apply { setPadding(dp(14),dp(8),dp(14),dp(8)) }
+        PageBackButton.addTo(head) { closePhoneCollection() }
         head.addView(text(title,20f).apply { typeface=android.graphics.Typeface.create("sans-serif-medium",android.graphics.Typeface.NORMAL) })
         body.addView(head,lp(-1,-2))
         val items=localItems()

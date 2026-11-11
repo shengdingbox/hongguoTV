@@ -43,20 +43,13 @@ class PhoneSettings(private val activity: MainActivity) {
         bindings.clear()
 
         val shell = PhoneUi.column(activity)
-        val topBaseTop = dp(10)
-        val baseHorizontal = dp(10)
+        val topBaseTop = dp(8)
+        val baseHorizontal = dp(14)
         val baseBottom = dp(18)
-        val top = PhoneUi.row(activity).apply { setPadding(baseHorizontal, topBaseTop, dp(16), dp(6)) }
-        val back = text("‹ 返回", 15f).apply {
-            setPadding(dp(10), dp(6), dp(10), dp(6))
-            background = TvStyle.shape(activity, TvStyle.raised)
-            isFocusable = true
-            setOnClickListener { activity.closePhoneSettings() }
-        }
-        top.addView(back)
+        val top = PhoneUi.row(activity).apply { setPadding(baseHorizontal, topBaseTop, dp(14), dp(8)) }
+        PageBackButton.addTo(top) { activity.closePhoneSettings() }
         top.addView(text("设置", 20f).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setPadding(dp(12), 0, 0, 0)
         }, PhoneUi.lp(0, -2).apply { weight = 1f })
         shell.addView(top, PhoneUi.lp(-1, -2))
 
@@ -73,7 +66,7 @@ class PhoneSettings(private val activity: MainActivity) {
 
         // 系统栏让位：顶栏避开状态栏，内容底部避开手势条，否则最后一行会被压在导航条下面
         PhoneInsets.listen(shell) { topInset, bottomInset, _ ->
-            top.setPadding(baseHorizontal, topBaseTop + topInset, dp(16), dp(6))
+            top.setPadding(baseHorizontal, topBaseTop + topInset, dp(14), dp(8))
             content.setPadding(dp(12), 0, dp(12), baseBottom + bottomInset)
         }
         root.addView(shell, FrameLayout.LayoutParams(-1, -1))

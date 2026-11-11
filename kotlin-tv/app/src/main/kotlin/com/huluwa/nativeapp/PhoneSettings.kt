@@ -1,256 +1,349 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.huluwa.nativeapp
 
+import android.graphics.Color
 import android.graphics.Typeface
 import android.text.TextUtils
 import android.view.Gravity
+import android.view.View
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.widget.NestedScrollView
 import com.hongguotv.core.DanmakuPrefs
 import com.hongguotv.core.PlaybackSpeed
 
-/**
- * 手机竖屏设置页：把电视版设置里对手机有意义的项按「播放 / 外观 / 设备 / 关于」
- * 重新排成单列，竖屏下就能改完全部设置，不必再旋转到横屏。
- *
- * 页面本身只负责排版：取值、落盘、弹窗一律复用 MainActivity 既有的实现
- * （见 [MainActivity.showPhoneSettings] 附近的 phoneXxx 桥接方法），避免两套设置逻辑各写一份。
- * 每行右侧的当前值都登记成 [Binding]，弹窗关闭后由 Activity 窗口重新拿到焦点时调用
- * [refreshValues] 就地更新——不整页重建，滚动位置因此不会跳回顶部。
- */
+/** 手机竖屏的 iOS 分组设置页；设置取值、落盘与操作仍复用原有桥接。 */
 class PhoneSettings(private val activity: MainActivity) {
-
     private val library get() = activity.phoneLibrary
+    private val pageColor get() = if (PortraitStyle.isDark) Color.BLACK else Color.rgb(242, 242, 247)
+    private val groupColor get() = if (PortraitStyle.isDark) Color.rgb(28, 28, 30) else Color.WHITE
+    private val secondaryColor get() = if (PortraitStyle.isDark) Color.rgb(152, 152, 159) else Color.rgb(109, 109, 114)
+    private val separatorColor get() = if (PortraitStyle.isDark) Color.rgb(56, 56, 59) else Color.rgb(218, 218, 222)
+    private val accent get() = PortraitStyle.navigationSelected
 
-    /** 一行设置右侧的值：provider 每次实时读库，弹窗改完只刷新文字。 */
     private class Binding(val provider: () -> String?, val view: TextView)
-
+    private class ToggleBinding(val provider: () -> Boolean, val view: PhoneSettingsSwitch)
     private val bindings = mutableListOf<Binding>()
-    /** 整页重画（切主题等）时保留滚动位置：设置项多，滚回顶部会让人找不到刚才改的地方。 */
+    private val toggles = mutableListOf<ToggleBinding>()
+    private var refreshingValues = false
     private var lastScrollY = 0
+    private var activeScroll: NestedScrollView? = null
 
-    private fun dp(v: Int) = PhoneUi.dp(activity, v)
-    private fun text(v: String, size: Float, color: Int = PortraitStyle.text) = PhoneUi.text(activity, v, size, color)
+    private fun dp(value: Int) = PhoneUi.dp(activity, value)
+    private fun text(value: String, size: Float = 17f, color: Int = PortraitStyle.text) = PhoneUi.text(activity, value, size, color)
+    private fun lp(w: Int = -1, h: Int = -2) = LinearLayout.LayoutParams(w, h)
 
     fun render(root: FrameLayout) {
         if (!library.isLoaded) return
+        val restoreY = lastScrollY
         PortraitStyle.refresh(activity)
         activity.phoneStatusBarLight(!PortraitStyle.isDark)
+        activeScroll = null
         root.removeAllViews()
-        root.setBackgroundColor(PortraitStyle.background)
+        root.setBackgroundColor(pageColor)
         bindings.clear()
+        toggles.clear()
 
         val shell = PhoneUi.column(activity)
-        val topBaseTop = dp(8)
-        val baseHorizontal = dp(14)
-        val baseBottom = dp(18)
-        val top = PhoneUi.row(activity).apply { setPadding(baseHorizontal, topBaseTop, dp(14), dp(8)) }
-        PageBackButton.addTo(top) { activity.closePhoneSettings() }.apply {
-            setTextColor(PortraitStyle.text)
-            compoundDrawablesRelative.filterNotNull().forEach { it.mutate().setTint(PortraitStyle.text) }
-            background = PortraitStyle.selectable(activity, android.graphics.Color.TRANSPARENT, radius = 6)
+        val navigation = FrameLayout(activity).apply { setBackgroundColor(pageColor) }
+        val bar = FrameLayout(activity)
+        val back = PhoneUi.row(activity).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), 0, dp(12), 0)
+            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 12)
+            contentDescription = "返回"
+            isFocusable = true
+            setOnClickListener { activity.closePhoneSettings() }
         }
-        top.addView(text("设置", 20f).apply {
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        }, PhoneUi.lp(0, -2).apply { weight = 1f })
-        shell.addView(top, PhoneUi.lp(-1, -2))
+        back.addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_page_back)
+            setColorFilter(accent)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, lp(dp(13), dp(22)))
+        back.addView(text("返回", 17f, accent).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, lp(-2, -2).apply { leftMargin = dp(5) })
+        bar.addView(back, FrameLayout.LayoutParams(-2, -1, Gravity.START))
+        val inlineTitle = text("设置", 17f).apply {
+            setTypeface(null, Typeface.BOLD)
+            alpha = 0f
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        bar.addView(inlineTitle, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        navigation.addView(bar, FrameLayout.LayoutParams(-1, dp(48), Gravity.BOTTOM))
+        val hairline = View(activity).apply { setBackgroundColor(separatorColor); alpha = 0f }
+        navigation.addView(hairline, FrameLayout.LayoutParams(-1, 1, Gravity.BOTTOM))
+        shell.addView(navigation, lp(-1, dp(48)))
 
-        val scroll = NestedScrollView(activity).apply { isVerticalScrollBarEnabled = false; isFillViewport = true }
-        val content = PhoneUi.column(activity).apply { setPadding(dp(12), 0, dp(12), dp(18)) }
-        scroll.addView(content, PhoneUi.lp(-1, -2))
-        shell.addView(scroll, PhoneUi.lp(-1, 0).apply { weight = 1f })
-
+        val scroll = NestedScrollView(activity).apply {
+            isVerticalScrollBarEnabled = false
+            isFillViewport = true
+            clipToPadding = false
+        }
+        activeScroll = scroll
+        val content = PhoneUi.column(activity).apply { setPadding(dp(20), 0, dp(20), dp(24)) }
+        content.addView(text("设置", 34f).apply {
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            letterSpacing = -.025f
+            setPadding(0, dp(4), 0, dp(20))
+            accessibilityHeadingCompat()
+        }, lp())
+        accountCard(content)
         playbackSection(content)
+        danmakuSection(content)
         lookSection(content)
         deviceSection(content)
         aboutSection(content)
-
-        // 系统栏让位：顶栏避开状态栏，内容底部避开手势条，否则最后一行会被压在导航条下面
-        PhoneInsets.listen(shell) { topInset, bottomInset, _ ->
-            top.setPadding(baseHorizontal, topBaseTop + topInset, dp(14), dp(8))
-            content.setPadding(dp(12), 0, dp(12), baseBottom + bottomInset)
-        }
+        scroll.addView(content, lp())
+        shell.addView(scroll, lp(-1, 0).apply { weight = 1f })
         root.addView(shell, FrameLayout.LayoutParams(-1, -1))
-        // 重画后回到原来的位置（首次进入为 0）
-        val restoreY = lastScrollY
-        scroll.post { if (restoreY > 0 && scroll.scrollY != restoreY) scroll.scrollTo(0, restoreY) }
-        scroll.viewTreeObserver.addOnScrollChangedListener { lastScrollY = scroll.scrollY }
+
+        fun updateNavigation() {
+            val progress = ((scroll.scrollY - dp(24)).toFloat() / dp(32).coerceAtLeast(1)).coerceIn(0f, 1f)
+            inlineTitle.alpha = progress
+            hairline.alpha = progress
+        }
+        PhoneInsets.listen(shell) { topInset, bottomInset, _ ->
+            navigation.layoutParams = lp(-1, dp(48) + topInset)
+            navigation.setPadding(0, topInset, 0, 0)
+            content.setPadding(dp(20), 0, dp(20), dp(24) + bottomInset)
+        }
+        scroll.viewTreeObserver.addOnScrollChangedListener {
+            if (activeScroll === scroll) {
+                lastScrollY = scroll.scrollY
+                updateNavigation()
+            }
+        }
+        scroll.post {
+            if (activeScroll === scroll) {
+                scroll.scrollTo(0, restoreY)
+                lastScrollY = scroll.scrollY
+                updateNavigation()
+            }
+        }
     }
 
-    /** 弹窗改完某一项后只刷新右侧值，不重建页面（否则会滚回顶部）。 */
+    private fun View.accessibilityHeadingCompat() {
+        androidx.core.view.ViewCompat.setAccessibilityHeading(this, true)
+    }
+
+    /** 弹窗关闭或开关变更时就地同步，保留当前滚动位置。 */
     fun refreshValues() {
-        if (bindings.isEmpty()) return
-        bindings.forEach { binding ->
-            val next = binding.provider().orEmpty()
-            if (binding.view.text.toString() != next) binding.view.text = next
+        if (refreshingValues) return
+        refreshingValues = true
+        try {
+            bindings.forEach { binding ->
+                val next = binding.provider().orEmpty()
+                if (binding.view.text.toString() != next) binding.view.text = next
+            }
+            toggles.forEach { binding -> binding.view.isChecked = binding.provider() }
+        } finally {
+            refreshingValues = false
         }
     }
 
-    // ---- 分组与行 ----
-
-    private fun heading(parent: LinearLayout, title: String, subtitle: String? = null) {
-        parent.addView(text(title, 13f, PortraitStyle.muted).apply {
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setPadding(dp(4), dp(16), dp(4), dp(2))
-        }, PhoneUi.lp(-1, -2))
-        if (subtitle != null) {
-            parent.addView(text(subtitle, 11f, PortraitStyle.muted).apply { setPadding(dp(4), 0, dp(4), dp(8)) }, PhoneUi.lp(-1, -2))
-        }
+    private fun chevron() = ImageView(activity).apply {
+        setImageResource(R.drawable.ic_chevron_right)
+        setColorFilter(secondaryColor)
+        alpha = .65f
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }
 
-    /**
-     * 一行设置：左标题 + 右当前值 + 箭头，整行可点。
-     * [value] 传 null 表示右侧不显示值（如「开源许可」）；[provider] 用于弹窗关闭后就地刷新。
-     */
-    private fun row(label: String, value: String?, provider: (() -> String?)? = null, onClick: (() -> Unit)? = null): LinearLayout {
-        val line = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            // 标题、右侧值与箭头字号不同；关闭基线对齐后统一按行高垂直居中，
-            // 避免带右侧值的行（如「观看统计」）标题看起来偏上/偏下。
-            isBaselineAligned = false
-            setPadding(dp(16), dp(13), dp(13), dp(13))
-            background = PortraitStyle.selectable(activity, PortraitStyle.surface)
-            isClickable = onClick != null
-            isFocusable = onClick != null
-            if (onClick != null) setOnClickListener { onClick() }
-            // 弹窗改完焦点回到这一行：顺手把整页取值刷一遍（遥控键盘/电视遥控走这条）
-            setOnFocusChangeListener { _, focused -> if (focused) refreshValues() }
-        }
-        line.addView(text(label, 15f).apply {
-            maxLines = 1
-            gravity = Gravity.CENTER_VERTICAL
-        }, PhoneUi.lp(0, -2).apply { weight = 1f })
+    private fun card() = PhoneUi.column(activity).apply {
+        background = PortraitStyle.shape(activity, groupColor, radius = 12)
+        clipToOutline = true
+    }
+
+    private fun section(parent: LinearLayout, title: String, footer: String? = null, build: (LinearLayout) -> Unit) {
+        parent.addView(text(title, 13f, secondaryColor).apply {
+            setPadding(dp(16), dp(8), dp(16), dp(7))
+            accessibilityHeadingCompat()
+        }, lp())
+        val group = card()
+        build(group)
+        parent.addView(group, lp())
+        if (footer != null) parent.addView(text(footer, 12f, secondaryColor).apply {
+            setPadding(dp(16), dp(7), dp(16), 0)
+            setLineSpacing(dp(2).toFloat(), 1f)
+        }, lp())
+        parent.addView(View(activity), lp(-1, dp(20)))
+    }
+
+    private fun addRow(parent: LinearLayout, line: LinearLayout) {
+        if (parent.childCount > 0) parent.addView(View(activity).apply {
+            setBackgroundColor(separatorColor)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, lp(-1, 1).apply { leftMargin = dp(16) })
+        parent.addView(line, lp())
+    }
+
+    private fun baseRow(onClick: (() -> Unit)?): LinearLayout = PhoneUi.row(activity).apply {
+        isBaselineAligned = false
+        minimumHeight = dp(52)
+        setPadding(dp(16), dp(10), dp(14), dp(10))
+        background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 0)
+        isClickable = onClick != null
+        isFocusable = onClick != null
+        if (onClick != null) setOnClickListener { onClick() }
+        setOnFocusChangeListener { _, focused -> if (focused) refreshValues() }
+    }
+
+    private fun row(label: String, value: String? = null, provider: (() -> String?)? = null,
+        actionColor: Int? = null, onClick: (() -> Unit)? = null): LinearLayout {
+        val line = baseRow(onClick)
+        line.addView(text(label, color = actionColor ?: PortraitStyle.text).apply {
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }, lp(0, -2).apply { weight = 1f })
         if (value != null) {
-            val valueView = text(value, 13f, PortraitStyle.muted).apply {
+            val current = text(value, 16f, secondaryColor).apply {
                 maxLines = 1
-                maxWidth = dp(160)
+                maxWidth = dp(136)
                 ellipsize = TextUtils.TruncateAt.END
             }
-            line.addView(valueView)
-            provider?.let { bindings += Binding(it, valueView) }
+            line.addView(current, lp(-2, -2).apply { leftMargin = dp(10) })
+            provider?.let { bindings += Binding(it, current) }
         }
-        if (onClick != null) line.addView(text("›", 16f, PortraitStyle.muted), PhoneUi.lp(-2, -2).apply { leftMargin = dp(7) })
+        if (onClick != null && actionColor == null) line.addView(chevron(), lp(dp(12), dp(17)).apply { leftMargin = dp(8) })
         return line
     }
 
-    /** 开关行：值文案由传入的 provider 实时给出。 */
-    private fun toggleRow(label: String, provider: () -> Boolean, onClick: () -> Unit): LinearLayout =
-        row(label, if (provider()) "开启" else "关闭", { if (provider()) "开启" else "关闭" }, onClick)
-
-    private fun addRow(parent: LinearLayout, line: LinearLayout) {
-        parent.addView(line, PhoneUi.lp(-1, -2).apply { bottomMargin = dp(7) })
+    private fun toggleRow(label: String, provider: () -> Boolean, onClick: () -> Unit): LinearLayout {
+        val toggle = PhoneSettingsSwitch(activity).apply {
+            isChecked = provider()
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            setOnCheckedChangeListener { _, checked ->
+                if (!refreshingValues && checked != provider()) {
+                    onClick()
+                    refreshValues()
+                }
+            }
+        }
+        toggles += ToggleBinding(provider, toggle)
+        return baseRow { toggle.performClick() }.apply {
+            setPadding(dp(16), dp(4), dp(12), dp(4))
+            addView(text(label).apply { maxLines = 2 }, lp(0, -2).apply { weight = 1f; rightMargin = dp(12) })
+            addView(toggle, lp(dp(55), dp(44)))
+            accessibilityDelegate = object : View.AccessibilityDelegate() {
+                override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
+                    super.onInitializeAccessibilityNodeInfo(host, info)
+                    info.className = "android.widget.Switch"
+                    info.isCheckable = true
+                    info.isChecked = toggle.isChecked
+                    info.text = label
+                }
+            }
+        }
     }
 
-    // ---- 播放与观看 ----
+    private fun accountCard(parent: LinearLayout) {
+        val account = activity.phoneAccount
+        val group = card()
+        val line = baseRow { account.showPhoneAccountDialog(activity) }.apply {
+            minimumHeight = dp(88)
+            setPadding(dp(16), dp(14), dp(14), dp(14))
+        }
+        line.addView(PhoneSettingsAvatar(activity).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, lp(dp(56), dp(56)).apply { rightMargin = dp(14) })
+        val labels = PhoneUi.column(activity)
+        labels.addView(text(if (account.signedIn) account.displayName else "红果账号", 20f).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }, lp())
+        labels.addView(text(if (account.signedIn) "云端观看记录 · ${account.cloudCount} 部" else "登录与管理云端观看记录", 13f, secondaryColor).apply {
+            maxLines = 2
+            setPadding(0, dp(4), 0, 0)
+        }, lp())
+        line.addView(labels, lp(0, -2).apply { weight = 1f })
+        line.addView(chevron(), lp(dp(12), dp(17)).apply { leftMargin = dp(8) })
+        group.addView(line, lp())
+        parent.addView(group, lp().apply { bottomMargin = dp(24) })
+    }
 
     private fun playbackSection(parent: LinearLayout) {
-        heading(parent, "播放与观看", "所有剧集共用，播放中也可调整")
-        addRow(parent, row("默认清晰度", "${library.maxQuality}P", { "${library.maxQuality}P" }) {
-            activity.phoneQualityPicker()
-        })
-        addRow(parent, row("默认倍速", PlaybackSpeed.label(library.playbackSpeed), { PlaybackSpeed.label(library.playbackSpeed) }) {
-            activity.phoneSpeedPicker()
-        })
-        addRow(parent, row("画面模式", library.frameMode.label, { library.frameMode.label }) {
-            activity.phoneFramePicker()
-        })
-        addRow(parent, toggleRow("自动连播", { library.autoNext }) {
-            library.autoNext = !library.autoNext
-            activity.phoneRefreshSettingsValues()
-        })
-        addRow(parent, toggleRow("系列剧连播", { library.autoSeason }) {
-            library.autoSeason = !library.autoSeason
-            activity.phoneRefreshSettingsValues()
-        })
-        addRow(parent, toggleRow("整集预载缓存", { library.episodeCache }) {
-            library.episodeCache = !library.episodeCache
-            activity.phoneApplyEpisodeCache()
-            activity.phoneRefreshSettingsValues()
-        })
-        addRow(parent, toggleRow("官方弹幕", { library.danmaku }) {
-            library.danmaku = !library.danmaku
-            activity.phoneApplyDanmakuPrefs()
-            activity.phoneRefreshSettingsValues()
-        })
-        // 弹幕细分项直接摊在页面上：竖屏只有一列，逐项点开比套一层二级菜单顺手
-        addRow(parent, row("弹幕不透明度", "${library.danmakuOpacity}%", { "${library.danmakuOpacity}%" }) {
-            activity.phoneDanmakuOpacity()
-        })
-        addRow(parent, row("弹幕字体大小", DanmakuPrefs.fontLabel(library.danmakuFont), { DanmakuPrefs.fontLabel(library.danmakuFont) }) {
-            activity.phoneDanmakuFont()
-        })
-        addRow(parent, row("弹幕移动速度", DanmakuPrefs.speedLabel(library.danmakuSpeed), { DanmakuPrefs.speedLabel(library.danmakuSpeed) }) {
-            activity.phoneDanmakuSpeed()
-        })
-        addRow(parent, row("弹幕展示行数", "${library.danmakuRows} 行", { "${library.danmakuRows} 行" }) {
-            activity.phoneDanmakuRows()
-        })
-        addRow(parent, row("弹幕屏蔽词", "${activity.phoneBlockedWordCount()} 个", { "${activity.phoneBlockedWordCount()} 个" }) {
-            activity.phoneBlockedWords()
-        })
-        addRow(parent, toggleRow("不兼容片源自动跳过", { activity.phoneAutoSkip }) {
-            activity.phoneSetAutoSkip(!activity.phoneAutoSkip)
-            activity.phoneRefreshSettingsValues()
-        })
-        addRow(parent, row("恢复弹幕默认设置", null) { activity.phoneResetDanmakuPrefs() })
+        section(parent, "播放与观看", "默认设置适用于所有剧集。整集预载会占用设备存储空间。") { group ->
+            addRow(group, row("默认清晰度", "${library.maxQuality}P", { "${library.maxQuality}P" }) { activity.phoneQualityPicker() })
+            addRow(group, row("默认倍速", PlaybackSpeed.label(library.playbackSpeed), { PlaybackSpeed.label(library.playbackSpeed) }) { activity.phoneSpeedPicker() })
+            addRow(group, row("画面模式", library.frameMode.label, { library.frameMode.label }) { activity.phoneFramePicker() })
+            addRow(group, toggleRow("自动连播", { library.autoNext }) {
+                library.autoNext = !library.autoNext
+                activity.phoneRefreshSettingsValues()
+            })
+            addRow(group, toggleRow("系列剧连播", { library.autoSeason }) {
+                library.autoSeason = !library.autoSeason
+                activity.phoneRefreshSettingsValues()
+            })
+            addRow(group, toggleRow("整集预载缓存", { library.episodeCache }) {
+                library.episodeCache = !library.episodeCache
+                activity.phoneApplyEpisodeCache()
+                activity.phoneRefreshSettingsValues()
+            })
+            addRow(group, toggleRow("不兼容片源自动跳过", { activity.phoneAutoSkip }) {
+                activity.phoneSetAutoSkip(!activity.phoneAutoSkip)
+                activity.phoneRefreshSettingsValues()
+            })
+        }
     }
 
-    // ---- 外观与界面 ----
+    private fun danmakuSection(parent: LinearLayout) {
+        section(parent, "弹幕", "调整官方弹幕的显示效果，屏蔽不想看到的内容。") { group ->
+            addRow(group, toggleRow("官方弹幕", { library.danmaku }) {
+                library.danmaku = !library.danmaku
+                activity.phoneApplyDanmakuPrefs()
+                activity.phoneRefreshSettingsValues()
+            })
+            addRow(group, row("不透明度", "${library.danmakuOpacity}%", { "${library.danmakuOpacity}%" }) { activity.phoneDanmakuOpacity() })
+            addRow(group, row("字体大小", DanmakuPrefs.fontLabel(library.danmakuFont), { DanmakuPrefs.fontLabel(library.danmakuFont) }) { activity.phoneDanmakuFont() })
+            addRow(group, row("移动速度", DanmakuPrefs.speedLabel(library.danmakuSpeed), { DanmakuPrefs.speedLabel(library.danmakuSpeed) }) { activity.phoneDanmakuSpeed() })
+            addRow(group, row("展示行数", "${library.danmakuRows} 行", { "${library.danmakuRows} 行" }) { activity.phoneDanmakuRows() })
+            addRow(group, row("屏蔽词", "${activity.phoneBlockedWordCount()} 个", { "${activity.phoneBlockedWordCount()} 个" }) { activity.phoneBlockedWords() })
+            addRow(group, row("恢复弹幕默认设置", actionColor = accent) { activity.phoneResetDanmakuPrefs() })
+        }
+    }
 
     private fun systemAppearance() = "跟随系统 · " + if (PortraitStyle.isDark) "深色" else "浅色"
 
     private fun lookSection(parent: LinearLayout) {
-        heading(parent, "外观与界面", "手机跟随系统深浅色，横屏主题独立设置")
-        addRow(parent, row("手机外观", systemAppearance(), { systemAppearance() }))
-        addRow(parent, row("横屏与电视风格", TvStyle.theme.label, { TvStyle.theme.label }) { activity.phoneThemeToggle() })
-        addRow(parent, row("界面缩放", UiScale.label(activity), { UiScale.label(activity) }) { activity.phoneUiScalePicker() })
-        addRow(parent, row("启动方向", OrientationMode.of(library.orientationMode).label, {
-            OrientationMode.of(library.orientationMode).label
-        }) { activity.phoneOrientationPicker() })
+        section(parent, "外观与界面", "手机页面跟随系统深浅色，横屏和电视使用独立主题。") { group ->
+            addRow(group, row("手机外观", systemAppearance(), { systemAppearance() }))
+            addRow(group, row("横屏与电视风格", TvStyle.theme.label, { TvStyle.theme.label }) { activity.phoneThemeToggle() })
+            addRow(group, row("界面缩放", UiScale.label(activity), { UiScale.label(activity) }) { activity.phoneUiScalePicker() })
+            addRow(group, row("启动方向", OrientationMode.of(library.orientationMode).label, { OrientationMode.of(library.orientationMode).label }) { activity.phoneOrientationPicker() })
+        }
     }
-
-    // ---- 设备与数据 ----
 
     private fun deviceSection(parent: LinearLayout) {
-        heading(parent, "设备与数据", "账号、本机记录与缓存")
-        val account = activity.phoneAccount
-        // 昵称与云端条数分开取，登录态变化由 MainActivity.onAccountChanged 整页刷新
-        addRow(parent, row(
-            if (account.signedIn) "红果账号 · ${account.displayName}" else "红果账号",
-            if (account.signedIn) "云端 ${account.cloudCount} 部" else "点击登录",
-        ) { account.showPhoneAccountDialog(activity) })
-        addRow(parent, row("手机快传", "传 APK / 视频") { activity.phoneQuickTransfer() })
-        addRow(parent, row("恢复隐藏推荐", "${library.hidden().size} 部", { "${library.hidden().size} 部" }) {
-            activity.phoneUnhideAll()
-        })
-        addRow(parent, row("观看统计", "本机累计") { activity.phoneWatchStats() })
-        addRow(parent, row("清理缓存", "封面与安装包等临时文件") { activity.phoneClearCache() })
+        section(parent, "设备与数据") { group ->
+            addRow(group, row("手机快传", "APK 与视频") { activity.phoneQuickTransfer() })
+            addRow(group, row("恢复隐藏推荐", "${library.hidden().size} 部", { "${library.hidden().size} 部" }) { activity.phoneUnhideAll() })
+            addRow(group, row("观看统计", "本机累计") { activity.phoneWatchStats() })
+            addRow(group, row("清理缓存") { activity.phoneClearCache() })
+        }
     }
 
-    // ---- 关于红果 ----
-
     private fun aboutSection(parent: LinearLayout) {
-        heading(parent, "关于红果", "版本更新、接口自检与许可")
-        addRow(parent, row("版本与更新", BuildConfig.VERSION_NAME) { activity.phoneUpdater() })
-        addRow(parent, row("接口自检", "推荐 / 搜索 / 播放") { activity.phoneInterfaceCheck() })
-        addRow(parent, row("运行日志", "推荐与播放 · 一键复制") { activity.phoneRuntimeLogs() })
-        addRow(parent, row("异常日志", "${CrashReporter.count(activity)} 份", { "${CrashReporter.count(activity)} 份" }) {
-            activity.phoneCrashLogs()
-        })
-        addRow(parent, row("开源许可", null) {
-            TvDialog.info(activity, "开源许可", "本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\n请求签名算法移植自 openhongguo（GPL-3.0），在本机完成计算与匿名设备注册。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\n完整源码和许可证见 GitHub：jycao2/hongguoTV。").show()
-        })
-
-        parent.addView(text("红果  /  ${BuildConfig.VERSION_NAME}    ·    收藏与本机记录保存在设备 · 登录后可同步到红果账号", 12f, PortraitStyle.muted).apply {
+        section(parent, "关于红果") { group ->
+            addRow(group, row("版本与更新", BuildConfig.VERSION_NAME) { activity.phoneUpdater() })
+            addRow(group, row("接口自检") { activity.phoneInterfaceCheck() })
+            addRow(group, row("运行日志") { activity.phoneRuntimeLogs() })
+            addRow(group, row("异常日志", "${CrashReporter.count(activity)} 份", { "${CrashReporter.count(activity)} 份" }) { activity.phoneCrashLogs() })
+            addRow(group, row("开源许可") {
+                TvDialog.info(activity, "开源许可", "本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\n请求签名算法移植自 openhongguo（GPL-3.0），在本机完成计算与匿名设备注册。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\n完整源码和许可证见 GitHub：jycao2/hongguoTV。").show()
+            })
+        }
+        parent.addView(text("红果 ${BuildConfig.VERSION_NAME}", 12f, secondaryColor).apply { gravity = Gravity.CENTER }, lp())
+        parent.addView(text("收藏与本机记录保存在设备，登录后可同步到红果账号。", 12f, secondaryColor).apply {
             gravity = Gravity.CENTER
-            setPadding(dp(8), dp(18), dp(8), dp(4))
-        }, PhoneUi.lp(-1, -2))
-        parent.addView(text("本应用仅用于技术交流与学习，不提供、不存储、不传播任何视频内容，内容版权归原平台所有。", 11f, PortraitStyle.muted).apply {
+            setPadding(dp(8), dp(7), dp(8), 0)
+            setLineSpacing(dp(2).toFloat(), 1f)
+        }, lp())
+        parent.addView(text("仅用于技术交流与学习，内容版权归原平台所有。", 12f, secondaryColor).apply {
             gravity = Gravity.CENTER
-            setPadding(dp(8), 0, dp(8), dp(8))
-        }, PhoneUi.lp(-1, -2))
+            setPadding(dp(8), dp(4), dp(8), dp(12))
+        }, lp())
     }
 }

@@ -271,6 +271,10 @@ class Library(context: Context) {
     var newReleaseWindow: String
         get() = prefs.getString("newReleaseWindow", null).orEmpty()
         set(value) { prefs.edit().putString("newReleaseWindow", value).apply() }
+    /** 手机新剧日历上次选中的日期；过期日期由页面回退到今天。本机偏好，不进备份。 */
+    var newReleaseDay: String
+        get() = prefs.getString("newReleaseDay", null).orEmpty()
+        set(value) { prefs.edit().putString("newReleaseDay", value).apply() }
     /** 导航栏「片源」入口是否隐藏：默认隐藏，用户可在设置里单独显示；随备份一起恢复。 */
     var sourceHidden: Boolean
         get() = state().settings.sourceHidden

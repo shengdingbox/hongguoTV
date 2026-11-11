@@ -147,6 +147,29 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         require(page in 1..100)
         return ComicRank.parse(text("$site/rank/${board.path}?page=$page"),page,board)
     }
+    /** 公开上新日历，与开心果 iOS 的 NewReleases 使用同一签名接口。 */
+    open fun newReleases(date: String = "", cursor: NewReleaseCursor? = null): NewReleasePage {
+        require(date.isEmpty() || NewReleaseCalendar.valid(date)) { "新剧日期必须为 YYYYMMDD" }
+        require(cursor == null || (NewReleaseCalendar.valid(cursor.date) && cursor.offset > 0 &&
+            (date.isEmpty() || date == cursor.date))) { "新剧分页游标不属于当前日期" }
+        val selectedDate = cursor?.date ?: date
+        val values = linkedMapOf(
+            "order_experiment" to "descend",
+            "offset" to (cursor?.offset ?: 0).toString(),
+            "active_panel" to "5",
+            "session_id" to cursor?.sessionId.orEmpty(),
+            "version" to "0",
+            "gender_type" to "2",
+            "tab_type" to "5",
+            "filter_type" to "gender",
+            "subscribe_list_opt" to "0",
+            "tab_style" to "2",
+            "need_calendar_schema" to "true",
+            "user_is_login" to "0",
+        )
+        if (selectedDate.isNotEmpty()) values["target_date"] = selectedDate
+        return NewReleaseParser.parse(signedJson("$API/reading/user/subscribe/list/", values, null), selectedDate, cursor)
+    }
     fun comicRanking(page: Int = 1)=ranking(RankBoard.COMIC,page)
     fun realRanking(page: Int = 1)=ranking(RankBoard.REAL,page)
     /** Genre selectors from the website's category page; cached briefly because they rarely change. */

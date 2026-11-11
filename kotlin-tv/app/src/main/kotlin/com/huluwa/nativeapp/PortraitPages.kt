@@ -24,9 +24,11 @@ import android.widget.TextView
 import androidx.core.widget.NestedScrollView
 import androidx.recyclerview.widget.RecyclerView
 import com.hongguotv.core.RankBoard
+import com.hongguotv.core.NewReleaseCalendar
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import java.util.TimeZone
 
 /** 手机统一的开心果 iOS 风格竖屏内容页。数据复用现有内容库。 */
 class PortraitPages(
@@ -38,7 +40,6 @@ class PortraitPages(
     private fun column() = PortraitUi.column(activity)
     private fun row() = PortraitUi.row(activity)
     private fun lp(w: Int = -1, h: Int = -2) = PortraitUi.lp(w, h)
-    private var selectedDay = ""
 
     fun home(body: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
         body.addView(PortraitUi.pageTitle(activity, "推荐"), lp())
@@ -91,48 +92,79 @@ class PortraitPages(
         }
     }
 
-    /** 本项目没有新剧日历接口，日期筛选可用，列表保持空数据。 */
-    fun newReleases(body: LinearLayout) {
+    /** 服务端日历 + 按日期缓存的三列新剧列表，沿用统一详情、收藏和分页组件。 */
+    fun newReleases(body: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
         body.addView(PortraitUi.pageTitle(activity, "新剧上线"), lp())
-        val format = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA)
-        val today = Calendar.getInstance()
-        val todayKey = format.format(today.time)
-        if (selectedDay.isEmpty()) selectedDay = todayKey
         val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
-        val dates = row().apply { setPadding(dp(16), dp(4), dp(16), dp(4)) }
+        val dates = row().apply { setPadding(dp(16), dp(4), dp(16), dp(10)) }
         strip.addView(dates)
-        val chips = mutableListOf<Pair<String, TextView>>()
-        var selectedChip: TextView? = null
-        fun paintDates() {
-            chips.forEach { (key, chip) ->
-                val selected = key == selectedDay
-                chip.setTextColor(if (selected) Color.WHITE else PortraitStyle.text)
-                chip.background = PortraitStyle.selectable(activity, if (selected) Color.BLACK else PortraitStyle.raised, radius = 20)
-                chip.isSelected = selected
-            }
-        }
-        for (offset in -14..14) {
-            val day = (today.clone() as Calendar).apply { add(Calendar.DAY_OF_MONTH, offset) }
-            val key = format.format(day.time)
-            val label = when (offset) {
-                0 -> "今天"
-                -1 -> "昨天"
-                1 -> "明天"
-                else -> SimpleDateFormat("M月d日", Locale.CHINA).format(day.time)
-            }
-            val chip = text(label, 13f).apply {
-                gravity = Gravity.CENTER
-                setPadding(dp(13), dp(8), dp(13), dp(8))
-                setOnClickListener { selectedDay = key; paintDates() }
-            }
-            dates.addView(chip, lp(-2, -2).apply { rightMargin = dp(6) })
-            chips += key to chip
-            if (key == selectedDay) selectedChip = chip
-        }
-        paintDates()
         body.addView(strip, lp())
-        strip.post { selectedChip?.let { strip.scrollTo((it.left - strip.width / 2 + it.width / 2).coerceAtLeast(0), 0) } }
-        body.addView(PortraitUi.emptyState(activity, R.drawable.ic_phone_grid, "这一天没有新剧", "暂无新剧数据"), lp())
+        val loading = PortraitUi.emptyHint(activity, "正在加载新剧…")
+        body.addView(loading, lp())
+        val empty = PortraitUi.emptyState(activity, R.drawable.ic_phone_grid, "这一天没有新剧", "换个日期看看，或下拉刷新")
+        body.addView(empty, lp())
+        val grid = RecyclerView(activity)
+        body.addView(grid, lp())
+        val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
+            { activity.loadMoreNewReleasesPhone() }, scrollRoot)
+        adapter.attach(grid)
+        val error = text("", 14f, PortraitStyle.muted).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(16), dp(24), dp(16), dp(24))
+            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 10)
+            setOnClickListener { activity.retryNewReleasesPhone() }
+        }
+        body.addView(error, lp())
+        var shownDates = emptyList<String>()
+        var shownSelected = ""
+        fun updateDates() {
+            val selectedDay = activity.newReleaseDatePhone
+            val days = activity.newReleaseDatesPhone
+            if (shownDates == days && shownSelected == selectedDay) return
+            shownDates = days; shownSelected = selectedDay
+            dates.removeAllViews()
+            val format = SimpleDateFormat("yyyyMMdd", Locale.CHINA).apply {
+                timeZone = TimeZone.getTimeZone("Asia/Shanghai")
+            }
+            val today = NewReleaseCalendar.today()
+            val yesterday = format.format(Calendar.getInstance(format.timeZone).apply { add(Calendar.DAY_OF_MONTH, -1) }.time)
+            val tomorrow = format.format(Calendar.getInstance(format.timeZone).apply { add(Calendar.DAY_OF_MONTH, 1) }.time)
+            var selectedChip: TextView? = null
+            days.forEach { key ->
+                val selected = key == selectedDay
+                val label = when (key) {
+                    today -> "今天"
+                    yesterday -> "昨天"
+                    tomorrow -> "明天"
+                    else -> "${key.substring(4, 6).toInt()}月${key.substring(6, 8).toInt()}日"
+                }
+                val chip = text(label, 13f, if (selected) Color.WHITE else PortraitStyle.text).apply {
+                    gravity = Gravity.CENTER
+                    setPadding(dp(13), dp(8), dp(13), dp(8))
+                    background = PortraitStyle.selectable(activity, if (selected) Color.BLACK else PortraitStyle.raised, radius = 20)
+                    isSelected = selected
+                    contentDescription = "$label，${if (selected) "已选择" else "查看新剧"}"
+                    setOnClickListener { activity.chooseNewReleaseDayPhone(key) }
+                }
+                dates.addView(chip, lp(-2, -2).apply { rightMargin = dp(6) })
+                if (selected) selectedChip = chip
+            }
+            strip.post {
+                selectedChip?.let { strip.scrollTo((it.left - strip.width / 2 + it.width / 2).coerceAtLeast(0), 0) }
+            }
+        }
+        return { _ ->
+            updateDates()
+            val items = activity.newReleaseItemsPhone.map { it.series }
+            val busy = activity.newReleaseLoadingPhone
+            val problem = activity.newReleaseErrorPhone
+            loading.visibility = if (busy && items.isEmpty()) View.VISIBLE else View.GONE
+            empty.visibility = if (!busy && problem.isBlank() && items.isEmpty()) View.VISIBLE else View.GONE
+            grid.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
+            error.text = problem
+            error.visibility = if (problem.isNotBlank()) View.VISIBLE else View.GONE
+            adapter.submitItems(items, activity.newReleaseHasMorePhone && problem.isBlank())
+        }
     }
 
     private fun section(body: LinearLayout, title: String) {

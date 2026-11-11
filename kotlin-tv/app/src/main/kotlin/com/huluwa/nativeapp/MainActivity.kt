@@ -826,6 +826,7 @@ class MainActivity: Activity() {
         artwork.load(view,url,if(focused) ArtworkLoader.PRIORITY_FOCUSED else ArtworkLoader.PRIORITY_VISIBLE)
     }
     private fun cancelWork() {
+        phoneNewReleaseLoading=false
         deferredWork?.discard?.invoke(); deferredWork=null
         workScope?.cancel(); workScope=null
         workJob?.cancel(true); workJob=null
@@ -6223,6 +6224,81 @@ class MainActivity: Activity() {
         private set
     var rankingPhone: ComicRanking?=null
         private set
+    /** 新剧日历独立于首页/榜单的 catalog，按服务端日期缓存列表和游标。 */
+    private val phoneNewReleasePages=mutableMapOf<String,NewReleasePage>()
+    private var phoneNewReleaseDay=""
+    private var phoneNewReleaseCalendarDay=""
+    private var phoneNewReleaseDates=emptyList<String>()
+    private var phoneNewReleaseLoading=false
+    private var phoneNewReleaseError=""
+    private var phoneNewReleaseFailedMore=false
+    val newReleaseDatePhone get() = phoneNewReleaseDay.ifBlank { NewReleaseCalendar.today() }
+    val newReleaseDatesPhone get() = phoneNewReleaseDates
+    val newReleaseItemsPhone get() = phoneNewReleasePages[newReleaseDatePhone]?.items.orEmpty()
+    val newReleaseHasMorePhone get() = phoneNewReleasePages[newReleaseDatePhone]?.cursor!=null
+    val newReleaseLoadingPhone get() = phoneNewReleaseLoading
+    val newReleaseErrorPhone get() = phoneNewReleaseError
+
+    private fun prepareNewReleaseCalendarPhone() {
+        val today=NewReleaseCalendar.today()
+        if(phoneNewReleaseCalendarDay==today) return
+        val saved=if(phoneNewReleaseCalendarDay.isEmpty()) library.newReleaseDay else phoneNewReleaseDay
+        phoneNewReleaseDates=NewReleaseCalendar.nearbyDates()
+        phoneNewReleaseDay=saved.takeIf { it in phoneNewReleaseDates }.orEmpty()
+        phoneNewReleaseCalendarDay=today
+        phoneNewReleasePages.clear(); phoneNewReleaseError=""
+    }
+
+    fun chooseNewReleaseDayPhone(date: String) {
+        if(date !in phoneNewReleaseDates || date==newReleaseDatePhone) return
+        cancelWork()
+        phoneNewReleaseDay=date; library.newReleaseDay=date
+        phoneNewReleaseError=""; phoneScrollY=0
+        retainedPhoneCatalogs["new"]?.scroll?.scrollTo(0,0)
+        renderPhone()
+    }
+
+    /** 刷新替换当前日，分页只追加；切页取消后，下次渲染会补发尚未完成的首屏请求。 */
+    private fun loadNewReleasesPhone(more: Boolean=false) {
+        if(!phoneLayout() || screen!="catalog" || phoneTab!="new" || phoneNewReleaseLoading) return
+        val date=phoneNewReleaseDay
+        val previous=phoneNewReleasePages[newReleaseDatePhone]
+        val cursor=if(more) previous?.cursor ?: return else null
+        val ticket=generation
+        phoneNewReleaseError=""; phoneNewReleaseFailedMore=more
+        work({ repository.newReleases(date,cursor) }, { result ->
+            if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="new" &&
+                phoneNewReleaseDay==date && !phoneDetailCollection) {
+                phoneNewReleaseLoading=false
+                val items=if(more && previous?.date==result.date) (previous.items+result.items).distinctBy { it.series.id } else result.items
+                phoneNewReleasePages[result.date]=result.copy(items=items)
+                phoneNewReleaseDay=result.date; library.newReleaseDay=result.date
+                if(result.dates.isNotEmpty()) phoneNewReleaseDates=result.dates
+                if(result.date !in phoneNewReleaseDates) phoneNewReleaseDates=(phoneNewReleaseDates+result.date).sorted()
+                phoneNewReleasePages.keys.retainAll(phoneNewReleaseDates.toSet())
+                renderPhone()
+            }
+        }, { problem ->
+            if(phoneLayout() && ticket==generation && phoneTab=="new" && phoneNewReleaseDay==date) {
+                phoneNewReleaseLoading=false
+                phoneNewReleaseError=if(more) "更多新剧加载失败，点此重试" else "新剧加载失败，点此重试"
+                renderPhone()
+                android.util.Log.w("HongguoTV","Phone new releases failed: ${problem.message}")
+            }
+        })
+        // work 会先取消上一请求；在它完成取消后再标记，避免新请求被当作空闲而重复加载。
+        phoneNewReleaseLoading=true
+        renderPhone()
+    }
+
+    fun loadMoreNewReleasesPhone() {
+        if(!phoneNewReleaseLoading && phoneNewReleaseError.isBlank() && newReleaseHasMorePhone) loadNewReleasesPhone(more=true)
+    }
+
+    fun retryNewReleasesPhone() {
+        loadNewReleasesPhone(more=phoneNewReleaseFailedMore && newReleaseHasMorePhone)
+    }
+
     /** 手机收藏分组筛选。 */
     var favoriteGroupFilterPhone: String?=null
     /** 手机播放页的集号镜像（PortraitDetail/PhonePlayer 读取，同步自 episodeIndex）。 */
@@ -6292,6 +6368,13 @@ class MainActivity: Activity() {
         if(screen=="settings") return
         // detail/player 有各自的渲染入口，误调进来会把正在看的页面清成空骨架
         if(phoneTab=="detail" || phoneTab=="player") return
+        if(phoneTab=="new") {
+            prepareNewReleaseCalendarPhone()
+            if(!phoneNewReleaseLoading && phoneNewReleasePages[newReleaseDatePhone]==null && phoneNewReleaseError.isBlank()) {
+                loadNewReleasesPhone()
+                return
+            }
+        }
         markPageShown()
         // 从播放页（黑底白图标）返回或切换主题后，状态栏图标外观跟当前主题对齐
         phoneStatusBarFollowTheme()
@@ -6317,7 +6400,7 @@ class MainActivity: Activity() {
         val update: ((Boolean) -> Unit)?=when(phoneTab) {
             "home" -> portraitPages.home(body,scrollRoot=scroll)
             "rank" -> portraitPages.rank(body,scrollRoot=scroll)
-            "new" -> { portraitPages.newReleases(body); null }
+            "new" -> portraitPages.newReleases(body,scrollRoot=scroll)
             "fav" -> { portraitPages.favorites(body,scrollRoot=scroll); null }
             "mine" -> { portraitPages.mine(body,scroll); null }
             "search" -> { portraitPages.search(body,::runPhoneSearch,scroll); null }
@@ -6356,6 +6439,8 @@ class MainActivity: Activity() {
         if(!phoneCatalogViewsValid()) retainedPhoneCatalogs.clear()
         val retained=retainedPhoneCatalogs[next]
         phoneTab=next; phoneScrollY=retained?.scroll?.scrollY ?: 0; screen="catalog"
+        // 新剧使用按日期保存的独立数据，不能恢复成首页或榜单共用的 catalog。
+        if(next=="new") { renderPhone(); return }
         if(retained!=null) {
             val saved=retained.state
             catalog=saved.items; hasMore=saved.hasMore; rankingPhone=saved.ranking; phoneCatalogSource=next
@@ -6563,6 +6648,7 @@ class MainActivity: Activity() {
         when(phoneTab) {
             "home" -> showPhoneHome(load=true)
             "rank" -> { phoneRankPage=1; catalog=emptyList(); showPhoneRank() }
+            "new" -> { prepareNewReleaseCalendarPhone(); loadNewReleasesPhone() }
             "search" -> if(phoneQuery.isNotBlank()) runPhoneSearch(phoneQuery) else renderPhone()
             else -> renderPhone()
         }
@@ -6674,6 +6760,11 @@ class MainActivity: Activity() {
                 }
             }
         }
+        val upcoming=phoneNewReleasePages.values.asSequence().flatMap { it.items.asSequence() }
+            .firstOrNull { it.series.id==series.id && !it.online &&
+                (it.publishAt<=0 || it.publishAt>System.currentTimeMillis()/1000) }
+        // 预告作品尚无播放详情，用日历返回的海报、简介和上线文案展示，可照常收藏。
+        if(upcoming!=null) { apply(Detail(upcoming.series,emptyList())); return }
         repository.cachedDetail(series.id)?.let(apply) ?: work({ repository.seriesDetail(series.id) }, apply, { problem ->
             // 失败回调是普通的非内联 lambda，里面不能写裸 return
             if(phoneLayout()) {

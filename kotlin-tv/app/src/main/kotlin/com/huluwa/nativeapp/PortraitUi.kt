@@ -41,7 +41,7 @@ object PortraitUi {
     fun text(activity: Activity, value: String, size: Float, color: Int = PortraitStyle.text): TextView =
         TextView(activity).apply { text = value; textSize = size; setTextColor(color); includeFontPadding = false }
 
-    /** 参考图的五项导航；新剧暂时展示空数据。 */
+    /** 手机五项导航，新剧使用红果公开上新日历。 */
     val TABS = listOf(
         Tab("home", "推荐", R.drawable.ic_phone_home),
         Tab("rank", "排行榜", R.drawable.ic_phone_rank),

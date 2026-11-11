@@ -130,7 +130,7 @@ class PortraitDetail(
             ellipsize = TextUtils.TruncateAt.END
             setLineSpacing(dp(3).toFloat(), 1f)
         }, lp())
-        val metadata = listOf(data.series.tags, "全 ${data.episodes.size} 集",
+        val metadata = listOf(data.series.tags, if (data.episodes.isEmpty()) data.series.badge else "全 ${data.episodes.size} 集",
             data.social.heatText.takeIf { it.isNotBlank() }?.let { "热度 $it" }.orEmpty())
             .filter { it.isNotBlank() }.joinToString(" · ")
         info.addView(text(metadata, 12f, PortraitStyle.muted).apply {

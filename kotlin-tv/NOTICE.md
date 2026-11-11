@@ -24,6 +24,12 @@ X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios 与魔改 AES-V3）与匿名�
 - 原始 Go 实现与测试向量以 Apache-2.0 发布；本仓库改写为 Kotlin，保留相同的信封、轮函数和请求绑定字段。
 - 上游许可证随 APK 打包于 `app/src/main/assets/licenses/openhongguo-LICENSE.txt`。
 
+新剧日历接口的请求参数与响应字段（`NewReleases.kt`、`ContentRepository.newReleases`）参考：
+
+- 开心果 iOS：https://github.com/kadaliao/kaixinguo-ios ，`KaixinguoKit/Sources/KaixinguoKit/AppModel.swift` 中的 `newFeed`。
+- openhongguo：https://github.com/beilunyang/openhongguo ，`SignedNewReleasePairs` / `ParseNewReleases`（Apache-2.0）。
+- 本仓库以 Kotlin 接入相同的公开日历协议，复用本机匿名设备签名；日历、预告和分页在安卓端展示。
+
 `kotlin-tv/` 原生应用源码和派生实现以 GPL-3.0-only 发布，许可证全文见 `LICENSE`。发布 APK 时同时提供本分支对应源码、Gradle 包装器和构建说明。APK 不包含 Node、React Native、JavaScript 引擎或该 JavaScript 源文件。
 
 其他依赖：

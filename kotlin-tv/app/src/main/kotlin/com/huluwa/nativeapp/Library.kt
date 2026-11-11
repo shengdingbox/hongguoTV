@@ -21,8 +21,6 @@ class Library(context: Context) {
         val retiredWrites = mutableListOf<LatestWriteQueue<String, () -> Any?>>()
         /** 普通进度变更的备份节流窗口：播放中每 5 秒就有一次进度落盘，没必要跟着整包重写。 */
         const val PROGRESS_BACKUP_INTERVAL_MS = 5 * 60_000L
-        /** 启动方向偏好的合法取值，见 [orientationMode]。落盘的是 [OrientationMode.name]，故为大写。 */
-        val ORIENTATION_MODES = setOf("AUTO", "LANDSCAPE", "PORTRAIT")
     }
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
@@ -259,12 +257,12 @@ class Library(context: Context) {
     var theme: String
         get() = prefs.getString("theme", null) ?: "NIGHT"
         set(value) { prefs.edit().putString("theme", value).apply() }
-    /** 启动方向偏好：auto 跟随系统 / landscape 强制横屏界面 / portrait 强制竖屏界面。
+    /** 启动方向偏好：默认 portrait 手机新版竖屏界面，可选 auto 跟随系统 / landscape 强制横屏界面。
      *  落盘用大写枚举名（AUTO / LANDSCAPE / PORTRAIT），与 [OrientationMode.name] 一致。
      *  本机偏好，不进备份（同一份备份可能恢复到方向习惯不同的设备上）。 */
     var orientationMode: String
-        get() = prefs.getString("orientationMode", null)?.takeIf { it in ORIENTATION_MODES } ?: "AUTO"
-        set(value) { prefs.edit().putString("orientationMode", value.takeIf { it in ORIENTATION_MODES } ?: "AUTO").apply() }
+        get() = OrientationMode.of(prefs.getString("orientationMode", null)).name
+        set(value) { prefs.edit().putString("orientationMode", OrientationMode.of(value).name).apply() }
     /** 收藏页排序：update 最近更新 / watch 最近观看 / name 名称。本机视图偏好，不进备份。 */
     var favoriteSort: String
         get() = prefs.getString("favoriteSort", null)?.takeIf { it in listOf("update", "watch", "name") } ?: "update"

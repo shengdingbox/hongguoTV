@@ -22,10 +22,10 @@ import androidx.recyclerview.widget.RecyclerView
 import com.hongguotv.core.Series
 import kotlin.math.abs
 
-/** 强制竖屏的独立界面组件，布局参照开心果 iOS；不参与自动方向和 TV 页面渲染。 */
+/** 手机默认竖屏界面组件，布局参照开心果 iOS；不参与自动方向和 TV 页面渲染。 */
 object PortraitUi {
 
-    /** 仅接管用户明确选择的强制竖屏模式。 */
+    /** 接管默认或手动选择的竖屏模式。 */
     fun shouldUse(activity: Activity): Boolean =
         TouchControls.isHandheld(activity) && PhoneUi.orientationMode(activity) == OrientationMode.PORTRAIT
 

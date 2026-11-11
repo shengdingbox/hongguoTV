@@ -826,6 +826,7 @@ class MainActivity: Activity() {
         artwork.load(view,url,if(focused) ArtworkLoader.PRIORITY_FOCUSED else ArtworkLoader.PRIORITY_VISIBLE)
     }
     private fun cancelWork() {
+        phoneRecommendationRetry?.let { main.removeCallbacks(it) }; phoneRecommendationRetry=null
         phoneHomeLoading=false
         phoneNewReleaseLoading=false
         deferredWork?.discard?.invoke(); deferredWork=null
@@ -4564,7 +4565,17 @@ class MainActivity: Activity() {
             rows[(buttons.size-1)/3].addView(btn,LinearLayout.LayoutParams(0,-2,1f).apply { rightMargin=dp(6) })
             return btn
         }
-        add("首页") { val page=repository.home(1,library.contentType); "返回 ${page.items.size} 条" }
+        val phoneRecommendationCheck=phoneLayout()
+        add(if(phoneRecommendationCheck) "推荐" else "首页") {
+            if(phoneRecommendationCheck) {
+                val result=repository.recommendations()
+                RuntimeLog.add("recommendation check ${result.diagnostic}")
+                "返回 ${result.items.size} 条"
+            } else {
+                val result=repository.home(1,library.contentType)
+                "返回 ${result.items.size} 条"
+            }
+        }
         add("搜索") { val page=repository.search("修仙",1,library.contentType); "返回 ${page.items.size} 条" }
         add("播放") {
             val progress=library.history().firstOrNull() ?: throw IllegalStateException("暂无观看记录，先播放一集")
@@ -4575,7 +4586,7 @@ class MainActivity: Activity() {
         add("云端") { accountManager.checkCloudHistory() }
         content.addView(rows[0])
         content.addView(rows[1],lp(-1,-2).apply { topMargin=dp(8) })
-        content.addView(text("说明：每项只发一次请求；账号与云端检测需要先登录，未登录会跳过。",12f,muted).apply { setPadding(dp(8),dp(10),dp(8),0) })
+        content.addView(text("说明：每项只检测一次；账号与云端检测需要先登录，未登录会跳过。",12f,muted).apply { setPadding(dp(8),dp(10),dp(8),0) })
         dialog=AlertDialog.Builder(this).setView(TvDialog.card(this,content)).create()
         TvDialog.styleWindow(this,dialog,widthDp=340)
         dialog.setOnDismissListener { if(anchor.isAttachedToWindow) anchor.requestFocus() }
@@ -6449,6 +6460,9 @@ class MainActivity: Activity() {
     private var phoneRecommendationStarted=false
     private var phoneRecommendationError=""
     private var phoneRecommendationFailedMore=false
+    private var phoneRecommendationRetry: Runnable?=null
+    private var phoneRecommendationRetries=0
+    private var phoneRecommendationDiagnostic="尚未请求"
     val recommendationItemsPhone get() = phoneRecommendationItems
     val recommendationHasMorePhone get() = phoneRecommendationCursor!=null
     val recommendationErrorPhone get() = phoneRecommendationError
@@ -6523,12 +6537,19 @@ class MainActivity: Activity() {
                     else -> result.cursor
                 }
                 phoneRecommendationStarted=true
+                phoneRecommendationRetries=0
+                phoneRecommendationDiagnostic=result.diagnostic
+                RuntimeLog.add("recommendations ${result.diagnostic} total=${phoneRecommendationItems.size} " +
+                    "visible=${phoneRecommendationItems.count { it.id !in library.hidden() }}")
                 library.cacheRecommendations(phoneRecommendationItems)
                 renderPhone()
             }
         }, { problem ->
             if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="home" && !phoneDetailCollection) {
                 phoneHomeLoading=false
+                phoneRecommendationDiagnostic=if(problem is EmptyRecommendationException) problem.diagnostic
+                    else problem.javaClass.simpleName
+                RuntimeLog.add("recommendations failed ${phoneRecommendationDiagnostic}")
                 val reason=problem.message?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim()?.take(160)
                 phoneRecommendationError=buildString {
                     append(if(more) "更多推荐加载失败" else "推荐加载失败")
@@ -6537,6 +6558,17 @@ class MainActivity: Activity() {
                 }
                 renderPhone()
                 android.util.Log.w("HongguoTV","Phone recommendations failed",problem)
+                // 与 iOS 空列表退避一致：2/4/8/16 秒各重试一次，离页立即取消。
+                if(phoneRecommendationItems.isEmpty() && problem is EmptyRecommendationException && phoneRecommendationRetries<4) {
+                    val delay=2_000L shl phoneRecommendationRetries
+                    phoneRecommendationRetries++
+                    val retry=Runnable {
+                        phoneRecommendationRetry=null
+                        if(foreground && screen=="catalog" && phoneTab=="home") loadPhoneRecommendations(more=more)
+                    }
+                    phoneRecommendationRetry=retry
+                    main.postDelayed(retry,delay)
+                }
             }
         })
         // work 先取消旧请求；完成取消后才标记本次加载，防止重渲染重复发起首屏。
@@ -6545,6 +6577,7 @@ class MainActivity: Activity() {
     }
 
     fun retryRecommendationsPhone() {
+        phoneRecommendationRetries=0
         loadPhoneRecommendations(more=phoneRecommendationFailedMore && phoneRecommendationCursor!=null)
     }
 
@@ -7153,6 +7186,10 @@ class MainActivity: Activity() {
         val data = detail
         val cache = episodeDiskCache
         appendLine("页面: $screen / 页签 $phoneTab" + if (data != null) " · 第 ${episodeIndex + 1}/${data.episodes.size} 集" else "")
+        appendLine("推荐: ${phoneRecommendationItems.size} 条 · 可见 ${phoneRecommendationItems.count { it.id !in library.hidden() }} 条" +
+            " · 已请求 $phoneRecommendationStarted · 加载中 $phoneHomeLoading · 可翻页 ${phoneRecommendationCursor!=null}")
+        appendLine("推荐接口: $phoneRecommendationDiagnostic")
+        if(phoneRecommendationError.isNotBlank()) appendLine("推荐错误: ${phoneRecommendationError.lineSequence().firstOrNull().orEmpty()}")
         appendLine("整集预载缓存: " + when {
             !library.episodeCache -> "开关关闭"
             cache == null -> "已开启但缓存池未创建（设置里开关一次即可重建）"

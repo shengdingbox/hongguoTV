@@ -176,16 +176,23 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             val initial = RecommendationParser.initial(catalogJson("$API/reading/bookapi/bookmall/tab/v", values))
             initial.cursor?.let { next ->
                 val more = change(next)
-                RecommendationPage((initial.items + more.items).distinctBy { it.id }, more.cursor)
+                RecommendationPage((initial.items + more.items).distinctBy { it.id }, more.cursor,
+                    "${initial.diagnostic}; ${more.diagnostic}")
             } ?: initial
         }
         // 服务端偶尔夹有空页：最多越过两页，单次加载不超过三页，避免空列表卡住或无限请求。
         repeat(2) {
             val next = result.cursor
-            if (result.items.isNotEmpty() || next == null) return result
-            result = change(next)
+            if (result.items.isNotEmpty() || next == null) {
+                if (cursor == null && result.items.isEmpty()) throw EmptyRecommendationException(result.diagnostic)
+                return result
+            }
+            val more = change(next)
+            result = more.copy(diagnostic = "${result.diagnostic}; ${more.diagnostic}")
         }
-        if (result.items.isEmpty() && result.cursor != null) throw IOException("推荐暂时没有内容，请稍后重试")
+        if (result.items.isEmpty() && (cursor == null || result.cursor != null)) {
+            throw EmptyRecommendationException(result.diagnostic)
+        }
         return result
     }
 

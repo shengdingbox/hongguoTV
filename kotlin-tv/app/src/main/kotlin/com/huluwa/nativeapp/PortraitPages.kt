@@ -58,9 +58,23 @@ class PortraitPages(
         }
         body.addView(error, lp())
         return { loading ->
-            val items = activity.recommendationItemsPhone.filterNot { it.id in activity.phoneLibrary.hidden() }
+            val allItems = activity.recommendationItemsPhone
+            val items = allItems.filterNot { it.id in activity.phoneLibrary.hidden() }
             val problem = activity.recommendationErrorPhone
-            empty.text = if (loading) "正在加载推荐…" else "暂时没有推荐，下拉可重新加载"
+            val allHidden = allItems.isNotEmpty() && items.isEmpty()
+            empty.text = when {
+                loading -> "正在加载推荐…"
+                allHidden && activity.recommendationHasMorePhone -> "本批推荐已被隐藏，点此加载更多"
+                allHidden -> "推荐已被隐藏，可在设置中恢复隐藏推荐"
+                else -> "暂时没有推荐，点此重新加载"
+            }
+            empty.isClickable = !loading
+            empty.setOnClickListener {
+                if (!loading) {
+                    if (allHidden && activity.recommendationHasMorePhone) activity.loadMorePhone()
+                    else activity.retryRecommendationsPhone()
+                }
+            }
             empty.visibility = if (items.isEmpty() && problem.isBlank()) View.VISIBLE else View.GONE
             grid.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
             error.text = problem

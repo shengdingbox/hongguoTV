@@ -13,7 +13,10 @@ data class RecommendationCursor(
     val clientTemplate: String = "",
     val offset: Int = 0,
 )
-data class RecommendationPage(val items: List<Series>, val cursor: RecommendationCursor?)
+data class RecommendationPage(val items: List<Series>, val cursor: RecommendationCursor?, val diagnostic: String = "")
+
+/** 推荐首屏为空通常是临时限制或响应结构变化，不能当作已经加载完毕。 */
+class EmptyRecommendationException(val diagnostic: String) : IOException("暂时未取到推荐，请稍后重试")
 
 /** 对照开心果 iOS 所用 openhongguo 的 ParseDiscoverTab / ParseCellChange。 */
 internal object RecommendationParser {
@@ -66,7 +69,8 @@ internal object RecommendationParser {
             cell.str("cell_id_str"), session, cell.str("show_type"),
             tab.optInt("client_template", 0).takeIf { it > 0 }?.toString().orEmpty(),
         ) else null
-        return RecommendationPage(items.distinctBy { it.id }, cursor)
+        val diagnostic = "tab=16 cells=${cells.size} parsed=${items.distinctBy { it.id }.size} continuation=${cursor != null}"
+        return RecommendationPage(items.distinctBy { it.id }, cursor, diagnostic)
     }
 
     fun next(root: JSONObject, previous: RecommendationCursor): RecommendationPage {
@@ -77,6 +81,10 @@ internal object RecommendationParser {
         val cursor = if (data.optBoolean("has_more", false) && offset > previous.offset) {
             previous.copy(offset = offset, sessionId = data.str("session_id").ifBlank { previous.sessionId })
         } else null
-        return RecommendationPage(items.distinctBy { it.id }, cursor)
+        val cell = data.optJSONObject("cell_view")
+        val diagnostic = "change view=${cell != null} cells=${rows(cell?.opt("cell_data")).size} " +
+            "parsed=${items.distinctBy { it.id }.size} hasMore=${data.optBoolean("has_more", false)} " +
+            "offset=${previous.offset} next=$offset"
+        return RecommendationPage(items.distinctBy { it.id }, cursor, diagnostic)
     }
 }

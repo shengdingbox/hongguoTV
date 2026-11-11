@@ -39,7 +39,7 @@ class ContentRepositoryTest {
 
     @Test fun incompatibleSourceDiagnosticCarriesRouteAndEveryVideoListEntry() {
         // 模拟站方降级模型：全部条目 main_url 都是加密 blob（非 http 开头），应逐条出现在诊断里且带路由。
-        // tab 接口响应缺 code:0 被 tabVideoModel 拒绝，模型实际来自第一条旧 POST 路由。
+        // 模拟优先播放 POST 返回带 fallback_api 的兼容模型。
         val repo=repository { request ->
             if(request.url.host=="example.com") {
                 val rows=JSONObject()
@@ -49,9 +49,8 @@ class ContentRepositoryTest {
             } else """{"data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}"""
         }
         val error=assertThrows(UnplayableVideoException::class.java) { repo.stream("123",1080) }
-        // mock 的 tab 接口缺 code:0 被 tabVideoModel 拒绝，模型实际来自第一条旧 POST 路由；
-        // 最终失败轮是重试计划的最后一项 (level=3, 主机)，诊断里带 lvl=3。
-        assertEquals("route=/novel/player/multi_video_model/v1/ lvl=3 video_list=video_1:bytevc2:1080:enc/enc;video_5:bytevc2:720:enc/empty",error.diagnostic)
+        // 优先 POST 路由随模型进入诊断；最终重试轮的 level=3 也应保留。
+        assertEquals("route=$playerPath lvl=3 video_list=video_1:bytevc2:1080:enc/enc;video_5:bytevc2:720:enc/empty",error.diagnostic)
     }
 
     @Test fun tabRouteTagRidesAlongInIncompatibleDiagnostic() {
@@ -107,12 +106,40 @@ class ContentRepositoryTest {
 
     private fun videoInfo() =
         """{"video_info":{"data":{"video_list":{"video_0":{"vheight":1080,"codec_type":"h264","main_url":"https://example.com/a.mp4"}}}}}"""
-    // 单集取址接口：现在的主力路由。
+    private val playerPath="/novel/player/video_model/v1/"
+    // 旧单集 GET：优先播放 POST 不可用时的第一条兼容路由。
     private val singlePath="/reading/bookapi/video_tab/video_model/v"
     // 多集取址接口：对匿名设备近乎一次性配额，只作兜底。
     private val tabPath="/reading/bookapi/video_tab/multi_video_model/v1/"
 
-    @Test fun singleEpisodeRouteIsPreferredOverMultiRoute() {
+    private fun playerModelResponse() =
+        """{"code":0,"data":{"expire_time":1893456000,"video_model":{"video_list":[{"main_url":"https://example.com/a.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}"""
+
+    @Test fun playerPostIsPreferredAndReturnsDirectStreamWithoutFallbackRequest() {
+        val requests=mutableListOf<Request>()
+        val repo=repository { request ->
+            requests += request
+            assertEquals(playerPath,request.url.encodedPath)
+            assertEquals("api5-normal-sinfonlinea.fqnovel.com",request.url.host)
+            assertEquals("POST",request.method)
+            val body=okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8()
+            val payload=JSONObject(body)
+            assertEquals("123",payload.getString("video_id"))
+            val business=payload.getJSONObject("biz_param")
+            assertEquals(0,business.getInt("video_id_type"))
+            assertTrue(business.getBoolean("need_all_video_definition"))
+            assertEquals(3,business.getInt("video_platform"))
+            playerModelResponse()
+        }
+        val stream=repo.stream("123")
+        assertEquals("https://example.com/a.mp4",stream.url)
+        assertEquals("1080P",stream.quality)
+        assertEquals(1893456000000L,stream.expiresAt)
+        assertNull(stream.key)
+        assertEquals(1,requests.size)
+    }
+
+    @Test fun legacySingleEpisodeRouteIsPreferredOverMultiWhenPlayerIsBlank() {
         val paths=mutableListOf<String>()
         val repo=repository { request ->
             paths += request.url.encodedPath
@@ -126,8 +153,8 @@ class ContentRepositoryTest {
             }
         }
         assertEquals("1080P",repo.stream("123").quality)
-        assertEquals(singlePath,paths.first())
-        // 单集接口成功时不应再碰一次性配额的多集接口。
+        assertEquals(listOf(playerPath,playerPath,singlePath,"/stream"),paths)
+        // 旧单集 GET 成功后，不再触碰多集接口。
         assertFalse(paths.contains(tabPath))
     }
 
@@ -150,7 +177,7 @@ class ContentRepositoryTest {
 
     @Test fun nonBlankErrorWithoutRecoveryFailsFast() {
         // 非空体表示站方明确拒绝（有错误码），换设备重扫没有意义：
-        // 应只试第一条旧 POST 路由就失败，而不是把五条路由和 recover 后的第二轮全部走完。
+        // 优先 POST 拒绝后仍允许兼容回退；首条旧 POST 也明确拒绝时立即失败，不再换设备重扫。
         val postRoutes=mutableListOf<String>()
         val repo=repository { request ->
             when {
@@ -163,7 +190,7 @@ class ContentRepositoryTest {
             }
         }
         assertThrows(IOException::class.java) { repo.stream("123") }
-        assertEquals(listOf("/novel/player/multi_video_model/v1/"),postRoutes)
+        assertEquals(listOf(playerPath,"/novel/player/multi_video_model/v1/"),postRoutes)
     }
 
     @Test fun videoTabRouteSuppliesPlaybackModel() {
@@ -192,39 +219,39 @@ class ContentRepositoryTest {
         assertEquals("1080P",repo.stream("123").quality)
     }
 
-    @Test fun warmPrefetchesEachEpisodeThroughTheRepeatableSingleRoute() {
+    @Test fun warmAndPlaybackSharePlayerPostModelsWithoutRefetching() {
         val modelRequests=mutableListOf<String>()
         val repo=repository { request ->
-            when {
-                request.url.host=="example.com" -> videoInfo()
-                // 预热只能走可重复请求的单集接口；一次性配额的多集接口不能碰。
-                request.url.encodedPath==singlePath -> {
-                    modelRequests += request.url.encodedPath
-                    """{"code":0,"data":{"video_model":{"fallback_api":"https://example.com/stream"}}}"""
-                }
-                else -> ""
-            }
+            assertEquals(playerPath,request.url.encodedPath)
+            assertEquals("POST",request.method)
+            val payload=okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8()
+            modelRequests += JSONObject(payload).getString("video_id")
+            playerModelResponse()
         }
         val report=repo.warm(listOf("1","2","3"))
         assertEquals(3,report.cached)
-        assertEquals(3,modelRequests.size)
+        assertEquals(playerPath,report.route)
+        assertEquals(listOf("1","2","3"),modelRequests)
         assertEquals("1080P",repo.stream("3").quality)
-        // 预热过的集不再单独问一次模型接口。
-        assertEquals(3,modelRequests.size)
+        // 正式播放复用同一份直连模型，不重取模型或请求 fallback_api。
+        assertEquals(listOf("1","2","3"),modelRequests)
     }
 
-    @Test fun blankRouteFallsBackToNextRoute() {
-        val paths=mutableListOf<String>()
+    @Test fun blankRoutesFallBackToNextLegacyPostRoute() {
+        val postRoutes=mutableListOf<String>()
+        val preloadPath="/novel/player/multi_video_model/preload/v1/"
         val repo=repository { request ->
-            paths += request.url.encodedPath
-            if(request.url.host=="example.com") videoInfo()
-            else if(request.url.encodedPath=="/novel/player/multi_video_model/v1/") ""
-            else """{"data":{"video_model":{"fallback_api":"https://example.com/stream"}}}"""
+            if(request.method=="POST") postRoutes += request.url.encodedPath
+            when {
+                request.url.host=="example.com" -> videoInfo()
+                request.url.encodedPath==preloadPath ->
+                    """{"data":{"video_model":{"fallback_api":"https://example.com/stream"}}}"""
+                else -> ""
+            }
         }
         assertEquals("1080P",repo.stream("123").quality)
-        assertEquals(singlePath,paths.first())
-        assertTrue(paths.contains("/novel/player/multi_video_model/v1/"))
-        assertTrue(paths.contains("/novel/player/video_model/v1/"))
+        assertEquals(listOf(playerPath,playerPath,
+            "/novel/player/multi_video_model/v1/","/novel/player/multi_video_model/v1/",preloadPath),postRoutes)
     }
 
     private fun repository(clock: () -> Long = System::currentTimeMillis, respond: (Request) -> String) = ContentRepository(

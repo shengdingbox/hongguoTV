@@ -550,11 +550,7 @@
     $("bhint").textContent = !controllable
       ? (snap ? "电视当前不在播放，可用方向键浏览" : "正在连接电视…")
       : (browse ? "正在浏览电视画面，点「遥控」切回播放控制" : "电视正在播放，可随时切到浏览");
-    // 片源是独立模块：电视停在片源页时，「继续观看」要换成片源的观看记录。
-    // 电视侧的 /resume 接口按 tab 自动切换内容，这里跟踪上下文，变了就重拉。
-    var ctx = resumeContext();
-    $("rtitle").textContent = ctx === "third" ? "片源 · 继续观看" : "继续观看";
-    if(browse && (!resumeLoaded || resumeCtx !== ctx)){ resumeLoaded = true; resumeCtx = ctx; refreshResume(); }
+    if(browse && !resumeLoaded){ resumeLoaded = true; refreshResume(); }
     if(!browse) resumeLoaded = false;
     previousMode = browse ? "browse" : "panel";
   }
@@ -564,8 +560,6 @@
   // 「继续观看」只在进入浏览形态时拉一次。不能用 previousMode 判断：
   // 首帧快照到达之前 renderMode 已经跑过一次，形态其实没变，列表就永远停在「正在连接电视…」。
   var resumeLoaded = false;
-  var resumeCtx = null;
-  function resumeContext(){ return !!snap && snap.screen === "third" ? "third" : "main"; }
 
   function renderPanel(){
     if(!snap) return;
@@ -609,7 +603,7 @@
     $("p-speed").classList.toggle("on", Math.abs(s.speed - 1) > 0.01);
     $("p-mute").querySelector("b").textContent = s.muted ? "静音" : "有声";
     $("p-mute").classList.toggle("on", !!s.muted);
-    // 三方片源没有弹幕：显示成「不支持」并禁用，比永远显示「关」而点了没反应诚实
+    // 电视未提供弹幕控制时禁用按钮。
     var dmkOk = !s.caps || s.caps.danmaku !== false;
     $("p-dmk").disabled = !dmkOk;
     $("p-dmk").querySelector("b").textContent = dmkOk ? (s.danmaku ? "开" : "关") : "无";
@@ -796,8 +790,7 @@
       box.innerHTML = "";
       var items = (data && data.items) || [];
       if(!items.length){
-        // 电视停在片源页时列表是片源自己的观看记录，提示语也要跟上
-        box.innerHTML = '<span class="empty">' + (resumeContext() === "third" ? "片源里还没有观看记录" : "电视上还没有观看记录") + '</span>';
+        box.innerHTML = '<span class="empty">电视上还没有观看记录</span>';
         return;
       }
       items.forEach(function(item){ box.appendChild(resumeCard(item)); });
@@ -807,13 +800,12 @@
   }
 
   // ---- 「更多」全量记录弹层：上滑出现，滑到底部自动续渲染下一批 ----
-  var rallItems = null, rallCtx = null, rallShown = 0;
+  var rallItems = null, rallShown = 0;
   var RALL_BATCH = 24;
   function openRmore(){
     $("rdrawer").classList.add("on");
-    var ctx = resumeContext();
-    if(rallItems === null || rallCtx !== ctx){
-      rallCtx = ctx; rallItems = []; rallShown = 0;
+    if(rallItems === null){
+      rallItems = []; rallShown = 0;
       $("rall").innerHTML = '<span class="empty">正在读取…</span>';
       fetch("/" + token + "/resume/all").then(function(r){ return r.json(); }).then(function(data){
         rallItems = (data && data.items) || [];

@@ -299,7 +299,7 @@ class LanRemoteHubTest {
 
     @Test fun `episodes and resume endpoints answer with provider data`() {
         val target = object : RemoteTarget {
-            override val source = PlaybackSource.THIRD
+            override val source = PlaybackSource.OFFICIAL
             override fun apply(cmd: RemoteCommand) = true
             override fun episodes() = listOf(
                 EpisodeGroupDetail("线路1", listOf(EpisodeEntry(0, "第 1 集"), EpisodeEntry(1, "第 2 集"))),

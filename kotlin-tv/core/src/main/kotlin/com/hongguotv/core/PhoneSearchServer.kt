@@ -33,7 +33,7 @@ data class PhoneField(
     val secret: Boolean = false
 )
 
-/** 手机填写页表单定义：搜索剧名、添加三方片源、导入配置等扫码场景共用同一套服务，只替换表单与文案。 */
+/** 手机填写页表单定义：用于电视搜索页的扫码输入。 */
 data class PhoneForm(
     val heading: String,
     val description: String,

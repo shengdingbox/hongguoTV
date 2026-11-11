@@ -95,11 +95,9 @@ class MainActivity: Activity() {
     private var randomDialog: AlertDialog?=null
     private var exitDialog: AlertDialog?=null
     private var killOnDestroy=false
-    private var third: ThirdSourceScreen?=null
     /** 手机遥控会话。独立于 TvTools 持有：那边每次打开新弹窗都会 dismiss 上一个。 */
     private var remote: PhoneRemoteSession?=null
     private var remoteHolding=false
-    private var thirdWantsScreenOn=false
     /** 播放器自己是否要求常亮。显式持有位，不靠 screen/requestedAutoplay 反推。 */
     private var playerScreenOn=false
     private var remotePublishedAt=0L
@@ -166,7 +164,6 @@ class MainActivity: Activity() {
     private var pendingDetail: Series?=null
     private var detailAutoplay=true
     private var libraryLoadError: Throwable?=null
-    private var localPermissionContinuation: (() -> Unit)?=null
     private var workScope: RequestScope?=null
     private var workJob: java.util.concurrent.Future<*>?=null
     private var detailExtrasScope: RequestScope?=null
@@ -210,7 +207,6 @@ class MainActivity: Activity() {
     private var accountButton: TextView?=null
     private lateinit var tvTools: TvTools
     private lateinit var extras: PlaybackExtras
-    private lateinit var thirdStore: ThirdStore
     private lateinit var updater: AppUpdater
     private lateinit var mediaSession: TvMediaSession
     private val sleepTimer=SleepTimer { android.os.SystemClock.elapsedRealtime() }
@@ -499,8 +495,7 @@ class MainActivity: Activity() {
     private val tick=object: Runnable {
         override fun run() {
             if(!foreground || isDestroyed) return
-            // 三方播放器走自己的 updatePlayUi，不会经过 updatePlaybackText，
-            // 只靠那两处挂点的话手机上的进度会永远停在扫码那一刻。
+            // 定时同步手机遥控的播放进度和前台状态。
             remotePublish()
             if(screen=="player") {
                 if(sleepTimer.poll()) stopForSleep()
@@ -638,27 +633,18 @@ class MainActivity: Activity() {
         setupMouseGestures()
         // 永久遥控的密钥/端口落盘，必须先于任何 PhoneRemoteSession 构造
         RemoteAccess.init(this)
-        XiaoAiAccess.init(this)
         accountManager=AccountManager(this,library,repository.signer)
         accountManager.onAccountChanged={
             accountButton?.text=accountManager.accountLabel
             // 账号状态变化后，正在展示的记录页立即重建（登录后拉取云端历史、退出后清空云端区）。
             // isLoaded 必须查：recreate()（换主题/缩放）会新建 AccountManager 并可能立刻回调，
-            // 此时本机记录还在异步加载，showCatalog 里 navHiddenAt 一碰 state() 就崩。
+            // 此时本机记录还在异步加载，页面一读取 state() 就会崩溃。
             if(library.isLoaded && screen=="catalog" && (tab==4 || collection=="resume")) showCatalog()
             // 手机竖屏的「我的 / 收藏」页直接展示账号与云端数据，登录/退出后要立即重建
             if(library.isLoaded && phoneLayout() && screen=="catalog" && (phoneTab=="mine" || phoneTab=="fav")) renderPhone()
             // 手机设置页里登录/退出：昵称与云端数量就是行标题，整页重画一次
             if(library.isLoaded && screen=="settings") refreshPhoneSettings()
         }
-        // 三方片源配置与观看历史随主备份一起保存/恢复：本地已有的保留，不覆盖
-        thirdStore=ThirdStore(this)
-        library.thirdSourcesProvider={ thirdStore.backupSources() }
-        library.thirdSourcesRestore={ thirdStore.mergeRestored(it) }
-        library.thirdHistoryProvider={ thirdStore.backupHistory() }
-        library.thirdHistoryRestore={ thirdStore.mergeHistory(it) }
-        library.thirdFavoritesProvider={ thirdStore.backupFavorites() }
-        library.thirdFavoritesRestore={ thirdStore.mergeFavorites(it) }
         InstallStatsPing.startOnce(applicationContext)
         backdropView=ImageView(this).apply { scaleType=ImageView.ScaleType.FIT_XY; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }
         loadBackdrop()
@@ -685,123 +671,12 @@ class MainActivity: Activity() {
         }) {
             // 记录加载完成后同步落盘缓存开关：恢复出厂/重装后首次进入也要按偏好创建缓存池
             applyEpisodeCacheSetting()
-            if(!isDestroyed && foreground) handleLocalBackupOnStartup {
-                // 手机竖屏：渲染手机首页（热门走缓存+后台刷新）；电视/横屏维持原有 showCatalog
-                if(!isDestroyed && foreground) {
-                    if(pendingPhoneSettings && phoneLayout()) { pendingPhoneSettings=false; showPhoneSettings(); favoriteMonitor.check() }
-                    else if(phoneLayout()) { showPhoneHome(load=true); favoriteMonitor.check() }
-                    else { showCatalog(load=true); favoriteMonitor.check() }
-                }
+            if(!isDestroyed && foreground) {
+                // 手机竖屏使用手机首页，电视与横屏使用电视目录。
+                if(pendingPhoneSettings && phoneLayout()) { pendingPhoneSettings=false; showPhoneSettings(); favoriteMonitor.check() }
+                else if(phoneLayout()) { showPhoneHome(load=true); favoriteMonitor.check() }
+                else { showCatalog(load=true); favoriteMonitor.check() }
             }
-        }
-    }
-    private fun handleLocalBackupOnStartup(done: () -> Unit) {
-        if(!library.localBackupEnabled || library.localRestoreChecked) {
-            library.localRestoreChecked=true
-            library.maybeBackupOnStartup()
-            done(); return
-        }
-        val storage=library.localBackup()
-        if(!storage.supported || (!storage.restoreAllowed && library.localPermissionAsked)) {
-            library.localRestoreChecked=true
-            library.maybeBackupOnStartup()
-            done(); return
-        }
-        if(storage.restoreAllowed) { restoreLocalBackup(done); return }
-        library.localPermissionAsked=true
-        TvDialog.confirm(this,"本地备份","开启后，收藏、观看记录与播放设置会备份到本机公共目录，卸载重装后可自动恢复。备份是明文文件，可随时在设置中关闭。云端观看记录不会随本地备份迁移，登录同一账号后会自动拉取。") {
-            localPermissionContinuation={ restoreLocalBackup(done) }
-            if(!storage.request(this)) {
-                localPermissionContinuation=null; library.localRestoreChecked=true
-                Toast.makeText(this,"当前设备无法授予存储权限，可在设置中使用手机备份迁移",Toast.LENGTH_LONG).show()
-                done()
-            }
-        }.also { it.setOnDismissListener { library.localRestoreChecked=true; done() }; it.show() }
-    }
-    private fun restoreLocalBackup(done: () -> Unit) {
-        io.execute {
-            val data=runCatching { library.readLocalBackup() }.getOrNull()
-            runOnUiThread {
-                if(isDestroyed) return@runOnUiThread
-                val restored=data!=null && library.isEmptyForRestore()
-                if(restored) {
-                    favoriteMonitor.stop()
-                    library.applyLocalBackup(data!!)
-                    tabState.clear(); tabFocus.clear(); catalogFocus=""; page=1
-                    Toast.makeText(this,"已从本机备份恢复收藏与记录",Toast.LENGTH_LONG).show()
-                }
-                library.localRestoreChecked=true
-                library.maybeBackupOnStartup()
-                done()
-            }
-        }
-    }
-    private fun localBackupLabel(): String {
-        if(!library.localBackupEnabled) return "本地备份与恢复  ·  已关闭"
-        val storage=library.localBackup()
-        if(!storage.supported) return "本地备份与恢复  ·  不可用"
-        if(storage.needsPermission) return "本地备份与恢复  ·  待授权"
-        return "本地备份与恢复  ·  已开启"
-    }
-    private fun showLocalBackupDialog(anchor: TextView) {
-        val storage=library.localBackup()
-        if(!storage.supported) {
-            TvDialog.info(this,"本地备份与恢复","当前设备没有可用的公共存储，无法自动备份；可使用「手机备份与恢复」迁移记录。").show()
-            return
-        }
-        if(!library.localBackupEnabled) {
-            TvDialog.confirm(this,"本地备份与恢复","开启后，收藏、观看记录与播放设置会备份到本机公共目录，卸载重装后可自动恢复。备份是明文文件，可随时关闭。云端观看记录不会随本地备份迁移，登录同一账号后会自动拉取。") {
-                library.localBackupEnabled=true; anchor.text=localBackupLabel()
-                if(storage.needsPermission) requestLocalBackupPermission(anchor) else localBackupAction(anchor)
-            }.show()
-            return
-        }
-        val needsPermission=storage.needsPermission
-        val actions=if(needsPermission) arrayOf("授权存储权限","关闭本地自动备份") else arrayOf(if(library.isEmptyForRestore() && library.hasLocalBackup()) "立即恢复" else "立即备份","关闭本地自动备份")
-        TvDialog.choose(this,"本地备份与恢复",actions.toList(), { which ->
-            if(which==0) {
-                if(needsPermission) requestLocalBackupPermission(anchor) else localBackupAction(anchor)
-            } else {
-                library.localBackupEnabled=false; anchor.text=localBackupLabel()
-                Toast.makeText(this,"已关闭本地自动备份，已有备份文件保留",Toast.LENGTH_SHORT).show()
-            }
-        }).show()
-    }
-    /** Empty library with an existing backup must restore instead of overwriting it with nothing. */
-    private fun localBackupAction(anchor: TextView) {
-        if(library.isEmptyForRestore() && library.hasLocalBackup()) {
-            restoreLocalBackup { anchor.text=localBackupLabel() }
-        } else backupWithToast(anchor)
-    }
-    private fun requestLocalBackupPermission(anchor: TextView) {
-        localPermissionContinuation={
-            anchor.text=localBackupLabel()
-            if(library.localBackup().backupAllowed) localBackupAction(anchor)
-        }
-        if(!library.localBackup().request(this)) {
-            localPermissionContinuation=null
-            anchor.text=localBackupLabel()
-            Toast.makeText(this,"当前设备无法授予存储权限，请使用手机备份迁移",Toast.LENGTH_LONG).show()
-        }
-    }
-    private fun backupWithToast(anchor: TextView) {
-        library.backupNow { ok ->
-            anchor.text=localBackupLabel()
-            Toast.makeText(this,if(ok) "本机备份已更新" else "备份失败，请检查存储权限",Toast.LENGTH_SHORT).show()
-        }
-    }
-    override fun onActivityResult(requestCode: Int,resultCode: Int,data: Intent?) {
-        super.onActivityResult(requestCode,resultCode,data)
-        if(requestCode==LocalBackupStorage.REQUEST_MANAGE) {
-            val next=localPermissionContinuation; localPermissionContinuation=null
-            if(next!=null && !isDestroyed) next()
-        }
-    }
-    override fun onRequestPermissionsResult(requestCode: Int,permissions: Array<out String>,grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode,permissions,grantResults)
-        if(requestCode==LocalBackupStorage.REQUEST_READ || requestCode==LocalBackupStorage.REQUEST_WRITE) {
-            val next=localPermissionContinuation; localPermissionContinuation=null
-            if(next!=null && !isDestroyed) next()
         }
     }
     private fun base(title: String?=null): LinearLayout {
@@ -907,18 +782,8 @@ class MainActivity: Activity() {
         val detail=if(problem is java.net.UnknownHostException) "无法连接内容网站" else if(problem is java.net.SocketTimeoutException) "连接超时" else problem.message.orEmpty().replace(Regex("https?://\\S+"),"[地址]").take(160)
         parent.addView(text(detail,13f,muted)); addButton(parent,"重试",onClick=retry).requestFocus()
     }
-    /** 导航栏模块是否被用户隐藏：首页(0) 与设置(5) 始终显示。 */
-    private fun navHiddenAt(index: Int): Boolean = when(index) {
-        1 -> library.navHidden("search")
-        2 -> library.navHidden("rank")
-        3 -> library.navHidden("favorite")
-        4 -> library.navHidden("history")
-        6 -> library.sourceHidden
-        7 -> library.navHidden("nas")
-        else -> false
-    }
     private fun switchTab(next: Int) {
-        if(navHiddenAt(next)) return
+        if(next !in 0..5) return
         leaveCollection()
         if(next==tab) { nav.getOrNull(tab)?.requestFocus(); return }
         if(retainableCatalog() && canReuseCatalogs() && restoreRetainedCatalog(next)) return
@@ -1001,7 +866,7 @@ class MainActivity: Activity() {
         switcher.displayedChild=switcher.indexOfChild(state.page)
         // 只刷新导航选中态，不碰内容区的卡片和图片。
         nav.forEachIndexed { index,item ->
-            val selected=when(index) { 0->tab==0; 1->tab==1; 2->tab==2; 3,4->tab==3 || tab==4; 5->tab==5; 6->tab==6; 7->tab==7; else->false }
+            val selected=when(index) { 0->tab==0; 1->tab==1; 2->tab==2; 3,4->tab==3 || tab==4; 5->tab==5; else->false }
             (item as? TextView)?.let { paintPillNav(it,selected,false) }
         }
         gridFocusOwned=state.focusOwned; catalogFocusPos=state.focusPosition; pendingCatalogFocusPos=state.pendingFocusPosition
@@ -1052,8 +917,7 @@ class MainActivity: Activity() {
     private fun showCatalog(load: Boolean=false,focusNav: Boolean=false,focusType: Boolean=false,focusFilter: Boolean=false) {
         retainedCatalogs.clear()
         initialCatalogPending=false; restoreStoppedPage=false; pendingDetail=null; pendingCloudResume=null
-        // 当前模块被隐藏时回到首页，避免停留在不可见的页签
-        if(navHiddenAt(tab)) tab=0
+        if(tab !in 0..5) tab=0
         // Never cache a new page number with the previous page's results while a request is pending.
         if(load) {
             val cached=when {
@@ -1072,9 +936,6 @@ class MainActivity: Activity() {
         val top=row().apply { setPadding(0,0,0,dp(8)) }
         val wdp=widthDp()
         val compactNav=wdp<1600
-        // 顶栏两级收缩：导航项一多（片源/本地库都打开）+ 高密度面板，960dp 就会把「设置」顶到屏幕外
-        // （模拟器 320dpi 实测：入口挤成一团、设置整块看不见也聚焦不到）。
-        // 一级（<1000dp）去掉版本号、工具与遥控入口改短文案；二级（<800dp）导航 pill 再去掉图标。
         val tightNav=wdp<1000
         val bareNav=wdp<800
         navTight=tightNav
@@ -1086,30 +947,25 @@ class MainActivity: Activity() {
         brand.addView(brandName)
         if(!tightNav) brand.addView(brandVer,lp(-2,-2).apply { topMargin=dp(6) })
         top.addView(brand,lp(-2,dp(44)).apply { rightMargin=dp(if(tightNav) 12 else 20) })
-        // 一级导航 Pill：首页 / 搜索 / 排行榜 / 片源 / 我的；收藏与最近观看并入我的
+        // 默认导航固定显示，收藏与最近观看合并在「我的」。
         val navMargin=if(compactNav) dp(4) else dp(6)
         val homeButton=pillNav(if(bareNav) 0 else com.huluwa.nativeapp.R.drawable.ic_nav_home,"首页",tab==0,{ switchTab(0) },compactNav)
         val areaButtons=listOf(
             Triple(1,"搜索",listOf(1)),
             Triple(2,"排行榜",listOf(2)),
-            Triple(7,"本地库",listOf(7)),
-            Triple(6,"片源",listOf(6)),
             Triple(3,"我的",listOf(4,3))).mapIndexed { index,entry ->
-            val iconRes=when(index) { 0->com.huluwa.nativeapp.R.drawable.ic_nav_search; 1->com.huluwa.nativeapp.R.drawable.ic_nav_rank; 2->com.huluwa.nativeapp.R.drawable.ic_nav_nas; 3->com.huluwa.nativeapp.R.drawable.ic_nav_source; else->com.huluwa.nativeapp.R.drawable.ic_nav_mine }
+            val iconRes=when(index) { 0->com.huluwa.nativeapp.R.drawable.ic_nav_search; 1->com.huluwa.nativeapp.R.drawable.ic_nav_rank; else->com.huluwa.nativeapp.R.drawable.ic_nav_mine }
             val pillIcon=if(bareNav) 0 else iconRes
             lateinit var view: TextView
             view=pillNav(pillIcon,entry.second,tab==entry.first || tab in entry.third,{
-                val target=entry.third.firstOrNull { !navHiddenAt(it) } ?: entry.third.first()
+                val target=entry.third.first()
                 if(target!=tab) switchTab(target) else view.requestFocus()
             },compactNav)
-            // 子模块全部隐藏时整个意图区消失
-            view.visibility=if(entry.third.all { navHiddenAt(it) }) View.GONE else View.VISIBLE
             view
         }
         lateinit var quickTool: TextView
         quickTool=button(if(tightNav) "快传" else "手机快传",false) {
-            tvTools.quickTransfer(quickTool,{ file,kind -> handleQuickTransfer(file,kind) },{},
-                { tvTools.quickFiles(quickTool,{ f,k -> handleQuickTransfer(f,k) },{ tvTools.quickTransfer(quickTool,{ file,kind -> handleQuickTransfer(file,kind) },{}) },{}) })
+            tvTools.quickTransfer(quickTool,::handleQuickTransfer)
         }.apply { textSize=13f; minHeight=dp(if(tightNav) 36 else 38); val pad=dp(if(tightNav) 10 else 12); setPadding(pad,dp(7),pad,dp(7)) }
         // 遥控入口放在顶栏而不是只在设置里：用户在任何一个列表页看剧时
         // 想换手机操作，都能就地打开，不用退回首页再一路找进设置。
@@ -1117,13 +973,13 @@ class MainActivity: Activity() {
         remoteTool=remoteEntryButton()
         val settingsTool=button("设置",tab==5) { switchTab(5) }
             .apply { textSize=13f; minHeight=dp(if(tightNav) 36 else 38); val pad=dp(if(tightNav) 10 else 12); setPadding(pad,dp(7),pad,dp(7)) }
-        listOf(homeButton,areaButtons[0],areaButtons[1],areaButtons[2],areaButtons[3],areaButtons[4]).forEach { item ->
+        listOf(homeButton,areaButtons[0],areaButtons[1],areaButtons[2]).forEach { item ->
             top.addView(item,lp(-2,-2).apply { rightMargin=navMargin })
         }
         // 右上工具与首页内容类型一起，等类型按钮挂完后再按 类型 → 留白 → 工具 的顺序追加
-        // 索引语义：0=首页 1=搜索 2=排行榜 3=收藏 4=历史 5=设置 6=片源 7=本地库
-        nav.addAll(listOf(homeButton,areaButtons[0],areaButtons[1],areaButtons[4],areaButtons[4],settingsTool,areaButtons[3],areaButtons[2]))
-        listOf(homeButton,areaButtons[0],areaButtons[1],areaButtons[2],areaButtons[3],areaButtons[4],quickTool,remoteTool,settingsTool).let { chain ->
+        // 索引语义：0=首页 1=搜索 2=排行榜 3=收藏 4=历史 5=设置
+        nav.addAll(listOf(homeButton,areaButtons[0],areaButtons[1],areaButtons[2],areaButtons[2],settingsTool))
+        listOf(homeButton,areaButtons[0],areaButtons[1],areaButtons[2],quickTool,remoteTool,settingsTool).let { chain ->
             chain.forEachIndexed { index,item ->
                 item.nextFocusLeftId=chain.getOrNull(index-1)?.id ?: item.id
                 item.nextFocusRightId=chain.getOrNull(index+1)?.id ?: item.id
@@ -1132,12 +988,12 @@ class MainActivity: Activity() {
         }
         container.addView(top)
         container.addView(View(this).apply { setBackgroundColor(TvStyle.outline) },lp(-1,dp(1)).apply { bottomMargin=dp(6) })
-        // 二级分段：我的（最近观看/收藏）同层切换，隐藏的模块不占位
+        // 二级分段：我的（最近观看/收藏）同层切换
         var segmentChips: List<TextView> =emptyList()
         if(tab in 3..4) {
             val options=listOf(4 to "最近观看",3 to "收藏")
             val segRow=row().apply { setPadding(0,0,0,dp(8)) }
-            segmentChips=options.filter { !navHiddenAt(it.first) }.map { (index,label) ->
+            segmentChips=options.map { (index,label) ->
                 chip(label,index==tab) { if(index!=tab) switchTab(index) }.apply {
                     textSize=14f; minHeight=dp(34); setPadding(dp(16),dp(7),dp(16),dp(7))
                 }
@@ -1145,31 +1001,6 @@ class MainActivity: Activity() {
             segmentChips.forEach { segRow.addView(it,lp(-2,-2).apply { rightMargin=dp(6) }) }
             segmentFirst=segmentChips.firstOrNull()
             if(segmentChips.isNotEmpty()) container.addView(segRow)
-        }
-        if(tab==7) {
-            val ns = NasScreen(this, tvTools)
-            ns.show(container)
-            // 本地库/片源页没有「设置」按钮，但顶栏位置还在：把唯一的遥控入口放过来，
-            // 免得用户正在本地库看片时想开手机遥控，还得先退回首页。
-            top.addView(Space(this),lp(0,1).apply { weight=1f })
-            top.addView(remoteTool,lp(-2,-2))
-            remoteTool.nextFocusLeftId=remoteTool.id; remoteTool.nextFocusRightId=remoteTool.id
-            if(ns.topFocusId != View.NO_ID) remoteTool.nextFocusDownId=ns.topFocusId
-            nav.forEach { it.nextFocusDownId = ns.topFocusId }
-            if(ns.topFocusId != View.NO_ID) container.findViewById<View>(ns.topFocusId)?.requestFocus() else nav[tab].requestFocus()
-            return
-        }
-        if(tab==6) {
-            val instance=third ?: ThirdSourceScreen(this, { showCatalog() }, { library.requestBackup() }).also { third=it }
-            instance.show(container)
-            top.addView(Space(this),lp(0,1).apply { weight=1f })
-            top.addView(remoteTool,lp(-2,-2))
-            remoteTool.nextFocusLeftId=remoteTool.id; remoteTool.nextFocusRightId=remoteTool.id
-            if(instance.topFocusId != View.NO_ID) remoteTool.nextFocusDownId=instance.topFocusId
-            nav.forEach { it.nextFocusDownId=instance.topFocusId }
-            val target=if(instance.topFocusId != View.NO_ID) container.findViewById<View>(instance.topFocusId) else null
-            if(target != null) target.requestFocus() else nav[tab].requestFocus()
-            return
         }
         if(tab==5) {
             // 右上工具固定在行末：留白推开后接手机快传与设置（设置页也需要顶栏工具，否则 nav[5] 不在视图树中）
@@ -2311,7 +2142,6 @@ class MainActivity: Activity() {
         val playback=column().apply { setPadding(dp(18),dp(6),dp(18),dp(18)); background=rounded(surface) }
         val look=column().apply { setPadding(dp(18),dp(6),dp(18),dp(18)); background=rounded(surface) }
         val device=column().apply { setPadding(dp(18),dp(6),dp(18),dp(18)); background=rounded(surface) }
-        val lab=column().apply { setPadding(dp(18),dp(6),dp(18),dp(18)); background=rounded(surface) }
         val about=column().apply { setPadding(dp(18),dp(6),dp(18),dp(18)); background=rounded(surface) }
         val settingRows=mutableListOf<TextView>()
         val groupRows=linkedMapOf<LinearLayout,MutableList<TextView>>()
@@ -2340,9 +2170,8 @@ class MainActivity: Activity() {
 
         val categories=listOf(
             Triple("播放与观看","所有剧集共用，播放中也可调整",playback),
-            Triple("外观与界面","主题与首页导航",look),
-            Triple("设备与数据","本机记录、存储与快传文件",device),
-            Triple("实验室功能","外部遥控、语音与自动化接口",lab),
+            Triple("外观与界面","主题与背景",look),
+            Triple("设备与数据","账号、本机记录与缓存",device),
             Triple("关于红果","版本更新、接口自检与许可",about))
         var active=0
         val railButtons=categories.map { entry ->
@@ -2464,8 +2293,6 @@ class MainActivity: Activity() {
             })
         }
         refreshBackdropSetting={ backdropButton.text=backdropLabel() }
-        lateinit var navModulesButton: TextView
-        navModulesButton=setting(look,navModulesLabel()) { showNavModules(navModulesButton) }
         // 电视/盒子本身锁定横屏，这一项只在手机等触屏设备上才有意义
         if(TouchControls.isHandheld(this)) {
             setting(look,"启动方向  ·  ${OrientationMode.of(library.orientationMode).label}") {
@@ -2475,8 +2302,6 @@ class MainActivity: Activity() {
 
         heading(device,"设备与数据",categories[2].second)
         accountButton=setting(device,accountManager.accountLabel) { accountManager.showLoginDialog(this) }
-        lateinit var localBackupButton: TextView
-        localBackupButton=setting(device,localBackupLabel()) { showLocalBackupDialog(localBackupButton) }
         lateinit var backup: TextView
         backup=railAction("备份与恢复  ·  手机扫码") {
             runCatching { LibraryBackup.encode(library.snapshot()) }.onSuccess { encoded ->
@@ -2488,26 +2313,10 @@ class MainActivity: Activity() {
                 }
             }.onFailure { tvTools.info("无法生成备份","本机记录暂时无法导出，请重试。",backup) }
         }
-        fun quickFilesLabel(count: Int,bytes: Long)="快传文件  ·  ${if(count<=0) "暂无" else "$count 个 · ${TransferRules.humanBytes(bytes)}"}"
-        fun quickFilesDirs()=TransferKind.entries.map { java.io.File(filesDir,TransferRules.directoryName(it)) }.distinct()
-        lateinit var quickFiles: TextView
-        fun refreshQuickFiles() {
-            io.execute {
-                val list=runCatching { TransferFiles.list(quickFilesDirs()) }.getOrDefault(emptyList())
-                main.post { if(!isDestroyed) quickFiles.text=quickFilesLabel(list.size,list.sumOf { it.file.length() }) }
-            }
-        }
         lateinit var quickSend: TextView
         quickSend=railAction("手机快传  ·  传 APK / 视频") {
-            tvTools.quickTransfer(quickSend,{ file,kind -> handleQuickTransfer(file,kind) },{ refreshQuickFiles() },
-                { tvTools.quickFiles(quickSend,{ f,k -> handleQuickTransfer(f,k,true,quickFiles) },{ tvTools.quickTransfer(quickSend,{ file,kind -> handleQuickTransfer(file,kind) },{ refreshQuickFiles() }) },{ refreshQuickFiles() }) })
+            tvTools.quickTransfer(quickSend,::handleQuickTransfer)
         }
-        quickFiles=setting(device,quickFilesLabel(0,0)) {
-            tvTools.quickFiles(quickFiles,{ file,kind -> handleQuickTransfer(file,kind,true,quickFiles) },{
-                tvTools.quickTransfer(quickFiles,{ file,kind -> handleQuickTransfer(file,kind) },{ refreshQuickFiles() })
-            },{ refreshQuickFiles() })
-        }
-        refreshQuickFiles()
         rail.addView(text("常用",11f,muted).apply { setPadding(dp(12),dp(10),0,dp(5)) })
         rail.addView(quickSend,lp(-1,-2).apply { bottomMargin=dp(6) })
         rail.addView(backup,lp(-1,-2).apply { bottomMargin=dp(6) })
@@ -2543,12 +2352,7 @@ class MainActivity: Activity() {
             val bytes=cacheBytes()
             main.post { if(!isDestroyed) clearCache.text=cacheLabel(bytes) }
         }
-        heading(lab,"实验室功能",categories[3].second)
-        lateinit var remoteAddressButton: TextView
-        remoteAddressButton=setting(lab,"遥控地址  ·  自动化 / 语音桥接") { showRemoteAddress(remoteAddressButton) }
-        lateinit var xiaoAiButton: TextView
-        xiaoAiButton=setting(lab,xiaoAiLabel()) { showXiaoAiDialog(xiaoAiButton) }
-        heading(about,"关于红果",categories[4].second)
+        heading(about,"关于红果",categories[3].second)
         lateinit var updates: TextView
         updates=setting(about,"版本与更新  ·  ${BuildConfig.VERSION_NAME}") { updater.show(updates) }
         lateinit var checkButton: TextView
@@ -2619,7 +2423,7 @@ class MainActivity: Activity() {
         rechainSettings()
         footerHost.addView(settingsFooter,lp(-2,-2))
         footerHost.addView(settingsDisclaimer,lp(-2,-2))
-        // 页面重建（如切换片源显隐）后按标签恢复焦点，避免跳回顶部导航
+        // 页面重建后按标签恢复焦点，避免跳回顶部导航
         val wanted=settingsFocusKey.also { settingsFocusKey=null }
         val target=wanted?.let { key -> settingRows.firstOrNull { it.text.toString().startsWith(key) } }
         if(target!=null) {
@@ -4932,55 +4736,6 @@ class MainActivity: Activity() {
         dialog.show()
         (items.getOrNull(options.indexOf(current)) ?: items.firstOrNull())?.requestFocus()
     }
-    /** 顶部导航栏模块：与实际顶栏对齐——搜索/排行榜/本地库/片源/我的；收藏与最近观看是"我的"的子 tab，不单独列。 */
-    private fun navModuleNames()=listOf("search" to "搜索","rank" to "排行榜","nas" to "本地库","source" to "片源","mine" to "我的")
-    private fun navModuleHidden(key: String): Boolean = when(key) {
-        "nas" -> library.navHidden("nas")
-        "source" -> library.sourceHidden
-        "mine" -> library.navHidden("favorite") && library.navHidden("history")
-        else -> library.navHidden(key)
-    }
-    private fun navModulesLabel(): String {
-        val names=navModuleNames()
-        return "导航模块  ·  ${names.count { !navModuleHidden(it.first) }}/${names.size} 显示"
-    }
-    /** 导航栏模块显隐：逐项开关，关闭后立即从顶部导航栏移除；首页与设置始终显示，不在此列。 */
-    private fun showNavModules(anchor: TextView) {
-        val content=column()
-        content.addView(TvDialog.title(this,"导航模块"))
-        content.addView(text("首页与设置始终显示；关闭后会从顶部导航栏移除，收藏与观看记录不会删除。",13f,muted)
-            .apply { setPadding(0,0,0,dp(10)) })
-        lateinit var dialog: AlertDialog
-        navModuleNames().forEach { (key,label) ->
-            fun rowText()="$label  ·  ${if(navModuleHidden(key)) "已隐藏" else "显示中"}"
-            val row=TvDialog.capsuleButton(this,rowText()) { }
-            row.gravity=Gravity.START or Gravity.CENTER_VERTICAL
-            row.setPadding(dp(16),0,dp(16),0)
-            row.setOnClickListener {
-                val hide=!navModuleHidden(key)
-                when(key) {
-                    "source" -> library.sourceHidden=hide
-                    "mine" -> { library.setNavHidden("favorite",hide); library.setNavHidden("history",hide) }
-                    else -> library.setNavHidden(key,hide)
-                }
-                row.text=rowText(); anchor.text=navModulesLabel()
-            }
-            content.addView(row,lp(-1,dp(46)).apply { bottomMargin=dp(8) })
-        }
-        val buttons=row().apply { gravity=Gravity.END; setPadding(0,dp(6),0,0) }
-        val done=TvDialog.capsuleButton(this,"完成") { dialog.dismiss() }
-        buttons.addView(done,lp(-2,-2))
-        content.addView(buttons)
-        dialog=AlertDialog.Builder(this).setView(TvDialog.card(this,content)).create()
-        TvDialog.styleWindow(this,dialog)
-        dialog.setOnDismissListener {
-            // 关闭后重建页面，让顶部导航立刻反映新的显隐，并把焦点送回本项
-            settingsFocusKey="导航模块"
-            showCatalog()
-        }
-        dialog.show()
-        content.getChildAt(2)?.requestFocus()
-    }
     private fun showEpisodePanel(anchor: View) {
         val data=detail ?: return
         if(episodePanel!=null) return
@@ -5088,28 +4843,15 @@ class MainActivity: Activity() {
         loadBackdrop()
         Toast.makeText(this,if(style=="forced") "已恢复为强制欣赏" else "已恢复默认背景",Toast.LENGTH_SHORT).show()
     }
-    /**
-     * 语音「打开快传文件」：与设置页里的入口同一条路，不另写一份列表。
-     *
-     * 列表里的确认键按类型分流到安装 / 预览 / 播放，那是「人已经选中了这一行」的确定意图，
-     * 所以 direct=true；列表为空时给的按钮是重新打开手机快传，也不另做一套。
-     */
-    private fun openQuickFiles(anchor: View?) {
-        tvTools.quickFiles(anchor,{ file,kind -> handleQuickTransfer(file,kind,true,anchor) },
-            { tvTools.quickTransfer(anchor,{ file,kind -> handleQuickTransfer(file,kind) },{},{ openQuickFiles(anchor) }) })
-    }
-    /** 快传落盘后的分流：APK 引导安装，图片可预览并设为背景，视频可直接播放。
-     *  [direct] 用于「快传文件」列表：用户已明确选中该行，直接进入预览/播放。 */
-    private fun handleQuickTransfer(file: java.io.File,kind: TransferKind,direct: Boolean=false,anchor: View?=null) {
+    /** 快传接收后按文件类型处理。 */
+    private fun handleQuickTransfer(file: java.io.File,kind: TransferKind) {
         when(kind) {
             TransferKind.APK -> {
                 pendingQuickApk=file
                 TvDialog.confirm(this,"安装手机传来的应用","已收到 ${file.name}。\n确认后打开电视的系统安装界面，按提示完成安装。") { installQuickApk(file) }.show()
             }
-            TransferKind.IMAGE -> if(direct) tvTools.previewImage(anchor,file) { setQuickBackdrop(file) }
-                else TvDialog.confirm(this,"设为电视背景","已收到图片 ${file.name}，是否用作电视背景？") { setQuickBackdrop(file) }.show()
-            TransferKind.VIDEO -> if(direct) tvTools.playVideo(anchor,file)
-                else Toast.makeText(this,"视频已保存到电视：${file.name}",Toast.LENGTH_LONG).show()
+            TransferKind.IMAGE -> TvDialog.confirm(this,"设为电视背景","已收到图片 ${file.name}，是否用作电视背景？") { setQuickBackdrop(file) }.show()
+            TransferKind.VIDEO -> Toast.makeText(this,"视频已保存到电视：${file.name}",Toast.LENGTH_LONG).show()
             TransferKind.OTHER -> Toast.makeText(this,"文件已保存到电视：${file.name}",Toast.LENGTH_LONG).show()
         }
     }
@@ -5244,20 +4986,9 @@ class MainActivity: Activity() {
     }
     // ================= 手机遥控 =================
 
-    /**
-     * 屏幕常亮的唯一决策点。原先 add/clear 散在起播、requestPlayback、releasePlayer、
-     * stopForSleep 和三方播放器里各写一遍，语义互相覆盖；遥控要求「电视暂停但手机上还有人连着」
-     * 时依然常亮，两处各自开关会打架，所以先收敛成一个函数。
-     */
     private fun refreshScreenOn() {
-        if(remoteHolding || thirdWantsScreenOn || playerScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if(remoteHolding || playerScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-    }
-
-    /** 三方播放器不再自己开关这个 flag，统一交给 [refreshScreenOn]。 */
-    fun onThirdWantsScreenOn(on: Boolean) {
-        if(thirdWantsScreenOn==on) return
-        thirdWantsScreenOn=on; refreshScreenOn()
     }
 
     private fun openRemote(anchor: View?) {
@@ -5359,17 +5090,10 @@ class MainActivity: Activity() {
         session.hub.snapshot=remoteSnapshotNow()
     }
 
-    /** 官方与三方共用一份快照结构，手机端不需要知道自己在控哪种播放器。 */
+    /** 主线程采集播放快照，供手机遥控读取。 */
     private fun remoteSnapshotNow(): PlaybackSnapshot {
-        val current=when {
-            tab==6 -> third?.remoteSnapshot()
-            screen=="player" -> officialSnapshot()
-            else -> null
-        }
-        return (current ?: PlaybackSnapshot()).copy(
-            foreground=foreground,
-            screen=if(tab==6) "third" else screen
-        )
+        val current=if(screen=="player") officialSnapshot() else null
+        return (current ?: PlaybackSnapshot()).copy(foreground=foreground,screen=screen)
     }
 
     private fun officialSnapshot(): PlaybackSnapshot? {
@@ -5394,9 +5118,6 @@ class MainActivity: Activity() {
     }
 
     private fun remoteTarget(): RemoteTarget? {
-        if(tab==6 && third?.remoteSnapshot()!=null) {
-            return LambdaTarget(PlaybackSource.THIRD,{ cmd->third?.remoteApply(cmd)==true },{ third?.remoteEpisodes() ?: emptyList() })
-        }
         if(screen=="player" && detail!=null) {
             return LambdaTarget(PlaybackSource.OFFICIAL,::applyOfficialCommand,::officialEpisodes)
         }
@@ -5445,15 +5166,8 @@ class MainActivity: Activity() {
         return listOf(EpisodeGroupDetail("正片",data.episodes.mapIndexed { index,_ -> EpisodeEntry(index,"第 ${index+1} 集") }))
     }
 
-    /** 片源是独立模块：电视停在片源页时，「继续观看」列的是片源自己的观看记录。
-     *  主站页则本机记录在前，登录后的红果云端记录补在后（同剧只留本机，云端角标「· 云端」）。 */
     private fun remoteResumeList(): List<ResumeItem> {
         // 首屏与电视「接着看」一栏对齐（8 个）：云端与更多记录收进手机端「更多」弹层
-        if(tab==6) return thirdStore.history().filter { !it.completed && it.durationMs>0 }.take(12).map {
-            ResumeItem(it.sourceApi+"|"+it.videoId,it.title,
-                it.episodeLabel.ifBlank { "第 ${it.episodeIndex+1} 集" }+" · "+formatTime(it.positionMs),
-                it.positionMs,it.durationMs,it.cover)
-        }
         return library.history().filter { it.duration>0 && !it.completed }.take(8).map {
             ResumeItem(it.series.id,it.series.title,"第 ${it.episodeIndex+1} 集 · ${formatTime(it.position)}",it.position,it.duration,it.series.cover)
         }
@@ -5461,11 +5175,6 @@ class MainActivity: Activity() {
 
     /** 「更多」弹层的全量记录：本机全部在前、云端补后（同剧去重），下滑分批由手机端渲染。 */
     private fun remoteResumeAll(): List<ResumeItem> {
-        if(tab==6) return thirdStore.history().filter { !it.completed && it.durationMs>0 }.map {
-            ResumeItem(it.sourceApi+"|"+it.videoId,it.title,
-                it.episodeLabel.ifBlank { "第 ${it.episodeIndex+1} 集" }+" · "+formatTime(it.positionMs),
-                it.positionMs,it.durationMs,it.cover)
-        }
         val local=library.history().filter { it.duration>0 && !it.completed }
         val localIds=local.map { it.series.id }.toSet()
         val cloud=if(!accountManager.signedIn) emptyList() else {
@@ -5486,10 +5195,6 @@ class MainActivity: Activity() {
     }
 
     private fun remoteResumePlay(id: String): Boolean {
-        if(tab==6) {
-            val entry=thirdStore.history().firstOrNull { it.sourceApi+"|"+it.videoId==id } ?: return false
-            return third?.remoteResume(entry)==true
-        }
         if(id.startsWith("cloud:")) {
             // 云端续播：复用最近观看页云端卡片同一条 openDetail(cloud=) 路径，
             // episodeId 对不上时自动退回集号，且不写本机记录
@@ -5502,47 +5207,6 @@ class MainActivity: Activity() {
         return true
     }
 
-    /**
-     * 遥控地址（含门禁 token）常驻入口。
-     *
-     * 手机扫码窗口一旦有手机连上就会自动关掉，想抄地址去配自动化就没地方看；
-     * 这里固定展示一次，并列出外部可直接用的命令，省得去翻源码或抓包。
-     */
-    private fun showRemoteAddress(anchor: View) {
-        autoStartRemote()
-        val session=remote ?: run {
-            tvTools.info("遥控地址","电视还没拿到局域网地址，请确认已连 Wi-Fi 或有线网络后重试。",anchor)
-            return
-        }
-        val base=session.hub.url
-        val message=buildString {
-            appendLine("同一局域网里的脚本、Home Assistant、语音桥都可以直接调。")
-            appendLine()
-            appendLine("① 地址由「IP + 端口 + 门禁 token」拼成：")
-            appendLine(base)
-            appendLine("换网络只有 IP 会变，token 不变。")
-            appendLine()
-            appendLine("② 在地址末尾加 /cmd，用 POST 发一段 JSON：")
-            appendLine("""{"cmd":"open","module":"source"}   跳到片源页""")
-            appendLine("""{"cmd":"watch","query":"黄石"}   搜出来摆好，自己点""")
-            appendLine("""{"cmd":"watch","query":"文盲修仙","episode":7}   直接看第 7 集""")
-            appendLine("""{"cmd":"say","text":"快进30秒"}   整句话交给电视理解""")
-            appendLine()
-            appendLine("③ 完整示例（bash / Git Bash 可直接跑）：")
-            appendLine("curl -X POST \"$base/cmd\" \\")
-            appendLine("  -H \"Content-Type: application/json\" \\")
-            appendLine("""  -d '{"cmd":"say","text":"给我随机推荐一部漫剧"}'""")
-            appendLine()
-            appendLine("④ say 能听懂的说法（节选）：")
-            appendLine("剧名 / 文盲修仙第七集 / 快进30秒 / 快退一分钟 / 返回上一级")
-            appendLine("1.5倍速 / 静音 / 声音大一点 / 半小时后关掉")
-            appendLine("随机推荐一部漫剧 / 切换短剧 / 登录红果账户 / 检查更新")
-            appendLine()
-            append("module 可选：home / search / rank / favorite / history / settings / source / library")
-        }
-        tvTools.info("遥控地址",message,anchor)
-    }
-
     /** 一级模块键 → 页签下标。索引语义见顶部导航构建处的注释。 */
     private fun remoteTabOf(module: String): Int? = when(module) {
         "home" -> 0
@@ -5551,17 +5215,9 @@ class MainActivity: Activity() {
         "favorite" -> 3
         "history" -> 4
         "settings" -> 5
-        "source" -> 6
-        "library" -> 7
         else -> null
     }
 
-    /**
-     * 语音/自动化「跳到某个模块」。
-     *
-     * 正在播的那部必须先停：只切页面不停播放器，会出现画面走了声音还在后台放。
-     * 模块被用户在设置里隐藏时直接返回 false，不要把焦点送进一个不可见的页签。
-     */
     /**
      * 语音与外部指令的动作分发（`act` 命令）。
      *
@@ -5638,12 +5294,10 @@ class MainActivity: Activity() {
             "play.replay" -> if(screen=="player") { seekTo(0); requestPlayback(true); true } else false
             "player.close" -> when {
                 screen=="player" -> { returnToDetail(); true }
-                tab==6 -> third?.onBack()==true
                 else -> false
             }
             "panel.episodes" -> when {
                 screen=="player" -> { showEpisodePanel(hud); true }
-                tab==6 -> third?.remoteMenu()==true
                 else -> false
             }
             "skip.intro" -> {
@@ -5694,38 +5348,25 @@ class MainActivity: Activity() {
                 true
             }
             "stats.show" -> { showWatchStats(anchor); true }
-            "backup.show" -> { showLocalBackupDialog(anchor); true }
             "quick.send" -> {
-                tvTools.quickTransfer(anchor,{ file,kind -> handleQuickTransfer(file,kind) },{},{ openQuickFiles(anchor) })
+                tvTools.quickTransfer(anchor,::handleQuickTransfer)
                 true
             }
             // 「刷新二维码」在没开面板时就是打开面板：新码本来就要重新生成一次，
             // 两条路合并成一条，行为对人是同一个结果（屏幕上出现一张能用的新码）。
             "transfer.refresh" -> {
                 if(tvTools.lanAddress()==null) { voiceSay("电视还没连上局域网，先连 Wi-Fi 再试"); return true }
-                tvTools.quickTransfer(anchor,{ file,kind -> handleQuickTransfer(file,kind) },{},{ openQuickFiles(anchor) })
+                tvTools.quickTransfer(anchor,::handleQuickTransfer)
                 voiceSay("二维码已刷新")
                 true
             }
-            "transfer.files" -> { openQuickFiles(anchor); true }
-            "transfer.clear" -> {
-                tvTools.clearQuickFiles { count,bytes ->
-                    voiceSay(if(count<=0) "快传文件本来就是空的"
-                        else "已清空 $count 个快传文件，腾出 ${TransferRules.humanBytes(bytes)}")
-                }
-                true
-            }
             "history.clear" -> {
-                // 主站与片源各一份历史，一句话两边一起清：人只记得「我搜过」，不记得在哪搜的。
                 library.clearSearches()
-                third?.remoteClearSearches()
                 // 只有停在搜索页才重建：那是左栏历史真正可见的地方，别处重建会白跑一次请求
                 if(tab==1) showCatalog()
                 voiceSay("已清空搜索历史")
                 true
             }
-            "remote.address" -> { showRemoteAddress(anchor); true }
-            "xiaoai.show" -> { showXiaoAiDialog(anchor); true }
             "account.show" -> { accountManager.showLoginDialog(this); true }
             "hidden.restore" -> {
                 library.unhideAll()
@@ -5774,8 +5415,8 @@ class MainActivity: Activity() {
     /**
      * 一条命令落到界面。
      *
-     * 遥控页输入框、小爱语音、局域网脚本三个入口共用这里：谁都不用再各自 when 一遍命令类型。
-     * 播放类命令交给当前播放器适配器（官方/三方各一份），其余交给界面。
+     * 遥控页输入框与局域网脚本共用此处的命令分发。
+     * 播放类命令交给播放器适配器，其余交给界面。
      */
     private fun remoteDo(cmd: RemoteCommand): Boolean = when(cmd) {
         is RemoteCommand.Act -> remoteAct(cmd)
@@ -5796,13 +5437,6 @@ class MainActivity: Activity() {
             val next=shift(effectiveSpeed())
             sessionSpeed=next; player?.setPlaybackSpeed(next)
             showHud(); updatePlaybackText()
-            voiceSay("倍速 ${PlaybackSpeed.label(next)}")
-            return true
-        }
-        val snap=if(tab==6) third?.remoteSnapshot() else null
-        if(snap!=null) {
-            val next=shift(snap.speed)
-            third?.remoteApply(RemoteCommand.Speed(next))
             voiceSay("倍速 ${PlaybackSpeed.label(next)}")
             return true
         }
@@ -5842,7 +5476,7 @@ class MainActivity: Activity() {
             "off" -> false
             else -> null
         }
-        val snapshot=if(tab==6) third?.remoteSnapshot() else if(screen=="player") officialSnapshot() else null
+        val snapshot=if(screen=="player") officialSnapshot() else null
         if(snapshot!=null && snapshot.controllable) {
             val target=wanted ?: !snapshot.muted
             if(remoteTarget()?.apply(RemoteCommand.Muted(target))!=true) return false
@@ -5880,8 +5514,6 @@ class MainActivity: Activity() {
             val pick=items.random()
             main.post {
                 if(isDestroyed) return@post
-                // 片源页盖在主界面上，先回首页再开详情，否则详情被片源视图挡住
-                if(tab==6) remoteOpenModule("home")
                 if(library.contentType!=type) {
                     library.contentType=type
                     for(index in 0..1) { tabState.remove(index); tabFocus.remove(index) }
@@ -5895,7 +5527,6 @@ class MainActivity: Activity() {
 
     private fun remoteOpenModule(module: String): Boolean {
         val target=remoteTabOf(module) ?: return false
-        if(navHiddenAt(target)) return false
         TvDialog.topmostDialog()?.dismiss()
         if(screen=="player") {
             resetPlaybackSession(); sleepTimer.cancel(); sleepStopped=false
@@ -5907,11 +5538,7 @@ class MainActivity: Activity() {
     }
 
     /**
-     * 遥控页输入框里那句话：先当语音指令理解，认不出动作就当剧名开播。
-     *
-     * 和 [runVoiceAction] 同源不同壳——那边是给小爱的，回执要带「小爱同学：」前缀；
-     * 这里是人自己在遥控页上打的字，做没做成屏幕上本来就看得见（切了页/开始播了），
-     * 只在**做不到**的时候补一句，免得多一层"手机关掉了没"的怀疑。
+     * 遥控页输入框里那句话：先识别指令，无法识别时搜索剧名。
      */
     private fun remoteSay(text: String): Boolean {
         val plan=VoiceIntent.parse(text) ?: return remoteWatch(text)
@@ -5928,29 +5555,16 @@ class MainActivity: Activity() {
      * 猜错一次的代价是「喊了 A 结果播了 B」，比让人多点一下烦得多。所以停在结果页，
      * 由人自己选——搜索页面本来就把「搜的是什么、有哪些结果」放在屏幕上。
      *
-     * 三个例外才允许自动落到播放器：
-     * - 嘴上已经说清集号（`文盲修仙第七集`）——意图足够明确；
-     * - [autoplay] 为 true（小爱主题昵称那条路，一个主题就是一个动作）；
-     * - 停在片源页 —— 交给片源模块自己的搜索与聚合，那边有独立的源列表。
+     * 说清集号时直接播放指定集，否则展示搜索结果供选择。
      */
-    private fun remoteWatch(query: String, episode: Int = 0, autoplay: Boolean = false): Boolean {
-        // 停在片源模块时交给片源自己的搜索：那一侧有自己的源列表和聚合结果页，
-        // 用主站搜索会搜出「主站有、当前片源没有」的片子，点开还是放不出来。
-        if(tab==6) {
-            val module=third
-            if(module==null) {
-                Toast.makeText(this,"片源模块还没准备好，稍后再试",Toast.LENGTH_SHORT).show()
-                return false
-            }
-            return if(episode>0 || autoplay) module.remotePlayTitle(query,episode) else module.remoteSearchTitle(query)
-        }
+    private fun remoteWatch(query: String, episode: Int = 0): Boolean {
         if(screen=="player") {
             resetPlaybackSession(); sleepTimer.cancel(); sleepStopped=false
             saveProgress(); library.flush(); releasePlayer()
         }
         // 先切到搜索结果页：结果本身就是要看的东西
         runSearch(query,fromPhone=true)
-        if(episode<=0 && !autoplay) {
+        if(episode<=0) {
             // 当前内容库搜不到时换一个库再搜一次（漫剧/短剧分库），别把人晾在空列表上。
             // 只换库，不替人挑剧——挑还是让人自己点。
             searchOtherLibrary(query)
@@ -5960,7 +5574,7 @@ class MainActivity: Activity() {
         val types=(listOf(library.contentType)+ContentType.entries).distinct().filter { it.searchTab!=null }
         // 主站搜索按基名索引：喊「黄石第五季」常常一条都搜不到，去掉季号再试一次就够了。
         // 原名优先，所以正常说法不会多花时间。
-        val words=listOf(query,ThirdCms.seriesBase(query)).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val words=listOf(query,TitleMatch.seriesBase(query)).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         io.execute {
             val hit=words.firstNotNullOfOrNull { word ->
                 types.firstNotNullOfOrNull { type ->
@@ -6023,144 +5637,6 @@ class MainActivity: Activity() {
                 Toast.makeText(this,"${found.first.label}里找到 ${found.second} 条「$query」",Toast.LENGTH_SHORT).show()
             }
         }
-    }
-
-    /** 小爱语音入口（巴法云中转）。没配私钥时为 null。 */
-    private var xiaoAi: XiaoAiLink? = null
-    private var xiaoAiState: String = ""
-
-    private fun xiaoAiLabel(): String = if(XiaoAiAccess.uid.isBlank()) "小爱同学  ·  未连接"
-        else "小爱同学  ·  已配置 ${XiaoAiAccess.masked()}"
-
-    /**
-     * 只在电视前台轮询巴法云。
-     *
-     * 后台常驻既费流量又会被系统的省电策略掐断，而语音入口的实际场景就是
-     * 「电视开着、人懒得找遥控器」，前台够用。
-     */
-    private fun startXiaoAi() {
-        if(XiaoAiAccess.uid.isBlank()) return
-        val link=xiaoAi ?: XiaoAiLink(
-            { action -> runVoiceAction(action) },
-            { state -> xiaoAiState=state }
-        ).also { xiaoAi=it }
-        link.start()
-    }
-
-    private fun stopXiaoAi() { xiaoAi?.stop() }
-
-    /**
-     * 换私钥后重开：基线要按新账号重算，否则旧主题的时间戳会挡住第一次触发。
-     */
-    private fun restartXiaoAi() {
-        xiaoAi?.destroy(); xiaoAi=null; xiaoAiState=""
-        startXiaoAi()
-    }
-
-    /** 语音动作落到界面：与手机遥控同一套入口，行为保持一致。 */
-    private fun runVoiceAction(action: XiaoAiVoice.Action) {
-        // 通用指令自己会出回执（「已切换弹幕」），只有做不到时才需要在这里补一句
-        if(action is XiaoAiVoice.Action.Do) {
-            if(!remoteDo(action.command))
-                Toast.makeText(this,"小爱同学：${action.echo}，但当前页面做不到",Toast.LENGTH_SHORT).show()
-            return
-        }
-        val ok=when(action) {
-            is XiaoAiVoice.Action.Open -> remoteOpenModule(action.module)
-            // 小爱这条路的约定是「一个主题 = 一个动作」，喊剧名就是开播，所以照旧自动起播
-            is XiaoAiVoice.Action.Watch -> remoteWatch(action.query,0,autoplay=true)
-            is XiaoAiVoice.Action.Do -> false
-        }
-        val what=when(action) {
-            is XiaoAiVoice.Action.Open -> "打开「${moduleLabel(action.module)}」"
-            is XiaoAiVoice.Action.Watch -> "播放「${action.query}」"
-            is XiaoAiVoice.Action.Do -> action.echo
-        }
-        Toast.makeText(this,if(ok) "小爱同学：$what" else "小爱同学：$what 没生效（当前页面不支持）",Toast.LENGTH_SHORT).show()
-    }
-
-    private fun moduleLabel(module: String): String = when(module) {
-        "home" -> "首页"; "search" -> "搜索"; "rank" -> "排行榜"; "favorite" -> "收藏"
-        "history" -> "最近观看"; "settings" -> "设置"; "source" -> "片源"; "library" -> "本地库"
-        else -> module
-    }
-
-    /**
-     * 小爱同学配置。
-     *
-     * 私钥是 32 位十六进制，用遥控器在电视上敲基本不可能，所以主入口是手机扫码填写
-     * （与「添加片源」共用 PhoneInputServer）。
-     */
-    private fun showXiaoAiDialog(anchor: View) {
-        val content=column()
-        content.addView(TvDialog.title(this,"小爱同学  ·  语音开播"))
-        content.addView(TextView(this).apply {
-            textSize=14f; setTextColor(TvStyle.muted); setLineSpacing(dp(5).toFloat(),1f)
-            text=buildString {
-                appendLine("小爱只会说「打开 / 关闭某个设备」，不会把整句传出来，所以约定：")
-                appendLine("巴法云里一个主题就是一个动作，主题昵称就是小爱要喊的名字。")
-                appendLine()
-                appendLine("① cloud.bemfa.com 新建主题，如 hghs001、hgmod1001")
-                appendLine("    主题名只能字母数字，末三位是设备类型（001 插座），否则不会同步到米家")
-                appendLine("② 进主题「更多设置」把昵称改成要喊的话")
-                appendLine("    剧名直接写「黄石第五季」；跳模块写「红果片源」「红果首页」")
-                appendLine("③ 米家 → 我的 → 其他平台设备 → 添加 → 巴法，登录同一个账号")
-                appendLine("④ 把控制台首页那串私钥填进来（扫码最省事），电视在前台时生效")
-            }
-        })
-        val status=TextView(this).apply {
-            textSize=14f; setTextColor(TvStyle.text); setPadding(0,dp(10),0,0)
-            text=xiaoAiStatusText()
-        }
-        content.addView(status)
-        val actions=row().apply { setPadding(0,dp(12),0,0) }
-        lateinit var dialog: AlertDialog
-        val scan=TvDialog.capsuleButton(this,"扫码填写") { }
-        val test=TvDialog.capsuleButton(this,"立即检查") {
-            if(XiaoAiAccess.uid.isBlank()) status.text="私钥  ${XiaoAiAccess.masked()}\n状态  先填私钥"
-            else { restartXiaoAi(); status.text="私钥  ${XiaoAiAccess.masked()}\n状态  正在连接…" }
-        }
-        val clear=TvDialog.capsuleButton(this,"清除") {
-            XiaoAiAccess.setUid(""); xiaoAi?.destroy(); xiaoAi=null; xiaoAiState=""
-            status.text=xiaoAiStatusText()
-            Toast.makeText(this,"已清除小爱配置",Toast.LENGTH_SHORT).show()
-        }
-        val close=TvDialog.capsuleButton(this,"关闭") { dialog.dismiss() }
-        actions.addView(scan,lp(-2,-2).apply { rightMargin=dp(10) })
-        actions.addView(test,lp(-2,-2).apply { rightMargin=dp(10) })
-        actions.addView(clear,lp(-2,-2).apply { rightMargin=dp(10) })
-        actions.addView(close,lp(-2,-2))
-        content.addView(actions)
-        dialog=AlertDialog.Builder(this).setView(TvDialog.card(this,content)).create()
-        TvDialog.styleWindow(this,dialog,widthDp=520)
-        scan.setOnClickListener {
-            tvTools.phoneForm(scan,PhoneForm(
-                heading="小爱同学 · 巴法云私钥",
-                description="巴法云控制台首页那串 32 位私钥。它既能读主题列表也能代表账号，只存在电视本机。",
-                fields=listOf(PhoneField("uid","巴法云私钥","控制台首页的 32 位十六进制",64)),
-                doneHint="回到电视即可看到连接状态。",
-                invalidMessage="请填写巴法云控制台首页那串私钥（20 位以上字母数字）"
-            )) { values ->
-                val uid=values["uid"].orEmpty().trim()
-                if(uid.length>=20) {
-                    XiaoAiAccess.setUid(uid); restartXiaoAi()
-                    status.text=xiaoAiStatusText()
-                    Toast.makeText(this,"已保存，正在连巴法云",Toast.LENGTH_SHORT).show()
-                } else status.text="私钥短了，巴法云的是 32 位；请重新扫码填写"
-            }
-        }
-        dialog.show()
-        test.requestFocus()
-    }
-
-    private fun xiaoAiStatusText(): String {
-        val live=xiaoAi?.state() ?: xiaoAiState
-        val state=when {
-            XiaoAiAccess.uid.isBlank() -> "未填写私钥"
-            live.isNotBlank() -> live
-            else -> "等电视开始轮询"
-        }
-        return "私钥  ${XiaoAiAccess.masked()}\n状态  $state"
     }
 
     /** 方向键走焦点搜索，不做 KeyEvent 注入：注入会撞上播放屏的专用语义（↓选集、↑更多）。 */
@@ -7286,11 +6762,7 @@ class MainActivity: Activity() {
             }
         }
     }
-    fun phoneRemoteAddress() = showRemoteAddress(voiceAnchor)
-    fun phoneXiaoAi() = showXiaoAiDialog(voiceAnchor)
-    fun phoneLocalBackup() = showLocalBackupDialog(voiceAnchor)
-    fun phoneQuickFiles() = openQuickFiles(voiceAnchor)
-    fun phoneQuickTransfer() { tvTools.quickTransfer(voiceAnchor,{ file,kind -> handleQuickTransfer(file,kind) },{},{}) }
+    fun phoneQuickTransfer() { tvTools.quickTransfer(voiceAnchor,::handleQuickTransfer) }
     fun phoneUpdater() = updater.show(voiceAnchor)
     fun phoneCrashLogs() {
         io.execute {
@@ -7389,9 +6861,8 @@ class MainActivity: Activity() {
      *  详情/播放页有各自的渲染入口，不能被这里覆盖掉。 */
     fun renderPhoneTab() { if(phoneLayout() && screen=="catalog" && !phoneDetailCollection) renderPhone() }
 
-    /** 与电视菜单键的抬起分支完全一致：短按按用户配置分流，长按走快捷面板。片源页则交给片源自己。 */
+    /** 与电视菜单键的抬起分支完全一致：短按按用户配置分流，长按走快捷面板。 */
     private fun remoteMenuShort(): Boolean {
-        if(tab==6) return third?.remoteMenu()==true
         if(screen!="player") return false
         if(panel) { hidePlaybackOverlay(); return true }
         if(playError) return true
@@ -7412,19 +6883,13 @@ class MainActivity: Activity() {
                 if(overlay!=null && TvDialog.dispatchRemoteKey(overlay,"back")) true else { goBack(); true }
             }
             // 与实体遥控长按菜单键一致：呼出四列快捷面板（menuLongRunnable 也走 showQuickPanel）；
-            // 片源播放器没有快捷面板，长按短按都呼出它自己的底部操作条
             is RemoteCommand.Menu -> if(cmd.long) {
                 if(screen=="player") { showQuickPanel(); true } else remoteMenuShort()
             } else remoteMenuShort()
             is RemoteCommand.Search -> {
-                // 片源是独立模块：电视停在片源页时，搜索就该搜片源自己的内容，
-                // 不能把人拽回主站搜索页。其余页面维持原行为。
-                if(tab==6) third?.remoteSearch(cmd.query)==true else {
-                    // 手机搜索会直接把电视切到搜索结果页；正在播的那部若不先停掉，
-                    // 画面走了声音还在后台放。离开播放页的收尾与 returnToDetail 一致。
-                    if(screen=="player") { resetPlaybackSession(); sleepTimer.cancel(); sleepStopped=false; saveProgress(); library.flush(); releasePlayer() }
-                    runSearch(cmd.query,fromPhone=true); true
-                }
+                // 手机搜索会切到搜索结果页，先保存进度并停止当前播放。
+                if(screen=="player") { resetPlaybackSession(); sleepTimer.cancel(); sleepStopped=false; saveProgress(); library.flush(); releasePlayer() }
+                runSearch(cmd.query,fromPhone=true); true
             }
             is RemoteCommand.Resume -> remoteResumePlay(cmd.id)
             is RemoteCommand.Open -> remoteOpenModule(cmd.module)
@@ -7475,7 +6940,7 @@ class MainActivity: Activity() {
                 else -> if(hud.visibility==View.VISIBLE && !playError) hidePlaybackOverlay() else returnToDetail()
             }
             "detail" -> showCatalog()
-            else -> if(tab==1 && advancedSearch) { switchAdvanced(false); filterToggle?.post { filterToggle?.requestFocus() } } else if(tab==6 && third?.onBack()==true) {} else if(tab==3 && favoriteManage) { favoriteManage=false; favoriteSelected.clear(); showCatalog() } else if(tab==2 && newRelease) { newRelease=false; page=1; catalog=emptyList(); hasMore=false; ranking=null; catalogFocus=""; discoveryCursor=null; discoverySelection=DiscoverySelection(); tabState.remove(2); tabFocus.remove(2); pendingNewReleaseFocus="back"; showCatalog(true) } else if(tab==2 && aiCatalog) { aiCatalog=false; aiGenre=null; page=1; catalogFocus=""; tabState.remove(2); tabFocus.remove(2); showCatalog(true); aiEntry?.post { if(aiEntry?.isAttachedToWindow==true) aiEntry?.requestFocus() } } else if(collection!=null) { leaveCollection(); showCatalog() } else if(nav.any { it.hasFocus() }) { if(tab!=0) { switchTab(0); nav[0].requestFocus() } else showExitConfirm() } else if(nav.getOrNull(tab)?.requestFocus()!=true) showExitConfirm()
+            else -> if(tab==1 && advancedSearch) { switchAdvanced(false); filterToggle?.post { filterToggle?.requestFocus() } } else if(tab==3 && favoriteManage) { favoriteManage=false; favoriteSelected.clear(); showCatalog() } else if(tab==2 && newRelease) { newRelease=false; page=1; catalog=emptyList(); hasMore=false; ranking=null; catalogFocus=""; discoveryCursor=null; discoverySelection=DiscoverySelection(); tabState.remove(2); tabFocus.remove(2); pendingNewReleaseFocus="back"; showCatalog(true) } else if(tab==2 && aiCatalog) { aiCatalog=false; aiGenre=null; page=1; catalogFocus=""; tabState.remove(2); tabFocus.remove(2); showCatalog(true); aiEntry?.post { if(aiEntry?.isAttachedToWindow==true) aiEntry?.requestFocus() } } else if(collection!=null) { leaveCollection(); showCatalog() } else if(nav.any { it.hasFocus() }) { if(tab!=0) { switchTab(0); nav[0].requestFocus() } else showExitConfirm() } else if(nav.getOrNull(tab)?.requestFocus()!=true) showExitConfirm()
         }
     }
     @Deprecated("TV remote back is handled through the activity")
@@ -7483,7 +6948,6 @@ class MainActivity: Activity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // 遥控一按就把鼠标专属的东西收起来：最近一次操作已经换人了
         if(mouseSeen && screen=="player") { mouseSeen=false; refreshPointerUi() }
-        if(tab==6 && third?.onKey(event)==true) return true
         if(handleCatalogDown(event)) return true
         if(handleCatalogUp(event)) return true
         // 收藏页：菜单键循环切换排序（卡片上的快捷菜单改用长按确认键，与设计稿按键表一致）
@@ -7595,7 +7059,6 @@ class MainActivity: Activity() {
         updater.resume()
         maybePromptCrash()
         autoStartRemote()
-        startXiaoAi()
         // 从「安装未知应用」授权页返回：同一个包继续安装，不用重新扫码
         pendingQuickApk?.let { apk -> if(Build.VERSION.SDK_INT<26 || packageManager.canRequestPackageInstalls()) { pendingQuickApk=null; installQuickApk(apk) } }
         if(library.isLoaded) {
@@ -7674,15 +7137,13 @@ class MainActivity: Activity() {
         updater.pause()
         foreground=false; main.removeCallbacks(tick); cancelRecovery(); cancelPrefetch(); mediaSession.deactivate()
         sleepTimer.cancel(); favoriteMonitor.stop(); detailAutoplay=false; requestedAutoplay=false; pausedForLifecycle=true
-        player?.pause(); third?.pause(); saveProgress(); library.flush()
+        player?.pause(); saveProgress(); library.flush()
         // 会话保留，但要让手机知道「电视已暂停」，否则页面会一直显示成还能操作
         remotePublish(true)
         super.onPause()
     }
     override fun onStop() {
         restoreStoppedPage=true; generation++; cancelWork(); cancelDetailExtras(); tvTools.close()
-        stopXiaoAi()
-        third?.stop()
         // 播放页留在屏幕上但被切到后台（切 App / 锁屏 / 下拉通知栏）：只暂停，不拆播放器。
         // 以前这里无条件 releasePlayer()，回来要重新取址、重新 prepare、重新缓冲。
         // 播放器的解码器与已缓冲的媒体样本都还在，onResume 可以直接原地续播。
@@ -7722,8 +7183,6 @@ class MainActivity: Activity() {
         if(networkRegistered) connectivity.unregisterNetworkCallback(networkCallback)
         favoriteMonitor.destroy(); tvTools.destroy(); updater.destroy(); saveProgress(); releasePlayer(); accountManager.destroy(); library.close()
         closeRemote()
-        xiaoAi?.destroy()
-        third?.release()
         artwork.close(); releaseCatalogViews(); mediaSession.release(); main.removeCallbacksAndMessages(null)
         pageIo.shutdownNow(); io.shutdownNow(); playbackCache.close(); episodeDiskCache?.close(); episodeDiskCache=null
         Thread({ repository.http.dispatcher.cancelAll(); repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() },"hongguotv-network-cleanup").start()

@@ -12,7 +12,7 @@ import android.content.res.Configuration
  *
  * 实现：attachBaseContext 用 [wrap] 包一层调过 densityDpi 的 Context，dp/sp 全部等比生效，
  * 像素宽高不变（网格列数、占屏比例关系保持）。只有 MainActivity 一个 Activity，
- * 全部 UI 组件（TvTools/NasScreen/TvDialog/EpisodePanel 等）都从 activity context 构建，
+ * 全部 UI 组件（TvTools/TvDialog/EpisodePanel 等）都从 activity context 构建，
  * 一处覆盖即全局生效；改档位后 recreate() 重建即生效（与「系统风格」切换同款交互）。
  */
 object UiScale {

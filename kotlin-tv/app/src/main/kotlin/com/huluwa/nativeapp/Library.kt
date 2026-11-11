@@ -8,7 +8,6 @@ import android.os.Looper
 import android.util.Log
 import com.hongguotv.core.*
 import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 // The backup and native library use the same immutable progress shape.
@@ -19,8 +18,6 @@ class Library(context: Context) {
     private companion object {
         // A replacement Activity must not load before its predecessor's final checkpoint commits.
         val retiredWrites = mutableListOf<LatestWriteQueue<String, () -> Any?>>()
-        /** 普通进度变更的备份节流窗口：播放中每 5 秒就有一次进度落盘，没必要跟着整包重写。 */
-        const val PROGRESS_BACKUP_INTERVAL_MS = 5 * 60_000L
         // 独立版本键：旧 home-comic/home-short 存的是网站榜单或分类，不能当作推荐流。
         const val RECOMMENDATION_CACHE_KEY = "phone-recommendation-feed-v1"
         const val PHONE_CACHE_ITEMS = 120
@@ -33,16 +30,6 @@ class Library(context: Context) {
     private val loader = Executors.newSingleThreadExecutor { task -> Thread(task, "hongguotv-library-load") }
     private val prefs by lazy { app.getSharedPreferences("native-library-v1", Context.MODE_PRIVATE) }
     private val homePrefs by lazy { app.getSharedPreferences("native-home-cache-v1", Context.MODE_PRIVATE) }
-    private val localPrefs by lazy { app.getSharedPreferences("native-local-backup-v1", Context.MODE_PRIVATE) }
-    private val localBackupStorage = LocalBackupStorage(app)
-    private val backupWorker = Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "hongguotv-local-backup") }
-    private val backupLock = Any()
-    private var backupTask: ScheduledFuture<*>? = null
-    /** 已排队的备份计划时间点（epoch ms），用于复用更早的计划，避免任务被反复推迟。 */
-    private var backupDueAt = 0L
-    @Volatile private var backupDirty = false
-    /** 上次成功落盘时间：两次备份之间至少间隔 1 分钟，避免播放中每 5 秒重写整包。 */
-    @Volatile private var lastBackupAt = 0L
     private val writes = LatestWriteQueue<String, () -> Any?>("hongguotv-library-write", write = { batch -> commit(prefs, batch) },
         failed = { Log.w("HongguoTV", "Local library commit failed; pending changes retained for retry") })
     private val homeWrites = LatestWriteQueue<String, () -> Any?>("hongguotv-home-write", write = { batch -> commit(homePrefs, batch) },
@@ -88,11 +75,6 @@ class Library(context: Context) {
                 synchronized(retiredWrites) { retiredWrites.removeAll(retired.toSet()) }
                 val values = prefs.all
                 val loaded = LibraryDisk.decode(values)
-                // 片源入口默认隐藏：从未手动切换过开关的老用户，升级后也按默认隐藏处理
-                if(!values.containsKey("sourceHiddenChosen")) {
-                    loaded.settings = loaded.settings.copy(sourceHidden = true)
-                    prefs.edit().putBoolean("sourceHidden", true).putBoolean("sourceHiddenChosen", true).apply()
-                }
                 val now = System.currentTimeMillis()
                 val cached = mutableMapOf<ContentType, CatalogPage>()
                 val stamps = mutableMapOf<ContentType, Long>()
@@ -166,7 +148,7 @@ class Library(context: Context) {
         }
     }
     internal fun state(): LibraryIndex = checkNotNull(index) { "Load the local library before accessing it" }
-    private fun put(key: String, value: Any?) { writes.submit(mapOf(key to { value })); scheduleLocalBackup() }
+    private fun put(key: String, value: Any?) { writes.submit(mapOf(key to { value })) }
     private fun persist(vararg keys: String) {
         val state = state()
         val batch = linkedMapOf<String, () -> Any?>()
@@ -185,8 +167,6 @@ class Library(context: Context) {
             }
         }
         writes.submit(batch)
-        // 只有播放进度是高频变更：其余收藏/历史操作/设置都尽快落盘
-        scheduleLocalBackup(urgent = keys.any { it != "progress" })
     }
     fun favorites() = state().favorites()
     fun favorite(id: String) = state().favorite(id)
@@ -375,18 +355,6 @@ class Library(context: Context) {
     var newReleaseDay: String
         get() = prefs.getString("newReleaseDay", null).orEmpty()
         set(value) { prefs.edit().putString("newReleaseDay", value).apply() }
-    /** 导航栏「片源」入口是否隐藏：默认隐藏，用户可在设置里单独显示；随备份一起恢复。 */
-    var sourceHidden: Boolean
-        get() = state().settings.sourceHidden
-        set(value) { if (value != sourceHidden) { state().settings = state().settings.copy(sourceHidden = value); put("sourceHidden", value); put("sourceHiddenChosen", true) } }
-    /** 导航栏其余模块（搜索/排行榜/收藏/最近观看）的显隐：首页与设置始终显示，默认全部显示；随备份一起恢复。 */
-    fun navHidden(key: String): Boolean = key in state().settings.navHidden
-    fun setNavHidden(key: String, hidden: Boolean) {
-        if (key !in LibraryBackup.NAV_KEYS || hidden == navHidden(key)) return
-        val next = if(hidden) state().settings.navHidden + key else state().settings.navHidden - key
-        state().settings = state().settings.copy(navHidden = next)
-        put("navHidden.$key", hidden)
-    }
     // Per-series intro/outro skips stay on this device, outside the backup, like the theme.
     private var marksCache: LinkedHashMap<String, SkipMark>? = null
     private fun marks(): LinkedHashMap<String, SkipMark> =
@@ -397,122 +365,23 @@ class Library(context: Context) {
         marksCache = next
         prefs.edit().putString("skipMarks", SkipMarks.encode(next)).apply()
     }
-    fun snapshot() = state().snapshot(
-        // 三方源/观看历史/收藏来自独立存储，任何异常都退化为空列表，不能让备份整体失败
-        runCatching { thirdSourcesProvider?.invoke() ?: emptyList() }.getOrDefault(emptyList()),
-        runCatching { thirdHistoryProvider?.invoke() ?: emptyList() }.getOrDefault(emptyList()),
-        runCatching { thirdFavoritesProvider?.invoke() ?: emptyList() }.getOrDefault(emptyList()))
-
-    /** 由 MainActivity 注入：三方片源配置、观看历史与收藏随主备份一起写入与恢复。 */
-    var thirdSourcesProvider: (() -> List<BackupThirdSource>)? = null
-    var thirdSourcesRestore: ((List<BackupThirdSource>) -> Unit)? = null
-    var thirdHistoryProvider: (() -> List<BackupThirdHistory>)? = null
-    var thirdHistoryRestore: ((List<BackupThirdHistory>) -> Unit)? = null
-    var thirdFavoritesProvider: (() -> List<BackupThirdFavorite>)? = null
-    var thirdFavoritesRestore: ((List<BackupThirdFavorite>) -> Unit)? = null
-
-    /** 三方片源变化后尽快落盘，避免只有片源变更时备份长期停留在旧内容。 */
-    fun requestBackup() = scheduleLocalBackup()
+    fun snapshot() = state().snapshot()
 
     fun restore(incoming: BackupData, restoreSettings: Boolean) {
         val merged = LibraryBackup.merge(snapshot(), incoming, restoreSettings)
         index = LibraryIndex(merged, state().updates())
         persist("favorites", "later", "progress", "watched", "hidden", "searches", "favoriteUpdates", "favoriteGroups")
-        // 三方源、观看历史与收藏各自合并：任一侧异常都只跳过该段，不影响其余记录恢复
-        if(incoming.thirdSources.isNotEmpty()) runCatching { thirdSourcesRestore?.invoke(incoming.thirdSources) }
-        if(incoming.thirdHistory.isNotEmpty()) runCatching { thirdHistoryRestore?.invoke(incoming.thirdHistory) }
-        if(incoming.thirdFavorites.isNotEmpty()) runCatching { thirdFavoritesRestore?.invoke(incoming.thirdFavorites) }
         writes.submit(mapOf("quality" to { merged.settings.quality }, "playbackSpeed" to { merged.settings.speed },
             "autoNext" to { merged.settings.autoNext }, "contentType" to { merged.settings.type.storedValue }, "frameMode" to { merged.settings.frame.name },
             "autoSeason" to { merged.settings.autoSeason }, "danmaku" to { merged.settings.danmaku },
             "danmakuOpacity" to { merged.settings.danmakuOpacity }, "danmakuFont" to { merged.settings.danmakuFont },
             "danmakuSpeed" to { merged.settings.danmakuSpeed }, "danmakuRows" to { merged.settings.danmakuRows }, "showClock" to { merged.settings.showClock },
-            "sourceHidden" to { merged.settings.sourceHidden }, "episodeCache" to { merged.settings.episodeCache },
-            "sourceHiddenChosen" to { true },
-            "navHidden.search" to { "search" in merged.settings.navHidden },
-            "navHidden.rank" to { "rank" in merged.settings.navHidden },
-            "navHidden.nas" to { "nas" in merged.settings.navHidden },
-            "navHidden.favorite" to { "favorite" in merged.settings.navHidden },
-            "navHidden.history" to { "history" in merged.settings.navHidden }))
-        scheduleLocalBackup()
+            "episodeCache" to { merged.settings.episodeCache }))
         flush()
-    }
-    // ---- Local rotating backup ----
-    var localBackupEnabled: Boolean
-        get() = localPrefs.getBoolean("enabled", true)
-        set(value) { localPrefs.edit().putBoolean("enabled", value).apply() }
-    var localRestoreChecked: Boolean
-        get() = localPrefs.getBoolean("restoreChecked", false)
-        set(value) { localPrefs.edit().putBoolean("restoreChecked", value).apply() }
-    var localPermissionAsked: Boolean
-        get() = localPrefs.getBoolean("permissionAsked", false)
-        set(value) { localPrefs.edit().putBoolean("permissionAsked", value).apply() }
-    fun localBackup(): LocalBackupStorage = localBackupStorage
-    /** True when the library holds no user data, so a backup may be restored without overwriting anything. */
-    fun isEmptyForRestore(): Boolean {
-        val data = runCatching { snapshot() }.getOrNull() ?: return false
-        return data.favorites.isEmpty() && data.later.isEmpty() && data.history.isEmpty() && data.searches.isEmpty() &&
-            data.favoriteGroups.isEmpty() && data.watched.isEmpty() && data.hidden.isEmpty()
-    }
-    fun readLocalBackup(): BackupData? = localBackupStorage.load()
-    fun hasLocalBackup(): Boolean = localBackupStorage.store()?.hasBackup() == true
-    fun applyLocalBackup(data: BackupData) = restore(data, true)
-    /** Immediate backup for the settings entry; the callback runs on the main thread. */
-    fun backupNow(onDone: (Boolean) -> Unit) {
-        val data = runCatching { snapshot() }.getOrNull()
-        if (data == null) { main.post { onDone(false) }; return }
-        backupWorker.execute {
-            val ok = localBackupStorage.store()?.save(data) == true
-            if (ok) { backupDirty = false; lastBackupAt = System.currentTimeMillis() }
-            main.post { onDone(ok) }
-        }
-    }
-    /** First run after an upgrade may have data but no backup yet; empty libraries are never written. */
-    fun maybeBackupOnStartup() {
-        if (!localBackupEnabled || index == null || isEmptyForRestore()) return
-        val store = localBackupStorage.store() ?: return
-        // 升级后清理旧版临时名残留（每次保存都会新插一行的孤儿条目），避免它们继续占用目录
-        store.cleanup()
-        if (store.hasBackup()) return
-        val data = runCatching { snapshot() }.getOrNull() ?: return
-        backupWorker.execute { if (store.save(data)) lastBackupAt = System.currentTimeMillis() }
-    }
-    private fun scheduleLocalBackup(urgent: Boolean = true) {
-        if (!localBackupEnabled || index == null) return
-        backupDirty = true
-        synchronized(backupLock) {
-            val now = System.currentTimeMillis()
-            // 变更先防抖 5 秒；播放进度这类高频变更再叠一个 5 分钟最小间隔，避免整包反复 fsync。
-            // 收藏、设置、片源等低频变更走 urgent，只防抖不受最小间隔限制。
-            val due = if(urgent) now + 5_000L else maxOf(now + 5_000L, lastBackupAt + PROGRESS_BACKUP_INTERVAL_MS)
-            // 已有更早的计划就复用：否则播放中每 5 秒都会把任务往后推，可能一直轮不到写盘
-            val pending = backupTask
-            if (pending != null && !pending.isDone && backupDueAt in 1..due) return
-            pending?.cancel(false)
-            backupDueAt = due
-            backupTask = backupWorker.schedule({
-                synchronized(backupLock) { backupTask = null; backupDueAt = 0L }
-                // 真正写盘时再取快照，保证是最新进度
-                runCatching { snapshot() }.getOrNull()?.let { writeLocalBackup(it) }
-            }, (due - now).coerceAtLeast(0), TimeUnit.MILLISECONDS)
-        }
-    }
-    private fun writeLocalBackup(data: BackupData) {
-        if (!localBackupEnabled) return
-        val ok = localBackupStorage.store()?.save(data) == true
-        if (ok) { backupDirty = false; lastBackupAt = System.currentTimeMillis() }
     }
     /** Requests prompt background commit, without lifecycle-thread disk waits. */
     fun flush() {
         writes.flush(); homeWrites.flush()
-        if (backupDirty && index != null) {
-            val data = runCatching { snapshot() }.getOrNull()
-            if (data != null) {
-                // 放弃排队中的延时备份，改为立刻写一次，避免 5 秒后又重复写同一份数据
-                synchronized(backupLock) { backupTask?.cancel(false); backupTask = null; backupDueAt = 0L }
-                backupWorker.execute { writeLocalBackup(data) }
-            }
-        }
     }
     /** Drain pending commits after Activity destruction; abrupt process death is still a boundary. */
     fun close() {
@@ -520,14 +389,6 @@ class Library(context: Context) {
         closed = true
         readyCallbacks.clear(); errorCallbacks.clear()
         loader.shutdown()
-        if (backupDirty && index != null) {
-            val data = runCatching { snapshot() }.getOrNull()
-            if (data != null) {
-                synchronized(backupLock) { backupTask?.cancel(false); backupTask = null; backupDueAt = 0L }
-                backupWorker.execute { writeLocalBackup(data) }
-            }
-        }
-        backupWorker.shutdown()
         synchronized(retiredWrites) {
             writes.close(); homeWrites.close()
             retiredWrites += writes; retiredWrites += homeWrites

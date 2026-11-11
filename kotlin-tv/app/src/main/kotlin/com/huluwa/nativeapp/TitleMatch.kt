@@ -18,13 +18,24 @@ import com.hongguotv.core.Series
  */
 object TitleMatch {
 
+    private fun nameKey(name: String): String =
+        name.replace("《", "").replace("》", "").replace(Regex("\\s+"), "").lowercase()
+
+    /** 季标记：兼容「第二季」「第2季」「第 2 部」，数字与「季/部」之间允许空格。 */
+    private val SeasonMark = Regex("第\\s*([0-9零〇一二三四五六七八九十百千]+)\\s*(?:季|部)")
+
+    /** 系列主名：去掉季标记和两端的括号/分隔符，「某剧（第二季）」与「某剧」算同一个系列。 */
+    fun seriesBase(name: String): String = name.replace(SeasonMark, "")
+        .trim().trim(' ', '\u3000', '：', ':', '-', '—', '_', '·', '（', '）', '(', ')',
+            '【', '】', '[', ']', '《', '》')
+
     /** 命中结果的下标；没把握时返回 -1。 */
     fun best(query: String, items: List<Series>): Int = bestIn(query, items.map { it.title })
 
     fun bestIn(query: String, titles: List<String>): Int {
-        val key = ThirdCms.nameKey(query)
+        val key = nameKey(query)
         if(key.length < 2) return -1
-        val keys = titles.map { ThirdCms.nameKey(it) }
+        val keys = titles.map { nameKey(it) }
         val exact = keys.indexOfFirst { it == key }
         if(exact >= 0) return exact
         val loose = keys.indexOfFirst { it.length >= 2 && (it.contains(key) || key.contains(it)) }

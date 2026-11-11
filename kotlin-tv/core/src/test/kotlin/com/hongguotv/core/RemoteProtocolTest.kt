@@ -26,7 +26,6 @@ class RemoteProtocolTest {
         // 遥控页整句：可能是指令也可能是剧名，理解交给电视端
         assertEquals(RemoteCommand.Say("检查有没有更新"), parse("""{"cmd":"say","text":"检查有没有更新"}"""))
         assertNull("空句子不该被当成指令", parse("""{"cmd":"say","text":"   "}"""))
-        assertEquals(RemoteCommand.Open("source"), parse("""{"cmd":"open","module":"source"}"""))
         // 大小写与两端空白由协议层吃掉，桥接那边不用自己归一
         assertEquals(RemoteCommand.Open("rank"), parse("""{"cmd":"open","module":" RANK "}"""))
     }
@@ -154,16 +153,12 @@ class RemoteProtocolTest {
         assertEquals(1, json.getJSONObject("remote").getInt("clients"))
         assertEquals(2, json.getJSONObject("remote").getInt("evictions"))
         assertTrue(json.isNull("error"))
-        // 支持的片源默认可以开关弹幕；三方片源要显式说「不支持」，
-        // 否则手机端只能把「没有弹幕」显示成「弹幕关」并且点了毫无反应
         assertTrue(json.getJSONObject("caps").getBoolean("danmaku"))
-        val third = JSONObject(PlaybackSnapshot(source = PlaybackSource.THIRD, danmaku = false, danmakuAvailable = false).toJson(1, 1, 1, 1, 0))
-        assertFalse(third.getJSONObject("caps").getBoolean("danmaku"))
     }
 
     @Test fun `empty snapshot is not controllable and forces browse mode`() {
         assertFalse(PlaybackSnapshot().controllable)
-        assertTrue(PlaybackSnapshot(source = PlaybackSource.THIRD).controllable)
+        assertTrue(PlaybackSnapshot(source = PlaybackSource.OFFICIAL).controllable)
     }
 
     @Test fun `episode and resume payloads carry what the page needs`() {

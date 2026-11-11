@@ -12,7 +12,7 @@ import com.hongguotv.core.DanmakuPrefs
 import com.hongguotv.core.PlaybackSpeed
 
 /**
- * 手机竖屏设置页：把电视版设置里对手机有意义的项按「播放 / 外观 / 设备 / 实验室 / 关于」
+ * 手机竖屏设置页：把电视版设置里对手机有意义的项按「播放 / 外观 / 设备 / 关于」
  * 重新排成单列，竖屏下就能改完全部设置，不必再旋转到横屏。
  *
  * 页面本身只负责排版：取值、落盘、弹窗一律复用 MainActivity 既有的实现
@@ -61,7 +61,6 @@ class PhoneSettings(private val activity: MainActivity) {
         playbackSection(content)
         lookSection(content)
         deviceSection(content)
-        labSection(content)
         aboutSection(content)
 
         // 系统栏让位：顶栏避开状态栏，内容底部避开手势条，否则最后一行会被压在导航条下面
@@ -209,33 +208,19 @@ class PhoneSettings(private val activity: MainActivity) {
     // ---- 设备与数据 ----
 
     private fun deviceSection(parent: LinearLayout) {
-        heading(parent, "设备与数据", "本机记录、存储与快传文件")
+        heading(parent, "设备与数据", "账号、本机记录与缓存")
         val account = activity.phoneAccount
         // 昵称与云端条数分开取，登录态变化由 MainActivity.onAccountChanged 整页刷新
         addRow(parent, row(
             if (account.signedIn) "红果账号 · ${account.displayName}" else "红果账号",
             if (account.signedIn) "云端 ${account.cloudCount} 部" else "点击登录",
         ) { account.showPhoneAccountDialog(activity) })
-        addRow(parent, row("本地备份与恢复", if (library.localBackupEnabled) "已开启" else "已关闭", {
-            if (library.localBackupEnabled) "已开启" else "已关闭"
-        }) { activity.phoneLocalBackup() })
         addRow(parent, row("手机快传", "传 APK / 视频") { activity.phoneQuickTransfer() })
-        addRow(parent, row("快传文件", "查看已收到的文件") { activity.phoneQuickFiles() })
         addRow(parent, row("恢复隐藏推荐", "${library.hidden().size} 部", { "${library.hidden().size} 部" }) {
             activity.phoneUnhideAll()
         })
         addRow(parent, row("观看统计", "本机累计") { activity.phoneWatchStats() })
         addRow(parent, row("清理缓存", "封面与安装包等临时文件") { activity.phoneClearCache() })
-    }
-
-    // ---- 实验室功能 ----
-
-    private fun labSection(parent: LinearLayout) {
-        heading(parent, "实验室功能", "外部遥控、语音与自动化接口")
-        addRow(parent, row("遥控地址", "自动化 / 语音桥接") { activity.phoneRemoteAddress() })
-        addRow(parent, row("小爱同学", if (XiaoAiAccess.uid.isBlank()) "未连接" else "已配置 ${XiaoAiAccess.masked()}") {
-            activity.phoneXiaoAi()
-        })
     }
 
     // ---- 关于红果 ----

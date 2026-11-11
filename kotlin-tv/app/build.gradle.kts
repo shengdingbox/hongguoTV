@@ -41,7 +41,5 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
     implementation("androidx.media3:media3-datasource-okhttp:1.8.0")
-    // 本地单测：CMS 解析跑在 JVM，需要真实 org.json 实现（Android 平台 stub 未 mock）
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.json:json:20240303")
 }

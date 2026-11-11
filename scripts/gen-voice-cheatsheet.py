@@ -73,9 +73,9 @@ SECTIONS = [
     ('六、播放偏好', ['autonext.toggle', 'autoseason.toggle', 'danmaku.toggle', 'autoskip.toggle']),
     ('七、观看与收藏', ['resume.latest', 'favorite.toggle']),
     ('八、内容库与随机推荐', ['type.set', 'random.pick']),
-    ('九、工具与弹窗', ['update.check', 'check.interface', 'cache.clear', 'stats.show', 'backup.show',
-                        'quick.send', 'transfer.refresh', 'transfer.files', 'transfer.clear',
-                        'history.clear', 'remote.address', 'xiaoai.show', 'account.show',
+    ('九、工具与弹窗', ['update.check', 'check.interface', 'cache.clear', 'stats.show',
+                        'quick.send', 'transfer.refresh',
+                        'history.clear', 'account.show',
                         'hidden.restore']),
 ]
 
@@ -89,15 +89,14 @@ w('')
 w('规模：**%d 组说法 / %d 个动作键 / %d 个模块**；另有 5 条走专用解析（剧名+集数、序数定位、快进快退、倍速、返回），'
   '因为它们的参数不是固定值，放进词表反而说不清。' % (len(RULES), len(ACTIONS), len(MODULES)))
 w('')
-w('## 三种入口，同一套命令')
+w('## 手机遥控与局域网命令')
 w('')
 w('| 入口 | 怎么用 |')
 w('|---|---|')
-w('| 手机遥控页 | 电视上说「遥控地址」，手机浏览器打开，输入框打字或键盘语音 |')
+w('| 手机遥控页 | 电视顶栏打开「手机遥控」，扫码后在输入框打字或键盘语音 |')
 w('| 局域网 | `POST {遥控地址}/cmd`，body `{"cmd":"say","text":"检查更新"}` |')
-w('| 小爱同学 | 巴法云主题把原话转发到电视，同样走 `VoiceIntent`（自建技能见 `xiaoai-voice.md`） |')
 w('')
-w('回执是电视上的短提示（Toast），不打断画面。所有说法都可以加「帮我 / 我要 / 我想 / 小爱同学」开头，')
+w('回执是电视上的短提示（Toast），不打断画面。所有说法都可以加「帮我 / 我要 / 我想」开头，')
 w('句尾「一下 / 吧 / 呢」可省。')
 w('')
 
@@ -165,7 +164,7 @@ w('| cmd | 参数 | 作用 |')
 w('|---|---|---|')
 w('| `open` | `module` | 跳模块，键见上表 |')
 w('| `watch` | `query`，可选 `episode` | 搜片；带集号才直接开播 |')
-w('| `say` | `text` | 整句话交给 `VoiceIntent` 解析（小爱走这条） |')
+w('| `say` | `text` | 整句话交给 `VoiceIntent` 解析 |')
 w('| `act` | `id`，可选 `arg` | 执行动作键 |')
 w('| `search` | `query` | 搜索页填入关键词 |')
 w('| `resume` | `id` | 续播指定剧 |')

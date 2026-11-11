@@ -127,25 +127,12 @@ object VoiceIntent {
             RemoteCommand.Act("cache.clear"), "正在清理缓存"),
         Rule(listOf("观看统计", "看了多少", "看剧时长", "统计一下"),
             RemoteCommand.Act("stats.show"), "观看统计"),
-        Rule(listOf("备份记录", "导出记录", "备份"),
-            RemoteCommand.Act("backup.show"), "本机备份"),
         Rule(listOf("手机快传", "快传", "传文件", "传apk"),
             RemoteCommand.Act("quick.send"), "手机快传"),
-        // 快传的三件事：换一张码、看收到的文件、把文件清掉。
-        // 「快传文件」刻意比「快传」长：说「打开快传文件」要落到文件列表，而不是再开一个上传面板。
         Rule(listOf("刷新二维码", "二维码刷新", "换个二维码", "换一个二维码", "重新生成二维码", "刷新快传码"),
             RemoteCommand.Act("transfer.refresh"), "二维码已刷新"),
-        Rule(listOf("打开快传文件", "快传文件", "查看快传文件", "看看快传文件", "打开收到的文件", "收到的文件", "传过来的文件"),
-            RemoteCommand.Act("transfer.files"), "快传文件"),
-        Rule(listOf("清空快传文件", "清空收到的文件", "清空传过来的文件", "删掉快传文件", "删除快传文件", "清空文件"),
-            RemoteCommand.Act("transfer.clear"), "清空快传文件"),
-        // 搜索历史主站与片源各存一份，一句话两边一起清——人不会记得自己在哪一栏搜过。
         Rule(listOf("清空搜索历史", "清除搜索历史", "清空搜索记录", "清除搜索记录", "删掉搜索历史", "清空历史记录"),
             RemoteCommand.Act("history.clear"), "已清空搜索历史"),
-        Rule(listOf("遥控地址", "遥控器地址", "局域网地址", "遥控接口"),
-            RemoteCommand.Act("remote.address"), "遥控地址"),
-        Rule(listOf("小爱同学设置", "小爱设置", "语音设置", "小爱连接"),
-            RemoteCommand.Act("xiaoai.show"), "小爱同学"),
         Rule(listOf("登录红果账户", "登录红果账号", "红果账号", "我的账号", "登录账号", "账号登录", "扫码登录", "登录"),
             RemoteCommand.Act("account.show"), "账号"),
         Rule(listOf("接口自检", "自检", "检查接口"),
@@ -164,9 +151,7 @@ object VoiceIntent {
         ModuleRule(listOf("排行榜", "排行", "榜单", "热播榜", "榜"), "rank", "排行榜"),
         ModuleRule(listOf("收藏夹", "我的收藏", "收藏页"), "favorite", "收藏"),
         ModuleRule(listOf("历史记录", "观看历史", "最近观看", "观看记录", "历史"), "history", "最近观看"),
-        ModuleRule(listOf("设置页", "设置", "系统设置"), "settings", "设置"),
-        ModuleRule(listOf("三方源", "片源页", "片源"), "source", "片源"),
-        ModuleRule(listOf("本地库", "本地视频", "nas"), "library", "本地库")
+        ModuleRule(listOf("设置页", "设置", "系统设置"), "settings", "设置")
     ).sortedByDescending { rule -> rule.words.maxOf { it.length } }
 
     /** 列表词 → `list.play` 的列表键。 */
@@ -184,7 +169,7 @@ object VoiceIntent {
 
     /** 句首的语气词：只在「认动作」时剥掉，认剧名时用原句（`请回答1988` 不能被剥成 `回答1988`）。 */
     private val LEAD_WORDS = listOf(
-        "小爱同学", "你能不能", "可不可以", "麻烦你", "帮我", "帮忙", "给我",
+        "你能不能", "可不可以", "麻烦你", "帮我", "帮忙", "给我",
         "我要", "我想", "想要", "能不能", "可以", "现在", "直接", "麻烦", "请", "你"
     )
 

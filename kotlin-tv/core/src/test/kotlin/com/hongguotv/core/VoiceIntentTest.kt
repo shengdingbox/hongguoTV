@@ -74,9 +74,7 @@ class VoiceIntentTest {
     fun tools() {
         assertEquals("cache.clear" to "", act("清理缓存"))
         assertEquals("stats.show" to "", act("观看统计"))
-        assertEquals("backup.show" to "", act("备份"))
         assertEquals("quick.send" to "", act("手机快传"))
-        assertEquals("remote.address" to "", act("遥控地址"))
         assertEquals("account.show" to "", act("登录账号"))
         assertEquals("check.interface" to "", act("接口自检"))
     }
@@ -132,7 +130,6 @@ class VoiceIntentTest {
         assertEquals(RemoteCommand.Open("settings"), command("打开设置"))
         assertEquals(RemoteCommand.Open("history"), command("去历史记录"))
         assertEquals(RemoteCommand.Open("favorite"), command("我的收藏"))
-        assertEquals(RemoteCommand.Open("source"), command("打开片源"))
     }
 
     @Test
@@ -235,21 +232,10 @@ class VoiceIntentTest {
 
     // ------------------------------------------------------------ 快传与历史
 
-    /**
-     * 快传的四句话各归各的：换码、看文件、清空文件。
-     *
-     * 最容易串的是「打开快传文件」——它同时含有 `快传`（手机快传面板）和 `快传文件`（文件列表），
-     * 长词优先的规则在这里必须真正生效，否则说「看文件」却又弹出一张二维码。
-     */
     @Test
     fun quickTransferVariants() {
         assertEquals("transfer.refresh" to "", act("刷新二维码"))
         assertEquals("transfer.refresh" to "", act("换个二维码"))
-        assertEquals("transfer.files" to "", act("打开快传文件"))
-        assertEquals("transfer.files" to "", act("快传文件"))
-        assertEquals("transfer.clear" to "", act("清空文件"))
-        assertEquals("transfer.clear" to "", act("清空快传文件"))
-        // 不带「文件」二字的仍是上传面板
         assertEquals("quick.send" to "", act("手机快传"))
         assertEquals("quick.send" to "", act("打开快传"))
     }
@@ -276,15 +262,15 @@ class VoiceIntentTest {
         val samples = listOf(
             "检查版本是否有更新", "切换主题", "换成白的", "显示时间", "恢复默认背景",
             "关闭弹窗", "自动连播", "系列剧连播", "关掉弹幕", "自动跳过", "下一集", "上一集",
-            "暂停", "继续播放", "接着看", "收藏这个", "清理缓存", "观看统计", "备份",
-            "手机快传", "遥控地址", "小爱同学设置", "登录账号", "接口自检", "恢复隐藏",
+            "暂停", "继续播放", "接着看", "收藏这个", "清理缓存", "观看统计",
+            "手机快传", "登录账号", "接口自检", "恢复隐藏",
             "历史记录第二个", "第五集",
             // 新增：播放页动作、类型切换、随机推荐、音量、定时
             "从头播放", "退出播放", "打开选集", "跳过片头", "快一点", "慢一点",
             "半小时后关掉", "看完这集就关", "声音大一点", "声音小一点", "静音", "取消静音",
             "随机推荐一部漫剧", "随机推荐", "切换短剧", "看漫剧",
-            // 新增：快传三件事与搜索历史
-            "刷新二维码", "打开快传文件", "清空文件", "清空搜索历史"
+            // 快传二维码与搜索历史
+            "刷新二维码", "清空搜索历史"
         )
         for(text in samples) {
             val cmd = VoiceIntent.parse(text)?.command

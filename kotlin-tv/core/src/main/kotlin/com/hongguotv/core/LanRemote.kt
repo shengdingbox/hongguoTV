@@ -6,7 +6,7 @@ import org.json.JSONObject
 
 /** 遥控协议的数据模型与命令白名单。纯数据 + 纯函数，不碰 socket，可单测。 */
 
-enum class PlaybackSource { OFFICIAL, THIRD, NONE }
+enum class PlaybackSource { OFFICIAL, NONE }
 
 /** 线路组摘要，只进快照、不含量；完整成员走 /episodes。 */
 data class EpisodeGroup(val name: String, val count: Int)
@@ -44,8 +44,8 @@ data class PlaybackSnapshot(
     val muted: Boolean = false,
     val danmaku: Boolean = true,
     /**
-     * 当前片源支不支持弹幕。三方片源没有弹幕，「关」和「不支持」必须区分开：
-     * 否则手机上的弹幕按钮永远显示「关」，点了也没有任何反应。
+     * 当前播放是否提供弹幕控制；设置中关闭弹幕时禁用手机上的按钮。
+     * 手机界面据此区分暂时关闭和不可用。
      */
     val danmakuAvailable: Boolean = true,
     val error: String? = null,
@@ -74,8 +74,8 @@ sealed class RemoteCommand {
     /**
      * 直接跳到一级模块。
      *
-     * 参数用稳定英文键而不是中文名：界面文案改名（「片源」→「三方源」）不该让外部桥接失效，
-     * 手机页面、语音桥、自动化脚本都只依赖这里的键。合法值见 [REMOTE_MODULES]。
+     * 参数使用稳定英文键，避免界面文案变化影响调用方。
+     * 手机页面与自动化脚本使用这里的键。合法值见 [REMOTE_MODULES]。
      */
     data class Open(val module: String) : RemoteCommand()
 
@@ -155,9 +155,7 @@ val REMOTE_MODULES = setOf(
     "rank",     // 排行榜
     "favorite", // 收藏
     "history",  // 最近观看
-    "settings", // 设置
-    "source",   // 片源（三方 CMS）
-    "library"   // 本地库
+    "settings"  // 设置
 )
 
 /**
@@ -187,7 +185,7 @@ val REMOTE_ACTIONS = setOf(
     "play.prev",        // 上一集
     "play.replay",      // 从头播放本集
     "player.close",     // 退出播放器，回到详情页
-    "panel.episodes",   // 呼出选集面板（电视播放页 / 片源播放页）
+    "panel.episodes",   // 呼出选集面板（电视播放页）
     "skip.intro",       // 按本剧片头标记跳过片头
     "speed.up",         // 倍速 +1 档（播放页只作用于本剧）
     "speed.down",       // 倍速 -1 档
@@ -210,14 +208,9 @@ val REMOTE_ACTIONS = setOf(
     "check.interface",  // 接口自检
     "cache.clear",      // 清理缓存
     "stats.show",       // 观看统计
-    "backup.show",      // 本地备份
     "quick.send",       // 手机快传（打开面板并生成新二维码）
     "transfer.refresh", // 刷新手机快传的二维码
-    "transfer.files",   // 打开快传文件列表
-    "transfer.clear",   // 清空快传收到的全部文件
-    "history.clear",    // 清空搜索历史（主站 + 片源）
-    "remote.address",   // 遥控地址
-    "xiaoai.show",      // 小爱同学设置
+    "history.clear",    // 清空搜索历史
     "account.show",     // 账号
     "hidden.restore"    // 恢复隐藏推荐
 )
@@ -418,7 +411,7 @@ fun List<ResumeItem>.toResumeJson(): String = JSONObject().put("items", JSONArra
     }
 }).toString()
 
-/** 播放适配器：官方与三方各实现一份，遥控代码里不出现「是不是三方」的分支。 */
+/** 播放适配器：为遥控提供播放控制与剧集列表。 */
 interface RemoteTarget {
     val source: PlaybackSource
     /** 主线程调用，执行一条已校验的播放类命令。 */

@@ -4,13 +4,9 @@ package com.huluwa.nativeapp
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -18,21 +14,12 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.widget.*
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
-import androidx.media3.common.MediaItem
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
 import com.hongguotv.core.EpisodeTarget
 import com.hongguotv.core.PhoneForm
 import com.hongguotv.core.PhoneInputServer
 import com.hongguotv.core.QuickTransferServer
-import com.hongguotv.core.ReceivedFile
-import com.hongguotv.core.TransferFiles
 import com.hongguotv.core.TransferKind
 import com.hongguotv.core.TransferRules
-import com.hongguotv.core.ThirdSourceTransferServer
-import com.hongguotv.core.BackupThirdSource
 import com.hongguotv.core.LibraryTransferServer
 import com.hongguotv.core.BackdropTransferServer
 import com.hongguotv.core.BackupData
@@ -41,7 +28,6 @@ import java.net.Inet4Address
 import java.util.concurrent.Executors
 
 /** Native modal controls kept separate from catalog/player navigation. */
-@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class TvTools(private val activity: Activity) {
     private val main=Handler(Looper.getMainLooper())
     private val worker=Executors.newSingleThreadExecutor()
@@ -68,7 +54,6 @@ class TvTools(private val activity: Activity) {
     private fun freeBytes()=runCatching { android.os.StatFs(activity.filesDir.absolutePath).availableBytes }.getOrDefault(0L)
     /** 快传落盘目录：都在 filesDir 下，卸载应用时随应用数据一起清除。 */
     private fun quickDirectory(kind: TransferKind)=File(activity.filesDir,TransferRules.directoryName(kind))
-    private fun quickDirectories()=TransferKind.entries.map { quickDirectory(it) }.distinct()
     private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(TvStyle.text); setPadding(dp(8),dp(4),dp(8),dp(4)) }
     private fun column()=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(4),dp(16),dp(8)) }
     private fun open(next: AlertDialog,anchor: View?,onDismiss: (()->Unit)?=null) {
@@ -182,30 +167,7 @@ class TvTools(private val activity: Activity) {
             } catch(_: Exception) { main.post { if(this@TvTools.dialog===dialog) status.text="无法开启手机填写，请检查网络后重试。" } }
         }
     }
-    /** 源配置的手机扫码导入导出：手机页可下载当前源配置，也可上传配置文件追加到电视。 */
-    fun sourceTransfer(config: String,anchor: View?,restore: (List<BackupThirdSource>)->Unit) {
-        val address=lanAddress()
-        if(address==null) { info("源配置导入/导出","请让电视和手机连接同一局域网后重试。",anchor); return }
-        val content=column(); content.addView(TvDialog.title(activity,"源配置导入/导出"))
-        val status=label("正在生成二维码…"); content.addView(status)
-        val dialog=AlertDialog.Builder(activity).setView(TvDialog.card(activity,content)).create()
-        // 二维码 + weight 文字列：必须固定宽度（同 phoneForm）
-        TvDialog.styleWindow(activity,dialog,widthDp=440)
-        open(dialog,anchor)
-        worker.execute {
-            try {
-                val session=ThirdSourceTransferServer(address,config,{ sources -> main.post { if(this@TvTools.dialog===dialog) { dialog.dismiss(); restore(sources) } } },
-                    { main.post { if(this@TvTools.dialog===dialog) { content.removeAllViews(); content.addView(label("二维码已过期，请关闭后重新打开。")) } } })
-                main.post {
-                    if(this@TvTools.dialog!==dialog) { session.close(); return@post }
-                    phone=session; content.removeAllViews()
-                    content.addView(TvDialog.qrRow(activity, qr(session.url),
-                        label("扫码打开：可下载当前源配置，或上传配置恢复到电视。\n已有源不覆盖，仅追加缺失。",16f),
-                        TvDialog.urlLabel(activity, session.url)))
-                }
-            } catch(_: Exception) { main.post { if(this@TvTools.dialog===dialog) status.text="无法开启源配置传输，请检查网络后重试。" } }
-        }
-    }
+    /** 收藏与观看记录的手机扫码备份及恢复。 */
     fun libraryTransfer(backup: String,anchor: View?,restore: (BackupData,Boolean)->Unit) {
         val address=lanAddress()
         if(address==null) { info("备份与恢复","请让电视和手机连接同一局域网后重试。",anchor); return }
@@ -272,7 +234,7 @@ class TvTools(private val activity: Activity) {
         }
     }
     /** 手机快传：扫码直传文件。APK 收到后交给调用方引导安装，其余文件落私有目录。 */
-    fun quickTransfer(anchor: View?,onReceived: (File,TransferKind)->Unit,onClose: ()->Unit={},onShowFiles: ()->Unit={}) {
+    fun quickTransfer(anchor: View?,onReceived: (File,TransferKind)->Unit) {
         val address=lanAddress()
         if(address==null) { info("手机快传","请让电视和手机连接同一局域网（Wi-Fi 或有线网络）后重试。",anchor); return }
         val content=column(); content.addView(TvDialog.title(activity,"手机快传"))
@@ -299,7 +261,7 @@ class TvTools(private val activity: Activity) {
                 if(remain>0) main.postDelayed(this,1000L)
             }
         }
-        open(dialog,anchor) { main.removeCallbacks(countdownTick); onClose() }
+        open(dialog,anchor) { main.removeCallbacks(countdownTick) }
         dialog.window?.decorView?.post { status.requestFocus() }
         fun startSession() {
             status.text="正在生成二维码…"
@@ -345,35 +307,10 @@ class TvTools(private val activity: Activity) {
                         val detail=label("",13f).apply { setTextColor(TvStyle.muted) }; content.addView(detail)
                         val received=label("本次已接收 0 个文件",13f).apply { setTextColor(TvStyle.muted) }; content.addView(received)
                         val actions=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.END; setPadding(0,dp(12),0,0) }
-                        val filesBtn=TvDialog.capsuleButton(activity,"快传文件") { onShowFiles() }
                         val refresh=TvDialog.capsuleButton(activity,"刷新二维码") { startSession() }
-                        // 文案压短：这一行四个胶囊按钮，6 个字会挤到换行
-                        val clear=TvDialog.capsuleButton(activity,"清空文件") {
-                            TvDialog.confirm(activity,"清空快传文件","删除通过手机快传收到的全部文件，不影响收藏、观看记录和已安装的应用。") {
-                                worker.execute {
-                                    listOf(TransferKind.APK,TransferKind.OTHER).map { quickDirectory(it) }.distinct().forEach { dir ->
-                                        dir.listFiles()?.filter { !it.name.endsWith(TransferRules.PART_SUFFIX) }?.forEach { it.deleteRecursively() }
-                                    }
-                                    main.post {
-                                        if(this@TvTools.dialog!==dialog) return@post
-                                        receivedFiles=0
-                                        received.text="本次已接收 0 个文件"
-                                        space.text=spaceLabel()
-                                        name.text="等待手机发送…"; bar.progress=0; detail.text=""
-                                    }
-                                }
-                            }.show()
-                        }
                         val close=TvDialog.capsuleButton(activity,"完成") { dialog.dismiss() }
-                        // 四个胶囊按钮横排，440dp 卡片内容宽约 352dp：默认 20dp 内边距 + 10dp 间距会多出
-                        // 一格宽度，把「完成」挤出卡片右缘（只剩一角）。这里统一收窄内边距与间距。
-                        listOf(filesBtn,refresh,clear,close).forEach { it.setPadding(dp(10),0,dp(10),0) }
-                        filesBtn.id=View.generateViewId(); refresh.id=View.generateViewId(); clear.id=View.generateViewId(); close.id=View.generateViewId()
-                        filesBtn.nextFocusRightId=refresh.id; refresh.nextFocusLeftId=filesBtn.id; refresh.nextFocusRightId=clear.id
-                        clear.nextFocusLeftId=refresh.id; clear.nextFocusRightId=close.id; close.nextFocusLeftId=clear.id
-                        actions.addView(filesBtn,LinearLayout.LayoutParams(-2,-2).apply { rightMargin=dp(8) })
+                        refresh.nextFocusRightId=close.id; close.nextFocusLeftId=refresh.id
                         actions.addView(refresh,LinearLayout.LayoutParams(-2,-2).apply { rightMargin=dp(8) })
-                        actions.addView(clear,LinearLayout.LayoutParams(-2,-2).apply { rightMargin=dp(8) })
                         actions.addView(close,LinearLayout.LayoutParams(-2,-2))
                         content.addView(actions)
                         views=QuickViews(name,bar,detail,received,space)
@@ -384,227 +321,6 @@ class TvTools(private val activity: Activity) {
             }
         }
         startSession()
-    }
-    /** 快传图片预览：后台解码大图，弹窗内显示实际保存路径，并可直接设为电视背景。 */
-    fun previewImage(anchor: View?,file: File,onSetBackdrop: ()->Unit) {
-        val content=column(); content.addView(TvDialog.title(activity,file.name))
-        content.addView(label("位置 · ${file.absolutePath}",11f).apply { setTextColor(TvStyle.muted) })
-        val status=label("正在加载…",12f).apply { text="正在加载…"; setTextColor(TvStyle.muted) }
-        content.addView(status)
-        val image=ImageView(activity).apply { scaleType=ImageView.ScaleType.FIT_CENTER; setPadding(0,dp(8),0,dp(8)) }
-        content.addView(image,LinearLayout.LayoutParams(-1,dp(400)))
-        val actions=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.END; setPadding(0,dp(10),0,0) }
-        lateinit var next: AlertDialog
-        val close=TvDialog.capsuleButton(activity,"关闭") { next.dismiss() }
-        val set=TvDialog.capsuleButton(activity,"设为电视背景") { next.dismiss(); onSetBackdrop() }
-        close.id=View.generateViewId(); set.id=View.generateViewId()
-        close.nextFocusRightId=set.id; set.nextFocusLeftId=close.id
-        actions.addView(close,LinearLayout.LayoutParams(-2,-2).apply { rightMargin=dp(12) })
-        actions.addView(set,LinearLayout.LayoutParams(-2,-2))
-        content.addView(actions)
-        next=AlertDialog.Builder(activity).setView(TvDialog.card(activity,content)).create()
-        TvDialog.styleWindow(activity,next,widthDp=560)
-        open(next,anchor)
-        close.post { if(this@TvTools.dialog===next) close.requestFocus() }
-        worker.execute {
-            val bitmap=runCatching { previewBitmap(file) }.getOrNull()
-            main.post {
-                if(this@TvTools.dialog!==next) return@post
-                if(bitmap==null) status.text="无法预览这张图片"
-                else { status.text=""; image.setImageBitmap(bitmap) }
-            }
-        }
-    }
-    /** 快传视频播放：内置播放器弹窗，确认键暂停/继续，返回键退出。 */
-    fun playVideo(anchor: View?,file: File) {
-        val content=column(); content.addView(TvDialog.title(activity,file.name))
-        content.addView(label("位置 · ${file.absolutePath}",11f).apply { setTextColor(TvStyle.muted) })
-        val status=label("正在播放 · 确认键暂停，返回键退出",12f).apply { setTextColor(TvStyle.muted) }
-        val view=PlayerView(activity).apply { useController=false; isFocusable=false; setBackgroundColor(Color.BLACK) }
-        content.addView(view,LinearLayout.LayoutParams(-1,dp(380)))
-        content.addView(status)
-        val next=AlertDialog.Builder(activity).setView(TvDialog.card(activity,content)).create()
-        TvDialog.styleWindow(activity,next,widthDp=620)
-        val player=ExoPlayer.Builder(activity).build()
-        player.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
-        player.prepare(); player.playWhenReady=true
-        view.player=player
-        next.setOnKeyListener { _,key,event ->
-            if(event.action==KeyEvent.ACTION_DOWN && (key==KeyEvent.KEYCODE_DPAD_CENTER || key==KeyEvent.KEYCODE_ENTER || key==KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)) {
-                player.playWhenReady=!player.playWhenReady
-                status.text=if(player.playWhenReady) "正在播放 · 确认键暂停，返回键退出" else "已暂停 · 确认键继续，返回键退出"
-                true
-            } else false
-        }
-        open(next,anchor) { player.release(); view.player=null }
-    }
-    /** 按屏幕宽度采样解码，避免超大图片直接把内存打满。 */
-    private fun previewBitmap(file: File): Bitmap? {
-        val bounds=BitmapFactory.Options().apply { inJustDecodeBounds=true }
-        BitmapFactory.decodeFile(file.absolutePath,bounds)
-        if(bounds.outWidth<=0 || bounds.outHeight<=0) return null
-        val screen=activity.resources.displayMetrics.widthPixels.coerceAtLeast(1)
-        var sample=1
-        while(bounds.outWidth/(sample*2)>=screen) sample*=2
-        return BitmapFactory.decodeFile(file.absolutePath,BitmapFactory.Options().apply { inSampleSize=sample })
-    }
-    /**
-     * 语音「清空文件」：删掉快传目录里的成品文件，回报删了多少个、腾出多少字节。
-     *
-     * 这里不弹二次确认——话说出口就是确认，再让人摸遥控器按一次，语音入口就白做了。
-     * 删的只是手机传过来的文件，收藏、观看记录、已安装应用都不动。
-     *
-     * 先 [close]：面板上写着「本次已接收 N 个」，文件被别处删掉后那个数字就不实了，
-     * 留着比关掉更让人困惑。顺带把快传会话一起收掉，下次打开是一张新码。
-     */
-    fun clearQuickFiles(onDone: (count: Int,bytes: Long)->Unit) {
-        close()
-        worker.execute {
-            var count=0
-            var bytes=0L
-            quickDirectories().forEach { dir ->
-                dir.listFiles()?.filter { !it.name.endsWith(TransferRules.PART_SUFFIX) }?.forEach { file ->
-                    val size=if(file.isDirectory) 0L else file.length()
-                    if(runCatching { file.deleteRecursively() }.getOrDefault(false)) { count++; bytes+=size }
-                }
-            }
-            main.post { onDone(count,bytes) }
-        }
-    }
-    /** 已收文件列表：查看历史上传、按类型筛选、单条删除；确认键执行各类型的主操作。 */
-    fun quickFiles(anchor: View?,onPrimary: (File,TransferKind)->Unit,onTransfer: ()->Unit,onClose: ()->Unit={}) {
-        val content=column(); content.addView(TvDialog.title(activity,"快传文件"))
-        val status=label("正在读取…"); content.addView(status)
-        val dialog=AlertDialog.Builder(activity).setView(TvDialog.card(activity,content)).create()
-        TvDialog.styleWindow(activity,dialog,widthDp=520)
-        open(dialog,anchor,onClose)
-        val directories=quickDirectories()
-        worker.execute {
-            val files=runCatching { TransferFiles.prune(directories); TransferFiles.list(directories) }.getOrNull()
-            main.post {
-                if(this@TvTools.dialog!==dialog) return@post
-                if(files==null) { status.text="读取快传文件失败，请重试"; return@post }
-                paintQuickFiles(dialog,content,directories,files,onPrimary,onTransfer)
-            }
-        }
-    }
-    private fun paintQuickFiles(
-        dialog: AlertDialog,
-        content: LinearLayout,
-        directories: List<File>,
-        initial: List<ReceivedFile>,
-        onPrimary: (File,TransferKind)->Unit,
-        onTransfer: ()->Unit,
-    ) {
-        var all=initial
-        var filter: TransferKind?=null
-        var removeFile: (ReceivedFile)->Unit={}
-
-        fun chipBackground(active: Boolean,focused: Boolean)=GradientDrawable().apply {
-            setColor(if(focused) TvStyle.raised else TvStyle.background)
-            cornerRadius=dp(999).toFloat()
-            if(active || focused) setStroke(dp(1),TvStyle.accent) else setStroke(dp(1),TvStyle.outline)
-        }
-        fun chipLabel(kind: TransferKind?)=when(kind) {
-            null->"全部"; TransferKind.APK->"安装包"; TransferKind.VIDEO->"视频"; TransferKind.IMAGE->"图片"; TransferKind.OTHER->"其它"
-        }
-        /** focusRows=true 焦点落在第一条文件，否则落在当前筛选标签上。 */
-        fun paint(focusRows: Boolean) {
-            content.removeAllViews()
-            content.addView(TvDialog.title(activity,"快传文件"))
-            val total=all.sumOf { it.file.length() }
-            content.addView(label("共 ${all.size} 个 · 合计 ${TransferRules.humanBytes(total)} · 电视可用 ${TransferRules.humanBytes(freeBytes())}",13f).apply { setTextColor(TvStyle.muted) })
-            if(all.isEmpty()) {
-                content.addView(label("还没有收到文件。\n手机快传扫码上传后，文件会出现在这里。",15f).apply {
-                    gravity=Gravity.CENTER; setTextColor(TvStyle.muted); setPadding(0,dp(46),0,dp(46))
-                })
-                val actions=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.END; setPadding(0,dp(12),0,0) }
-                val transfer=TvDialog.capsuleButton(activity,"手机快传") { onTransfer() }
-                val close=TvDialog.capsuleButton(activity,"关闭") { dialog.dismiss() }
-                transfer.id=View.generateViewId(); close.id=View.generateViewId()
-                transfer.nextFocusRightId=close.id; close.nextFocusLeftId=transfer.id
-                actions.addView(transfer,LinearLayout.LayoutParams(-2,-2).apply { rightMargin=dp(12) })
-                actions.addView(close,LinearLayout.LayoutParams(-2,-2))
-                content.addView(actions)
-                transfer.post { if(transfer.isAttachedToWindow) transfer.requestFocus() }
-                return
-            }
-            // 筛选标签：只列实际存在的类型，数量直接写在标签上
-            val options=listOf<TransferKind?>(null)+TransferKind.entries.filter { kind -> all.any { it.kind==kind } }
-            val chipViews=mutableListOf<TextView>()
-            val chips=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL; setPadding(0,dp(10),0,dp(10)) }
-            options.forEach { kind ->
-                val active=filter==kind
-                val count=if(kind==null) all.size else all.count { it.kind==kind }
-                val chip=TextView(activity).apply {
-                    id=View.generateViewId(); text="${chipLabel(kind)} $count"; textSize=12f; gravity=Gravity.CENTER
-                    isFocusable=true; isClickable=true
-                    setPadding(dp(12),dp(5),dp(12),dp(5))
-                    setTextColor(if(active) TvStyle.accent else TvStyle.muted)
-                    background=chipBackground(active,false)
-                    setOnFocusChangeListener { view,_ ->
-                        view.background=chipBackground(active,view.isFocused)
-                        (view as TextView).setTextColor(if(active || view.isFocused) TvStyle.accent else TvStyle.muted)
-                    }
-                    setOnClickListener { filter=kind; paint(false) }
-                }
-                chips.addView(chip,LinearLayout.LayoutParams(-2,-2).apply { rightMargin=dp(8) })
-                chipViews+=chip
-            }
-            chipViews.forEachIndexed { index,chip ->
-                chip.nextFocusLeftId=chipViews.getOrNull(index-1)?.id ?: chip.id
-                chip.nextFocusRightId=chipViews.getOrNull(index+1)?.id ?: chip.id
-            }
-            content.addView(chips)
-
-            val adapter=QuickFilesAdapter(activity,{ item -> onPrimary(item.file,item.kind) },{ item -> removeFile(item) })
-            val list=RecyclerView(activity).apply {
-                id=View.generateViewId()
-                layoutManager=LinearLayoutManager(activity); itemAnimator=null
-            }
-            list.adapter=adapter
-            adapter.submit(if(filter==null) all else all.filter { it.kind==filter })
-            content.addView(list,LinearLayout.LayoutParams(-1,dp(290)))
-            val footer=LinearLayout(activity).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(10),0,0) }
-            footer.addView(label("确认 = 安装 / 预览 · 右移到「删除」",12f).apply { setTextColor(TvStyle.muted) },LinearLayout.LayoutParams(0,-2,1f))
-            val clear=TvDialog.capsuleButton(activity,"清空全部") {
-                TvDialog.confirm(activity,"清空快传文件","删除全部 ${all.size} 个文件，合计 ${TransferRules.humanBytes(total)}，不影响收藏、观看记录和已安装的应用。") {
-                    worker.execute {
-                        directories.forEach { dir ->
-                            dir.listFiles()?.filter { !it.name.endsWith(TransferRules.PART_SUFFIX) }?.forEach { it.deleteRecursively() }
-                        }
-                        main.post { if(this@TvTools.dialog===dialog) { all=emptyList(); filter=null; paint(true) } }
-                    }
-                }.show()
-            }
-            val close=TvDialog.capsuleButton(activity,"关闭") { dialog.dismiss() }
-            clear.id=View.generateViewId(); close.id=View.generateViewId()
-            clear.nextFocusRightId=close.id; close.nextFocusLeftId=clear.id
-            footer.addView(clear,LinearLayout.LayoutParams(-2,-2).apply { rightMargin=dp(12) })
-            footer.addView(close,LinearLayout.LayoutParams(-2,-2))
-            content.addView(footer)
-            val wanted=options.indexOf(filter)
-            list.post {
-                if(this@TvTools.dialog!==dialog) return@post
-                // 上下方向的跨区跳转交给系统按位置查找：标签在上、列表在下、按钮在底部
-                val target=if(focusRows) list.getChildAt(0) else chipViews.getOrNull(wanted)
-                target?.requestFocus()
-            }
-        }
-        removeFile={ item ->
-            TvDialog.confirm(activity,"删除文件","删除「${item.name}」，删除后无法恢复。") {
-                worker.execute {
-                    val deleted=runCatching { item.file.delete() }.getOrDefault(false)
-                    main.post {
-                        if(this@TvTools.dialog!==dialog) return@post
-                        if(!deleted) Toast.makeText(activity,"文件已被删除或无法访问",Toast.LENGTH_SHORT).show()
-                        all=all.filterNot { it.file==item.file }
-                        paint(true)
-                    }
-                }
-            }.show()
-        }
-        paint(true)
     }
     private class QuickViews(val name: TextView,val bar: ProgressBar,val detail: TextView,val received: TextView,val space: TextView)
 }

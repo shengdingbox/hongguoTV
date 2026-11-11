@@ -832,6 +832,7 @@ class MainActivity: Activity() {
     private fun cancelWork() {
         phoneRecommendationRetry?.let { main.removeCallbacks(it) }; phoneRecommendationRetry=null
         phoneHomeLoading=false
+        phoneRankLoading=false
         phoneNewReleaseLoading=false
         deferredWork?.discard?.invoke(); deferredWork=null
         workScope?.cancel(); workScope=null
@@ -6239,6 +6240,7 @@ class MainActivity: Activity() {
         private set
     var rankingPhone: ComicRanking?=null
         private set
+    private var phoneRankLoading=false
     /** 新剧日历独立于首页/榜单的 catalog，按服务端日期缓存列表和游标。 */
     private val phoneNewReleasePages=mutableMapOf<String,NewReleasePage>()
     private var phoneNewReleaseDay=""
@@ -6366,6 +6368,7 @@ class MainActivity: Activity() {
     private data class RetainedPhoneCatalog(
         val frame: FrameLayout,
         val scroll: androidx.core.widget.NestedScrollView,
+        val refreshLayout: PortraitUi.RefreshLayout?,
         val update: (Boolean) -> Unit,
         var state: CatalogState,
     )
@@ -6381,6 +6384,13 @@ class MainActivity: Activity() {
     private fun capturePhoneCatalog()=if(phoneTab=="home")
         CatalogState(1,phoneRecommendationItems,phoneRecommendationCursor!=null,null)
         else CatalogState(if(phoneTab=="rank") phoneRankPage else page,catalog,hasMore,rankingPhone,rankBoardPhone)
+
+    private fun phoneFeedLoading()=when(phoneTab) {
+        "home" -> phoneHomeLoading
+        "rank" -> phoneRankLoading
+        "new" -> phoneNewReleaseLoading
+        else -> false
+    }
 
     /** 手机底部导航渲染总入口：按 phoneTab 渲染对应页面。 */
     private fun renderPhone() {
@@ -6411,16 +6421,22 @@ class MainActivity: Activity() {
         retainedPhoneCatalogs[phoneTab]?.let { retained ->
             // 联网刷新和翻页只更新差异卡片；页签切换只改变可见性，不触发 detach。
             retained.update(phoneHomeLoading)
+            retained.refreshLayout?.updateLoading(phoneFeedLoading())
             retained.state=capturePhoneCatalog()
-            retainedPhoneCatalogs.forEach { (key,value) -> value.frame.visibility=if(key==phoneTab) View.VISIBLE else View.GONE }
+            retainedPhoneCatalogs.forEach { (key,value) ->
+                value.frame.visibility=if(key==phoneTab) View.VISIBLE else View.GONE
+                if(key!=phoneTab) value.refreshLayout?.isRefreshing=false
+            }
             phoneScrollY=retained.scroll.scrollY
             artwork.refreshVisible()
             return
         }
         val renderedTab=phoneTab
         val (frame,content,_)=PortraitUi.scaffold(this,phoneTab,::switchPhoneTab)
-        // 所有手机竖屏页面共用新版胶囊导航和下拉刷新。
-        val scroll=PortraitUi.RefreshScrollView(this,::refreshPortraitFeed)
+        // 三个内容流由原生刷新容器接管拖拽动画，内层继续保留整页滚动和海报分页。
+        val animatedRefresh=phoneTab in listOf("home","rank","new")
+        val scroll=if(animatedRefresh) androidx.core.widget.NestedScrollView(this)
+            else PortraitUi.RefreshScrollView(this,::refreshPortraitFeed)
         scroll.isVerticalScrollBarEnabled=false; scroll.isFillViewport=true
         scroll.clipToPadding=false
         PhoneInsets.listen(scroll) { _,bottomInset,_ -> scroll.setPadding(0,0,0,dp(92)+bottomInset) }
@@ -6436,15 +6452,19 @@ class MainActivity: Activity() {
             else -> null
         }
         update?.invoke(phoneHomeLoading)
-        content.addView(scroll,lp(-1,0).apply { weight=1f })
+        val refreshLayout=if(animatedRefresh) PortraitUi.RefreshLayout(this,scroll,::refreshPortraitFeed) else null
+        content.addView(refreshLayout ?: scroll,lp(-1,0).apply { weight=1f })
         if(update!=null) {
             if(retainedPhoneCatalogs.isEmpty()) {
                 root.removeAllViews()
                 retainedPhoneType=library.contentType; retainedPhoneTheme=TvStyle.theme
                 retainedPhoneConfiguration=android.content.res.Configuration(resources.configuration)
             }
-            retainedPhoneCatalogs.values.forEach { it.frame.visibility=View.GONE }
-            retainedPhoneCatalogs[phoneTab]=RetainedPhoneCatalog(frame,scroll,update,capturePhoneCatalog())
+            retainedPhoneCatalogs.values.forEach {
+                it.frame.visibility=View.GONE
+                it.refreshLayout?.isRefreshing=false
+            }
+            retainedPhoneCatalogs[phoneTab]=RetainedPhoneCatalog(frame,scroll,refreshLayout,update,capturePhoneCatalog())
         } else {
             retainedPhoneCatalogs.clear()
             root.removeAllViews()
@@ -6603,11 +6623,10 @@ class MainActivity: Activity() {
             val cached=library.cachedRank(board)
             if(cached!=null) { catalog=cached.items; hasMore=cached.hasMore; rankingPhone=cached.ranking }
         }
-        // 缓存和空态只渲染一次；新结果回来沿用同一套卡片。
-        renderPhone()
         work({ repository.ranking(board,rankPage) }, { result ->
             if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="rank" &&
                 phoneCatalogSource=="rank" && rankBoardPhone==board && !phoneDetailCollection) {
+                phoneRankLoading=false
                 if(rankPage<=1) {
                     catalog=result.items; rankingPhone=result.ranking
                     library.cacheRank(board,result.items,result.hasMore,result.ranking)
@@ -6618,10 +6637,15 @@ class MainActivity: Activity() {
         }, { problem ->
             if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="rank" &&
                 rankBoardPhone==board && !phoneDetailCollection) {
-                if(catalog.isEmpty()) { hasMore=false; rankingPhone=null; renderPhone() }
+                phoneRankLoading=false
+                if(catalog.isEmpty()) { hasMore=false; rankingPhone=null }
+                renderPhone()
                 android.util.Log.w("HongguoTV","Phone rank failed: ${problem.message}")
             }
         })
+        // work 先取消旧请求，再标记本次加载；缓存与刷新圈一起保留到请求结束。
+        phoneRankLoading=true
+        renderPhone()
     }
 
     /** 手机排行榜分页页码。 */
@@ -6772,7 +6796,7 @@ class MainActivity: Activity() {
             if(phoneRecommendationError.isBlank()) loadPhoneRecommendations(more=true)
             return
         }
-        if(loadingMore || !hasMore || screen!="catalog" || phoneDetailCollection || phoneTab !in listOf("rank","search")) return
+        if(loadingMore || phoneRankLoading || !hasMore || screen!="catalog" || phoneDetailCollection || phoneTab !in listOf("rank","search")) return
         loadingMore=true
         val ticket=generation
         val nextPage=if(phoneTab=="rank") phoneRankPage+1 else phoneSearchPage+1

@@ -19,6 +19,7 @@ import androidx.core.widget.NestedScrollView
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.hongguotv.core.Series
 import kotlin.math.abs
 
@@ -359,7 +360,25 @@ object PortraitUi {
         menu.show()
     }
 
-    /** 手机竖屏统一使用原生滚动，并在顶部下拉时刷新。 */
+    /** 推荐、排行和新剧共用原生拖拽进度、松手转圈及收起动画。 */
+    class RefreshLayout(activity: Activity, scroll: NestedScrollView, refresh: () -> Unit) : SwipeRefreshLayout(activity) {
+        init {
+            setColorSchemeColors(PortraitStyle.accent)
+            setProgressBackgroundColorSchemeColor(PortraitStyle.background)
+            setDistanceToTriggerSync(dp(activity, 80))
+            setProgressViewOffset(true, -dp(activity, 40), dp(activity, 64))
+            setOnChildScrollUpCallback { _, _ -> scroll.canScrollVertically(-1) }
+            setOnRefreshListener { refresh() }
+            addView(scroll, ViewGroup.LayoutParams(-1, -1))
+        }
+
+        /** 动画由下拉手势启动，首屏和分页加载不会主动弹出刷新圈。 */
+        fun updateLoading(loading: Boolean) {
+            if (!loading) isRefreshing = false
+        }
+    }
+
+    /** 其余手机竖屏页面保留原生滚动和顶部下拉刷新手势。 */
     class RefreshScrollView(activity: Activity, private val refresh: () -> Unit) : NestedScrollView(activity) {
         private val threshold = dp(activity, 80)
         private val touchSlop = ViewConfiguration.get(activity).scaledTouchSlop

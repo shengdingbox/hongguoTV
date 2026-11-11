@@ -25,7 +25,7 @@ import com.hongguotv.core.Detail
  *
  *  - 竖屏皮肤：顶部返回 / 「第 N 集」/ 倍速 / 更多，压在黑色渐变里；
  *    底部剧名 + 「第N集 | 简介」（可展开）/ 白色细线进度条 /
- *    「选集 · 全N集」整行按钮 + 收藏爱心 + 全屏
+ *    「选集 · 全N集」整行按钮 + 收藏爱心；横向视频下方居中显示「全屏观看」
  *  - 横屏全屏皮肤（葫芦娃 fullscreen 同款）：顶部标题变成「剧名 · 第N集」；
  *    底部换成一行紧凑控制条（播放/暂停、时间、选集、退出全屏），
  *    不再显示剧名行与简介；轻点画面显隐控件
@@ -80,6 +80,7 @@ class PhonePlayer(
     private var seekBar: PlaybackSeekBar? = null
     private var favoriteButton: ImageView? = null
     private var fullscreenButton: ImageView? = null
+    private var portraitFullscreenButton: View? = null
     private var centerPlay: ImageView? = null
     private var buffering: ProgressBar? = null
     private var errorBlock: View? = null
@@ -194,6 +195,8 @@ class PhonePlayer(
     fun attachPlayerView(view: View) {
         playerView = view
         videoHost?.addView(view, 0, FrameLayout.LayoutParams(-1, -1))
+        val frame = view.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame) ?: view
+        frame.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updatePortraitFullscreenButton() }
         updateVideoLayout()
     }
 
@@ -219,8 +222,8 @@ class PhonePlayer(
         applyEpisodeSheetTransform()
     }
 
-    /** 记录画面实际位置，避免从整屏黑边的边缘开始移动。 */
-    private fun captureEpisodePreviewOrigin(): RectF? {
+    /** 画面在页面中的实际位置，包含留黑边后的尺寸与播放器位移。 */
+    private fun videoBoundsOnPage(): RectF? {
         val page = host ?: return null
         val view = playerView ?: return null
         val frame = view.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame) ?: view
@@ -260,6 +263,24 @@ class PhonePlayer(
             alpha = if (uiHidden) 0f else 1f - episodeSheetProgress
             visibility = if (uiHidden || episodeSheetProgress == 1f) View.INVISIBLE else View.VISIBLE
         }
+        updatePortraitFullscreenButton()
+    }
+
+    /** 横向视频的全屏入口贴着实际画面下沿，竖向视频与选集预览不显示。 */
+    private fun updatePortraitFullscreenButton() {
+        val button = portraitFullscreenButton ?: return
+        val bounds = videoBoundsOnPage()
+        if (fullscreen || videoAspectRatio <= 1f || episodeSheetTopOnScreen != null || bounds == null) {
+            button.visibility = View.GONE
+            return
+        }
+        val params = button.layoutParams as FrameLayout.LayoutParams
+        val top = bounds.bottom.toInt() + dp(12)
+        if (params.topMargin != top) {
+            params.topMargin = top
+            button.layoutParams = params
+        }
+        button.visibility = View.VISIBLE
     }
 
     private fun updateVideoLayout() {
@@ -282,7 +303,7 @@ class PhonePlayer(
             FrameLayout.LayoutParams(-1, -1)
         }
         if (docked && !previewDocked && episodePreviewOrigin == null) {
-            episodePreviewOrigin = captureEpisodePreviewOrigin()
+            episodePreviewOrigin = videoBoundsOnPage()
         }
         val previous = video.layoutParams as FrameLayout.LayoutParams
         if (previous.width != params.width || previous.height != params.height ||
@@ -525,7 +546,7 @@ class PhonePlayer(
         seek.addView(bar, rowLp(0, dp(24)).apply { weight = 1f })
         bottomBar.addView(seek, rowLp(-1, -2))
 
-        // 「选集 · 全N集」整行按钮 + 收藏 + 全屏（葫芦娃同构）
+        // 「选集 · 全N集」整行按钮 + 收藏；全屏入口独立放到横向视频下方。
         val actions = row().apply { setPadding(dp(16), dp(2), dp(16), dp(6)) }
         val picker = row().apply {
             gravity = Gravity.CENTER_VERTICAL
@@ -548,16 +569,27 @@ class PhonePlayer(
         }
         actions.addView(favoriteButton, rowLp(dp(40), dp(40)).apply { leftMargin = dp(8) })
 
-        fullscreenButton = ImageView(activity).apply {
-            setImageResource(R.drawable.ic_fullscreen)
-            setColorFilter(Color.WHITE)
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            setOnClickListener { enterFullscreenFromButton() }
-        }
-        actions.addView(fullscreenButton, rowLp(dp(40), dp(40)).apply { leftMargin = dp(4) })
         bottomBar.addView(actions, rowLp(-1, -2))
 
         layer.addView(bottomBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+
+        val watchFullscreen = row().apply {
+            gravity = Gravity.CENTER
+            background = TvStyle.shape(activity, Color.rgb(0x20, 0x20, 0x20), radius = 8)
+            setPadding(dp(12), 0, dp(14), 0)
+            contentDescription = "全屏观看，切换横屏"
+            isFocusable = true
+            visibility = View.GONE
+            setOnClickListener { enterFullscreenFromButton() }
+        }
+        watchFullscreen.addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_screen_rotate)
+            setColorFilter(Color.WHITE)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, rowLp(dp(20), dp(20)).apply { rightMargin = dp(6) })
+        watchFullscreen.addView(text("全屏观看", 14f).apply { maxLines = 1 }, rowLp(-2, -2))
+        portraitFullscreenButton = watchFullscreen
+        layer.addView(watchFullscreen, FrameLayout.LayoutParams(-2, dp(44), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
     }
 
     /**
@@ -629,7 +661,7 @@ class PhonePlayer(
         layer.addView(bottomBar, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
     }
 
-    /** 全屏图标随状态切换（只有竖屏皮肤有这个按钮）。 */
+    /** 切换全屏后同步入口位置、退出图标与播放进度。 */
     private fun applyFullscreenUi() {
         updateVideoLayout()
         fullscreenButton?.setImageResource(if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen)
@@ -805,7 +837,7 @@ class PhonePlayer(
         topBar = null; bottom = null; titleText = null; speedLabel = null
         seriesTitleText = null; introText = null; introToggle = null; episodePickerText = null
         playPauseButton = null; timeText = null; fsEpisodeButton = null
-        seekBar = null; favoriteButton = null; fullscreenButton = null
+        seekBar = null; favoriteButton = null; fullscreenButton = null; portraitFullscreenButton = null
         centerPlay = null; buffering = null; errorBlock = null; errorText = null
     }
 

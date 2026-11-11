@@ -3682,9 +3682,9 @@ class MainActivity: Activity() {
                     // 交接只更新逐集状态，保留用户暂停、生命周期暂停与定时停止的播放意图。
                     library.setWatched(data.series.id,false)
                     playbackTitle.text="${data.series.title}  ·  第 ${episodeIndex+1} 集"
-                    // 手机竖版顶栏的集号只认 updateEpisode：自然连播不经过 playEpisode，
-                    // 不在这里补一次，第 2 集起顶部会一直停在第 1 集的编号。
-                    if(phonePlayerLayout()) phonePlayer?.updateEpisode(data)
+                    // 自然连播沿用视频输出，Media3 不保证为每集再次发送首帧回调。
+                    // 同步标题与集号时保留连续画面，避免重新盖上封面后一直等不到回调。
+                    if(phonePlayerLayout()) phonePlayer?.updateEpisode(data,waitForFirstFrame=false)
                     progressBar.progress=0
                     oldVideo?.setPlaybackActive(false)
                     session.select(nextId,episodeIndex)

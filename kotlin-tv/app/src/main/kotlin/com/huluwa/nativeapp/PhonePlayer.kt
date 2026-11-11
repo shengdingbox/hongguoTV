@@ -362,8 +362,8 @@ class PhonePlayer(
         videoHost?.addView(view, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
     }
 
-    /** 切集 / 详情刷新时更新标题、集号与简介。 */
-    fun updateEpisode(data: Detail) {
+    /** 切集 / 详情刷新时更新标题、集号与简介；连续播放保持视频可见，不等待新的首帧回调。 */
+    fun updateEpisode(data: Detail, waitForFirstFrame: Boolean = true) {
         currentTitle = data.series.title
         currentDescription = data.series.description
         currentCover = data.series.cover
@@ -385,7 +385,9 @@ class PhonePlayer(
             displayedEpisodeId = episodeId
             videoHost?.let { video ->
                 episodePlaceholder?.let(video::removeView)
-                val placeholder = buildEpisodePlaceholder(activity.phoneEpisodeIndex, showInfo = false)
+                val placeholder = buildEpisodePlaceholder(activity.phoneEpisodeIndex, showInfo = false).apply {
+                    visibility = if (waitForFirstFrame) View.VISIBLE else View.GONE
+                }
                 episodePlaceholder = placeholder
                 val index = playerView?.let { video.indexOfChild(it) + 1 } ?: 0
                 video.addView(placeholder, index, FrameLayout.LayoutParams(-1, -1))
@@ -394,7 +396,7 @@ class PhonePlayer(
             seekBar?.progress = 0
             centerPlay?.visibility = View.GONE
             errorBlock?.visibility = View.GONE
-            buffering?.visibility = View.VISIBLE
+            buffering?.visibility = if (waitForFirstFrame) View.VISIBLE else View.GONE
         }
         episodePager?.updateEpisode(activity.phoneEpisodeIndex, episodeCount)
     }

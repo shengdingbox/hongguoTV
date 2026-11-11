@@ -503,7 +503,11 @@ class MainActivity: Activity() {
                     val remaining=p.duration-p.currentPosition
                     if(p.duration>0 && remaining in 0..outroSkipSeconds*1000L) {
                         outroTriggered=true
-                        if(library.autoNext && episodeIndex<data.episodes.lastIndex) {
+                        // 播放器已经自动交接到预挂的下一集时不要再走 playEpisode：
+                        // 那条路会 pauseForSwitch + dropQueuedNext，与交接撞在一起就是「播到下一集却卡住」。
+                        val alreadyHandedOff=queuedNextId.isNotEmpty() && p.currentMediaItem?.mediaId==queuedNextId
+                        if(alreadyHandedOff) { /* onMediaItemTransition 正在接管 */ }
+                        else if(library.autoNext && episodeIndex<data.episodes.lastIndex) {
                             Toast.makeText(this@MainActivity,"已跳过片尾，播放下一集",Toast.LENGTH_SHORT).show()
                             playEpisode(episodeIndex+1,savedPosition(episodeIndex+1))
                         } else if(continueToNextSeason()) { /* season jump in progress */ }
@@ -3609,10 +3613,17 @@ class MainActivity: Activity() {
                     requestedAutoplay=true; pausedForLifecycle=false
                     library.setWatched(data.series.id,false)
                     playbackTitle.text="${data.series.title}  ·  第 ${episodeIndex+1} 集"
+                    // 手机竖版顶栏的集号只认 updateEpisode：自然连播不经过 playEpisode，
+                    // 不在这里补一次，第 2 集起顶部会一直停在第 1 集的编号。
+                    if(phonePlayerLayout()) phonePlayer?.updateEpisode(data)
                     progressBar.progress=0
                     oldVideo?.setPlaybackActive(false)
                     session.select(nextId,episodeIndex)
                     retainPlaybackWindow()
+                    // 交接后补一次播放意图：requestedAutoplay 只是 App 内部标记，
+                    // 上一集结束时若被 pause 过（ENDED 收尾、生命周期暂停），播放器不会自己恢复。
+                    // 用户主动暂停（requestedAutoplay=false）时不抢回。
+                    if(foreground && requestedAutoplay && !sleepStopped && !pausedForLifecycle && episodePanel==null) p.play()
                     android.util.Log.w("HongguoTV","Playback seamless switch episode=${fromIndex+1}->${episodeIndex+1} previousDurationMs=$fromDuration")
                     val intro=library.skipMark(data.series.id)?.introSeconds ?: 0
                     if(intro>0) {
@@ -3835,6 +3846,8 @@ class MainActivity: Activity() {
         if(queuedNextId.isNotEmpty() && p!=null) {
             for(i in 0 until p.mediaItemCount) {
                 if(p.getMediaItemAt(i).mediaId==queuedNextId) {
+                    // i>0 才移除：已在当前索引说明播放器刚好自动切到了这一集，
+                    // 它是正在播放的媒体源，移除会让播放器落到空列表停在暂停态。
                     if(i>0) p.removeMediaItem(i)
                     break
                 }

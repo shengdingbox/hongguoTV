@@ -26,11 +26,18 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
     private val sourceLocation = IntArray(2)
     private val navLocation = IntArray(2)
     private val glassBounds = RectF()
+    private val innerRimBounds = RectF()
+    private val sheenBounds = RectF()
     private val backdropBounds = RectF()
     private val backdropPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
         colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(1.2f) })
     }
     private val tintPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val sheenPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val innerRimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = density
+    }
     private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = density
@@ -53,11 +60,11 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
         outlineProvider = object : ViewOutlineProvider() {
             override fun getOutline(view: View, outline: Outline) {
                 outline.setRoundRect(0, 0, view.width, view.height, view.height / 2f)
-                outline.alpha = .35f
+                outline.alpha = .45f
             }
         }
         clipToOutline = true
-        elevation = 8f * density
+        elevation = 12f * density
     }
 
     override fun onAttachedToWindow() {
@@ -80,15 +87,26 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         glassBounds.set(density / 2f, density / 2f, w - density / 2f, h - density / 2f)
+        innerRimBounds.set(glassBounds)
+        innerRimBounds.inset(density, density)
+        sheenBounds.set(-w * .15f, -h * .9f, w * 1.05f, h * .65f)
         // 轻微放大后方色块，配合弧面高光形成玻璃透镜的观感。
         backdropBounds.set(-blurPadding - w * .015f, -blurPadding - h * .025f,
             w + blurPadding + w * .015f, h + blurPadding + h * .025f)
+        // 白底上也保留中下部的冷色折射，避免白色遮罩与页面融为一体。
         tintPaint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(),
-            intArrayOf(Color.argb(155, 255, 255, 255), Color.argb(84, 248, 250, 252), Color.argb(130, 255, 255, 255)),
+            intArrayOf(Color.argb(90, 255, 255, 255), Color.argb(54, 236, 243, 247),
+                Color.argb(78, 180, 198, 212), Color.argb(94, 216, 228, 237)),
+            floatArrayOf(0f, .26f, .72f, 1f), Shader.TileMode.CLAMP)
+        sheenPaint.shader = LinearGradient(0f, 0f, 0f, h * .65f,
+            Color.argb(100, 255, 255, 255), Color.TRANSPARENT, Shader.TileMode.CLAMP)
+        // 外沿偏冷、内沿偏亮，形成有厚度的玻璃边缘；下沿加强与浅色背景的分离。
+        rimPaint.shader = LinearGradient(0f, 0f, w.toFloat(), h.toFloat(),
+            intArrayOf(Color.argb(68, 119, 139, 155), Color.argb(36, 139, 161, 178), Color.argb(98, 104, 126, 145)),
+            floatArrayOf(0f, .35f, 1f), Shader.TileMode.CLAMP)
+        innerRimPaint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(),
+            intArrayOf(Color.argb(230, 255, 255, 255), Color.argb(55, 255, 255, 255), Color.argb(130, 255, 255, 255)),
             floatArrayOf(0f, .5f, 1f), Shader.TileMode.CLAMP)
-        rimPaint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(),
-            intArrayOf(Color.argb(245, 255, 255, 255), Color.argb(68, 160, 170, 180), Color.argb(190, 255, 255, 255)),
-            floatArrayOf(0f, .55f, 1f), Shader.TileMode.CLAMP)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -96,6 +114,9 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
         blurred?.let { canvas.drawBitmap(it, null, backdropBounds, backdropPaint) }
         val radius = height / 2f
         canvas.drawRoundRect(glassBounds, radius, radius, tintPaint)
+        canvas.drawOval(sheenBounds, sheenPaint)
+        val innerRadius = innerRimBounds.height() / 2f
+        canvas.drawRoundRect(innerRimBounds, innerRadius, innerRadius, innerRimPaint)
         canvas.drawRoundRect(glassBounds, radius, radius, rimPaint)
     }
 

@@ -30,10 +30,10 @@ object PortraitStyle {
     fun navigationItem(context: Context, selected: Boolean): RippleDrawable {
         val density = context.resources.displayMetrics.density
         val glass = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (selected) intArrayOf(
-            Color.argb(160, 255, 255, 255), Color.argb(70, 255, 255, 255), Color.argb(100, 215, 222, 208),
+            Color.argb(185, 250, 255, 246), Color.argb(105, 213, 236, 198), Color.argb(100, 172, 200, 156),
         ) else intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT)).apply {
             cornerRadius = 28f * density
-            if (selected) setStroke(density.toInt().coerceAtLeast(1), Color.argb(170, 255, 255, 255))
+            if (selected) setStroke(density.toInt().coerceAtLeast(1), Color.argb(86, 112, 145, 97))
         }
         return RippleDrawable(ColorStateList.valueOf(Color.argb(35, 90, 110, 80)), glass, shape(context, Color.WHITE, 28))
     }

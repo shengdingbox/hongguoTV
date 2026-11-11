@@ -6,65 +6,46 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
-import android.graphics.drawable.StateListDrawable
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.core.graphics.ColorUtils
 import androidx.core.graphics.drawable.DrawableCompat
 import kotlin.math.roundToInt
 
-/** 二级页顶栏共用的返回入口：矢量箭头、胶囊轮廓与遥控焦点反馈。 */
+/** 二级页顶栏共用的返回入口：白色尖角图标与文字，常态无底色、无边框。 */
 object PageBackButton {
     fun addTo(parent: LinearLayout, label: String = "返回", onClick: () -> Unit): TextView {
         val context = parent.context
         fun dp(value: Int) = (value * context.resources.displayMetrics.density).roundToInt()
-        val pressed = intArrayOf(android.R.attr.state_pressed)
-        val focused = intArrayOf(android.R.attr.state_focused)
-        val hovered = intArrayOf(android.R.attr.state_hovered)
-        val idle = intArrayOf()
-        val activeText = if (TvStyle.theme == TvStyle.Theme.NIGHT) TvStyle.background else Color.WHITE
-        val states = arrayOf(pressed, focused, hovered, idle)
-        val textColors = ColorStateList(states, intArrayOf(activeText, activeText, TvStyle.text, TvStyle.text))
-        val iconColors = ColorStateList(states, intArrayOf(activeText, activeText, TvStyle.accent, TvStyle.accent))
-
-        fun capsule(fill: Int, border: Int, stroke: Int = 1) = GradientDrawable().apply {
-            setColor(fill)
-            cornerRadius = dp(24).toFloat()
-            setStroke(dp(stroke).coerceAtLeast(1), border)
-        }
-        val surfaces = StateListDrawable().apply {
-            addState(pressed, capsule(TvStyle.accent, TvStyle.accent, 2))
-            addState(focused, capsule(TvStyle.accent, TvStyle.accent, 2))
-            addState(hovered, capsule(TvStyle.raised, TvStyle.accent))
-            addState(idle, capsule(TvStyle.surface, TvStyle.outline))
-        }
         val arrow = DrawableCompat.wrap(requireNotNull(context.getDrawable(R.drawable.ic_page_back)).mutate()).apply {
-            setBounds(0, 0, dp(20), dp(20))
-            DrawableCompat.setTintList(this, iconColors)
+            setBounds(0, 0, dp(12), dp(20))
+            DrawableCompat.setTint(this, Color.WHITE)
         }
         val button = TextView(context).apply {
             id = View.generateViewId()
             text = label
             contentDescription = label
-            textSize = 14f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            textSize = 15f
+            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
             includeFontPadding = false
             isSingleLine = true
             ellipsize = TextUtils.TruncateAt.END
             gravity = Gravity.CENTER
-            minWidth = dp(96)
+            minWidth = dp(64)
             minHeight = dp(48)
-            setPaddingRelative(dp(16), 0, dp(16), 0)
-            setTextColor(textColors)
+            setPaddingRelative(dp(4), 0, dp(4), 0)
+            setTextColor(Color.WHITE)
             setCompoundDrawablesRelative(arrow, null, null, null)
-            compoundDrawablePadding = dp(8)
+            compoundDrawablePadding = dp(4)
             background = RippleDrawable(
-                ColorStateList.valueOf(ColorUtils.setAlphaComponent(TvStyle.accent, 48)),
-                surfaces,
-                capsule(Color.WHITE, Color.TRANSPARENT),
+                ColorStateList.valueOf(0x26FFFFFF),
+                null,
+                GradientDrawable().apply {
+                    setColor(Color.WHITE)
+                    cornerRadius = dp(6).toFloat()
+                },
             )
             isFocusable = true
             isFocusableInTouchMode = true

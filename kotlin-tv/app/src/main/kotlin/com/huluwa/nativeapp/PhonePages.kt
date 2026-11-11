@@ -54,8 +54,8 @@ class PhonePages(
         typeRow.addView(ImageView(activity).apply {
             setImageResource(com.huluwa.nativeapp.R.drawable.ic_search)
             setColorFilter(TvStyle.text)
-            background = TvStyle.shape(activity, TvStyle.raised)
-            setPadding(dp(10), dp(10), dp(10), dp(10))
+            background = null
+            setPadding(dp(13), dp(13), dp(13), dp(13))
             contentDescription = "搜索"
             isFocusable = true
             setOnClickListener { onSearch() }

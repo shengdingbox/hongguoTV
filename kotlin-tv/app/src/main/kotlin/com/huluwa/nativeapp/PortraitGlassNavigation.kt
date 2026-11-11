@@ -18,7 +18,7 @@ import android.view.ViewTreeObserver
 import android.widget.LinearLayout
 import kotlin.math.ceil
 
-/** 强制竖屏导航的玻璃底板，只采样导航后方内容，图标和文字保持原始清晰度。 */
+/** 手机竖屏导航的玻璃底板，只采样导航后方内容，图标和文字保持原始清晰度。 */
 class PortraitGlassNavigation(context: Context, private val content: View) : LinearLayout(context) {
     private val density = resources.displayMetrics.density
     private val sampleSize = 4f * density

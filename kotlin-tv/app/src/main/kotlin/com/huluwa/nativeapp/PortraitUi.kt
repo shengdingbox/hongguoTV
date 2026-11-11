@@ -22,12 +22,11 @@ import androidx.recyclerview.widget.RecyclerView
 import com.hongguotv.core.Series
 import kotlin.math.abs
 
-/** 手机默认竖屏界面组件，布局参照开心果 iOS；不参与自动方向和 TV 页面渲染。 */
+/** 手机统一竖屏界面组件，布局参照开心果 iOS；跟随系统竖屏与强制竖屏共用。 */
 object PortraitUi {
 
-    /** 接管默认或手动选择的竖屏模式。 */
-    fun shouldUse(activity: Activity): Boolean =
-        TouchControls.isHandheld(activity) && PhoneUi.orientationMode(activity) == OrientationMode.PORTRAIT
+    /** 按设备、方向和用户偏好判断，电视及手机横屏由 TV 页面接管。 */
+    fun shouldUse(activity: Activity): Boolean = PhoneUi.shouldUse(activity)
 
     // ---- 基础视图工具（与 TV 版 dp/text/lp 对齐，但控件尺寸按手机习惯收紧） ----
 
@@ -173,7 +172,7 @@ object PortraitUi {
         }
     }
 
-    /** 强制竖屏统一使用三列海报网格（含加载更多 footer）。点击卡片进详情。
+    /** 手机竖屏统一使用三列海报网格（含加载更多 footer）。点击卡片进详情。
      *  [scrollParent] 是页面外层的竖向滚动容器：网格放进 NestedScrollView 时高度随内容展开、
      *  自身不滚，拖动由外层接管，所以「加载更多」也要改看外层的滚动位置。 */
     class PosterGrid(
@@ -333,7 +332,7 @@ object PortraitUi {
         menu.show()
     }
 
-    /** 只在强制竖屏创建，沿用原生滚动并在顶部下拉时刷新。 */
+    /** 手机竖屏统一使用原生滚动，并在顶部下拉时刷新。 */
     class RefreshScrollView(activity: Activity, private val refresh: () -> Unit) : NestedScrollView(activity) {
         private val threshold = dp(activity, 80)
         private val touchSlop = ViewConfiguration.get(activity).scaledTouchSlop

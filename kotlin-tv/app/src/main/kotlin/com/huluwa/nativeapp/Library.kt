@@ -257,7 +257,7 @@ class Library(context: Context) {
     var theme: String
         get() = prefs.getString("theme", null) ?: "NIGHT"
         set(value) { prefs.edit().putString("theme", value).apply() }
-    /** 启动方向偏好：默认 portrait 手机新版竖屏界面，可选 auto 跟随系统 / landscape 强制横屏界面。
+    /** 启动方向偏好：默认 auto 跟随系统，可选 landscape 强制横屏 / portrait 强制竖屏。
      *  落盘用大写枚举名（AUTO / LANDSCAPE / PORTRAIT），与 [OrientationMode.name] 一致。
      *  本机偏好，不进备份（同一份备份可能恢复到方向习惯不同的设备上）。 */
     var orientationMode: String

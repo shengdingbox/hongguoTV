@@ -28,7 +28,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 
-/** 开心果 iOS 风格的内容页，仅由强制竖屏入口调用。数据复用现有内容库。 */
+/** 手机统一的开心果 iOS 风格竖屏内容页。数据复用现有内容库。 */
 class PortraitPages(
     private val activity: MainActivity,
     private val loadCover: (ImageView, String) -> Unit,

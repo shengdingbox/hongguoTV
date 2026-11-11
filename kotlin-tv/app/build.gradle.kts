@@ -13,6 +13,8 @@ android {
         // Android 5-7 兼容包用 -PHONGGUOTV_MIN_SDK=21 出 android5 变体
         minSdk = findProperty("HONGGUOTV_MIN_SDK")?.toString()?.toInt() ?: 26
         targetSdk = 36
+        // 界面为中文；保留中英文库资源，其余语言沿用默认文案。
+        resourceConfigurations += listOf("zh", "en")
         versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 12
         versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.30.10"
     }
@@ -39,8 +41,6 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation(project(":core")) { exclude(group = "org.json") }
     implementation("androidx.media3:media3-exoplayer:1.8.0")
-    implementation("androidx.media3:media3-exoplayer-hls:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
-    implementation("androidx.media3:media3-datasource-okhttp:1.8.0")
     testImplementation("junit:junit:4.13.2")
 }

@@ -12,6 +12,12 @@
 - 手机遥控端：[hongguoTV-remote](https://github.com/jycao2/hongguoTV-remote)（扫码录入并管理电视入口；遥控页面与按键逻辑内置在本 APK）
 - 问题反馈与功能建议：请到 [hongguoTV-updates issues](https://github.com/jycao2/hongguoTV-updates/issues) 提交（该仓库同时承载版本更新与下载）
 
+## 安装包体积优化（未发布）
+
+- 正式包继续开启 R8 代码压缩与资源裁剪，仅打包中文、英文及默认语言资源，移除依赖自带的其他翻译。
+- 播放统一使用自定义 `VideoDataSource` 与 MP4 媒体源，移除未使用的 Media3 HLS 和 OkHttp 数据源适配模块，避免反射保留额外的 HLS 播放代码；业务网络请求继续使用 OkHttp。
+- 退出占位图和电视启动横幅改为无损 WebP，沿用原资源名称、尺寸与透明通道，兼容现有 Android 5.0 及以上设备。
+
 ## 播放缓存优化（未发布）
 
 - 参照葫芦娃安卓端，播放页只在内存保留当前集及前后各一集的最终播放地址、解密索引与视频分块，切集和正在执行的预加载共用同一个任务。

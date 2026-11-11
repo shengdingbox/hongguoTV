@@ -200,15 +200,15 @@ class EpisodeDiskCache(
 
     // ---------- 播放端查询 ----------
 
-    @Synchronized fun meta(id: String, quality: Int): Meta? {
-        val entry = entries[Key(id, quality)] ?: return null
-        if (!entry.meta.done) return null
+    fun meta(id: String, quality: Int): Meta? = synchronized(lock) {
+        val entry = entries[Key(id, quality)] ?: return@synchronized null
+        if (!entry.meta.done) return@synchronized null
         if (entry.meta.expiresAt > 0 && entry.meta.expiresAt <= clock() + 60_000L) {
             entry.meta = entry.meta.copy(done = false)
             runCatching { saveMeta(Key(id, quality), entry) }
-            return null
+            return@synchronized null
         }
-        return entry.meta
+        entry.meta
     }
 
     /** 判定 [offset, offset+length) 是否完全落盘；失败视为未覆盖，调用方回落在线。 */

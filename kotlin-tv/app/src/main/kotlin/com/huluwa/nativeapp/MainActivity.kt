@@ -127,7 +127,7 @@ class MainActivity: Activity() {
     }
     private var playbackSession: EpisodePlaybackSession?=null
     /** 整集落盘缓存池：开关（library.episodeCache）关闭时保持 null，播放取数与调度全部走原有内存模式。 */
-    private var episodeDiskCache: EpisodeDiskCache?=null
+    @Volatile private var episodeDiskCache: EpisodeDiskCache?=null
     private var episodeCacheOn=false
     /** 播放中切换清晰度：落盘池整体换档重建，旧画质条目全部废弃。 */
     private var episodeCacheQuality=0
@@ -3549,7 +3549,7 @@ class MainActivity: Activity() {
         recoverySpinner?.visibility=View.VISIBLE
         controls.removeAllViews(); controls.visibility=View.GONE; transportPlay=null; sleepButton=null
         syncMediaSession()
-        val requestedId=data.episodes[episodeIndex]; val maxQuality=effectiveQuality(); val ticket=generation
+        val requestedId=data.episodes[episodeIndex]; val maxQuality=effectiveQuality()
         // 每集最多自动降两档，换集后重新计数，避免一集失败就把整部剧拖到最低画质。
         if(requestedId!=downgradeEpisode) { downgradeEpisode=requestedId; downgradeCount=0 }
         val beginPlayback: (EpisodePlaybackCache.PreparedEpisode)->Unit={ prepared ->
@@ -3557,7 +3557,7 @@ class MainActivity: Activity() {
             video=remote; quality=remote.info.quality
             // 取址成功，后面的「缓冲」交给 PlayerView 自己的缓冲圈。
             recoverySpinner?.visibility=View.GONE
-            val session=playbackSession ?: EpisodePlaybackSession(this,episodeDiskCache).also {
+            val session=playbackSession ?: EpisodePlaybackSession(this,disk={ episodeDiskCache }).also {
                 playbackSession=it; player=it.player; playerView?.player=it.player
             }
             val p=session.player
@@ -3565,7 +3565,9 @@ class MainActivity: Activity() {
             p.setPlaybackSpeed(effectiveSpeed())
             var episodeStartedAt=playbackStarted
             val listener=object: Player.Listener {
-                private fun active()=player===p && generation==ticket
+                // 页面请求的 generation 在 onStop 时会变，但保留下来的播放器仍使用这个监听器。
+                // 按当前监听器身份判定归属，切集或释放后旧回调失效，原地续播后的回调继续有效。
+                private fun active()=!isDestroyed && screen=="player" && player===p && playerListener===this
                 private fun markReady() {
                     if(!p.currentTracks.isTypeSelected(C.TRACK_TYPE_VIDEO)) {
                         playerFailure(PlaybackException("资源没有可解码的视频轨道",null,PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED))
@@ -3626,9 +3628,7 @@ class MainActivity: Activity() {
                     downgradeEpisode=nextId; downgradeCount=0
                     startPosition=0; pendingSeek=null; outroTriggered=false; ffActive=false
                     outroSkipSeconds=library.skipMark(data.series.id)?.outroSeconds ?: 0
-                    requestedAutoplay=true; pausedForLifecycle=false
-                    // 自动交接到下一集本身就是「继续看下去」，清掉上一集可能残留的暂停意图。
-                    userPausedIntentionally=false
+                    // 交接只更新逐集状态，保留用户暂停、生命周期暂停与定时停止的播放意图。
                     library.setWatched(data.series.id,false)
                     playbackTitle.text="${data.series.title}  ·  第 ${episodeIndex+1} 集"
                     // 手机竖版顶栏的集号只认 updateEpisode：自然连播不经过 playEpisode，
@@ -3638,10 +3638,7 @@ class MainActivity: Activity() {
                     oldVideo?.setPlaybackActive(false)
                     session.select(nextId,episodeIndex)
                     retainPlaybackWindow()
-                    // 交接后补一次播放意图：requestedAutoplay 只是 App 内部标记，
-                    // 上一集结束时若被 pause 过（ENDED 收尾、生命周期暂停），播放器不会自己恢复。
-                    // 用户主动暂停（requestedAutoplay=false）时不抢回。
-                    if(foreground && requestedAutoplay && !sleepStopped && !pausedForLifecycle && episodePanel==null) p.play()
+                    if(foreground && requestedAutoplay && !userPausedIntentionally && !sleepStopped && !pausedForLifecycle && episodePanel==null) p.play()
                     android.util.Log.w("HongguoTV","Playback seamless switch episode=${fromIndex+1}->${episodeIndex+1} previousDurationMs=$fromDuration")
                     val intro=library.skipMark(data.series.id)?.introSeconds ?: 0
                     if(intro>0) {
@@ -3703,7 +3700,7 @@ class MainActivity: Activity() {
     }
     /** 取消相邻集预取，但不打断当前视频的数据源。 */
     private fun cancelPrefetch() {
-        dropQueuedNext()
+        dropQueuedNext(preserveCurrent=true)
         playbackSession?.setPreloadingEnabled(false)
         video?.setPlaybackActive(false)
         // 后台下载只停不删：切界面 / 退到后台 / 播放失败都走这里，
@@ -3754,7 +3751,7 @@ class MainActivity: Activity() {
             }
             episodeDiskCache=cache
             playbackCache.onInvalidate={ id -> cache.invalidate(id) }
-            // 播放中开启：当前集与已排队的下一集仍走内存模式，新创建的媒体源（手动切集/之后的连播）自动带磁盘缓存
+            // 数据源通过提供函数读取当前缓存池，现有播放器及已预加载的下一集也能接入新缓存。
             scheduleDiskCache()
         } else {
             episodeDiskCache?.clear()
@@ -3859,14 +3856,15 @@ class MainActivity: Activity() {
         cache.schedule(ordered,quality,data.episodes.subList(from,to).toSet(),quality)
     }
     /** 移除自动连播队列时保留相邻集的媒体源，手动切集继续复用。 */
-    private fun dropQueuedNext() {
+    private fun dropQueuedNext(preserveCurrent: Boolean=false) {
         val p=player
         if(queuedNextId.isNotEmpty() && p!=null) {
             for(i in 0 until p.mediaItemCount) {
                 if(p.getMediaItemAt(i).mediaId==queuedNextId) {
-                    // i>0 才移除：已在当前索引说明播放器刚好自动切到了这一集，
-                    // 它是正在播放的媒体源，移除会让播放器落到空列表停在暂停态。
-                    if(i>0) p.removeMediaItem(i)
+                    // 自动交接可能已经把当前索引移到 1；只能删除尚未播放的下一项。
+                    // 已交接时保留元数据，交给 onMediaItemTransition 完成集号与资源所有权更新。
+                    if(preserveCurrent && i==p.currentMediaItemIndex) return
+                    if(i>p.currentMediaItemIndex) p.removeMediaItem(i)
                     break
                 }
             }
@@ -3902,7 +3900,7 @@ class MainActivity: Activity() {
         if(foreground && screen=="player") scheduleDiskCache()
         val p=player ?: return; val data=detail ?: return
         val session=playbackSession ?: return
-        if(queuedNextId.isNotEmpty() && (!library.autoNext || sleepStopped)) dropQueuedNext()
+        if(queuedNextId.isNotEmpty() && (!library.autoNext || sleepStopped)) dropQueuedNext(preserveCurrent=true)
         if(!foreground || !p.playWhenReady || playError || sleepStopped || pausedForLifecycle || video==null) return
         if(!networkAvailable()) return
         if(!prefetchMemoryReady()) return
@@ -5103,7 +5101,8 @@ class MainActivity: Activity() {
     }
     private fun releasePlayer(preservePlaybackCache: Boolean=false) {
         cancelRecovery()
-        if(preservePlaybackCache) dropQueuedNext() else cancelPrefetch()
+        dropQueuedNext()
+        if(!preservePlaybackCache) cancelPrefetch()
         mediaSession.deactivate(); tvTools.close()
         main.removeCallbacks(menuLongRunnable); menuLongFired=false
         ffActive=false; outroSkipSeconds=0; outroTriggered=false

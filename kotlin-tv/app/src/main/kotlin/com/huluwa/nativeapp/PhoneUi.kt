@@ -156,7 +156,7 @@ object PhoneUi {
         }
     }
 
-    /** 手机海报卡片：定宽两列网格用。上海报（3:4 圆角）+ 标题 + 标签。 */
+    /** 手机海报卡片：无外框，圆角海报 + 标题 + 标签；网格与横向条带共用。 */
     class PosterCard(activity: Activity) : LinearLayout(activity) {
         val image = ImageView(activity).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
@@ -167,15 +167,15 @@ object PhoneUi {
 
         init {
             orientation = VERTICAL
-            setPadding(dp(activity, 6), dp(activity, 6), dp(activity, 6), dp(activity, 8))
-            background = TvStyle.shape(activity, TvStyle.surface)
-            clipChildren = false
             // 海报容器：按卡片实测宽度定高
             val poster = object : FrameLayout(activity) {
                 override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                     val w = MeasureSpec.getSize(widthMeasureSpec)
                     super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec((w / TvStyle.POSTER_ASPECT).toInt(), MeasureSpec.EXACTLY))
                 }
+            }.apply {
+                background = TvStyle.shape(activity, TvStyle.surface, radius = 6).apply { setStroke(0, Color.TRANSPARENT) }
+                clipToOutline = true
             }
             poster.addView(image, FrameLayout.LayoutParams(-1, -1))
             addView(poster, lp(-1, -2))
@@ -236,7 +236,9 @@ object PhoneUi {
             }
             val card = PosterCard(activity)
             card.layoutParams = RecyclerView.LayoutParams(-1, -2).apply {
-                // 网格横向 spacing 由 RecyclerView padding + itemMargin 实现，这里简单给 bottomMargin
+                // 间距放在卡片外侧，海报直接铺满卡片宽度。
+                leftMargin = dp(activity, 6)
+                rightMargin = dp(activity, 6)
                 bottomMargin = dp(activity, 12)
             }
             return Holder(card)
@@ -306,7 +308,7 @@ object PhoneUi {
         head.addView(text(activity, title, 16f).apply { setTypeface(null, Typeface.BOLD) }, lp(0, -2).apply { weight = 1f })
         if (more != null) head.addView(text(activity, "全部 ›", 13f, TvStyle.muted).apply { setOnClickListener { more() } })
         block.addView(head, lp(-1, -2))
-        val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false; clipToPadding = false; setPadding(dp(activity, 8), 0, dp(activity, 8), 0) }
+        val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false; clipToPadding = false; setPadding(dp(activity, 14), 0, dp(activity, 14), 0) }
         val line = row(activity)
         strip.addView(line)
         val cardW = dp(activity, 100)

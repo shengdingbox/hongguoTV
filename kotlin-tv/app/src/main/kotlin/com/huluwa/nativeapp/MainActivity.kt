@@ -5862,12 +5862,14 @@ class MainActivity: Activity() {
     /** 推荐、排行、新剧和我的各保留列表与滚动容器，切页复用已显示的封面。 */
     private data class RetainedPhoneCatalog(
         val frame: FrameLayout,
+        val nav: LinearLayout,
         val scroll: androidx.core.widget.NestedScrollView,
         val refreshLayout: PortraitUi.RefreshLayout?,
         val update: (Boolean) -> Unit,
         var state: CatalogState,
     )
     private val retainedPhoneCatalogs=mutableMapOf<String,RetainedPhoneCatalog>()
+    private var phoneNavigationTab: String?=null
     private var retainedPhoneType: ContentType?=null
     private var retainedPhoneTheme=TvStyle.theme
     private var retainedPhoneConfiguration: android.content.res.Configuration?=null
@@ -5916,6 +5918,8 @@ class MainActivity: Activity() {
         phoneStatusBarFollowTheme()
         if(!phoneCatalogViewsValid()) retainedPhoneCatalogs.clear()
         retainedPhoneCatalogs[phoneTab]?.let { retained ->
+            PortraitUi.paintNav(retained.nav,phoneTab,phoneNavigationTab)
+            phoneNavigationTab=phoneTab
             // 联网刷新和翻页只更新差异卡片；页签切换只改变可见性，不触发 detach。
             retained.update(phoneHomeLoading)
             retained.refreshLayout?.updateLoading(phoneFeedLoading())
@@ -5929,7 +5933,7 @@ class MainActivity: Activity() {
             return
         }
         val renderedTab=phoneTab
-        val (frame,content,_)=PortraitUi.scaffold(this,phoneTab,::switchPhoneTab)
+        val (frame,content,nav)=PortraitUi.scaffold(this,phoneTab,::switchPhoneTab,phoneNavigationTab)
         // 三个内容流由原生刷新容器接管拖拽动画，内层继续保留整页滚动和海报分页。
         val animatedRefresh=phoneTab in listOf("home","rank","new")
         val scroll=if(animatedRefresh) androidx.core.widget.NestedScrollView(this)
@@ -5969,12 +5973,13 @@ class MainActivity: Activity() {
                 it.frame.visibility=View.GONE
                 it.refreshLayout?.finishRefresh()
             }
-            retainedPhoneCatalogs[phoneTab]=RetainedPhoneCatalog(frame,scroll,refreshLayout,update,capturePhoneCatalog())
+            retainedPhoneCatalogs[phoneTab]=RetainedPhoneCatalog(frame,nav,scroll,refreshLayout,update,capturePhoneCatalog())
         } else {
             retainedPhoneCatalogs.clear()
             root.removeAllViews()
         }
         root.addView(frame,android.widget.FrameLayout.LayoutParams(-1,-1))
+        phoneNavigationTab=phoneTab
         artwork.refreshVisible()
         val restoreY=phoneScrollY
         scroll.post { if(scroll.isShown && phoneTab==renderedTab && scroll.scrollY!=restoreY) scroll.scrollTo(0,restoreY) }

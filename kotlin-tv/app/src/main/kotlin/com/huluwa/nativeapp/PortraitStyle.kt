@@ -13,6 +13,8 @@ object PortraitStyle {
     val surface = Color.rgb(247, 247, 247)
     val raised = Color.rgb(239, 239, 239)
     val accent = Color.rgb(78, 141, 43)
+    // 开心果 iOS 的 AccentColor；仅用于底部导航选中态。
+    val navigationSelected = Color.rgb(74, 140, 42)
     val text = Color.rgb(17, 17, 17)
     val muted = Color.rgb(145, 145, 145)
     val outline = Color.rgb(228, 228, 228)
@@ -27,16 +29,12 @@ object PortraitStyle {
             if (border != Color.TRANSPARENT) setStroke((context.resources.displayMetrics.density).toInt().coerceAtLeast(1), border)
         }
 
-    fun navigationItem(context: Context, selected: Boolean): RippleDrawable {
-        val density = context.resources.displayMetrics.density
-        val glass = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (selected) intArrayOf(
-            Color.argb(185, 250, 255, 246), Color.argb(105, 213, 236, 198), Color.argb(100, 172, 200, 156),
-        ) else intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT)).apply {
-            cornerRadius = 28f * density
-            if (selected) setStroke(density.toInt().coerceAtLeast(1), Color.argb(86, 112, 145, 97))
-        }
-        return RippleDrawable(ColorStateList.valueOf(Color.argb(35, 90, 110, 80)), glass, shape(context, Color.WHITE, 28))
-    }
+    /** 选中胶囊统一由导航底板绘制，菜单项仅保留中性的触摸反馈。 */
+    fun navigationItem(context: Context) = RippleDrawable(
+        ColorStateList.valueOf(Color.argb(24, 0, 0, 0)),
+        null,
+        shape(context, Color.WHITE, 28),
+    )
 
     fun selectable(context: Context, color: Int, radius: Int = 10) = RippleDrawable(
         ColorStateList.valueOf(Color.argb(28, 0, 0, 0)),

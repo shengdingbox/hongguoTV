@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.huluwa.nativeapp
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -15,8 +16,12 @@ import android.graphics.Shader
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.ViewTreeObserver
+import android.view.animation.PathInterpolator
 import android.widget.LinearLayout
+import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.sin
 
 /** 手机竖屏导航的玻璃底板，只采样导航后方内容，图标和文字保持原始清晰度。 */
 class PortraitGlassNavigation(context: Context, private val content: View) : LinearLayout(context) {
@@ -29,6 +34,16 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
     private val innerRimBounds = RectF()
     private val sheenBounds = RectF()
     private val backdropBounds = RectF()
+    private val selectionBounds = RectF()
+    private val selectionTarget = RectF()
+    private val selectionPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val selectionRimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = density * .65f
+    }
+    private var selectedIndex = -1
+    private var pendingFromIndex = -1
+    private var selectionAnimator: ValueAnimator? = null
     private val backdropPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
         colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(1.2f) })
     }
@@ -73,6 +88,9 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
     }
 
     override fun onDetachedFromWindow() {
+        selectionAnimator?.cancel()
+        selectionAnimator = null
+        selectionBounds.set(selectionTarget)
         observer?.takeIf { it.isAlive }?.removeOnPreDrawListener(preDraw)
         observer = null
         captured = null
@@ -82,6 +100,60 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
         previousPixels = IntArray(0)
         scratch = IntArray(0)
         super.onDetachedFromWindow()
+    }
+
+    /** 页面切换会复用或重建底板，均从上一个可见 Tab 的位置开始过渡。 */
+    fun selectItem(index: Int, fromIndex: Int = -1) {
+        if (index !in 0 until childCount) return
+        selectedIndex = index
+        pendingFromIndex = fromIndex
+        if (getChildAt(index).width > 0) updateSelection()
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        updateSelection()
+    }
+
+    private fun itemBounds(index: Int): RectF {
+        val item = getChildAt(index)
+        return RectF(item.left + 2f * density, item.top + density,
+            item.right - 2f * density, item.bottom - density)
+    }
+
+    private fun updateSelection() {
+        if (selectedIndex !in 0 until childCount || getChildAt(selectedIndex).width == 0) return
+        val target = itemBounds(selectedIndex)
+        val fromIndex = pendingFromIndex
+        pendingFromIndex = -1
+        val animate = fromIndex in 0 until childCount && fromIndex != selectedIndex
+        if (!animate && target == selectionTarget && !selectionBounds.isEmpty) return
+        selectionAnimator?.cancel()
+        selectionTarget.set(target)
+        if (!animate) {
+            selectionBounds.set(target)
+            invalidate()
+            return
+        }
+        val origin = itemBounds(fromIndex)
+        selectionBounds.set(origin)
+        val stretch = (abs(target.centerX() - origin.centerX()) * .08f).coerceAtMost(6f * density)
+        selectionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 320L
+            interpolator = PathInterpolator(.2f, .85f, .25f, 1f)
+            addUpdateListener { animation ->
+                val progress = animation.animatedValue as Float
+                val expansion = sin(PI * progress).toFloat() * stretch
+                selectionBounds.set(
+                    (origin.left + (target.left - origin.left) * progress - expansion).coerceAtLeast(paddingLeft.toFloat()),
+                    origin.top + (target.top - origin.top) * progress,
+                    (origin.right + (target.right - origin.right) * progress + expansion).coerceAtMost((width - paddingRight).toFloat()),
+                    origin.bottom + (target.bottom - origin.bottom) * progress,
+                )
+                invalidate()
+            }
+            start()
+        }
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -107,6 +179,13 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
         innerRimPaint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(),
             intArrayOf(Color.argb(230, 255, 255, 255), Color.argb(55, 255, 255, 255), Color.argb(130, 255, 255, 255)),
             floatArrayOf(0f, .5f, 1f), Shader.TileMode.CLAMP)
+        // iOS 的选中底板为中性浅灰玻璃，绿色只用于图标与文字。
+        selectionPaint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(),
+            intArrayOf(Color.argb(42, 97, 102, 109), Color.argb(50, 117, 122, 129), Color.argb(58, 139, 144, 151)),
+            floatArrayOf(0f, .5f, 1f), Shader.TileMode.CLAMP)
+        selectionRimPaint.shader = LinearGradient(0f, 0f, 0f, h.toFloat(),
+            intArrayOf(Color.argb(95, 255, 255, 255), Color.argb(10, 255, 255, 255), Color.argb(12, 0, 0, 0)),
+            floatArrayOf(0f, .5f, 1f), Shader.TileMode.CLAMP)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -118,6 +197,11 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
         val innerRadius = innerRimBounds.height() / 2f
         canvas.drawRoundRect(innerRimBounds, innerRadius, innerRadius, innerRimPaint)
         canvas.drawRoundRect(glassBounds, radius, radius, rimPaint)
+        if (!selectionBounds.isEmpty) {
+            val selectionRadius = selectionBounds.height() / 2f
+            canvas.drawRoundRect(selectionBounds, selectionRadius, selectionRadius, selectionPaint)
+            canvas.drawRoundRect(selectionBounds, selectionRadius, selectionRadius, selectionRimPaint)
+        }
     }
 
     private fun updateBackdrop() {

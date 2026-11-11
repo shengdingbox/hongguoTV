@@ -56,7 +56,7 @@ object PortraitUi {
     data class Tab(val key: String, val label: String, val icon: Int)
 
     /** 内容铺满页面，胶囊导航悬浮于内容之上。滚动页自行预留底部空间。 */
-    fun scaffold(activity: Activity, activeTab: String, onTab: (String) -> Unit): Triple<FrameLayout, LinearLayout, LinearLayout> {
+    fun scaffold(activity: Activity, activeTab: String, onTab: (String) -> Unit, previousTab: String? = null): Triple<FrameLayout, LinearLayout, LinearLayout> {
         val root = FrameLayout(activity).apply { setBackgroundColor(PortraitStyle.background) }
         val content = column(activity)
         root.addView(content, FrameLayout.LayoutParams(-1, -1))
@@ -70,7 +70,7 @@ object PortraitUi {
                 contentDescription = tab.label
                 isFocusable = true
                 tag = "nav-item:${tab.key}"
-                background = PortraitStyle.navigationItem(activity, selected = false)
+                background = PortraitStyle.navigationItem(activity)
                 setOnClickListener { onTab(tab.key) }
             }
             item.addView(ImageView(activity).apply {
@@ -90,7 +90,7 @@ object PortraitUi {
             rightMargin = dp(activity, 18)
             bottomMargin = dp(activity, 12)
         })
-        paintNav(nav, activeTab)
+        paintNav(nav, activeTab, previousTab)
         PhoneInsets.listen(root) { topInset, bottomInset, imeInset ->
             content.setPadding(0, topInset, 0, imeInset)
             (nav.layoutParams as FrameLayout.LayoutParams).apply { bottomMargin = dp(activity, 12) + bottomInset }
@@ -100,14 +100,17 @@ object PortraitUi {
         return Triple(root, content, nav)
     }
 
-    fun paintNav(nav: LinearLayout, active: String) {
+    fun paintNav(nav: LinearLayout, active: String, previous: String? = null) {
+        val selectedTab = if (active == "fav") "mine" else active
+        val previousTab = if (previous == "fav") "mine" else previous
+        (nav as? PortraitGlassNavigation)?.selectItem(
+            TABS.indexOfFirst { it.key == selectedTab },
+            TABS.indexOfFirst { it.key == previousTab },
+        )
         TABS.forEach { tab ->
-            val selected = tab.key == active || active == "fav" && tab.key == "mine"
-            val color = if (selected) PortraitStyle.accent else PortraitStyle.text
-            nav.findViewWithTag<View>("nav-item:${tab.key}")?.apply {
-                isSelected = selected
-                background = PortraitStyle.navigationItem(context, selected)
-            }
+            val selected = tab.key == selectedTab
+            val color = if (selected) PortraitStyle.navigationSelected else PortraitStyle.text
+            nav.findViewWithTag<View>("nav-item:${tab.key}")?.isSelected = selected
             (nav.findViewWithTag<View>("nav-icon:${tab.key}") as? ImageView)?.setColorFilter(color)
             (nav.findViewWithTag<View>("nav-label:${tab.key}") as? TextView)?.apply {
                 setTextColor(color)

@@ -6362,7 +6362,7 @@ class MainActivity: Activity() {
     /** 界面缩放重建后待回到手机设置页（见 PageRestore.phoneSettings）。 */
     private var pendingPhoneSettings=false
 
-    /** 竖版首页、排行各持有列表和滚动容器，互切时始终留在窗口内。 */
+    /** 推荐、排行、新剧和我的各保留列表与滚动容器，切页复用已显示的封面。 */
     private data class RetainedPhoneCatalog(
         val frame: FrameLayout,
         val scroll: androidx.core.widget.NestedScrollView,
@@ -6414,6 +6414,7 @@ class MainActivity: Activity() {
             retained.state=capturePhoneCatalog()
             retainedPhoneCatalogs.forEach { (key,value) -> value.frame.visibility=if(key==phoneTab) View.VISIBLE else View.GONE }
             phoneScrollY=retained.scroll.scrollY
+            artwork.refreshVisible()
             return
         }
         val renderedTab=phoneTab
@@ -6430,7 +6431,7 @@ class MainActivity: Activity() {
             "rank" -> portraitPages.rank(body,scrollRoot=scroll)
             "new" -> portraitPages.newReleases(body,scrollRoot=scroll)
             "fav" -> { portraitPages.favorites(body,scrollRoot=scroll); null }
-            "mine" -> { portraitPages.mine(body,scroll); null }
+            "mine" -> portraitPages.mine(body,scroll)
             "search" -> { portraitPages.search(body,::runPhoneSearch,scroll); null }
             else -> null
         }
@@ -6449,6 +6450,7 @@ class MainActivity: Activity() {
             root.removeAllViews()
         }
         root.addView(frame,android.widget.FrameLayout.LayoutParams(-1,-1))
+        artwork.refreshVisible()
         val restoreY=phoneScrollY
         scroll.post { if(scroll.isShown && phoneTab==renderedTab && scroll.scrollY!=restoreY) scroll.scrollTo(0,restoreY) }
         scroll.viewTreeObserver.addOnScrollChangedListener {
@@ -6485,8 +6487,8 @@ class MainActivity: Activity() {
         if(!phoneCatalogViewsValid()) retainedPhoneCatalogs.clear()
         val retained=retainedPhoneCatalogs[next]
         phoneTab=next; phoneScrollY=retained?.scroll?.scrollY ?: 0; screen="catalog"
-        // 推荐和新剧各自保存数据，避免把共用 catalog 的榜单/搜索结果恢复进来。
-        if(next=="home" || next=="new") { renderPhone(); return }
+        // 推荐、新剧和我的各自取数，避免恢复其他页签的共用 catalog。
+        if(next=="home" || next=="new" || next=="mine") { renderPhone(); return }
         if(retained!=null) {
             val saved=retained.state
             catalog=saved.items; hasMore=saved.hasMore; rankingPhone=saved.ranking; phoneCatalogSource=next
@@ -7280,6 +7282,8 @@ class MainActivity: Activity() {
     fun phoneClearCache() {
         val dirs = listOfNotNull(cacheDir, externalCacheDir)
         TvDialog.confirm(this, "清理缓存", "清除封面图片和已下载的安装包等缓存数据，不影响收藏和观看记录。") {
+            retainedPhoneCatalogs.clear()
+            artwork.cancelAll(clearMemory=true)
             io.execute {
                 dirs.forEach { dir -> dir.listFiles()?.forEach { it.deleteRecursively() } }
                 main.post { if(!isDestroyed) PhoneUi.toast(this, "缓存已清理") }

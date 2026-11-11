@@ -24,6 +24,7 @@ import android.widget.TextView
 import androidx.core.widget.NestedScrollView
 import androidx.recyclerview.widget.RecyclerView
 import com.hongguotv.core.RankBoard
+import com.hongguotv.core.Series
 import com.hongguotv.core.NewReleaseCalendar
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -198,7 +199,22 @@ class PortraitPages(
         }, lp())
     }
 
-    fun mine(body: LinearLayout, scrollRoot: NestedScrollView? = null) {
+    /** 切页保留最近观看和收藏的海报控件；记录实际变化时才更新内容。 */
+    fun mine(body: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
+        var shownHistory: List<WatchProgress>? = null
+        var shownFavorites: List<Series>? = null
+        return { _ ->
+            val history = activity.phoneLibrary.history().take(30)
+            val favorites = activity.phoneLibrary.favorites()
+            if (shownHistory != history || shownFavorites != favorites) {
+                shownHistory = history; shownFavorites = favorites
+                body.removeAllViews()
+                buildMine(body, scrollRoot, history)
+            }
+        }
+    }
+
+    private fun buildMine(body: LinearLayout, scrollRoot: NestedScrollView?, history: List<WatchProgress>) {
         val head = row()
         head.addView(PortraitUi.pageTitle(activity, "我的"), lp(0, -2).apply { weight = 1f })
         head.addView(ImageView(activity).apply {
@@ -210,12 +226,12 @@ class PortraitPages(
             setOnClickListener { activity.showPhoneSettings() }
         }, lp(dp(44), dp(44)).apply { gravity = Gravity.BOTTOM; rightMargin = dp(10) })
         body.addView(head, lp())
-        val history = activity.phoneLibrary.history().take(30)
         if (history.isNotEmpty()) {
             section(body, "最近观看")
             val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
             val cards = row().apply { gravity = Gravity.TOP; setPadding(dp(16), 0, dp(16), 0) }
             strip.addView(cards)
+            strip.viewTreeObserver.addOnScrollChangedListener { activity.refreshPhoneCovers() }
             history.forEach { watch ->
                 val card = PortraitUi.PosterCard(activity)
                 card.title.text = watch.series.title

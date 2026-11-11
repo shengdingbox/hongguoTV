@@ -35,10 +35,13 @@ class ArtworkLoader(context: Context) {
         const val PRIORITY_PREFETCH = 2
         private const val MAX_PENDING = 24
         private const val MAX_BYTES = 4 * 1024 * 1024
+        // 位图不持有 Activity；旋转重建后继续复用，实际内存压力仍由 trimMemory 回收。
+        private var sharedMemory: LruCache<Key, Bitmap>? = null
+        private var sharedDisk: ArtworkCache? = null
     }
 
     private data class Key(val url: String, val width: Int, val height: Int)
-    private class Binding(view: ImageView, val owner: Long, val url: String, var priority: Int,
+    private class Binding(view: ImageView, val owner: Long, var url: String, val cacheUrl: String, var priority: Int,
                           val width: Int, val height: Int) {
         val view = WeakReference(view)
         var key: Key? = null
@@ -49,7 +52,7 @@ class ArtworkLoader(context: Context) {
         lateinit var layout: View.OnLayoutChangeListener
         lateinit var attach: View.OnAttachStateChangeListener
     }
-    private class Job(val key: Key, val owner: Long, var priority: Int, val order: Long) : Comparable<Job> {
+    private class Job(val key: Key, val url: String, val owner: Long, var priority: Int, val order: Long) : Comparable<Job> {
         val listeners = linkedSetOf<Binding>()
         @Volatile var cancelled = false
         @Volatile var call: Call? = null
@@ -62,11 +65,15 @@ class ArtworkLoader(context: Context) {
     private val lowRam = activityManager?.isLowRamDevice == true
     // 普通设备最多用应用内存预算的 1/8，范围 8–32 MiB；低内存设备保留 4 MiB。
     private val cacheBytes = (if (lowRam) 4 else ((activityManager?.memoryClass ?: 128) / 8).coerceIn(8, 32)) * 1024 * 1024
-    private val cache = object : LruCache<Key, Bitmap>(cacheBytes) {
-        override fun sizeOf(key: Key, value: Bitmap) = value.allocationByteCount
+    private val cache = synchronized(Companion) {
+        sharedMemory ?: object : LruCache<Key, Bitmap>(cacheBytes) {
+            override fun sizeOf(key: Key, value: Bitmap) = value.allocationByteCount
+        }.also { sharedMemory = it }
     }
     // v2：代取链路现在落盘的是转码后的 JPEG（v1 缓存里可能存着手机解不了的 HEIC 原始字节），升版本作废旧缓存
-    private val disk = ArtworkCache(File(context.applicationContext.cacheDir, "artwork-v2"))
+    private val disk = synchronized(Companion) {
+        sharedDisk ?: ArtworkCache(File(context.applicationContext.cacheDir, "artwork-v2")).also { sharedDisk = it }
+    }
     // This client owns its dispatcher and pool; cancelling artwork never cancels video or catalog calls.
     private val http = OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS).callTimeout(12, TimeUnit.SECONDS).build()
@@ -89,17 +96,22 @@ class ArtworkLoader(context: Context) {
     /** Size defaults to the laid-out content bounds, including the detail page's portrait artwork. */
     fun load(view: ImageView, url: String, priority: Int = PRIORITY_VISIBLE, widthPx: Int = 0, heightPx: Int = 0) {
         if (closed) return
+        val cacheUrl = ArtworkCache.identity(url)
         val previous = bindings[view]
-        if (previous != null && previous.owner == owner && previous.url == url && previous.width == widthPx && previous.height == heightPx) {
+        if (previous != null && previous.owner == owner && previous.cacheUrl == cacheUrl && previous.width == widthPx && previous.height == heightPx) {
+            if (previous.url != url) {
+                previous.url = url
+                previous.failed = null; previous.failures = 0; previous.retryAfter = 0L
+            }
             // 同一个控件重复请求同一张图时保留已经显示的位图，只调整请求优先级。
             previous.priority = priority.coerceIn(PRIORITY_FOCUSED, PRIORITY_PREFETCH)
             request(previous)
             return
         }
-        val keepPreviousImage = previous?.url == url && view.drawable != null
+        val keepPreviousImage = previous?.cacheUrl == cacheUrl && view.drawable != null
         if (previous != null) unbind(previous)
         if (url.isBlank()) { view.setImageDrawable(null); return }
-        val binding = Binding(view, owner, url, priority.coerceIn(PRIORITY_FOCUSED, PRIORITY_PREFETCH), widthPx, heightPx)
+        val binding = Binding(view, owner, url, cacheUrl, priority.coerceIn(PRIORITY_FOCUSED, PRIORITY_PREFETCH), widthPx, heightPx)
         binding.layout = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> request(binding) }
         binding.attach = object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) {
@@ -114,7 +126,7 @@ class ArtworkLoader(context: Context) {
         view.addOnAttachStateChangeListener(binding.attach)
         // 没有旧图可保留时，才尝试同步命中内存缓存；未命中则清掉复用卡片上的上一部剧。
         // applied 必须与 key 一起记录，不能在 key 尚未计算时写成 null，否则后续仍会当成未显示。
-        val cached = peekCached(view, url, widthPx, heightPx)
+        val cached = peekCached(view, cacheUrl, widthPx, heightPx)
         if (cached != null) {
             view.setImageBitmap(cached.second)
             binding.key = cached.first
@@ -160,12 +172,14 @@ class ArtworkLoader(context: Context) {
     private fun request(binding: Binding) {
         val view = binding.view.get() ?: return
         if (closed || binding.owner != owner || bindings[view] !== binding || !view.isAttachedToWindow) return
+        // 保留的其他页签不抢占当前页的下载队列；切回时由 refreshVisible 续载。
+        if (!view.isShown) { detachJob(binding); return }
         val width = if (binding.width > 0) binding.width else view.width - view.paddingLeft - view.paddingRight
         val height = if (binding.height > 0) binding.height else view.height - view.paddingTop - view.paddingBottom
         if (width <= 0 || height <= 0) return
         // A malformed layout cannot ask an old TV to allocate a full-screen, multi-megapixel thumbnail.
         val scale = min(1.0, 1024.0 / max(width, height))
-        val key = Key(binding.url, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
+        val key = Key(binding.cacheUrl, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
         if (binding.key != key) {
             detachJob(binding); binding.key = key; binding.failed = null
             binding.failures = 0; binding.retryAfter = 0L
@@ -197,7 +211,7 @@ class ArtworkLoader(context: Context) {
                 cancelLocked(worst)
                 cancelled = worst
             }
-            val job = Job(key, owner, priority, ++order)
+            val job = Job(key, binding.url, owner, priority, ++order)
             job.listeners += binding
             jobs[key] = job
             pending += job
@@ -262,7 +276,7 @@ class ArtworkLoader(context: Context) {
     fun close() {
         if (closed) return
         closed = true
-        cancelPage(clearMemory = true)
+        cancelPage()
         synchronized(signal) { signal.notifyAll() }
         workers.shutdownNow()
         // TLS socket pool disposal can block and must not happen on the UI thread.
@@ -318,7 +332,9 @@ class ArtworkLoader(context: Context) {
     // Dropped preloads must not leave a visible card blank when a queue slot becomes free.
     private fun refillVisible() {
         val visible = Rect()
-        bindings.values.toList().filter { binding ->
+        val snapshot = bindings.values.toList()
+        snapshot.filter { it.view.get()?.isShown != true }.forEach(::detachJob)
+        snapshot.filter { binding ->
             val view = binding.view.get()
             view?.isShown == true && view.isAttachedToWindow && view.getGlobalVisibleRect(visible) &&
                 (binding.applied != binding.key || view.drawable == null)
@@ -332,25 +348,25 @@ class ArtworkLoader(context: Context) {
      */
     fun bytes(url: String): ByteArray? {
         disk.get(url)?.let { return it }
-        // 上限 1024 与 Hub 的 /cover 路由一致：云端签名封面地址偏长，卡太紧会被整段拒掉
-        if(url.length > 1024 || !(url.startsWith("http://") || url.startsWith("https://"))) return null
+        // 上限 1024 与 Hub 的 /cover 路由一致：云端签名封面地址偏长，卡太紧会被整段拒掉。
+        if (url.length > 1024 || !(url.startsWith("http://") || url.startsWith("https://"))) return null
         return runCatching {
-            http.newCall(Request.Builder().url(url).build()).execute().use { response ->
-                val body = response.body ?: return null
-                if(!response.isSuccessful || body.contentLength() > MAX_BYTES) return null
-                val out = ByteArrayOutputStream()
-                val buffer = ByteArray(8192)
-                body.byteStream().use { input ->
-                    while(true) {
-                        val count = input.read(buffer)
-                        if(count < 0) break
-                        if(out.size() + count > MAX_BYTES) return null
-                        out.write(buffer, 0, count)
+            disk.getOrLoad(url) {
+                http.newCall(Request.Builder().url(url).build()).execute().use { response ->
+                    val body = response.body ?: return@getOrLoad null
+                    if (!response.isSuccessful || body.contentLength() > MAX_BYTES) return@getOrLoad null
+                    val out = ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    body.byteStream().use { input ->
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            if (out.size() + count > MAX_BYTES) return@getOrLoad null
+                            out.write(buffer, 0, count)
+                        }
                     }
+                    toBrowserFormat(out.toByteArray().takeIf { it.isNotEmpty() } ?: return@getOrLoad null)
                 }
-                val data = toBrowserFormat(out.toByteArray().takeIf { it.isNotEmpty() } ?: return null)
-                disk.put(url, data)
-                data
             }
         }.getOrNull()
     }
@@ -381,32 +397,35 @@ class ArtworkLoader(context: Context) {
     }
 
     private fun fetch(job: Job): Bitmap? {
-        val bytes = disk.get(job.key.url) ?: run {
-            if (job.cancelled) return null
-            val call = http.newCall(Request.Builder().url(job.key.url).build())
+        val bytes = disk.getOrLoad(job.url) {
+            if (job.cancelled) return@getOrLoad null
+            val call = http.newCall(Request.Builder().url(job.url).build())
             job.call = call
-            if (job.cancelled) { call.cancel(); return null }
+            if (job.cancelled) { call.cancel(); return@getOrLoad null }
             call.execute().use { response ->
-                val body = response.body ?: return null
-                if (!response.isSuccessful || body.contentLength() > MAX_BYTES) return null
+                val body = response.body ?: return@getOrLoad null
+                if (!response.isSuccessful || body.contentLength() > MAX_BYTES) return@getOrLoad null
                 val out = ByteArrayOutputStream()
                 val buffer = ByteArray(8192)
                 body.byteStream().use { input ->
                     while (!job.cancelled) {
                         val count = input.read(buffer)
                         if (count < 0) break
-                        if (out.size() + count > MAX_BYTES) return null
+                        if (out.size() + count > MAX_BYTES) return@getOrLoad null
                         out.write(buffer, 0, count)
                     }
                 }
-                if (job.cancelled) return null
-                out.toByteArray().also { disk.put(job.key.url, it) }
+                if (job.cancelled) return@getOrLoad null
+                out.toByteArray()
             }
-        }
+        } ?: return null
         if (job.cancelled) return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        if (bounds.outWidth !in 1..32768 || bounds.outHeight !in 1..32768) return null
+        if (bounds.outWidth !in 1..32768 || bounds.outHeight !in 1..32768) {
+            disk.remove(job.url)
+            return null
+        }
         // Fit the entire source into the measured target. Cropping at decode time cannot be
         // undone by ImageView.FIT_CENTER and used to remove most of a portrait poster.
         val fit = min(1.0, min(job.key.width.toDouble() / bounds.outWidth, job.key.height.toDouble() / bounds.outHeight))
@@ -416,7 +435,10 @@ class ArtworkLoader(context: Context) {
         while (bounds.outWidth / (sample * 2) >= width && bounds.outHeight / (sample * 2) >= height) sample *= 2
         if ((bounds.outWidth / sample).toLong() * (bounds.outHeight / sample) > (if (lowRam) 2 else 4) * 1024 * 1024) return null
         val options = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
-        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: run {
+            disk.remove(job.url)
+            return null
+        }
         if (job.cancelled) { decoded.recycle(); return null }
         val result = try { Bitmap.createScaledBitmap(decoded, width, height, true) }
         catch (problem: Throwable) { decoded.recycle(); throw problem }

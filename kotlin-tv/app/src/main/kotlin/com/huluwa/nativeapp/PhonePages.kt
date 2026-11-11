@@ -188,19 +188,26 @@ class PhonePages(
     }
 
     /** 入口行：左标题 + 可选副标题 + 右侧当前值 + 箭头，整行可点。
-     *  高度由 [groupCard] 按 [entryHeight] 固定，内容靠 [row] 的垂直居中收口。 */
+     *  高度由 [groupCard] 按 [entryHeight] 固定，标题区填满行高并垂直居中。 */
     private fun entryRow(title: String, subtitle: String = "", value: String? = null, onClick: () -> Unit): LinearLayout {
         val entry = row().apply {
+            isBaselineAligned = false
             // 上下内边距交给固定行高承担，避免双行内容把行撑高
             setPadding(dp(16), 0, dp(14), 0)
             isClickable = true
             setOnClickListener { onClick() }
         }
-        val label = column()
+        val label = column().apply { gravity = Gravity.CENTER_VERTICAL }
         // 昵称/标题可能很长，限一行省略，避免把右箭头挤出可视区
         label.addView(text(title, 15f).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
-        if (subtitle.isNotBlank()) label.addView(text(subtitle, 12f, TvStyle.muted), PhoneUi.lp(0, -2).apply { topMargin = dp(2) })
-        entry.addView(label, PhoneUi.lp(0, -2).apply { weight = 1f })
+        if (subtitle.isNotBlank()) {
+            // 纵向容器中的副标题占满可用宽度，避免零宽测量导致换行、挤偏标题。
+            label.addView(text(subtitle, 12f, TvStyle.muted).apply {
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+            }, PhoneUi.lp(-1, -2).apply { topMargin = dp(2) })
+        }
+        entry.addView(label, PhoneUi.lp(0, -1).apply { weight = 1f })
         if (value != null) {
             entry.addView(text(value, 13f, TvStyle.muted).apply {
                 maxLines = 1

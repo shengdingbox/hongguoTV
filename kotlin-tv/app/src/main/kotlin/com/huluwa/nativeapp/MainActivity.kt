@@ -3601,6 +3601,7 @@ class MainActivity: Activity() {
                 playbackSession=it; player=it.player; playerView?.player=it.player
             }
             val p=session.player
+            phonePlayer?.updateVideoPosition(p.videoSize)
             session.select(requestedId,selectedIndex,resetSource=restarting)
             p.setPlaybackSpeed(effectiveSpeed())
             var episodeStartedAt=playbackStarted
@@ -3691,6 +3692,9 @@ class MainActivity: Activity() {
                     syncMediaSession()
                     maybePrefetch()
                     if(sleepTimer.episodeEnded()) { stopForSleep(false); return }
+                }
+                override fun onVideoSizeChanged(videoSize: VideoSize) {
+                    if(active()) phonePlayer?.updateVideoPosition(videoSize)
                 }
                 override fun onRenderedFirstFrame() {
                     if(active() && firstFrame) {

@@ -15,6 +15,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.media3.common.VideoSize
 import com.hongguotv.core.Detail
 
 /**
@@ -52,6 +53,7 @@ class PhonePlayer(
     private var host: FrameLayout? = null
     /** 视频区：PlayerView 与弹幕层放在这里。 */
     private var videoHost: FrameLayout? = null
+    private var playerView: View? = null
     /** 顶部栏 + 底部面板。轻点画面切换显隐，隐藏后即沉浸式观看。 */
     private var controls: FrameLayout? = null
     /** 控件层当前是否隐藏（沉浸模式）。 */
@@ -180,7 +182,14 @@ class PhonePlayer(
 
     /** 把 MainActivity 创建的 PlayerView 放进视频区最底层。 */
     fun attachPlayerView(view: View) {
+        playerView = view
         videoHost?.addView(view, 0, FrameLayout.LayoutParams(-1, -1))
+    }
+
+    /** 竖屏播放横向视频时，将画面从居中位置上移 10dp。 */
+    fun updateVideoPosition(size: VideoSize) {
+        val landscape = size.height > 0 && size.width * size.pixelWidthHeightRatio > size.height
+        playerView?.translationY = if (!fullscreen && landscape) -dp(10).toFloat() else 0f
     }
 
     /**
@@ -676,7 +685,7 @@ class PhonePlayer(
     private fun rowLp(w: Int, h: Int) = LinearLayout.LayoutParams(w, h)
 
     private fun clearRefs() {
-        host = null; videoHost = null; controls = null
+        host = null; videoHost = null; playerView = null; controls = null
         topBar = null; bottom = null; titleText = null; speedLabel = null
         seriesTitleText = null; introText = null; introToggle = null; episodePickerText = null
         playPauseButton = null; timeText = null; fsEpisodeButton = null

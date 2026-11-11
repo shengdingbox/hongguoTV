@@ -248,6 +248,14 @@ class MainActivity: Activity() {
     private var addressRequestedAt=0L
     private var requestedAutoplay=true
     private var retryAutoplay=true
+    /**
+     * 用户是否主动按了暂停（只由用户操作与定时停止改写）。
+     *
+     * 自动连播不能读 [requestedAutoplay]：那个标记会被 onPause / onStop 后的原地续播
+     * 置 false，而用户没手动点播放时没有任何路径把它恢复，结果一集播完就停住不切下一集。
+     * 这里只记录「用户本人的意图」，生命周期打断不会污染它，回到前台继续播时也不会。
+     */
+    private var userPausedIntentionally=false
     private var foreground=false
     private lateinit var connectivity: ConnectivityManager
     private var networkRegistered=false
@@ -3428,6 +3436,9 @@ class MainActivity: Activity() {
         var firstReady=true; var firstFrame=true; var rebufferStart=0L
         if(!recovering) recovery.reset()
         autoRecovery=false; readySince=0; startPosition=position.coerceAtLeast(0); requestedAutoplay=autoplay
+        // 主动切集/重进播放页按这次传入的意图重置；自动连播走的 playEpisode 永远是 autoplay=true，
+        // 所以连播链不会被上一次的用户暂停状态卡住。
+        userPausedIntentionally=!autoplay
         val skipMark=library.skipMark(data.series.id)
         outroSkipSeconds=skipMark?.outroSeconds ?: 0; outroTriggered=false; ffActive=false
         if(autoplay) sleepStopped=false
@@ -3581,9 +3592,14 @@ class MainActivity: Activity() {
                     syncMediaSession()
                     if(state==Player.STATE_ENDED) {
                         saveProgress(true)
+                        // 自动连播只看用户本人的意图：userPausedIntentionally 只由「用户按暂停」
+                        // 与「定时停止」改写，生命周期打断（下拉通知栏/来电/切后台）不会污染它。
+                        // 以前读 requestedAutoplay，那个标记被 onPause 置 false 后没有任何路径
+                        // 会恢复，所以一集播完就直接停住、不切下一集。
                         if(sleepTimer.episodeEnded()) stopForSleep()
-                        else if(foreground && requestedAutoplay && !pausedForLifecycle && library.autoNext && episodeIndex<data.episodes.lastIndex) playEpisode(episodeIndex+1,savedPosition(episodeIndex+1))
-                        else if(foreground && requestedAutoplay && !pausedForLifecycle && continueToNextSeason()) { /* season jump in progress */ }
+                        else if(userPausedIntentionally) { requestedAutoplay=false; p.pause(); showEndedPanel() }
+                        else if(foreground && library.autoNext && episodeIndex<data.episodes.lastIndex) playEpisode(episodeIndex+1,savedPosition(episodeIndex+1))
+                        else if(foreground && continueToNextSeason()) { /* season jump in progress */ }
                         else { requestedAutoplay=false; p.pause(); showEndedPanel() }
                     }
                 }
@@ -3611,6 +3627,8 @@ class MainActivity: Activity() {
                     startPosition=0; pendingSeek=null; outroTriggered=false; ffActive=false
                     outroSkipSeconds=library.skipMark(data.series.id)?.outroSeconds ?: 0
                     requestedAutoplay=true; pausedForLifecycle=false
+                    // 自动交接到下一集本身就是「继续看下去」，清掉上一集可能残留的暂停意图。
+                    userPausedIntentionally=false
                     library.setWatched(data.series.id,false)
                     playbackTitle.text="${data.series.title}  ·  第 ${episodeIndex+1} 集"
                     // 手机竖版顶栏的集号只认 updateEpisode：自然连播不经过 playEpisode，
@@ -4163,6 +4181,8 @@ class MainActivity: Activity() {
     }
     private fun requestPlayback(play: Boolean) {
         requestedAutoplay=play; pausedForLifecycle=!play
+        // 用户亲手按的播放/暂停：只有这里（和定时停止）能改写自动连播的判定依据。
+        userPausedIntentionally=!play
         if(play) sleepStopped=false
         if(!play) { player?.pause(); retryAutoplay=false; saveProgress() }
         else if(playError) { playEpisode(episodeIndex,retryPosition,true); return }
@@ -4200,6 +4220,8 @@ class MainActivity: Activity() {
     }
     private fun stopForSleep(saveCurrent: Boolean=true) {
         sleepStopped=true; requestedAutoplay=false; retryAutoplay=false; pausedForLifecycle=true
+        // 定时停止是用户设定的「到点就停」，等同于主动暂停：不能再自动连播下一集。
+        userPausedIntentionally=true
         cancelRecovery(); player?.pause(); cancelPrefetch(); if(saveCurrent) saveProgress()
         playerScreenOn=false; refreshScreenOn()
         playbackText.text="定时停止已生效 · 观看位置已保存 · 按播放可继续"

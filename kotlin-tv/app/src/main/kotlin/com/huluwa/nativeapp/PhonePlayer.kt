@@ -40,7 +40,7 @@ import com.hongguotv.core.Detail
  *  - 强制横屏 / 跟随系统且横着拿（非全屏）→ 整个 App 走 TV 模式，本类不参与渲染。
  *
  * 播放内核完全复用 MainActivity 的 EpisodePlaybackSession / playbackCache，
- * 进度与状态由 MainActivity 的 tick 通过 [refresh] 驱动。
+ * 状态由播放器回调即时同步，进度由 MainActivity 的 tick 通过 [refresh] 定时刷新。
  */
 class PhonePlayer(
     private val activity: MainActivity,
@@ -469,7 +469,7 @@ class PhonePlayer(
         favoriteButton?.setColorFilter(if (favorite) 0xFFFF4D67.toInt() else Color.WHITE)
     }
 
-    /** 由 MainActivity 的 tick 每秒调用，刷新进度与状态。 */
+    /** 播放状态变化时立即调用，定时刷新时同步进度。 */
     fun refresh(
         playing: Boolean,
         position: Long,

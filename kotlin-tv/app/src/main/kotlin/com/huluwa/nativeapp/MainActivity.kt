@@ -3711,6 +3711,15 @@ class MainActivity: Activity() {
                         android.util.Log.w("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-episodeStartedAt}")
                     }
                 }
+                override fun onEvents(player: Player,events: Player.Events) {
+                    // 播放状态变化立即同步手机控件，不等待每秒一次的进度刷新。
+                    if(active() && events.containsAny(
+                        Player.EVENT_IS_PLAYING_CHANGED,
+                        Player.EVENT_PLAY_WHEN_READY_CHANGED,
+                        Player.EVENT_PLAYBACK_STATE_CHANGED,
+                        Player.EVENT_PLAYER_ERROR,
+                    )) refreshPhonePlayerNow()
+                }
                 override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(playing) maybePrefetch(); if(hud.visibility==View.VISIBLE) showHud(); syncMediaSession() } }
                 override fun onPlaybackParametersChanged(parameters: PlaybackParameters) { if(active()) syncMediaSession() }
                 override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,newPosition: Player.PositionInfo,reason: Int) { if(active()) { syncMediaSession(); danmakuView?.seekTo(newPosition.positionMs) } }
@@ -4240,6 +4249,7 @@ class MainActivity: Activity() {
         if(!play) { player?.pause(); retryAutoplay=false; saveProgress() }
         else if(playError) { playEpisode(episodeIndex,retryPosition,true); return }
         else if(episodePanel==null) { if(player?.playbackState==Player.STATE_ENDED) player?.seekTo(0); player?.play() }
+        refreshPhonePlayerNow()
         playerScreenOn=play; refreshScreenOn()
         showHud(); updatePlaybackText(); syncMediaSession(); if(panel && episodePanel==null) showPanel()
     }
@@ -7127,7 +7137,7 @@ class MainActivity: Activity() {
         val ui=phonePlayer ?: return
         val p=player
         val failure=phoneFailureText()
-        val playing=p?.let { it.playWhenReady && it.playbackState==Player.STATE_READY } ?: false
+        val playing=p?.isPlaying==true
         val buffering=p!=null && (p.playbackState==Player.STATE_BUFFERING || p.playbackState==Player.STATE_IDLE || !playbackReady) && failure==null
         val duration=p?.duration?.coerceAtLeast(0) ?: 0L
         val position=pendingSeek ?: p?.currentPosition ?: 0L

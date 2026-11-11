@@ -4983,6 +4983,8 @@ class MainActivity: Activity() {
         danmakuLoader=loader
         layer.setBlockedFilter { text -> extras.blocks(text) }
         layer.bind(loader,{ currentPosition() })
+        // bind 会把弹幕层置为 VISIBLE；横屏全屏只有沉浸观看才该看到它，这里按控件显隐再压一次
+        if(phonePlayerLayout()) phonePlayer?.refreshDanmakuVisibility()
         val startPosition=currentPosition()
         io.execute { runCatching { loader.loadUpTo(startPosition) } }
     }

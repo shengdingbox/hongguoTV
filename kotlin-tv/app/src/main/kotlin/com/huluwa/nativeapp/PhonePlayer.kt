@@ -29,7 +29,8 @@ import com.hongguotv.core.Detail
  *    不再显示剧名行与简介；轻点画面显隐控件
  *  - 点击交互：竖屏轻点 = 播放 / 暂停，双击 = 播放 / 暂停，上下滑动切集；
  *    横屏全屏轻点 = 显隐控件；双击也是播放 / 暂停
- *  - 弹幕层从标题栏下沿开始滚，不与顶部按钮重叠（见 [attachDanmaku]）
+ *  - 弹幕层：竖屏从标题栏下沿开始滚；横屏全屏直接顶到标题栏位置，且只在沉浸观看时显示
+ *    （见 [attachDanmaku] / [syncDanmakuWithControls]）
  *
  * 方向规则：
  *  - 全屏按钮：强制竖屏 / 跟随系统 → 旋转成横屏并换成横屏全屏皮肤
@@ -168,7 +169,7 @@ class PhonePlayer(
                 bottom?.setPadding(0, dp(34), 0, dp(8) + bottomInset)
             }
             videoHost?.findViewWithTag<View>(TAG_DANMAKU)?.let { view ->
-                (view.layoutParams as? FrameLayout.LayoutParams)?.topMargin = dp(DANMAKU_TOP_DP) + topInset
+                (view.layoutParams as? FrameLayout.LayoutParams)?.topMargin = danmakuTopMargin()
                 view.requestLayout()
             }
         }
@@ -183,13 +184,20 @@ class PhonePlayer(
     }
 
     /**
-     * 弹幕层挂在视频区，但上沿让出顶部标题栏：葫芦娃红果播放页的弹幕从标题栏下方
-     * 才开始滚，否则第一行弹幕会被返回键和倍速按钮压住。
+     * 弹幕层挂在视频区，上沿按皮肤走：
+     *  - 竖屏：让出顶部标题栏（葫芦娃红果播放页同款），第一行弹幕不被返回键与倍速压住；
+     *  - 横屏全屏：直接顶到顶部标题栏的位置（标题栏那一行控件占位），沉浸观看时
+     *    控件整层淡出，弹幕就成为画面最上方的那一排。
      */
     fun attachDanmaku(view: View) {
         view.tag = TAG_DANMAKU
-        videoHost?.addView(view, FrameLayout.LayoutParams(-1, -1).apply { topMargin = dp(DANMAKU_TOP_DP) + topInsetPx })
+        videoHost?.addView(view, FrameLayout.LayoutParams(-1, -1).apply { topMargin = danmakuTopMargin() })
+        // 横屏全屏只在沉浸（控件隐藏）时显示弹幕
+        if (fullscreen) view.visibility = if (uiHidden) View.VISIBLE else View.INVISIBLE
     }
+
+    /** 弹幕层上边距（px）：横屏贴着标题栏顶部，竖屏让出标题栏整行。 */
+    private fun danmakuTopMargin(): Int = if (fullscreen) 0 else dp(DANMAKU_TOP_DP) + topInsetPx
 
     /** 屏幕最底部离线状态条（含条上方的原因提示）：压在视频区底部，不挡控件。 */
     fun attachCacheStrip(view: View) {
@@ -573,6 +581,8 @@ class PhonePlayer(
     private fun toggleUiVisibility() {
         val layer = controls ?: return
         uiHidden = !uiHidden
+        // 横屏全屏的弹幕跟着控件一起进出：控件在时让位，沉浸时才铺到标题栏位置
+        syncDanmakuWithControls()
         layer.animate().cancel()
         layer.visibility = View.VISIBLE
         layer.animate()
@@ -584,6 +594,23 @@ class PhonePlayer(
             }
             .start()
     }
+
+    /**
+     * 横屏全屏的弹幕只在沉浸观看时显示：控件可见时整层隐藏，避免与顶栏/控制条抢位置。
+     *
+     * 用 INVISIBLE 而不是 GONE：弹幕层要保持原有布局尺寸（轨道按高度算），
+     * 也要让绘制继续跑，恢复显示的瞬间就是连续的画面。
+     * 弹幕总开关关闭时 DanmakuView 自己会置 GONE，这里不能把它改成别的状态。
+     */
+    private fun syncDanmakuWithControls() {
+        if (!fullscreen) return
+        val danmaku = videoHost?.findViewWithTag<View>(TAG_DANMAKU) ?: return
+        if (danmaku.visibility == View.GONE) return
+        danmaku.visibility = if (uiHidden) View.VISIBLE else View.INVISIBLE
+    }
+
+    /** 弹幕层重新 bind 后会把自己置为 VISIBLE，宿主需要再按沉浸状态压一次。 */
+    fun refreshDanmakuVisibility() = syncDanmakuWithControls()
 
     /** 收藏按钮：与详情页共用 library.toggle，图标即时切换。 */
     private fun toggleFavorite() {

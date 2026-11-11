@@ -10,13 +10,16 @@ import android.os.Build
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
+import android.view.ViewTreeObserver
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
+import android.widget.TextView
 import com.hongguotv.core.Detail
+import com.hongguotv.core.Series
 import com.hongguotv.core.seasonNumber
 
 /** 竖屏详情：渐变海报区、续播与收藏、季导航和六列选集。 */
@@ -28,7 +31,63 @@ class PortraitDetail(
     private fun text(v: String, size: Float, color: Int = PortraitStyle.text) = PortraitUi.text(activity, v, size, color)
     private fun lp(w: Int = -1, h: Int = -2) = LinearLayout.LayoutParams(w, h)
 
+    private data class PageBinding(
+        val frame: View,
+        val update: (Detail) -> Unit,
+        val loading: (String?) -> Unit,
+    )
+    private var pageBinding: PageBinding? = null
+
+    fun hasPage(root: FrameLayout) = pageBinding?.frame?.parent === root
+
+    fun updateSeason(root: FrameLayout, data: Detail): Boolean {
+        val binding = pageBinding?.takeIf { it.frame.parent === root } ?: return false
+        binding.update(data)
+        return true
+    }
+
+    fun setSeasonLoading(root: FrameLayout, seasonId: String?) {
+        pageBinding?.takeIf { it.frame.parent === root }?.loading?.invoke(seasonId)
+    }
+
+    private data class Playback(
+        val currentIndex: Int,
+        val watched: Boolean,
+        val completed: Boolean,
+        val playIndex: Int,
+        val resumePosition: Long,
+        val label: String,
+    )
+
+    private fun playbackState(data: Detail): Playback {
+        val library = activity.phoneLibrary
+        val progress = library.progress(data.series.id)
+        val watched = library.watched(data.series.id)
+        val index = progress?.let { data.episodes.indexOf(it.episodeId) } ?: -1
+        val replay = watched || (index >= 0 && progress?.completed == true && index == data.episodes.lastIndex)
+        val playIndex = when {
+            replay || index < 0 -> 0
+            progress?.completed == true -> index + 1
+            else -> index
+        }
+        val position = progress?.takeIf { !watched && !it.completed && index >= 0 }?.position?.coerceAtLeast(0L) ?: 0L
+        val label = when {
+            data.episodes.isEmpty() -> "暂无可播放剧集"
+            replay -> "重新观看"
+            index >= 0 -> "继续看第 ${playIndex + 1} 集"
+            else -> "开始观看"
+        }
+        return Playback(index, watched, progress?.completed == true, playIndex, position, label)
+    }
+
+    private fun metadata(data: Detail) = listOf(
+        data.series.tags,
+        if (data.episodes.isEmpty()) data.series.badge else "全 ${data.episodes.size} 集",
+        data.social.heatText.takeIf { it.isNotBlank() }?.let { "热度 $it" }.orEmpty(),
+    ).filter { it.isNotBlank() }.joinToString(" · ")
+
     fun renderState(root: FrameLayout, label: String, retry: (() -> Unit)? = null) {
+        pageBinding = null
         root.removeAllViews()
         activity.phoneStatusBarLight(true)
         val (frame, body, _) = PortraitUi.scaffold(activity, activity.phoneDetailOriginTab, activity::switchPhoneTab)
@@ -49,7 +108,11 @@ class PortraitDetail(
         root.addView(frame, FrameLayout.LayoutParams(-1, -1))
     }
 
-    fun render(root: FrameLayout, data: Detail) {
+    fun render(root: FrameLayout, initial: Detail) {
+        pageBinding = null
+        var data = initial
+        var loadingSeasonId: String? = null
+        var playback = playbackState(data)
         val library = activity.phoneLibrary
         activity.phoneStatusBarLight(true)
         root.removeAllViews()
@@ -128,25 +191,24 @@ class PortraitDetail(
         loadCover(poster, data.series.cover)
         hero.addView(poster, lp(dp(118), dp(157)).apply { rightMargin = dp(16) })
         val info = PortraitUi.column(activity)
-        info.addView(text(data.series.title, 20f).apply {
+        val heroTitle = text(data.series.title, 20f).apply {
             setTypeface(null, Typeface.BOLD)
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             setLineSpacing(dp(3).toFloat(), 1f)
-        }, lp())
-        val metadata = listOf(data.series.tags, if (data.episodes.isEmpty()) data.series.badge else "全 ${data.episodes.size} 集",
-            data.social.heatText.takeIf { it.isNotBlank() }?.let { "热度 $it" }.orEmpty())
-            .filter { it.isNotBlank() }.joinToString(" · ")
-        info.addView(text(metadata, 12f, PortraitStyle.muted).apply {
+        }
+        info.addView(heroTitle, lp())
+        val metadataView = text(metadata(data), 12f, PortraitStyle.muted).apply {
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             setLineSpacing(dp(3).toFloat(), 1f)
-        }, lp().apply { topMargin = dp(7) })
+        }
+        info.addView(metadataView, lp().apply { topMargin = dp(7) })
         hero.addView(info, lp(0, -2).apply { weight = 1f })
         content.addView(hero, lp())
 
         var expanded = false
-        content.addView(text(data.series.description.ifBlank { "暂无简介" }, 14f, Color.rgb(60, 60, 60)).apply {
+        val synopsis = text(data.series.description.ifBlank { "暂无简介" }, 14f, Color.rgb(60, 60, 60)).apply {
             maxLines = 3
             ellipsize = TextUtils.TruncateAt.END
             setLineSpacing(dp(4).toFloat(), 1f)
@@ -156,34 +218,18 @@ class PortraitDetail(
                 expanded = !expanded
                 maxLines = if (expanded) Int.MAX_VALUE else 3
             }
-        }, lp())
+        }
+        content.addView(synopsis, lp())
 
-        val progress = library.progress(data.series.id)
-        val watched = library.watched(data.series.id)
-        val resumeIndex = progress?.let { data.episodes.indexOf(it.episodeId) } ?: -1
-        val replay = watched || (resumeIndex >= 0 && progress?.completed == true && resumeIndex == data.episodes.lastIndex)
-        val playIndex = when {
-            replay || resumeIndex < 0 -> 0
-            progress?.completed == true -> resumeIndex + 1
-            else -> resumeIndex
-        }
-        val resumePosition = progress?.takeIf { !watched && !it.completed && resumeIndex >= 0 }
-            ?.position?.coerceAtLeast(0L) ?: 0L
-        val playLabel = when {
-            data.episodes.isEmpty() -> "暂无可播放剧集"
-            replay -> "重新观看"
-            resumeIndex >= 0 -> "继续看第 ${playIndex + 1} 集"
-            else -> "开始观看"
-        }
         val actions = PortraitUi.row(activity).apply { setPadding(dp(16), 0, dp(16), 0) }
         val play = PortraitUi.row(activity).apply {
             gravity = Gravity.CENTER
             background = PortraitStyle.selectable(activity, PortraitStyle.accent, radius = 28)
             isEnabled = data.episodes.isNotEmpty()
             alpha = if (isEnabled) 1f else .45f
-            contentDescription = playLabel
+            contentDescription = playback.label
             setOnClickListener {
-                activity.playEpisodePhone(playIndex, resumePosition)
+                if (loadingSeasonId == null) activity.playEpisodePhone(playback.playIndex, playback.resumePosition)
             }
         }
         play.addView(ImageView(activity).apply {
@@ -191,7 +237,8 @@ class PortraitDetail(
             setColorFilter(Color.WHITE)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }, lp(dp(22), dp(22)).apply { rightMargin = dp(5) })
-        play.addView(text(playLabel, 15f, Color.WHITE).apply { setTypeface(null, Typeface.BOLD) }, lp(-2, -2))
+        val playText = text(playback.label, 15f, Color.WHITE).apply { setTypeface(null, Typeface.BOLD) }
+        play.addView(playText, lp(-2, -2))
         actions.addView(play, lp(0, dp(54)).apply { weight = 1f })
 
         val favoriteIcon = ImageView(activity).apply {
@@ -225,43 +272,71 @@ class PortraitDetail(
 
         val seasonHost = PortraitUi.column(activity).apply { setPadding(dp(16), dp(20), dp(16), dp(4)) }
         content.addView(seasonHost, lp())
+        val seasonStrip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
+        val seasonLine = PortraitUi.row(activity)
+        seasonStrip.addView(seasonLine)
+        seasonHost.addView(seasonStrip, lp())
+        val knownSeasons = linkedMapOf<String, Series>()
+        val seasonButtons = linkedMapOf<String, TextView>()
+        fun updateSeasonSelection() {
+            seasonButtons.forEach { (id, button) ->
+                val selected = id == data.series.id
+                if (button.isSelected != selected) {
+                    button.isSelected = selected
+                    button.setTextColor(if (selected) Color.WHITE else PortraitStyle.text)
+                    button.background = PortraitStyle.selectable(activity, if (selected) Color.BLACK else PortraitStyle.raised, radius = 20)
+                }
+                button.alpha = if (id == loadingSeasonId) .5f else 1f
+            }
+        }
         fun renderSeasons(current: Detail) {
-            seasonHost.removeAllViews()
-            val seasons = (listOf(current.series) + current.sameName).distinctBy { it.id }
-                .sortedBy { seasonNumber(it.title).takeIf { number -> number != Int.MAX_VALUE } ?: 0 }
+            if (current.series.id != data.series.id) return
+            // 新季主详情尚未补齐系列数据时，继续沿用已知季列表和原来的横向滚动位置。
+            (listOf(current.series) + current.sameName).forEach { knownSeasons[it.id] = it }
+            val seasons = knownSeasons.values.sortedBy { seasonNumber(it.title).takeIf { number -> number != Int.MAX_VALUE } ?: 0 }
             seasonHost.visibility = if (seasons.size > 1) View.VISIBLE else View.GONE
             if (seasons.size <= 1) return
-            val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
-            val line = PortraitUi.row(activity)
-            strip.addView(line)
-            seasons.forEach { season ->
-                val selected = season.id == current.series.id
-                val number = seasonNumber(season.title)
-                val label = if (number == Int.MAX_VALUE) season.title else "第 $number 季"
-                line.addView(text(label, 13f, if (selected) Color.WHITE else PortraitStyle.text).apply {
-                    gravity = Gravity.CENTER
-                    setPadding(dp(13), dp(7), dp(13), dp(7))
-                    background = PortraitStyle.selectable(activity, if (selected) Color.BLACK else PortraitStyle.raised, radius = 20)
-                    isSelected = selected
-                    if (selected) post { strip.scrollTo(left, 0) }
-                    setOnClickListener { if (!selected) activity.openDetailPhone(season) }
-                }, lp(-2, -2).apply { rightMargin = dp(6) })
+            if (seasonButtons.keys.toList() != seasons.map { it.id }) {
+                val oldScrollX = seasonStrip.scrollX
+                seasonLine.removeAllViews()
+                seasonButtons.clear()
+                seasons.forEach { season ->
+                    val number = seasonNumber(season.title)
+                    val label = if (number == Int.MAX_VALUE) season.title else "第 $number 季"
+                    val button = text(label, 13f).apply {
+                        gravity = Gravity.CENTER
+                        setPadding(dp(13), dp(7), dp(13), dp(7))
+                        background = PortraitStyle.selectable(activity, PortraitStyle.raised, radius = 20)
+                        setOnClickListener {
+                            if (season.id != data.series.id || loadingSeasonId != null) activity.switchDetailSeasonPhone(season)
+                        }
+                    }
+                    seasonButtons[season.id] = button
+                    seasonLine.addView(button, lp(-2, -2).apply { rightMargin = dp(6) })
+                }
+                seasonStrip.post {
+                    if (oldScrollX > 0) seasonStrip.scrollTo(oldScrollX, 0)
+                    else seasonButtons[data.series.id]?.let { seasonStrip.scrollTo(it.left, 0) }
+                }
             }
-            seasonHost.addView(strip, lp())
+            updateSeasonSelection()
         }
 
         val pageSize = 100
-        val totalPages = ((data.episodes.size + pageSize - 1) / pageSize).coerceAtLeast(1)
-        val currentIndex = resumeIndex
-        var episodePage = (currentIndex / pageSize).coerceIn(0, totalPages - 1)
+        fun totalPages() = ((data.episodes.size + pageSize - 1) / pageSize).coerceAtLeast(1)
+        var episodePage = (playback.currentIndex / pageSize).coerceIn(0, totalPages() - 1)
         var episodeColumns = 6
         val episodeHost = PortraitUi.column(activity).apply { setPadding(dp(16), 0, dp(16), 0) }
         content.addView(episodeHost, lp())
+        var episodeStatus: TextView? = null
         fun renderEpisodes() {
             episodeHost.removeAllViews()
+            val totalPages = totalPages()
             val pager = PortraitUi.row(activity).apply { minimumHeight = dp(48) }
             pager.addView(text("选集", 17f).apply { setTypeface(null, Typeface.BOLD) }, lp(-2, -2))
-            pager.addView(text("共 ${data.episodes.size} 集", 12f, PortraitStyle.muted), lp(0, -2).apply {
+            val status = text(if (loadingSeasonId == null) "共 ${data.episodes.size} 集" else "正在切换…", 12f, PortraitStyle.muted)
+            episodeStatus = status
+            pager.addView(status, lp(0, -2).apply {
                 weight = 1f
                 leftMargin = dp(8)
             })
@@ -296,14 +371,14 @@ class PortraitDetail(
             (pageStart until pageEnd).chunked(episodeColumns).forEach { numbers ->
                 val line = PortraitUi.row(activity)
                 numbers.forEachIndexed { column, index ->
-                    val selected = index == currentIndex
-                    val seen = watched || (progress?.completed == true && index == currentIndex)
+                    val selected = index == playback.currentIndex
+                    val seen = playback.watched || (playback.completed && selected)
                     val cell = FrameLayout(activity).apply {
                         background = PortraitStyle.selectable(activity, if (selected) PortraitStyle.accent else PortraitStyle.raised, radius = 9)
                         isSelected = selected
                         contentDescription = "第 ${index + 1} 集" + if (seen) "，已看过" else ""
                         setOnClickListener {
-                            activity.playEpisodePhone(index, if (index == currentIndex) resumePosition else 0L)
+                            if (loadingSeasonId == null) activity.playEpisodePhone(index, if (index == playback.currentIndex) playback.resumePosition else 0L)
                         }
                     }
                     cell.addView(text("${index + 1}", 15f,
@@ -336,6 +411,58 @@ class PortraitDetail(
         }
         renderEpisodes()
 
+        fun setLoading(seasonId: String?) {
+            loadingSeasonId = seasonId
+            play.isEnabled = seasonId == null && data.episodes.isNotEmpty()
+            play.alpha = if (play.isEnabled) 1f else .45f
+            episodeStatus?.text = if (seasonId == null) "共 ${data.episodes.size} 集" else "正在切换…"
+            updateSeasonSelection()
+        }
+        pageBinding = PageBinding(frame, { next ->
+            val previousCover = data.series.cover
+            val oldScrollY = scroll.scrollY
+            val oldSeasonTop = seasonHost.top
+            data = next
+            playback = playbackState(next)
+            loadingSeasonId = null
+            titleInBar.text = next.series.title
+            heroTitle.text = next.series.title
+            metadataView.text = metadata(next)
+            synopsis.text = next.series.description.ifBlank { "暂无简介" }
+            playText.text = playback.label
+            play.contentDescription = playback.label
+            val saved = library.favorite(next.series.id)
+            favoriteLabel.text = if (saved) "已收藏" else "收藏"
+            favoriteIcon.alpha = if (saved) 1f else .45f
+            favorite.isSelected = saved
+            favorite.contentDescription = favoriteLabel.text
+            if (next.series.cover != previousCover) {
+                loadCover(poster, next.series.cover)
+                loadCover(backdropCover, next.series.cover)
+            }
+            episodePage = (playback.currentIndex / pageSize).coerceIn(0, totalPages() - 1)
+            renderSeasons(next)
+            renderEpisodes()
+            setLoading(null)
+            // 上方标题或简介高度变化时，维持季导航在屏幕中的位置。
+            val observer = content.viewTreeObserver
+            observer.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if (observer.isAlive) observer.removeOnPreDrawListener(this)
+                    if (frame.parent === root && data.series.id == next.series.id && oldScrollY > 0) {
+                        scroll.scrollTo(0, (oldScrollY + seasonHost.top - oldSeasonTop).coerceAtLeast(0))
+                    }
+                    return true
+                }
+            })
+            activity.loadDetailExtras(next, ::renderSeasons)
+        }, ::setLoading)
+        frame.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) = Unit
+            override fun onViewDetachedFromWindow(v: View) {
+                if (pageBinding?.frame === v) pageBinding = null
+            }
+        })
         renderSeasons(data)
         activity.loadDetailExtras(data, ::renderSeasons)
     }

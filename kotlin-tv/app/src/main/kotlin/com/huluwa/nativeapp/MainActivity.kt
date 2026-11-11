@@ -5840,7 +5840,9 @@ class MainActivity: Activity() {
     private var phonePlayerRenderedFullscreen=false
     // 手机页面实例：首次使用时创建后缓存（lazy 不能修饰 var）
     private val portraitPages by lazy { PortraitPages(this,::loadCover) }
-    private val portraitDetail by lazy { PortraitDetail(this,::loadCover) }
+    private val portraitDetail by lazy {
+        PortraitDetail(this) { view, url -> artwork.load(view, url, keepCurrentImage = true) }
+    }
 
     /** 所有手机竖屏详情统一使用新版界面，播放页继续使用原生 PhonePlayer。 */
     private fun renderPhoneDetail(data: Detail) {
@@ -6390,6 +6392,44 @@ class MainActivity: Activity() {
             // 失败回调是普通的非内联 lambda，里面不能写裸 return
             if(phoneLayout()) {
                 portraitDetail.renderState(root,problem.message ?: "加载失败") { openDetailPhone(series,resume) }
+            }
+        })
+    }
+
+    /** 同剧切季保留页面外壳，只在主详情返回后更新已有控件。 */
+    fun switchDetailSeasonPhone(series: Series) {
+        val previous = detail
+        if (!phoneLayout() || screen != "detail" || phoneTab != "detail" || previous == null || !portraitDetail.hasPage(root)) {
+            openDetailPhone(series)
+            return
+        }
+        if (series.id == previous.series.id && pendingDetail?.id == series.id) return
+        favoriteMonitor.stop()
+        // 取消旧季的数据请求，保留海报绑定，避免整页失效造成封面闪白。
+        generation++; cancelWork(); cancelDetailExtras()
+        pendingDetail = series
+        portraitDetail.setSeasonLoading(root, series.id)
+        val apply: (Detail) -> Unit = { result ->
+            if (!phoneLayout()) {
+                openDetail(series, preloaded = result)
+            } else if (screen == "detail" && phoneTab == "detail") {
+                detail = result
+                if (result.episodes.isNotEmpty()) {
+                    library.observeFavorite(series.id, result.episodes.size, System.currentTimeMillis(), acknowledge = true)
+                    val progress = library.progress(series.id)
+                    val target = ResumePlayback.target(result.episodes, progress?.episodeId, progress?.position ?: 0, progress?.completed == true)
+                    episodeIndex = target.index
+                } else episodeIndex = 0
+                group = episodeIndex / 20
+                if (!portraitDetail.updateSeason(root, result)) renderPhoneDetail(result)
+                if (result.episodes.isNotEmpty()) prefetchDetailWindow(episodeIndex)
+            }
+        }
+        repository.cachedDetail(series.id)?.let(apply) ?: work({ repository.seriesDetail(series.id) }, apply, {
+            if (phoneLayout() && screen == "detail" && phoneTab == "detail") {
+                pendingDetail = previous.series
+                portraitDetail.setSeasonLoading(root, null)
+                PhoneUi.toast(this, "切换失败，请重试")
             }
         })
     }

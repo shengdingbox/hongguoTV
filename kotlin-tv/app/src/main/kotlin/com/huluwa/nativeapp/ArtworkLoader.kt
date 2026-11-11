@@ -94,7 +94,8 @@ class ArtworkLoader(context: Context) {
     init { repeat(if (lowRam) 1 else 2) { workers.execute(::work) } }
 
     /** Size defaults to the laid-out content bounds, including the detail page's portrait artwork. */
-    fun load(view: ImageView, url: String, priority: Int = PRIORITY_VISIBLE, widthPx: Int = 0, heightPx: Int = 0) {
+    fun load(view: ImageView, url: String, priority: Int = PRIORITY_VISIBLE, widthPx: Int = 0, heightPx: Int = 0,
+             keepCurrentImage: Boolean = false) {
         if (closed) return
         val cacheUrl = ArtworkCache.identity(url)
         val previous = bindings[view]
@@ -108,7 +109,8 @@ class ArtworkLoader(context: Context) {
             request(previous)
             return
         }
-        val keepPreviousImage = previous?.cacheUrl == cacheUrl && view.drawable != null
+        // 详情页切季可保留旧海报，等新海报就绪后直接替换。
+        val keepPreviousImage = (keepCurrentImage || previous?.cacheUrl == cacheUrl) && view.drawable != null
         if (previous != null) unbind(previous)
         if (url.isBlank()) { view.setImageDrawable(null); return }
         val binding = Binding(view, owner, url, cacheUrl, priority.coerceIn(PRIORITY_FOCUSED, PRIORITY_PREFETCH), widthPx, heightPx)
@@ -124,7 +126,7 @@ class ArtworkLoader(context: Context) {
         bindings[view] = binding
         view.addOnLayoutChangeListener(binding.layout)
         view.addOnAttachStateChangeListener(binding.attach)
-        // 没有旧图可保留时，才尝试同步命中内存缓存；未命中则清掉复用卡片上的上一部剧。
+        // 优先同步命中内存缓存；未命中且没有旧图可保留时才清空控件。
         // applied 必须与 key 一起记录，不能在 key 尚未计算时写成 null，否则后续仍会当成未显示。
         val cached = peekCached(view, cacheUrl, widthPx, heightPx)
         if (cached != null) {

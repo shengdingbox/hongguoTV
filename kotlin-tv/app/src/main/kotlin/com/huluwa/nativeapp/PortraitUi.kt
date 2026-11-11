@@ -3,7 +3,6 @@ package com.huluwa.nativeapp
 
 import android.app.Activity
 import android.graphics.Color
-import android.graphics.Rect
 import android.graphics.Typeface
 import android.text.TextUtils
 import android.view.Gravity
@@ -11,7 +10,6 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
-import android.view.ViewTreeObserver
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -123,103 +121,6 @@ object PortraitUi {
         setTypeface(null, Typeface.BOLD)
         setPadding(dp(activity, 16), dp(activity, 16), dp(activity, 16), dp(activity, 10))
         androidx.core.view.ViewCompat.setAccessibilityHeading(this, true)
-    }
-
-    const val FEED_TABS_TAG = "phone-feed-tabs"
-
-    /** 保留 Tab 在文档中的占位，通过位移吸顶，列表与刷新仍由原滚动容器接管。 */
-    fun pinFeedTabs(scroll: NestedScrollView?, tabs: View) {
-        tabs.tag = FEED_TABS_TAG
-        tabs.setBackgroundColor(PortraitStyle.background)
-        if (scroll == null) return
-        val pinnedElevation = 3f * scroll.resources.displayMetrics.density
-        fun updatePosition() {
-            val offset = (scroll.scrollY - tabs.top).coerceAtLeast(0).toFloat()
-            tabs.translationY = offset
-            tabs.elevation = if (offset > 0f) pinnedElevation else 0f
-        }
-        fun updateBounds() {
-            // 空列表也保留标题的折叠空间，切换 Tab 时不会把已吸顶的栏位拉回原处。
-            val body = scroll.getChildAt(0) ?: return
-            val height = (scroll.height - scroll.paddingTop - scroll.paddingBottom + tabs.top).coerceAtLeast(0)
-            if (body.minimumHeight != height) body.minimumHeight = height
-            updatePosition()
-        }
-        val listener = ViewTreeObserver.OnScrollChangedListener { updatePosition() }
-        scroll.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateBounds() }
-        tabs.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateBounds() }
-        scroll.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
-            override fun onViewAttachedToWindow(view: View) {
-                view.viewTreeObserver.addOnScrollChangedListener(listener)
-                updateBounds()
-            }
-            override fun onViewDetachedFromWindow(view: View) {
-                view.viewTreeObserver.removeOnScrollChangedListener(listener)
-            }
-        })
-    }
-
-    /** 在刷新容器外判断方向；横滑取消卡片点击，竖滑继续交给列表和下拉刷新。 */
-    class TabSwipeLayout(
-        activity: Activity,
-        content: View,
-        private val excludedView: View?,
-        private val switchTab: (Int) -> Unit,
-    ) : FrameLayout(activity) {
-        private val touchSlop = ViewConfiguration.get(activity).scaledTouchSlop
-        private val threshold = maxOf(dp(activity, 48), touchSlop * 3)
-        private val excludedBounds = Rect()
-        private var downX = 0f
-        private var downY = 0f
-        private var tracking = false
-        private var swiping = false
-
-        init { addView(content, LayoutParams(-1, -1)) }
-
-        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = event.x
-                    downY = event.y
-                    swiping = false
-                    // 日期条保留自身横向滚动，内容区横滑才切换日期。
-                    tracking = excludedView?.let {
-                        !it.getGlobalVisibleRect(excludedBounds) ||
-                            !excludedBounds.contains(event.rawX.toInt(), event.rawY.toInt())
-                    } ?: true
-                }
-                MotionEvent.ACTION_POINTER_DOWN -> tracking = false
-                MotionEvent.ACTION_MOVE -> {
-                    if (tracking && !swiping) {
-                        val dx = abs(event.x - downX)
-                        val dy = abs(event.y - downY)
-                        if (maxOf(dx, dy) > touchSlop) {
-                            if (dx > dy * 1.5f) {
-                                swiping = true
-                                parent?.requestDisallowInterceptTouchEvent(true)
-                                val cancel = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
-                                super.dispatchTouchEvent(cancel)
-                                cancel.recycle()
-                            } else tracking = false
-                        }
-                    }
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (swiping) {
-                        val dx = event.x - downX
-                        val shouldSwitch = tracking && event.actionMasked == MotionEvent.ACTION_UP &&
-                            abs(dx) >= threshold && abs(dx) > abs(event.y - downY) * 1.5f
-                        tracking = false
-                        swiping = false
-                        parent?.requestDisallowInterceptTouchEvent(false)
-                        if (shouldSwitch) switchTab(if (dx < 0f) 1 else -1)
-                        return true
-                    }
-                    tracking = false
-                }
-            }
-            return if (swiping) true else super.dispatchTouchEvent(event)
-        }
     }
 
     /** 手机海报卡片：无外框，圆角海报 + 标题 + 标签；网格与横向条带共用。 */

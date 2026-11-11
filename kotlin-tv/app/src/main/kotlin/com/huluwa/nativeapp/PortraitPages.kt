@@ -84,77 +84,73 @@ class PortraitPages(
         }
     }
 
-    fun rank(body: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
-        body.addView(PortraitUi.pageTitle(activity, "排行榜"), lp())
+    fun rankPager(refresh: () -> Unit): PortraitFeedPager {
+        lateinit var feed: PortraitFeedPager
+        val boards = RankBoard.values()
         val types = row().apply {
             background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 9)
             setPadding(dp(3), dp(3), dp(3), dp(3))
         }
-        val buttons = RankBoard.values().map { board ->
+        val buttons = boards.map { board ->
             val button = text(board.label, 13f).apply {
                 gravity = Gravity.CENTER
-                setOnClickListener { activity.switchRankBoardPhone(board) }
+                setOnClickListener { feed.selectPage(board.name) }
             }
             types.addView(button, lp(0, dp(32)).apply { weight = 1f })
             board to button
         }
         val tabs = column().apply {
-            isClickable = true
             addView(types, lp().apply { leftMargin = dp(16); rightMargin = dp(16); bottomMargin = dp(14) })
         }
-        body.addView(tabs, lp())
-        PortraitUi.pinFeedTabs(scrollRoot, tabs)
-        val empty = PortraitUi.emptyHint(activity, "正在读取榜单…")
-        body.addView(empty, lp())
-        val grid = RecyclerView(activity)
-        body.addView(grid, lp())
-        val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
-            { activity.loadMorePhone() }, scrollRoot, ranked = true)
-        adapter.attach(grid)
-        return { _ ->
-            buttons.forEach { (board, button) ->
-                val selected = activity.rankBoardPhone == board
-                button.isSelected = selected
-                button.background = PortraitStyle.selectable(activity, if (selected) Color.WHITE else Color.TRANSPARENT, radius = 7)
-                button.setTypeface(null, if (selected) Typeface.BOLD else Typeface.NORMAL)
-                button.contentDescription = "${board.label}，${if (selected) "已选择" else "查看榜单"}"
+        feed = PortraitFeedPager(activity, "排行榜", tabs,
+            keys = { boards.map { it.name } },
+            selected = { activity.rankBoardPhone.name },
+            select = { activity.switchRankBoardPhone(RankBoard.valueOf(it)) },
+            updateTabs = { key ->
+                buttons.forEach { (board, button) ->
+                    val selected = board.name == key
+                    button.isSelected = selected
+                    button.background = PortraitStyle.selectable(activity, if (selected) Color.WHITE else Color.TRANSPARENT, radius = 7)
+                    button.setTypeface(null, if (selected) Typeface.BOLD else Typeface.NORMAL)
+                    button.contentDescription = "${board.label}，${if (selected) "已选择" else "查看榜单"}"
+                }
+            },
+            loading = { activity.rankLoadingPhone },
+            refresh = refresh,
+        ) { key, body, scroll ->
+            val board = RankBoard.valueOf(key)
+            val empty = PortraitUi.emptyHint(activity, "正在读取榜单…").apply {
+                setOnClickListener { if (feed.isCurrent(key)) refresh() }
             }
-            val items = activity.catalog
-            empty.text = "这个榜单暂时是空的，下拉可重新加载"
-            empty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
-            grid.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
-            adapter.submitItems(items, activity.hasMore)
+            body.addView(empty, lp())
+            val grid = RecyclerView(activity)
+            body.addView(grid, lp())
+            val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
+                { if (feed.isCurrent(key)) activity.loadMorePhone() }, scroll, ranked = true)
+            adapter.attach(grid)
+            val update: () -> Unit = {
+                val page = activity.rankPagePhone(board)
+                val items = page?.items.orEmpty()
+                val busy = if (activity.rankBoardPhone == board) activity.rankLoadingPhone else page == null
+                empty.text = if (busy) "正在读取榜单…" else "这个榜单暂时是空的，下拉可重新加载"
+                empty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+                grid.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
+                adapter.submitItems(items, page?.hasMore == true)
+            }
+            update
         }
+        return feed
     }
 
-    /** 服务端日历 + 按日期缓存的三列新剧列表，沿用统一详情、收藏和分页组件。 */
-    fun newReleases(body: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
-        body.addView(PortraitUi.pageTitle(activity, "新剧上线"), lp())
+    /** 每个日期持有独立列表和滚动位置，Tab 与原生分页双向联动。 */
+    fun newReleasesPager(refresh: () -> Unit): PortraitFeedPager {
+        lateinit var feed: PortraitFeedPager
         val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
         val dates = row().apply { setPadding(dp(16), dp(4), dp(16), dp(10)) }
         strip.addView(dates)
-        body.addView(strip, lp())
-        PortraitUi.pinFeedTabs(scrollRoot, strip)
-        val loading = PortraitUi.emptyHint(activity, "正在加载新剧…")
-        body.addView(loading, lp())
-        val empty = PortraitUi.emptyState(activity, R.drawable.ic_phone_grid, "这一天没有新剧", "换个日期看看，或下拉刷新")
-        body.addView(empty, lp())
-        val grid = RecyclerView(activity)
-        body.addView(grid, lp())
-        val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
-            { activity.loadMoreNewReleasesPhone() }, scrollRoot)
-        adapter.attach(grid)
-        val error = text("", 14f, PortraitStyle.muted).apply {
-            gravity = Gravity.CENTER
-            setPadding(dp(16), dp(24), dp(16), dp(24))
-            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 10)
-            setOnClickListener { activity.retryNewReleasesPhone() }
-        }
-        body.addView(error, lp())
         var shownDates = emptyList<String>()
         var shownSelected = ""
-        fun updateDates() {
-            val selectedDay = activity.newReleaseDatePhone
+        fun updateDates(selectedDay: String) {
             val days = activity.newReleaseDatesPhone
             if (shownDates == days && shownSelected == selectedDay) return
             shownDates = days; shownSelected = selectedDay
@@ -180,27 +176,55 @@ class PortraitPages(
                     background = PortraitStyle.selectable(activity, if (selected) Color.BLACK else PortraitStyle.raised, radius = 20)
                     isSelected = selected
                     contentDescription = "$label，${if (selected) "已选择" else "查看新剧"}"
-                    setOnClickListener { activity.chooseNewReleaseDayPhone(key) }
+                    setOnClickListener { feed.selectPage(key) }
                 }
                 dates.addView(chip, lp(-2, -2).apply { rightMargin = dp(6) })
                 if (selected) selectedChip = chip
             }
             strip.post {
-                selectedChip?.let { strip.scrollTo((it.left - strip.width / 2 + it.width / 2).coerceAtLeast(0), 0) }
+                selectedChip?.let { strip.smoothScrollTo((it.left - strip.width / 2 + it.width / 2).coerceAtLeast(0), 0) }
             }
         }
-        return { _ ->
-            updateDates()
-            val items = activity.newReleaseItemsPhone.map { it.series }
-            val busy = activity.newReleaseLoadingPhone
-            val problem = activity.newReleaseErrorPhone
-            loading.visibility = if (busy && items.isEmpty()) View.VISIBLE else View.GONE
-            empty.visibility = if (!busy && problem.isBlank() && items.isEmpty()) View.VISIBLE else View.GONE
-            grid.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
-            error.text = problem
-            error.visibility = if (problem.isNotBlank()) View.VISIBLE else View.GONE
-            adapter.submitItems(items, activity.newReleaseHasMorePhone && problem.isBlank())
+        feed = PortraitFeedPager(activity, "新剧上线", strip,
+            keys = { activity.newReleaseDatesPhone },
+            selected = { activity.newReleaseDatePhone },
+            select = { activity.chooseNewReleaseDayPhone(it) },
+            updateTabs = ::updateDates,
+            loading = { activity.newReleaseLoadingPhone },
+            refresh = refresh,
+        ) { key, body, scroll ->
+            val loading = PortraitUi.emptyHint(activity, "正在加载新剧…")
+            body.addView(loading, lp())
+            val empty = PortraitUi.emptyState(activity, R.drawable.ic_phone_grid, "这一天没有新剧", "换个日期看看，或下拉刷新")
+            body.addView(empty, lp())
+            val grid = RecyclerView(activity)
+            body.addView(grid, lp())
+            val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
+                { if (feed.isCurrent(key)) activity.loadMoreNewReleasesPhone() }, scroll)
+            adapter.attach(grid)
+            val error = text("", 14f, PortraitStyle.muted).apply {
+                gravity = Gravity.CENTER
+                setPadding(dp(16), dp(24), dp(16), dp(24))
+                background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 10)
+                setOnClickListener { if (feed.isCurrent(key)) activity.retryNewReleasesPhone() }
+            }
+            body.addView(error, lp())
+            val update: () -> Unit = {
+                val page = activity.newReleasePagePhone(key)
+                val items = page?.items.orEmpty().map { it.series }
+                val selected = activity.newReleaseDatePhone == key
+                val busy = if (selected) activity.newReleaseLoadingPhone else page == null
+                val problem = if (selected) activity.newReleaseErrorPhone else ""
+                loading.visibility = if (busy && items.isEmpty()) View.VISIBLE else View.GONE
+                empty.visibility = if (!busy && problem.isBlank() && items.isEmpty()) View.VISIBLE else View.GONE
+                grid.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
+                error.text = problem
+                error.visibility = if (problem.isNotBlank()) View.VISIBLE else View.GONE
+                adapter.submitItems(items, page?.cursor != null && problem.isBlank())
+            }
+            update
         }
+        return feed
     }
 
     private fun section(body: LinearLayout, title: String) {

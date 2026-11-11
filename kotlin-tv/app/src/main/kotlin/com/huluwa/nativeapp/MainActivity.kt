@@ -5728,6 +5728,12 @@ class MainActivity: Activity() {
         private set
     private var phoneRankLoading=false
     private var phoneRankReady=false
+    private val phoneRankPages=mutableMapOf<RankBoard,CatalogState>()
+    val rankLoadingPhone get() = phoneRankLoading
+    fun rankPagePhone(board: RankBoard): CatalogPage? =
+        if(phoneTab=="rank" && phoneCatalogSource=="rank" && rankBoardPhone==board)
+            CatalogPage(catalog,hasMore,rankingPhone)
+        else phoneRankPages[board]?.let { CatalogPage(it.items,it.hasMore,it.ranking) } ?: library.cachedPhoneRank(board)
     /** 新剧日历独立于首页/榜单的 catalog，按服务端日期缓存列表和游标。 */
     private val phoneNewReleasePages=mutableMapOf<String,NewReleasePage>()
     /** SP 快照只用于展示，每个日期首次进入仍联网更新列表和游标。 */
@@ -5744,6 +5750,8 @@ class MainActivity: Activity() {
     val newReleaseHasMorePhone get() = phoneNewReleasePages[newReleaseDatePhone]?.cursor!=null
     val newReleaseLoadingPhone get() = phoneNewReleaseLoading
     val newReleaseErrorPhone get() = phoneNewReleaseError
+    fun newReleasePagePhone(date: String): NewReleasePage? =
+        phoneNewReleasePages[date] ?: library.cachedNewReleases(date)
 
     private fun prepareNewReleaseCalendarPhone() {
         val today=NewReleaseCalendar.today()
@@ -5756,11 +5764,11 @@ class MainActivity: Activity() {
     }
 
     fun chooseNewReleaseDayPhone(date: String) {
+        if(!phoneLayout() || screen!="catalog" || phoneTab!="new" || phoneDetailCollection) return
         if(date !in phoneNewReleaseDates || date==newReleaseDatePhone) return
         cancelWork()
         phoneNewReleaseDay=date; library.newReleaseDay=date
         phoneNewReleaseError=""
-        resetPhoneFeedScroll("new")
         renderPhone()
     }
 
@@ -5863,11 +5871,15 @@ class MainActivity: Activity() {
     private data class RetainedPhoneCatalog(
         val frame: FrameLayout,
         val nav: LinearLayout,
-        val scroll: androidx.core.widget.NestedScrollView,
+        val scroll: androidx.core.widget.NestedScrollView?,
         val refreshLayout: PortraitUi.RefreshLayout?,
         val update: (Boolean) -> Unit,
         var state: CatalogState,
-    )
+        val pager: PortraitFeedPager?=null,
+    ) {
+        val position get() = pager?.position ?: scroll?.scrollY ?: 0
+        fun finishRefresh() { refreshLayout?.finishRefresh(); pager?.finishRefresh() }
+    }
     private val retainedPhoneCatalogs=mutableMapOf<String,RetainedPhoneCatalog>()
     private var phoneNavigationTab: String?=null
     private var retainedPhoneType: ContentType?=null
@@ -5926,43 +5938,47 @@ class MainActivity: Activity() {
             retained.state=capturePhoneCatalog()
             retainedPhoneCatalogs.forEach { (key,value) ->
                 value.frame.visibility=if(key==phoneTab) View.VISIBLE else View.GONE
-                if(key!=phoneTab) value.refreshLayout?.finishRefresh()
+                if(key!=phoneTab) value.finishRefresh()
             }
-            phoneScrollY=retained.scroll.scrollY
+            phoneScrollY=retained.position
             artwork.refreshVisible()
             return
         }
         val renderedTab=phoneTab
         val (frame,content,nav)=PortraitUi.scaffold(this,phoneTab,::switchPhoneTab,phoneNavigationTab)
-        // 三个内容流由原生刷新容器接管拖拽动画，内层继续保留整页滚动和海报分页。
-        val animatedRefresh=phoneTab in listOf("home","rank","new")
-        val scroll=if(animatedRefresh) androidx.core.widget.NestedScrollView(this)
-            else PortraitUi.RefreshScrollView(this,::refreshPortraitFeed)
-        scroll.isVerticalScrollBarEnabled=false; scroll.isFillViewport=true
-        scroll.clipToPadding=false
-        PhoneInsets.listen(scroll) { _,bottomInset,_ -> scroll.setPadding(0,0,0,dp(92)+bottomInset) }
-        val body=column()
-        scroll.addView(body)
-        val update: ((Boolean) -> Unit)?=when(phoneTab) {
-            "home" -> portraitPages.home(body,scrollRoot=scroll)
-            "rank" -> portraitPages.rank(body,scrollRoot=scroll)
-            "new" -> portraitPages.newReleases(body,scrollRoot=scroll)
-            "fav" -> { portraitPages.favorites(body,scrollRoot=scroll); null }
-            "mine" -> portraitPages.mine(body,scroll)
-            "search" -> { portraitPages.search(body,::runPhoneSearch,scroll); null }
+        val feedPager=when(phoneTab) {
+            "rank" -> portraitPages.rankPager(::refreshPortraitFeed)
+            "new" -> portraitPages.newReleasesPager(::refreshPortraitFeed)
             else -> null
         }
+        val scroll=if(feedPager!=null) null else if(phoneTab=="home") androidx.core.widget.NestedScrollView(this)
+            else PortraitUi.RefreshScrollView(this,::refreshPortraitFeed)
+        var refreshLayout: PortraitUi.RefreshLayout?=null
+        val update: ((Boolean) -> Unit)?
+        if(feedPager!=null) {
+            content.addView(feedPager,lp(-1,0).apply { weight=1f })
+            feedPager.onPositionChanged={ y ->
+                if(feedPager.isShown && phoneTab==renderedTab && screen=="catalog") phoneScrollY=y
+            }
+            update={ feedPager.update() }
+        } else {
+            val feedScroll=checkNotNull(scroll)
+            feedScroll.isVerticalScrollBarEnabled=false; feedScroll.isFillViewport=true
+            feedScroll.clipToPadding=false
+            PhoneInsets.listen(feedScroll) { _,bottomInset,_ -> feedScroll.setPadding(0,0,0,dp(92)+bottomInset) }
+            val body=column()
+            feedScroll.addView(body)
+            update=when(phoneTab) {
+                "home" -> portraitPages.home(body,scrollRoot=feedScroll)
+                "fav" -> { portraitPages.favorites(body,scrollRoot=feedScroll); null }
+                "mine" -> portraitPages.mine(body,feedScroll)
+                "search" -> { portraitPages.search(body,::runPhoneSearch,feedScroll); null }
+                else -> null
+            }
+            if(phoneTab=="home") refreshLayout=PortraitUi.RefreshLayout(this,feedScroll,::refreshPortraitFeed,maxDurationMillis=3_000L)
+            content.addView(refreshLayout ?: feedScroll,lp(-1,0).apply { weight=1f })
+        }
         update?.invoke(phoneHomeLoading)
-        val refreshLayout=if(animatedRefresh) PortraitUi.RefreshLayout(
-            this,scroll,::refreshPortraitFeed,maxDurationMillis=if(phoneTab=="home") 3_000L else 0L
-        ) else null
-        val feed=refreshLayout ?: scroll
-        val feedContent=if(phoneTab in listOf("rank","new")) PortraitUi.TabSwipeLayout(
-            this,feed,
-            if(phoneTab=="new") scroll.findViewWithTag<View>(PortraitUi.FEED_TABS_TAG) else null,
-            ::swipePhoneFeedTab,
-        ) else feed
-        content.addView(feedContent,lp(-1,0).apply { weight=1f })
         if(update!=null) {
             if(retainedPhoneCatalogs.isEmpty()) {
                 root.removeAllViews()
@@ -5971,9 +5987,9 @@ class MainActivity: Activity() {
             }
             retainedPhoneCatalogs.values.forEach {
                 it.frame.visibility=View.GONE
-                it.refreshLayout?.finishRefresh()
+                it.finishRefresh()
             }
-            retainedPhoneCatalogs[phoneTab]=RetainedPhoneCatalog(frame,nav,scroll,refreshLayout,update,capturePhoneCatalog())
+            retainedPhoneCatalogs[phoneTab]=RetainedPhoneCatalog(frame,nav,scroll,refreshLayout,update,capturePhoneCatalog(),feedPager)
         } else {
             retainedPhoneCatalogs.clear()
             root.removeAllViews()
@@ -5982,9 +5998,14 @@ class MainActivity: Activity() {
         phoneNavigationTab=phoneTab
         artwork.refreshVisible()
         val restoreY=phoneScrollY
-        scroll.post { if(scroll.isShown && phoneTab==renderedTab && scroll.scrollY!=restoreY) scroll.scrollTo(0,restoreY) }
-        scroll.viewTreeObserver.addOnScrollChangedListener {
-            if(scroll.isShown && phoneTab==renderedTab && screen=="catalog") phoneScrollY=scroll.scrollY
+        if(feedPager!=null) feedPager.post {
+            if(feedPager.isShown && phoneTab==renderedTab) feedPager.restorePosition(restoreY)
+        }
+        scroll?.let { feedScroll ->
+            feedScroll.post { if(feedScroll.isShown && phoneTab==renderedTab && feedScroll.scrollY!=restoreY) feedScroll.scrollTo(0,restoreY) }
+            feedScroll.viewTreeObserver.addOnScrollChangedListener {
+                if(feedScroll.isShown && phoneTab==renderedTab && screen=="catalog") phoneScrollY=feedScroll.scrollY
+            }
         }
     }
 
@@ -6016,7 +6037,7 @@ class MainActivity: Activity() {
         cancelWork(); loadingMore=false
         if(!phoneCatalogViewsValid()) retainedPhoneCatalogs.clear()
         val retained=retainedPhoneCatalogs[next]
-        phoneTab=next; phoneScrollY=retained?.scroll?.scrollY ?: 0; screen="catalog"
+        phoneTab=next; phoneScrollY=retained?.position ?: 0; screen="catalog"
         // 推荐、新剧和我的各自取数，避免恢复其他页签的共用 catalog。
         if(next=="home" || next=="new" || next=="mine") { renderPhone(); return }
         if(retained!=null) {
@@ -6166,35 +6187,22 @@ class MainActivity: Activity() {
     /** 手机排行榜分页页码。 */
     private var phoneRankPage=1
 
-    /** 左滑切到后一项，右滑切到前一项；边界停在当前项。 */
-    private fun swipePhoneFeedTab(direction: Int) {
-        if(!phoneLayout() || screen!="catalog" || phoneDetailCollection) return
-        when(phoneTab) {
-            "rank" -> {
-                val boards=com.hongguotv.core.RankBoard.values()
-                boards.getOrNull(boards.indexOf(rankBoardPhone)+direction)?.let { switchRankBoardPhone(it) }
-            }
-            "new" -> phoneNewReleaseDates.getOrNull(
-                phoneNewReleaseDates.indexOf(newReleaseDatePhone)+direction
-            )?.let { chooseNewReleaseDayPhone(it) }
-        }
-    }
-
-    /** 切换内容后回到列表首屏，已折叠的标题保持折叠，避免吸顶栏跳回页面中间。 */
-    private fun resetPhoneFeedScroll(tab: String) {
-        val scroll=retainedPhoneCatalogs[tab]?.scroll
-        val tabs=scroll?.findViewWithTag<View>(PortraitUi.FEED_TABS_TAG)
-        phoneScrollY=minOf(scroll?.scrollY ?: 0,tabs?.top ?: 0)
-        scroll?.scrollTo(0,phoneScrollY)
-    }
-
     fun switchRankBoardPhone(board: com.hongguotv.core.RankBoard) {
-        if(rankBoardPhone==board && catalog.isNotEmpty()) return
+        if(!phoneLayout() || screen!="catalog" || phoneTab!="rank" || phoneDetailCollection || rankBoardPhone==board) return
+        if(phoneRankReady && phoneCatalogSource=="rank") {
+            phoneRankPages[rankBoardPhone]=CatalogState(phoneRankPage,catalog,hasMore,rankingPhone,rankBoardPhone)
+        }
         cancelWork(); loadingMore=false
-        rankBoardPhone=board; phoneRankPage=1
-        resetPhoneFeedScroll("rank")
-        catalog=emptyList(); hasMore=false; rankingPhone=null; phoneCatalogSource="rank"
-        showPhoneRank()
+        rankBoardPhone=board; phoneCatalogSource="rank"
+        val saved=phoneRankPages[board]
+        if(saved!=null) {
+            phoneRankPage=saved.page; catalog=saved.items; hasMore=saved.hasMore; rankingPhone=saved.ranking
+            phoneRankReady=true
+            renderPhone()
+        } else {
+            phoneRankPage=1; catalog=emptyList(); hasMore=false; rankingPhone=null
+            showPhoneRank()
+        }
     }
 
     /** 「我的」页统计格跳转到收藏页签（switchPhoneTab 是私有的，这里给页面一个公开入口）。 */

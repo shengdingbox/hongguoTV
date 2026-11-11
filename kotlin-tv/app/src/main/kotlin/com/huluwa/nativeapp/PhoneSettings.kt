@@ -204,6 +204,11 @@ class PhoneSettings(private val activity: MainActivity) {
         addRow(parent, row("启动方向", OrientationMode.of(library.orientationMode).label, {
             OrientationMode.of(library.orientationMode).label
         }) { activity.phoneOrientationPicker() })
+        if (OrientationMode.of(library.orientationMode) == OrientationMode.LANDSCAPE) {
+            addRow(parent, row("首页版本", HomeVersion.of(library.homeVersion).label, {
+                HomeVersion.of(library.homeVersion).label
+            }) { activity.phoneHomeVersionPicker() })
+        }
     }
 
     // ---- 设备与数据 ----

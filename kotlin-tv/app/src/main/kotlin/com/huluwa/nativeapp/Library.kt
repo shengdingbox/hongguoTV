@@ -265,6 +265,10 @@ class Library(context: Context) {
     var orientationMode: String
         get() = prefs.getString("orientationMode", null)?.takeIf { it in ORIENTATION_MODES } ?: "AUTO"
         set(value) { prefs.edit().putString("orientationMode", value.takeIf { it in ORIENTATION_MODES } ?: "AUTO").apply() }
+    /** 首页视觉：新版预览剧架 / 旧版原首页。仅本机视觉偏好，不进备份。 */
+    var homeVersion: String
+        get() = prefs.getString("homeVersion", null)?.takeIf { it in setOf("NEW", "LEGACY") } ?: "NEW"
+        set(value) { prefs.edit().putString("homeVersion", value.takeIf { it in setOf("NEW", "LEGACY") } ?: "NEW").apply() }
     /** 收藏页排序：update 最近更新 / watch 最近观看 / name 名称。本机视图偏好，不进备份。 */
     var favoriteSort: String
         get() = prefs.getString("favoriteSort", null)?.takeIf { it in listOf("update", "watch", "name") } ?: "update"

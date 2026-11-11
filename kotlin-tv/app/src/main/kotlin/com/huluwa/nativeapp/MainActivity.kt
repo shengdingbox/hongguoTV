@@ -566,14 +566,14 @@ class MainActivity: Activity() {
     private fun button(label: String,selected: Boolean=false,onClick: ()->Unit): TextView = text(label,15f).apply {
         gravity=Gravity.CENTER; setPadding(dp(14),dp(10),dp(14),dp(10)); minHeight=dp(42); focusStyle(this,selected); setOnClickListener { onClick() }
     }
-    /** 顶栏文字导航：icon + label，选中态粗体 accent 色，焦点态 raised 底+accent 边框，默认态 muted。
+    /** 顶栏文字导航：当前栏目使用浅强调底，遥控器焦点使用实色强调底，默认态 muted。
      *  iconRes 传 0 表示只显示文字（极窄宽度下省掉图标的宽度，见 showCatalog 的 bareNav）。 */
     private fun pillNav(iconRes: Int,label: String,selected: Boolean,onClick: ()->Unit,compact: Boolean=false): TextView {
         val padH=if(compact) 10 else 14
         val padV=if(compact) 6 else 8
         val drawPad=if(compact) 4 else 6
-        val h=if(compact) 32 else 36
-        val ts=if(compact) 14f else 15f
+        val h=if(compact) 38 else 42
+        val ts=if(compact) 15f else 17f
         val view=text(label,ts,white).apply {
             gravity=Gravity.CENTER; isFocusable=true; isFocusableInTouchMode=true; isClickable=true; includeFontPadding=false
             // isFocusableInTouchMode 必须有：这台电视的 IR 鼠标棒事件带 SOURCE_TOUCHSCREEN，
@@ -588,7 +588,7 @@ class MainActivity: Activity() {
         return view
     }
 
-    private fun paintPillNav(view: TextView,selected: Boolean,focused: Boolean) {
+    private fun legacyPillNav(view: TextView,selected: Boolean,focused: Boolean) {
         when {
             selected -> {
                 view.background=rounded(Color.TRANSPARENT,accent)
@@ -604,6 +604,27 @@ class MainActivity: Activity() {
                 view.compoundDrawables[0]?.setTint(muted)
             }
         }
+        view.isSelected=selected
+    }
+
+    private fun paintPillNav(view: TextView,selected: Boolean,focused: Boolean) {
+        if(homeUsesLegacyStyle() && tab in 0..4) {
+            legacyPillNav(view,selected,focused); return
+        }
+        val ink=when {
+            focused -> if(TvStyle.theme==TvStyle.Theme.NIGHT) bg else Color.WHITE
+            selected -> accent
+            else -> muted
+        }
+        view.background=when {
+            focused -> rounded(accent,accent)
+            selected -> rounded(TvStyle.selectedSurface)
+            else -> rounded(Color.TRANSPARENT)
+        }
+        view.setTextColor(ink)
+        view.typeface=if(selected || focused) Typeface.create("sans-serif-medium",Typeface.NORMAL) else Typeface.DEFAULT
+        view.compoundDrawables[0]?.mutate()?.setTint(ink)
+        view.isSelected=selected
     }
     private fun addButton(parent: LinearLayout,label: String,selected: Boolean=false,onClick: ()->Unit): TextView {
         val view=button(label,selected,onClick); parent.addView(view,lp().apply { width=LinearLayout.LayoutParams.WRAP_CONTENT; rightMargin=dp(8) }); return view
@@ -1041,6 +1062,10 @@ class MainActivity: Activity() {
             }
         } else library.history().map { it.series }
     }
+    /** 旧版首页仅适用于手机的强制横屏偏好；电视与其它方向不会误读旧版样式。 */
+    private fun homeUsesLegacyStyle() =
+        TouchControls.isHandheld(this) && PhoneUi.orientationMode(this)==OrientationMode.LANDSCAPE &&
+            HomeVersion.of(library.homeVersion)==HomeVersion.LEGACY
     private fun showCatalog(load: Boolean=false,focusNav: Boolean=false,focusType: Boolean=false,focusFilter: Boolean=false) {
         retainedCatalogs.clear()
         initialCatalogPending=false; restoreStoppedPage=false; pendingDetail=null; pendingCloudResume=null
@@ -1072,13 +1097,21 @@ class MainActivity: Activity() {
         navTight=tightNav
         val brand=row()
         val brandIcon=ImageView(this).apply { setImageResource(com.huluwa.nativeapp.R.drawable.app_icon) }
-        val brandName=text("红果",if(tightNav) 19f else 22f).apply { typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL); includeFontPadding=false }
-        val brandVer=text("v${BuildConfig.VERSION_NAME}",12f,muted).apply { includeFontPadding=false }
+        val legacy=homeUsesLegacyStyle()
+        val brandName=text(if(tightNav || legacy) "红果" else "红果 TV",if(tightNav) 20f else if(legacy) 22f else 23f).apply { typeface=Typeface.create("sans-serif-medium",Typeface.NORMAL); includeFontPadding=false }
         brand.addView(brandIcon,lp(dp(28),dp(28)).apply { rightMargin=dp(if(tightNav) 7 else 9) })
         brand.addView(brandName)
-        if(!tightNav) brand.addView(brandVer,lp(-2,-2).apply { topMargin=dp(6) })
         top.addView(brand,lp(-2,dp(44)).apply { rightMargin=dp(if(tightNav) 12 else 20) })
-        // 一级导航 Pill：首页 / 搜索 / 排行榜 / 片源 / 我的；收藏与最近观看并入我的
+        // 新版导航在可用宽度内横向滚动，为右侧工具保留位置；旧版保持原来的整行布局。
+        val navigation=row()
+        if(legacy) top.addView(navigation,lp(-2,-2)) else {
+            val navigationScroll=HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled=false; isFocusable=false
+                addView(navigation)
+            }
+            top.addView(navigationScroll,lp(0,-2).apply { weight=1f })
+        }
+        // 一级导航：首页 / 搜索 / 排行榜 / 片源 / 我的；收藏与最近观看并入我的
         val navMargin=if(compactNav) dp(4) else dp(6)
         val homeButton=pillNav(if(bareNav) 0 else com.huluwa.nativeapp.R.drawable.ic_nav_home,"首页",tab==0,{ switchTab(0) },compactNav)
         val areaButtons=listOf(
@@ -1110,7 +1143,7 @@ class MainActivity: Activity() {
         val settingsTool=button("设置",tab==5) { switchTab(5) }
             .apply { textSize=13f; minHeight=dp(if(tightNav) 36 else 38); val pad=dp(if(tightNav) 10 else 12); setPadding(pad,dp(7),pad,dp(7)) }
         listOf(homeButton,areaButtons[0],areaButtons[1],areaButtons[2],areaButtons[3],areaButtons[4]).forEach { item ->
-            top.addView(item,lp(-2,-2).apply { rightMargin=navMargin })
+            navigation.addView(item,lp(-2,-2).apply { rightMargin=navMargin })
         }
         // 右上工具与首页内容类型一起，等类型按钮挂完后再按 类型 → 留白 → 工具 的顺序追加
         // 索引语义：0=首页 1=搜索 2=排行榜 3=收藏 4=历史 5=设置 6=片源 7=本地库
@@ -1143,7 +1176,7 @@ class MainActivity: Activity() {
             ns.show(container)
             // 本地库/片源页没有「设置」按钮，但顶栏位置还在：把唯一的遥控入口放过来，
             // 免得用户正在本地库看片时想开手机遥控，还得先退回首页。
-            top.addView(Space(this),lp(0,1).apply { weight=1f })
+            top.addView(Space(this),if(legacy) lp(0,1).apply { weight=1f } else lp(dp(8),1))
             top.addView(remoteTool,lp(-2,-2))
             remoteTool.nextFocusLeftId=remoteTool.id; remoteTool.nextFocusRightId=remoteTool.id
             if(ns.topFocusId != View.NO_ID) remoteTool.nextFocusDownId=ns.topFocusId
@@ -1154,7 +1187,7 @@ class MainActivity: Activity() {
         if(tab==6) {
             val instance=third ?: ThirdSourceScreen(this, { showCatalog() }, { library.requestBackup() }).also { third=it }
             instance.show(container)
-            top.addView(Space(this),lp(0,1).apply { weight=1f })
+            top.addView(Space(this),if(legacy) lp(0,1).apply { weight=1f } else lp(dp(8),1))
             top.addView(remoteTool,lp(-2,-2))
             remoteTool.nextFocusLeftId=remoteTool.id; remoteTool.nextFocusRightId=remoteTool.id
             if(instance.topFocusId != View.NO_ID) remoteTool.nextFocusDownId=instance.topFocusId
@@ -1165,7 +1198,7 @@ class MainActivity: Activity() {
         }
         if(tab==5) {
             // 右上工具固定在行末：留白推开后接手机快传与设置（设置页也需要顶栏工具，否则 nav[5] 不在视图树中）
-            top.addView(Space(this),lp(0,1).apply { weight=1f })
+            top.addView(Space(this),if(legacy) lp(0,1).apply { weight=1f } else lp(dp(8),1))
             top.addView(quickTool,lp(-2,-2).apply { rightMargin=dp(8) })
             top.addView(remoteTool,lp(-2,-2).apply { rightMargin=dp(8) })
             top.addView(settingsTool,lp(-2,-2))
@@ -1191,10 +1224,10 @@ class MainActivity: Activity() {
             // 内容类型 tab：漫剧 / 短剧（互斥切换），chip 样式强调 tab 属性
             listOf(ContentType.COMIC,ContentType.SHORT).forEach { type ->
                 typeButtons[type]=chip(type.label,library.contentType==type) { switchContentType(type) }
-                    .apply { isSelected=library.contentType==type; nextFocusUpId=nav[tab].id; textSize=14f; minHeight=dp(38); setPadding(dp(16),dp(8),dp(16),dp(8)) }
+                    .apply { isSelected=library.contentType==type; nextFocusUpId=nav[tab].id; textSize=if(legacy) 13f else 14f; minHeight=dp(if(legacy) 36 else 38); setPadding(dp(if(legacy) 14 else 16),dp(if(legacy) 7 else 8),dp(if(legacy) 14 else 16),dp(if(legacy) 7 else 8)) }
                 types.addView(typeButtons[type],lp(-2,-2).apply { rightMargin=dp(8) })
             }
-            if(tab==0) types.addView(text("长按确认 · 管理片单",12f,muted).apply { setPadding(dp(8),0,0,0) })
+            if(tab==0) types.addView(text(if(legacy) "长按确认 · 管理片单" else "发现下一段好故事",if(legacy) 12f else 13f,muted).apply { setPadding(dp(if(legacy) 8 else 10),0,0,0) })
             if(tab==0) {
                 // 题材筛选、随机荐剧推到最右，与左侧漫剧/短剧 tab 用弹性间距分隔
                 types.addView(Space(this),lp(0,1).apply { weight=1f })
@@ -1207,13 +1240,16 @@ class MainActivity: Activity() {
                 types.addView(filterToggle,lp(-2,-2))
             }
             // 内容类型（漫剧/短剧/题材/随机）统一放在内容区首行，不挤进顶栏
-            typeButtons.values.forEach { view -> (view as TextView).apply { textSize=13f; minHeight=dp(36); setPadding(dp(14),dp(7),dp(14),dp(7)) } }
+            typeButtons.values.forEach { view -> (view as TextView).apply {
+                textSize=if(legacy) 13f else 14f; minHeight=dp(if(legacy) 36 else 38)
+                setPadding(dp(if(legacy) 14 else 16),dp(if(legacy) 7 else 8),dp(if(legacy) 14 else 16),dp(if(legacy) 7 else 8))
+            } }
             container.addView(types)
             nav.forEach { it.nextFocusDownId=(if(tab==1) filterToggle else typeButtons[library.contentType] ?: typeButtons.values.firstOrNull())?.id ?: nav[tab].id }
             }
         }
         // 右上工具固定在行末：类型按钮靠左，留白推开后接手机快传、遥控与设置
-        top.addView(Space(this),lp(0,1).apply { weight=1f })
+        top.addView(Space(this),if(legacy) lp(0,1).apply { weight=1f } else lp(dp(8),1))
         top.addView(quickTool,lp(-2,-2).apply { rightMargin=dp(8) })
         top.addView(remoteTool,lp(-2,-2).apply { rightMargin=dp(8) })
         top.addView(settingsTool,lp(-2,-2))
@@ -2151,9 +2187,10 @@ class MainActivity: Activity() {
     private fun renderHome(body: LinearLayout,focusNav: Boolean,focusType: Boolean,loading: Boolean) {
         homeUpdateCount=library.updatedFavorites()
         val top=typeButtons.getValue(library.contentType)
-        // 首页改由 Hero 展示当前焦点剧集（图、剧名、进度），不再额外占用一行文字预览
+        // 首页预览随剧架焦点更新，标题、海报和续播提示共用当前选中剧集。
+        val homeVersion=if(homeUsesLegacyStyle()) HomeVersion.LEGACY else HomeVersion.NEW
         val home=HomeScreen(this,top,::loadCover,{ _, _-> },
-            { item,resume -> openDetail(item,resume) },::quickActions,{ catalogFocus=it })
+            { item,resume -> openDetail(item,resume) },::quickActions,{ catalogFocus=it },homeVersion)
         homeScreen=home; body.addView(home,lp(-1,0).apply { weight=1f })
         val hot=catalog.filterNot { it.id in library.hidden() }
         home.render(homeShelves(),catalogFocus,!focusNav && !focusType,
@@ -2462,6 +2499,12 @@ class MainActivity: Activity() {
         if(TouchControls.isHandheld(this)) {
             setting(look,"启动方向  ·  ${OrientationMode.of(library.orientationMode).label}") {
                 showOrientationPicker(voiceAnchor)
+            }
+            if(OrientationMode.of(library.orientationMode)==OrientationMode.LANDSCAPE) {
+                lateinit var homeVersionButton: TextView
+                homeVersionButton=setting(look,"首页版本  ·  ${HomeVersion.of(library.homeVersion).label}") {
+                    showHomeVersionPicker(homeVersionButton)
+                }
             }
         }
 
@@ -6957,6 +7000,7 @@ class MainActivity: Activity() {
     fun phoneRefreshSettingsValues() { if(screen=="settings") phoneSettings.refreshValues() }
 
     fun phoneOrientationPicker() = showOrientationPicker(voiceAnchor)
+    fun phoneHomeVersionPicker() = showHomeVersionPicker()
     fun phoneQualityPicker() = showQualityPicker(voiceAnchor,false)
     fun phoneSpeedPicker() = showSpeedPicker(voiceAnchor,false)
     fun phoneFramePicker() = showFramePicker(voiceAnchor,false)
@@ -7056,6 +7100,21 @@ class MainActivity: Activity() {
                 main.post { if(!isDestroyed) PhoneUi.toast(this, "缓存已清理") }
             }
         }.show()
+    }
+
+    /** 首页版本选择：只在手机强制横屏的外观分类中开放。 */
+    private fun showHomeVersionPicker(anchor: android.view.View?=null) {
+        val current=HomeVersion.of(library.homeVersion)
+        tvTools.choose("首页版本",HomeVersion.entries.map { version ->
+            version.label+(if(version==current) "   ·   当前" else "")
+        },anchor,{ choice ->
+            val next=HomeVersion.entries.getOrNull(choice) ?: return@choose
+            if(next!=current) {
+                library.homeVersion=next.name
+                // 电视式设置页重建后按设置行前缀恢复焦点；手机设置页只需刷新值。
+                if(screen=="settings" && phoneLayout()) phoneRefreshSettingsValues() else recreateKeepingPage("首页版本")
+            }
+        },focusIndex=HomeVersion.entries.indexOf(current))
     }
 
     /**

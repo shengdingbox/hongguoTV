@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>红果 TV · 横屏首页设计预览</title>
+<style>
+:root{color-scheme:dark;--bg:#0b0f15;--surface:#171e28;--raised:#202a36;--text:#f3f4f6;--muted:#93a0b2;--accent:#ff8964;--selected:#3d2722;--outline:#2b3746}
+*{box-sizing:border-box}body{margin:0;background:#05070b;color:var(--text);font-family:"Microsoft YaHei","PingFang SC",sans-serif}button{font:inherit;color:inherit;cursor:pointer;border:0}button:focus{outline:none}svg{width:1em;height:1em;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}.symbols{display:none}
+.stage{width:100vw;height:100vh;display:grid;place-items:center}.tv{width:min(100vw,177.7778vh);height:min(56.25vw,100vh);background:var(--bg);container-type:size;overflow:hidden}.screen{height:100%;padding:5cqh 5cqw;display:flex;flex-direction:column;font-size:1.18cqw}.header{display:flex;align-items:center;gap:1.5cqw;min-height:5.8cqh;margin-bottom:1.2cqh}.brand{display:flex;align-items:center;gap:.65cqw;font-weight:700;font-size:1.85cqw;white-space:nowrap}.brand-mark{height:2.45cqw;width:2.45cqw;border-radius:.75cqw;background:var(--accent);display:grid;place-items:center;color:var(--bg)}.brand-mark svg{fill:currentColor;stroke:none;width:65%;height:65%}.nav{display:flex;align-items:center;gap:.25cqw;min-width:0;overflow-x:auto;scrollbar-width:none;flex:1}.nav button{display:flex;align-items:center;gap:.45cqw;padding:.75cqw .95cqw;background:transparent;color:var(--muted);border-radius:.7cqw;white-space:nowrap;flex-shrink:0}.nav button[aria-current=page]{background:var(--selected);color:var(--accent);font-weight:700}.nav button:focus,.tools button:focus,.filters button:focus{background:var(--accent);color:var(--bg);box-shadow:0 0 0 .15cqw var(--accent)}.tools{display:flex;gap:.55cqw}.tools button{white-space:nowrap;background:var(--surface);color:var(--muted);border-radius:.65cqw;padding:.65cqw .8cqw;font-size:1.05cqw}.rule{height:1px;background:var(--outline);flex-shrink:0}.filters{display:flex;align-items:center;gap:.6cqw;padding:1.2cqh 0 1.3cqh}.filters button{background:var(--surface);padding:.65cqw 1.05cqw;border-radius:.65cqw;white-space:nowrap}.filters button[aria-pressed=true]{background:var(--selected);color:var(--accent)}.filters p{margin:0 0 0 .35cqw;color:var(--muted);font-size:1.05cqw;flex:1}.content{flex:1;min-height:0;overflow:auto;scrollbar-width:none;scroll-behavior:smooth}.content::-webkit-scrollbar,.rail::-webkit-scrollbar{display:none}.hero{height:22cqh;min-height:0;position:relative;background:var(--surface);border-radius:1.3cqw;overflow:hidden;margin-bottom:2.2cqh}.hero-art{position:absolute;right:0;width:43%;height:100%;object-fit:cover;object-position:center 35%}.hero:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,var(--surface) 0%,var(--surface) 50%,transparent 100%)}.hero-copy{position:relative;z-index:1;width:62%;height:100%;display:flex;justify-content:center;flex-direction:column;padding:1.7cqw}.eyebrow{font-size:.9cqw;color:var(--accent);margin:0 0 .6cqh}.hero h1{font-size:2.6cqw;line-height:1.3;margin:0 0 .65cqh;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.hero-meta{font-size:1.05cqw;line-height:1.5;margin:0;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.hero-action{color:var(--accent);font-size:1cqw;margin:1cqh 0 0;display:flex;align-items:center;gap:.45cqw}.hero-action svg{fill:currentColor;stroke:none}.shelf{margin:0 0 2.7cqh}.shelf-heading{display:flex;align-items:center;gap:.8cqw;padding:0 .15cqw 1.2cqh}.shelf-heading h2{margin:0;font-size:1.5cqw;font-weight:650}.shelf-heading span{color:var(--muted);font-size:1cqw}.shelf-heading .hint{margin-left:auto}.rail{display:flex;gap:1.25cqw;overflow-x:auto;padding:.25cqw;scrollbar-width:none}.card{flex:0 0 calc((100% - 3.2 * 1.25cqw)/4.2);padding:.3cqw .3cqw .6cqw;background:transparent;min-width:0;position:relative;text-align:left;border-radius:.9cqw;border:.15cqw solid transparent}.card:focus{border-color:var(--accent);background:var(--raised)}.card:focus .card-title{color:var(--accent)}.card:focus .card-status{color:var(--text)}.card-art{position:relative;overflow:hidden;border-radius:.65cqw;aspect-ratio:1.65;background:var(--surface)}.card img{width:100%;height:100%;object-fit:cover;object-position:center 34%;display:block}.card-title{display:block;font-size:1.22cqw;line-height:1.4;margin:.6cqw .2cqw .2cqw;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.card-status{color:var(--muted);font-size:1cqw;display:block;margin:0 .2cqw;line-height:1.5}.progress{height:.23cqw;background:var(--outline);border-radius:2px;overflow:hidden;margin:.65cqw .2cqw 0}.progress i{height:100%;display:block;background:var(--accent)}.poster-rail .card{flex-basis:calc((100% - 6 * 1.25cqw)/7)}.poster-rail .card-art{aspect-ratio:.7}.footer{display:flex;justify-content:center;gap:1cqw;color:var(--muted);padding:2cqh 0}.footer button{background:var(--surface);padding:.8cqw 1.5cqw;border-radius:.6cqw}.footer button:focus{background:var(--accent);color:var(--bg)}.toast{position:absolute;z-index:4;bottom:6cqh;left:50%;transform:translateX(-50%);background:var(--raised);border:1px solid var(--outline);padding:1cqw 1.5cqw;border-radius:.8cqw;max-width:80%;font-size:1.1cqw}.tv{position:relative}.note{position:fixed;bottom:8px;right:14px;font-size:11px;color:#93a0b2;pointer-events:none;opacity:.8}
+@media(prefers-reduced-motion:reduce){.content{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<svg class="symbols" aria-hidden="true"><defs>
+<symbol id="play" viewBox="0 0 24 24"><path d="M7 4 21 12 7 20Z"/></symbol>
+<symbol id="home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10H3Z M9 20v-7h6v7"/></symbol>
+<symbol id="search" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></symbol>
+<symbol id="rank" viewBox="0 0 24 24"><path d="M3 21V11h6v10 M9 21V4h6v17 M15 21V8h6v13"/></symbol>
+<symbol id="library" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18 M8 16h1 M13 16h4"/></symbol>
+<symbol id="source" viewBox="0 0 24 24"><path d="m12 3 10 5-10 5L2 8Z M2 12l10 5 10-5 M2 16l10 5 10-5"/></symbol>
+<symbol id="mine" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4"/><path d="M4 21v-3a8 8 0 0 1 16 0v3"/></symbol>
+</defs></svg>
+<main class="stage"><div class="tv"><div class="screen">
+<header class="header"><div class="brand"><span class="brand-mark"><svg><use href="#play"/></svg></span>红果 TV</div>
+<nav class="nav" aria-label="主导航"><button data-row="0" aria-current="page"><svg><use href="#home"/></svg>首页</button><button data-row="0"><svg><use href="#search"/></svg>搜索</button><button data-row="0"><svg><use href="#rank"/></svg>排行榜</button><button data-row="0"><svg><use href="#library"/></svg>本地库</button><button data-row="0"><svg><use href="#source"/></svg>片源</button><button data-row="0"><svg><use href="#mine"/></svg>我的</button></nav>
+<div class="tools"><button data-row="0">快传</button><button data-row="0">手机遥控</button><button data-row="0">设置</button></div></header>
+<div class="rule"></div>
+<div class="filters"><button data-row="1" aria-pressed="false">漫剧</button><button data-row="1" aria-pressed="true">短剧</button><p>发现下一段好故事</p><button data-row="1">题材</button><button data-row="1">随机荐剧</button></div>
+<div class="content"><section class="hero" aria-label="当前选中剧集"><img class="hero-art" alt="" src="../hongguotv-tv-ui-redesign/assets/poster_b_1680x2240.jpg"><div class="hero-copy"><p class="eyebrow">接着看</p><h1>雨夜重逢</h1><p class="hero-meta">第 12 集 · 02:36　·　都市情感　·　全 80 集</p><p class="hero-action"><svg><use href="#play"/></svg><span>确认继续观看　 ·　 长按管理片单</span></p></div></section>
+<section class="shelf"><div class="shelf-heading"><h2>接着看</h2><span>4 部</span><span class="hint">确认继续观看</span></div><div class="rail" id="resume"></div></section>
+<section class="shelf"><div class="shelf-heading"><h2>热门发现 · 短剧</h2><span>7 部</span><span class="hint">左右选剧</span></div><div class="rail poster-rail" id="hot"></div></section>
+<div class="footer"><button data-row="4">刷新热门</button><button data-row="4">更多热门 ›</button></div>
+</div></div><div class="toast" hidden role="status"></div></div></main>
+<div class="note">设计预览 · 方向键选剧 · 回车键确认 · 示例片单</div>
+<script>
+const assets='../hongguotv-tv-ui-redesign/assets/';
+const series=[
+ {title:'雨夜重逢',art:'b',tags:'都市情感 · 全 80 集',status:'第 12 集 · 02:36',progress:42},
+ {title:'长夜破晓',art:'a',tags:'古装逆袭 · 全 60 集',status:'第 6 集 · 01:18',progress:24},
+ {title:'与君渡山河',art:'c',tags:'仙侠奇缘 · 全 72 集',status:'第 21 集 · 03:10',progress:71},
+ {title:'星海来信',art:'d',tags:'奇幻悬疑 · 全 48 集',status:'第 3 集 · 00:56',progress:18},
+ {title:'重返长安',art:'a',tags:'古装权谋 · 全 64 集'},
+ {title:'恰逢心动',art:'b',tags:'都市甜宠 · 全 80 集'},
+ {title:'云上故人',art:'c',tags:'仙侠奇缘 · 全 56 集'}
+];
+function artwork(item){return assets+'poster_'+item.art+'_1680x2240.jpg'}
+let toastTimer;
+function notify(message){const box=document.querySelector('.toast');box.textContent=message;box.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>box.hidden=true,2200)}
+function addCard(item,row,resume){
+ const button=document.createElement('button');button.className='card';button.dataset.row=row;button.setAttribute('aria-label',item.title+'，'+(resume?item.status:item.tags));
+ const art=document.createElement('div');art.className='card-art';const img=document.createElement('img');img.src=artwork(item);img.alt='';art.append(img);button.append(art);
+ const title=document.createElement('span');title.className='card-title';title.textContent=item.title;button.append(title);
+ const status=document.createElement('span');status.className='card-status';status.textContent=resume?item.status:item.tags;button.append(status);
+ if(resume){const track=document.createElement('div');track.className='progress';const fill=document.createElement('i');fill.style.width=item.progress+'%';track.append(fill);button.append(track)}
+ button.addEventListener('focus',()=>{document.querySelector('.hero-art').src=artwork(item);document.querySelector('.hero h1').textContent=item.title;document.querySelector('.eyebrow').textContent=resume?'接着看':'热门发现 · 短剧';document.querySelector('.hero-meta').textContent=(resume?item.status+' · ':'')+item.tags;document.querySelector('.hero-action span').textContent=(resume?'确认继续观看':'确认查看详情')+'　 ·　 长按管理片单';button.scrollIntoView({block:'nearest',inline:'nearest'})});
+ button.addEventListener('click',()=>notify('交互示意：'+(resume?'继续观看':'查看详情')+'《'+item.title+'》'));
+ document.getElementById(resume?'resume':'hot').append(button);
+}
+series.slice(0,4).forEach(item=>addCard(item,2,true));series.forEach(item=>addCard(item,3,false));
+document.querySelectorAll('button:not(.card)').forEach(button=>button.addEventListener('click',()=>notify('交互示意：'+button.textContent.trim())));
+document.addEventListener('keydown',event=>{
+ if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))return;
+ event.preventDefault();const active=document.activeElement;const current=Number(active.dataset.row??2);const rows=[...new Set([...document.querySelectorAll('[data-row]')].map(node=>Number(node.dataset.row)))].sort((a,b)=>a-b);
+ const row=[...document.querySelectorAll('[data-row="'+current+'"]')];const column=Math.max(0,row.indexOf(active));let target;
+ if(event.key==='ArrowLeft'||event.key==='ArrowRight'){const direction=event.key==='ArrowLeft'?-1:1;target=row[Math.max(0,Math.min(row.length-1,column+direction))]}
+ else{const index=rows.indexOf(current)+(event.key==='ArrowUp'?-1:1);const next=rows[Math.max(0,Math.min(rows.length-1,index))];const candidates=[...document.querySelectorAll('[data-row="'+next+'"]')];target=candidates[Math.min(column,candidates.length-1)]}
+ target?.focus();if(Number(target?.dataset.row)<=1)document.querySelector('.content').scrollTop=0;
+});
+document.querySelector('#resume .card').focus({preventScroll:true});
+</script>
+</body></html>

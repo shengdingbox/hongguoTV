@@ -5759,8 +5759,8 @@ class MainActivity: Activity() {
         if(date !in phoneNewReleaseDates || date==newReleaseDatePhone) return
         cancelWork()
         phoneNewReleaseDay=date; library.newReleaseDay=date
-        phoneNewReleaseError=""; phoneScrollY=0
-        retainedPhoneCatalogs["new"]?.scroll?.scrollTo(0,0)
+        phoneNewReleaseError=""
+        resetPhoneFeedScroll("new")
         renderPhone()
     }
 
@@ -5952,7 +5952,13 @@ class MainActivity: Activity() {
         val refreshLayout=if(animatedRefresh) PortraitUi.RefreshLayout(
             this,scroll,::refreshPortraitFeed,maxDurationMillis=if(phoneTab=="home") 3_000L else 0L
         ) else null
-        content.addView(refreshLayout ?: scroll,lp(-1,0).apply { weight=1f })
+        val feed=refreshLayout ?: scroll
+        val feedContent=if(phoneTab in listOf("rank","new")) PortraitUi.TabSwipeLayout(
+            this,feed,
+            if(phoneTab=="new") scroll.findViewWithTag<View>(PortraitUi.FEED_TABS_TAG) else null,
+            ::swipePhoneFeedTab,
+        ) else feed
+        content.addView(feedContent,lp(-1,0).apply { weight=1f })
         if(update!=null) {
             if(retainedPhoneCatalogs.isEmpty()) {
                 root.removeAllViews()
@@ -6155,11 +6161,33 @@ class MainActivity: Activity() {
     /** 手机排行榜分页页码。 */
     private var phoneRankPage=1
 
+    /** 左滑切到后一项，右滑切到前一项；边界停在当前项。 */
+    private fun swipePhoneFeedTab(direction: Int) {
+        if(!phoneLayout() || screen!="catalog" || phoneDetailCollection) return
+        when(phoneTab) {
+            "rank" -> {
+                val boards=com.hongguotv.core.RankBoard.values()
+                boards.getOrNull(boards.indexOf(rankBoardPhone)+direction)?.let { switchRankBoardPhone(it) }
+            }
+            "new" -> phoneNewReleaseDates.getOrNull(
+                phoneNewReleaseDates.indexOf(newReleaseDatePhone)+direction
+            )?.let { chooseNewReleaseDayPhone(it) }
+        }
+    }
+
+    /** 切换内容后回到列表首屏，已折叠的标题保持折叠，避免吸顶栏跳回页面中间。 */
+    private fun resetPhoneFeedScroll(tab: String) {
+        val scroll=retainedPhoneCatalogs[tab]?.scroll
+        val tabs=scroll?.findViewWithTag<View>(PortraitUi.FEED_TABS_TAG)
+        phoneScrollY=minOf(scroll?.scrollY ?: 0,tabs?.top ?: 0)
+        scroll?.scrollTo(0,phoneScrollY)
+    }
+
     fun switchRankBoardPhone(board: com.hongguotv.core.RankBoard) {
         if(rankBoardPhone==board && catalog.isNotEmpty()) return
         cancelWork(); loadingMore=false
-        retainedPhoneCatalogs.remove("rank")?.let { root.removeView(it.frame) }
-        rankBoardPhone=board; phoneRankPage=1; phoneScrollY=0
+        rankBoardPhone=board; phoneRankPage=1
+        resetPhoneFeedScroll("rank")
         catalog=emptyList(); hasMore=false; rankingPhone=null; phoneCatalogSource="rank"
         showPhoneRank()
     }

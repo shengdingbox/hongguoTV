@@ -90,17 +90,20 @@ class PortraitPages(
             background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 9)
             setPadding(dp(3), dp(3), dp(3), dp(3))
         }
-        listOf(RankBoard.COMIC, RankBoard.REAL, RankBoard.AI).forEach { board ->
-            val selected = activity.rankBoardPhone == board
-            types.addView(text(board.label, 13f).apply {
+        val buttons = RankBoard.values().map { board ->
+            val button = text(board.label, 13f).apply {
                 gravity = Gravity.CENTER
-                background = PortraitStyle.selectable(activity, if (selected) Color.WHITE else Color.TRANSPARENT, radius = 7)
-                isSelected = selected
-                if (selected) setTypeface(null, Typeface.BOLD)
                 setOnClickListener { activity.switchRankBoardPhone(board) }
-            }, lp(0, dp(32)).apply { weight = 1f })
+            }
+            types.addView(button, lp(0, dp(32)).apply { weight = 1f })
+            board to button
         }
-        body.addView(types, lp().apply { leftMargin = dp(16); rightMargin = dp(16); bottomMargin = dp(14) })
+        val tabs = column().apply {
+            isClickable = true
+            addView(types, lp().apply { leftMargin = dp(16); rightMargin = dp(16); bottomMargin = dp(14) })
+        }
+        body.addView(tabs, lp())
+        PortraitUi.pinFeedTabs(scrollRoot, tabs)
         val empty = PortraitUi.emptyHint(activity, "正在读取榜单…")
         body.addView(empty, lp())
         val grid = RecyclerView(activity)
@@ -109,6 +112,13 @@ class PortraitPages(
             { activity.loadMorePhone() }, scrollRoot, ranked = true)
         adapter.attach(grid)
         return { _ ->
+            buttons.forEach { (board, button) ->
+                val selected = activity.rankBoardPhone == board
+                button.isSelected = selected
+                button.background = PortraitStyle.selectable(activity, if (selected) Color.WHITE else Color.TRANSPARENT, radius = 7)
+                button.setTypeface(null, if (selected) Typeface.BOLD else Typeface.NORMAL)
+                button.contentDescription = "${board.label}，${if (selected) "已选择" else "查看榜单"}"
+            }
             val items = activity.catalog
             empty.text = "这个榜单暂时是空的，下拉可重新加载"
             empty.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
@@ -124,6 +134,7 @@ class PortraitPages(
         val dates = row().apply { setPadding(dp(16), dp(4), dp(16), dp(10)) }
         strip.addView(dates)
         body.addView(strip, lp())
+        PortraitUi.pinFeedTabs(scrollRoot, strip)
         val loading = PortraitUi.emptyHint(activity, "正在加载新剧…")
         body.addView(loading, lp())
         val empty = PortraitUi.emptyState(activity, R.drawable.ic_phone_grid, "这一天没有新剧", "换个日期看看，或下拉刷新")

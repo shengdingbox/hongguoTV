@@ -9,8 +9,20 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.view.ContextThemeWrapper
 
-/** 竖屏内容独立跟随系统深浅色；不改变电视和播放器使用的 TvStyle。 */
+/** 竖屏内容独立选择外观；不改变电视和播放器使用的 TvStyle。 */
 object PortraitStyle {
+    enum class Appearance(val label: String) {
+        SYSTEM("跟随系统"), LIGHT("浅色"), DARK("深色");
+
+        companion object {
+            fun fromStored(value: String?) = entries.firstOrNull { it.name == value } ?: SYSTEM
+        }
+    }
+
+    private const val PREFS = "native-library-v1"
+    private const val APPEARANCE_KEY = "phoneAppearance"
+    var appearance = Appearance.SYSTEM
+        private set
     var isDark = false
         private set
     /** 用于淘汰使用旧配色构造的页面缓存。 */
@@ -18,10 +30,25 @@ object PortraitStyle {
         private set
 
     /** 在启动、系统外观变化和恢复前台时调用；返回是否需要重建内容页。 */
-    fun refresh(context: Context): Boolean = refresh(context.resources.configuration)
+    fun refresh(context: Context): Boolean {
+        val stored = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(APPEARANCE_KEY, null)
+        appearance = Appearance.fromStored(stored)
+        return refresh(context.resources.configuration)
+    }
+
+    /** 手机外观只保存在本机，旧版本未设置时继续跟随系统。 */
+    fun setAppearance(context: Context, value: Appearance): Boolean {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(APPEARANCE_KEY, value.name).apply()
+        appearance = value
+        return refresh(context.resources.configuration)
+    }
 
     fun refresh(configuration: Configuration): Boolean {
-        val next = configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+        val next = when (appearance) {
+            Appearance.SYSTEM -> configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+            Appearance.LIGHT -> false
+            Appearance.DARK -> true
+        }
         if (next == isDark) return false
         isDark = next
         revision++
@@ -49,7 +76,7 @@ object PortraitStyle {
     val ripple get() = if (isDark) Color.argb(35, 255, 255, 255) else Color.argb(28, 0, 0, 0)
     const val POSTER_ASPECT = .75f
 
-    /** 原生菜单使用与竖屏内容一致的系统外观，不沿用固定的电视 Activity 主题。 */
+    /** 原生菜单使用与竖屏内容一致的外观，不沿用固定的电视 Activity 主题。 */
     fun popupContext(context: Context): Context = ContextThemeWrapper(context,
         if (isDark) android.R.style.Theme_Material else android.R.style.Theme_Material_Light)
 

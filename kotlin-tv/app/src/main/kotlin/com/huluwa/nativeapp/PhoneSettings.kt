@@ -10,6 +10,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.core.widget.NestedScrollView
 import com.hongguotv.core.DanmakuPrefs
@@ -305,11 +306,32 @@ class PhoneSettings(private val activity: MainActivity) {
         }
     }
 
-    private fun systemAppearance() = "跟随系统 · " + if (PortraitStyle.isDark) "深色" else "浅色"
+    private fun phoneAppearanceLabel() = PortraitStyle.appearance.label
+
+    private fun showAppearancePicker(anchor: View) {
+        val choices = PortraitStyle.Appearance.entries
+        val menu = PopupMenu(PortraitStyle.popupContext(activity), anchor)
+        choices.forEachIndexed { index, appearance ->
+            menu.menu.add(0, index, index, appearance.label).apply {
+                isCheckable = true
+                isChecked = appearance == PortraitStyle.appearance
+            }
+        }
+        menu.menu.setGroupCheckable(0, true, true)
+        menu.setOnMenuItemClickListener { item ->
+            choices.getOrNull(item.itemId)?.let { activity.phoneSetAppearance(it) }
+            true
+        }
+        menu.show()
+    }
 
     private fun lookSection(parent: LinearLayout) {
-        section(parent, "外观与界面", "手机页面跟随系统深浅色，横屏和电视使用独立主题。") { group ->
-            addRow(group, row("手机外观", systemAppearance(), { systemAppearance() }))
+        section(parent, "外观与界面", "手机外观可跟随系统或固定为浅色、深色，横屏和电视使用独立主题。") { group ->
+            lateinit var appearanceRow: LinearLayout
+            appearanceRow = row("手机外观", phoneAppearanceLabel(), { phoneAppearanceLabel() }) {
+                showAppearancePicker(appearanceRow)
+            }
+            addRow(group, appearanceRow)
             addRow(group, row("横屏与电视风格", TvStyle.theme.label, { TvStyle.theme.label }) { activity.phoneThemeToggle() })
             addRow(group, row("界面缩放", UiScale.label(activity), { UiScale.label(activity) }) { activity.phoneUiScalePicker() })
             addRow(group, row("启动方向", OrientationMode.of(library.orientationMode).label, { OrientationMode.of(library.orientationMode).label }) { activity.phoneOrientationPicker() })

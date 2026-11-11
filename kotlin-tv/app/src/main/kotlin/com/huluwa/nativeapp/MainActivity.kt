@@ -7080,6 +7080,14 @@ class MainActivity: Activity() {
     /** 只刷新各行右侧的取值（不重建页面，滚动位置与焦点都保留）。 */
     fun phoneRefreshSettingsValues() { if(screen=="settings") phoneSettings.refreshValues() }
 
+    /** 手机外观独立保存，立即重画设置页并淘汰旧配色的竖屏内容缓存。 */
+    fun phoneSetAppearance(appearance: PortraitStyle.Appearance) {
+        if(screen!="settings" || !phoneLayout()) return
+        PortraitStyle.setAppearance(this,appearance)
+        retainedPhoneCatalogs.clear()
+        refreshPhoneSettings()
+    }
+
     fun phoneOrientationPicker() = showOrientationPicker(voiceAnchor)
     fun phoneQualityPicker() = showQualityPicker(voiceAnchor,false)
     fun phoneSpeedPicker() = showSpeedPicker(voiceAnchor,false)
@@ -7385,11 +7393,13 @@ class MainActivity: Activity() {
         phoneConfiguration=android.content.res.Configuration(newConfig)
         val themeChanged=PortraitStyle.refresh(newConfig)
         if(themeChanged) retainedPhoneCatalogs.clear()
-        val appearanceOnly=themeChanged && previous!=null && previous.orientation==newConfig.orientation &&
+        val systemAppearanceChanged=previous!=null &&
+            (previous.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK)!=(newConfig.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+        val appearanceOnly=systemAppearanceChanged && previous!=null && previous.orientation==newConfig.orientation &&
             previous.screenWidthDp==newConfig.screenWidthDp && previous.screenHeightDp==newConfig.screenHeightDp
-        // 纯外观切换只更新内容页，避免重新挂载播放页。
+        // 固定手机外观时忽略系统深浅色变化；纯外观切换不重新挂载播放页。
         if(appearanceOnly) {
-            if(screen!="player") { applyPhoneSystemBars(); redrawPhoneTheme() }
+            if(themeChanged && screen!="player") { applyPhoneSystemBars(); redrawPhoneTheme() }
             return
         }
         // 系统栏同步不依赖数据加载，先于库就绪判断处理（内部自带手机/全屏守卫）

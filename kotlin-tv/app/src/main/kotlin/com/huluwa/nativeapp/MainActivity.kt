@@ -6434,7 +6434,7 @@ class MainActivity: Activity() {
             retained.state=capturePhoneCatalog()
             retainedPhoneCatalogs.forEach { (key,value) ->
                 value.frame.visibility=if(key==phoneTab) View.VISIBLE else View.GONE
-                if(key!=phoneTab) value.refreshLayout?.isRefreshing=false
+                if(key!=phoneTab) value.refreshLayout?.finishRefresh()
             }
             phoneScrollY=retained.scroll.scrollY
             artwork.refreshVisible()
@@ -6461,7 +6461,9 @@ class MainActivity: Activity() {
             else -> null
         }
         update?.invoke(phoneHomeLoading)
-        val refreshLayout=if(animatedRefresh) PortraitUi.RefreshLayout(this,scroll,::refreshPortraitFeed) else null
+        val refreshLayout=if(animatedRefresh) PortraitUi.RefreshLayout(
+            this,scroll,::refreshPortraitFeed,maxDurationMillis=if(phoneTab=="home") 3_000L else 0L
+        ) else null
         content.addView(refreshLayout ?: scroll,lp(-1,0).apply { weight=1f })
         if(update!=null) {
             if(retainedPhoneCatalogs.isEmpty()) {
@@ -6471,7 +6473,7 @@ class MainActivity: Activity() {
             }
             retainedPhoneCatalogs.values.forEach {
                 it.frame.visibility=View.GONE
-                it.refreshLayout?.isRefreshing=false
+                it.refreshLayout?.finishRefresh()
             }
             retainedPhoneCatalogs[phoneTab]=RetainedPhoneCatalog(frame,scroll,refreshLayout,update,capturePhoneCatalog())
         } else {
@@ -6579,6 +6581,8 @@ class MainActivity: Activity() {
             // 分批返回和追加分页都写入 SP；离页取消时仍保留已经展示的数据。
             library.cacheRecommendations(phoneRecommendationItems)
             renderPhone()
+            // 首批已合并频道与猜你喜欢两个接口，展示后即可收起刷新圈，后续批量预取继续。
+            retainedPhoneCatalogs["home"]?.refreshLayout?.finishRefresh()
         }
         work({
             val scope=RequestScope.current()

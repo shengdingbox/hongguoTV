@@ -361,20 +361,41 @@ object PortraitUi {
     }
 
     /** 推荐、排行和新剧共用原生拖拽进度、松手转圈及收起动画。 */
-    class RefreshLayout(activity: Activity, scroll: NestedScrollView, refresh: () -> Unit) : SwipeRefreshLayout(activity) {
+    class RefreshLayout(
+        activity: Activity,
+        scroll: NestedScrollView,
+        refresh: () -> Unit,
+        private val maxDurationMillis: Long = 0L,
+    ) : SwipeRefreshLayout(activity) {
+        private val refreshTimeout = Runnable { finishRefresh() }
+
         init {
             setColorSchemeColors(PortraitStyle.accent)
             setProgressBackgroundColorSchemeColor(PortraitStyle.background)
             setDistanceToTriggerSync(dp(activity, 80))
             setProgressViewOffset(true, -dp(activity, 40), dp(activity, 64))
             setOnChildScrollUpCallback { _, _ -> scroll.canScrollVertically(-1) }
-            setOnRefreshListener { refresh() }
+            setOnRefreshListener {
+                removeCallbacks(refreshTimeout)
+                if (maxDurationMillis > 0L) postDelayed(refreshTimeout, maxDurationMillis)
+                refresh()
+            }
             addView(scroll, ViewGroup.LayoutParams(-1, -1))
         }
 
         /** 动画由下拉手势启动，首屏和分页加载不会主动弹出刷新圈。 */
         fun updateLoading(loading: Boolean) {
-            if (!loading) isRefreshing = false
+            if (!loading) finishRefresh()
+        }
+
+        fun finishRefresh() {
+            removeCallbacks(refreshTimeout)
+            isRefreshing = false
+        }
+
+        override fun onDetachedFromWindow() {
+            finishRefresh()
+            super.onDetachedFromWindow()
         }
     }
 

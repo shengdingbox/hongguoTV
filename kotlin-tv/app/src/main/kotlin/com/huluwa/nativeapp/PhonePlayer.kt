@@ -591,11 +591,13 @@ class PhonePlayer(
             setLineSpacing(dp(8).toFloat(), 1f)
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
         }
-        // 宽度 0 + weight 1：占满箭头之外的剩余宽度，超长由 ellipsize 截断
-        titleRow.addView(seriesTitleText, rowLp(0, -2).apply { weight = 1f })
-        titleRow.addView(ImageView(activity).apply {
+        // 内容容器随剧名收缩，让箭头紧跟标题；空间不足时由标题权重让出箭头宽度。
+        val titleContent = row()
+        titleContent.addView(seriesTitleText, rowLp(0, -2).apply { weight = 1f })
+        titleContent.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_chevron_right); setColorFilter(Color.WHITE)
-        }, rowLp(dp(20), dp(20)).apply { leftMargin = dp(2) })
+        }, rowLp(dp(20), dp(20)).apply { marginStart = dp(2) })
+        titleRow.addView(titleContent, rowLp(-2, -2))
         // heightIn(min = 32dp)，内容垂直居中
         info.addView(titleRow, rowLp(-1, dp(32)))
 

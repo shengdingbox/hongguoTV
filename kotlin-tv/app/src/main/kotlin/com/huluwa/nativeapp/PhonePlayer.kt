@@ -44,6 +44,7 @@ import com.hongguotv.core.Detail
  */
 class PhonePlayer(
     private val activity: MainActivity,
+    private val loadCover: (ImageView, String) -> Unit,
 ) {
     private fun dp(v: Int) = PhoneUi.dp(activity, v)
     private fun text(v: String, size: Float, color: Int = Color.WHITE) = PhoneUi.text(activity, v, size, color)
@@ -52,6 +53,10 @@ class PhonePlayer(
 
     /** 整页根容器。 */
     private var host: FrameLayout? = null
+    private var episodePager: PhoneEpisodePager? = null
+    private var episodePlaceholder: View? = null
+    private var displayedEpisodeId: String? = null
+    private var currentCover = ""
     /** 视频区：PlayerView 与弹幕层放在这里。 */
     private var videoHost: FrameLayout? = null
     private var playerView: View? = null
@@ -107,6 +112,7 @@ class PhonePlayer(
         clearRefs()
         currentTitle = data.series.title
         currentDescription = data.series.description
+        currentCover = data.series.cover
         episodeCount = data.episodes.size
         favorite = activity.phoneLibrary.favorite(data.series.id)
         // 全屏皮肤由调用方按当前方向传入：横屏重建后外壳要直接长成横屏那套，
@@ -118,12 +124,20 @@ class PhonePlayer(
         activity.phoneStatusBarLight(false)
         root.setBackgroundColor(Color.BLACK)
         val page = FrameLayout(activity)
-        host = page
+        val episodePage = FrameLayout(activity)
+        host = episodePage
+        val pager = PhoneEpisodePager(activity, episodePage,
+            preview = { index -> buildEpisodePlaceholder(index, showInfo = true) },
+            canSwipe = { episodeSheetTopOnScreen == null && seekBar?.scrubbing != true },
+            onSelect = { index -> activity.skipEpisodePhone(index - activity.phoneEpisodeIndex) },
+        )
+        episodePager = pager
+        page.addView(pager, FrameLayout.LayoutParams(-1, -1))
 
         videoHost = FrameLayout(activity).apply {
             addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applyEpisodeSheetTransform() }
         }
-        page.addView(videoHost, FrameLayout.LayoutParams(-1, -1))
+        episodePage.addView(videoHost, FrameLayout.LayoutParams(-1, -1))
 
         // 暂停时居中显示的大播放按钮（葫芦娃红果播放页同款）
         centerPlay = ImageView(activity).apply {
@@ -159,7 +173,9 @@ class PhonePlayer(
         errorBlock = error
         videoHost?.addView(error, FrameLayout.LayoutParams(dp(240), -2, Gravity.CENTER))
 
-        buildControls(page)
+        buildControls(if (fullscreen) page else episodePage)
+        // 顶栏（以及横屏全屏控制条）保持固定，视频和竖屏剧集信息随整页翻动。
+        buildTopBar(page)
 
         // 手势只挂在视频区：控件层（按钮/进度条）保持正常点击，不能被整页监听吞掉。
         videoHost?.setOnTouchListener(touchListener)
@@ -312,10 +328,10 @@ class PhonePlayer(
         }
         if (previewDocked != docked) {
             previewDocked = docked
-            controls?.apply {
-                animate().cancel()
-                alpha = if (uiHidden) 0f else 1f
-                visibility = if (docked) View.INVISIBLE else if (uiHidden) View.GONE else View.VISIBLE
+            listOfNotNull(controls, topBar).forEach { layer ->
+                layer.animate().cancel()
+                layer.alpha = if (uiHidden) 0f else 1f
+                layer.visibility = if (docked) View.INVISIBLE else if (uiHidden) View.GONE else View.VISIBLE
             }
             video.findViewWithTag<View>(TAG_DANMAKU)?.let { view ->
                 (view.layoutParams as? FrameLayout.LayoutParams)?.topMargin = danmakuTopMargin()
@@ -350,6 +366,7 @@ class PhonePlayer(
     fun updateEpisode(data: Detail) {
         currentTitle = data.series.title
         currentDescription = data.series.description
+        currentCover = data.series.cover
         episodeCount = data.episodes.size
         val number = activity.phoneEpisodeIndex + 1
         // 竖屏标题只写集号；横屏全屏按葫芦娃写成「剧名 · 第N集」
@@ -363,6 +380,84 @@ class PhonePlayer(
         introText?.maxLines = if (introExpanded) 4 else 1
         // 简介为空时葫芦娃不显示「展开」，这里跟着切
         introToggle?.visibility = if (currentDescription.isBlank()) View.GONE else View.VISIBLE
+        val episodeId = data.episodes.getOrNull(activity.phoneEpisodeIndex)
+        if (displayedEpisodeId != episodeId || episodePlaceholder == null) {
+            displayedEpisodeId = episodeId
+            videoHost?.let { video ->
+                episodePlaceholder?.let(video::removeView)
+                val placeholder = buildEpisodePlaceholder(activity.phoneEpisodeIndex, showInfo = false)
+                episodePlaceholder = placeholder
+                val index = playerView?.let { video.indexOfChild(it) + 1 } ?: 0
+                video.addView(placeholder, index, FrameLayout.LayoutParams(-1, -1))
+            }
+            lastPosition = 0L; lastDuration = 0L
+            seekBar?.progress = 0
+            centerPlay?.visibility = View.GONE
+            errorBlock?.visibility = View.GONE
+            buffering?.visibility = View.VISIBLE
+        }
+        episodePager?.updateEpisode(activity.phoneEpisodeIndex, episodeCount)
+    }
+
+    /** 新集首帧到达后才撤掉封面，避免翻页时露出播放器保留的上一集画面。 */
+    fun onFirstFrame() {
+        episodePlaceholder?.visibility = View.GONE
+        buffering?.visibility = View.GONE
+    }
+
+    /** 与葫芦娃分页相同，用封面、集号和滑动提示承接相邻页与首帧等待。 */
+    private fun buildEpisodePlaceholder(index: Int, showInfo: Boolean): View {
+        val page = FrameLayout(activity).apply { setBackgroundColor(Color.rgb(0x19, 0x1F, 0x1C)) }
+        val cover = ImageView(activity).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        page.addView(cover, FrameLayout.LayoutParams(-1, -1))
+        loadCover(cover, currentCover)
+        page.addView(View(activity).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.argb(92, 0, 0, 0), Color.argb(158, 0, 0, 0), Color.argb(128, 0, 0, 0)))
+        }, FrameLayout.LayoutParams(-1, -1))
+        val label = column().apply { gravity = Gravity.CENTER }
+        label.addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_play_arrow)
+            setColorFilter(Color.WHITE)
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.argb(97, 0, 0, 0)) }
+        }, rowLp(dp(58), dp(58)).apply { gravity = Gravity.CENTER_HORIZONTAL })
+        label.addView(text("第${index + 1}集", 22f).apply {
+            gravity = Gravity.CENTER
+            setTypeface(null, Typeface.BOLD)
+        }, rowLp(-1, -2).apply { topMargin = dp(10) })
+        label.addView(text("上下滑动切换剧集", 12f, Color.argb(184, 255, 255, 255)).apply {
+            gravity = Gravity.CENTER
+        }, rowLp(-1, -2).apply { topMargin = dp(10) })
+        page.addView(label, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
+        if (showInfo && !fullscreen) {
+            val info = column().apply {
+                setPadding(dp(16), dp(34), dp(16), dp(14))
+                background = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
+                    intArrayOf(Color.argb(225, 0, 0, 0), Color.TRANSPARENT))
+                visibility = if (uiHidden) View.INVISIBLE else View.VISIBLE
+            }
+            info.addView(text(currentTitle, 18f).apply {
+                maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
+            }, rowLp(-1, dp(32)))
+            info.addView(text(if (currentDescription.isBlank()) "第${index + 1}集 · 共${episodeCount}集"
+                else "第${index + 1}集 | $currentDescription", 14f, Color.argb(184, 255, 255, 255)).apply {
+                maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+                gravity = Gravity.CENTER_VERTICAL
+            }, rowLp(-1, dp(32)))
+            info.addView(text("选集 · 全${episodeCount}集", 15f).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), 0, dp(16), 0)
+                background = TvStyle.shape(activity, Color.rgb(0x15, 0x15, 0x15), radius = 10)
+            }, rowLp(-1, dp(44)).apply { topMargin = dp(30); rightMargin = dp(48) })
+            page.addView(info, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+            PhoneInsets.listen(page) { _, bottomInset, _ -> info.setPadding(dp(16), dp(34), dp(16), dp(14) + bottomInset) }
+        }
+        return page
     }
 
     /** 收藏态变化后刷新爱心图标。 */
@@ -418,7 +513,6 @@ class PhonePlayer(
         // 旋转重建同样会走 release，那里绝不能把全屏会话的方向掰回去。
         if (fullscreen) activity.exitFullscreenPhone(rebuild = false, restoreOrientation = false)
         fullscreen = false
-        host = null; videoHost = null; controls = null
         clearRefs()
     }
 
@@ -434,7 +528,6 @@ class PhonePlayer(
         val layer = FrameLayout(activity)
         controls = layer
         page.addView(layer, FrameLayout.LayoutParams(-1, -1))
-        buildTopBar(layer)
         if (fullscreen) buildFullscreenControls(layer) else buildPortraitControls(layer)
     }
 
@@ -673,44 +766,14 @@ class PhonePlayer(
 
     @SuppressLint("ClickableViewAccessibility")
     private val touchListener = View.OnTouchListener { _, event ->
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) strokeTotal = 0f
         gesture.onTouchEvent(event)
         true
     }
 
-    /** 本次手势累计纵向位移。 */
-    private var strokeTotal = 0f
-    /** 同一次手势内只切一集。 */
-    private var strokeLocked = false
-
+    // 分页手势由外层 PhoneEpisodePager 拦截，视频区仅处理轻点和双击。
     private val gesture: GestureDetector by lazy {
         GestureDetector(activity, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean {
-                strokeTotal = 0f
-                strokeLocked = false
-                return true
-            }
-
-            override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
-                if (strokeLocked) return true
-                strokeTotal += dy
-                // 与 TV 版手势一致：dy 是「上次−当前」，上滑为正 → 下一集
-                if (Math.abs(strokeTotal) > activity.resources.displayMetrics.heightPixels * 0.18f) {
-                    strokeLocked = true
-                    if (strokeTotal > 0) activity.skipEpisodePhone(1) else activity.skipEpisodePhone(-1)
-                }
-                return true
-            }
-
-            override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                if (strokeLocked) return false
-                // 快速轻扫位移可能不够 18%，用速度兜底；要求纵向明显占优，避免误伤横向拖动
-                if (Math.abs(vy) > Math.abs(vx) * 1.4f && Math.abs(vy) > 1600f) {
-                    strokeLocked = true
-                    if (vy < 0) activity.skipEpisodePhone(1) else activity.skipEpisodePhone(-1)
-                }
-                return true
-            }
+            override fun onDown(e: MotionEvent): Boolean = true
 
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 // 轻点画面 = 切换控件显隐，进入 / 退出沉浸式观看（横竖屏皮肤一致）
@@ -733,20 +796,22 @@ class PhonePlayer(
      * 即沉浸式观看；再点一次恢复。只动控件层，不碰播放内核。
      */
     private fun toggleUiVisibility() {
-        val layer = controls ?: return
+        if (controls == null) return
         uiHidden = !uiHidden
         // 横屏全屏的弹幕跟着控件一起进出：控件在时让位，沉浸时才铺到标题栏位置
         syncDanmakuWithControls()
-        layer.animate().cancel()
-        layer.visibility = View.VISIBLE
-        layer.animate()
-            .alpha(if (uiHidden) 0f else 1f)
-            .setDuration(180)
-            .withEndAction {
-                // 动画期间用户可能又点了一次，状态已变回显示时不能把它藏掉
-                if (uiHidden) layer.visibility = View.GONE
-            }
-            .start()
+        listOfNotNull(controls, topBar).forEach { layer ->
+            layer.animate().cancel()
+            layer.visibility = View.VISIBLE
+            layer.animate()
+                .alpha(if (uiHidden) 0f else 1f)
+                .setDuration(180)
+                .withEndAction {
+                    // 动画期间用户可能又点了一次，状态已变回显示时不能把它藏掉
+                    if (uiHidden) layer.visibility = View.GONE
+                }
+                .start()
+        }
     }
 
     /**
@@ -830,6 +895,9 @@ class PhonePlayer(
     private fun rowLp(w: Int, h: Int) = LinearLayout.LayoutParams(w, h)
 
     private fun clearRefs() {
+        episodePager?.release(); episodePager = null
+        controls?.animate()?.cancel(); topBar?.animate()?.cancel()
+        episodePlaceholder = null; displayedEpisodeId = null
         host = null; videoHost = null; playerView = null; controls = null
         videoAspectRatio = 0f; episodeSheetTopOnScreen = null; previewDocked = false
         episodeSheetProgress = 0f; episodePreviewOrigin = null

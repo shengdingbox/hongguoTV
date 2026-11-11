@@ -3496,7 +3496,7 @@ class MainActivity: Activity() {
         remotePublish(true)
         if(!reuse) {
             root.removeAllViews(); root.setBackgroundColor(Color.BLACK)
-            val view=PlayerView(this).apply {
+            val view=(if(phonePlayerLayout()) layoutInflater.inflate(R.layout.phone_player_view,root,false) as PlayerView else PlayerView(this)).apply {
                 useController=false; resizeMode=frameResizeMode(); isFocusable=false
                 setKeepContentOnPlayerReset(true); setShutterBackgroundColor(Color.BLACK); setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
             }
@@ -3699,6 +3699,7 @@ class MainActivity: Activity() {
                 override fun onRenderedFirstFrame() {
                     if(active() && firstFrame) {
                         firstFrame=false
+                        if(phonePlayerLayout()) phonePlayer?.onFirstFrame()
                         android.util.Log.w("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-episodeStartedAt}")
                     }
                 }
@@ -6233,7 +6234,7 @@ class MainActivity: Activity() {
     val playerDuration get() = player?.duration?.takeIf { it>0 } ?: 0L
     /** 手机播放页 UI 实例（单例复用，控件引用由 render 重建时刷新）。 */
     private var phonePlayer: PhonePlayer?=null
-    private val phonePlayerOrCreate get() = phonePlayer ?: PhonePlayer(this).also { phonePlayer=it }
+    private val phonePlayerOrCreate get() = phonePlayer ?: PhonePlayer(this,::loadCover).also { phonePlayer=it }
     /** 当前手机播放页实例；PhonePlayer 用它确认自己没有被旋转重建替换掉。 */
     val currentPhonePlayer: PhonePlayer? get() = phonePlayer
     /**
@@ -6710,7 +6711,7 @@ class MainActivity: Activity() {
     /** 手机播放控制桥接：由 PhonePlayer 调用，复用既有播放操作。 */
     fun togglePlaybackPhone()=togglePlayback()
     fun seekToPhone(position: Long)=seekTo(position)
-    fun skipEpisodePhone(direction: Int) { if(!skipEpisode(direction)) PhoneUi.toast(this,"没有更多集数") }
+    fun skipEpisodePhone(direction: Int): Boolean = skipEpisode(direction).also { if(!it) PhoneUi.toast(this,"没有更多集数") }
     fun showPhoneEpisodePicker() { if(detail!=null) showEpisodePanel(voiceAnchor) }
 
     /** 手机竖屏选集：底部数字宫格弹层（对齐葫芦娃红果播放页），选中后直接切集。 */

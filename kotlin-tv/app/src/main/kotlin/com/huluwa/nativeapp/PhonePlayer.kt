@@ -186,10 +186,10 @@ class PhonePlayer(
         videoHost?.addView(view, 0, FrameLayout.LayoutParams(-1, -1))
     }
 
-    /** 竖屏播放横向视频时，将画面从居中位置上移 10dp。 */
+    /** 竖屏播放横向视频时，将画面从居中位置上移 25dp。 */
     fun updateVideoPosition(size: VideoSize) {
         val landscape = size.height > 0 && size.width * size.pixelWidthHeightRatio > size.height
-        playerView?.translationY = if (!fullscreen && landscape) -dp(10).toFloat() else 0f
+        playerView?.translationY = if (!fullscreen && landscape) -dp(25).toFloat() else 0f
     }
 
     /**

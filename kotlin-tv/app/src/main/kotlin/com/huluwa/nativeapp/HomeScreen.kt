@@ -122,8 +122,16 @@ class HomeScreen(
                 val width=((resources.displayMetrics.widthPixels*.9f-dp(70))/6).toInt().coerceAtLeast(dp(100))
                 val key=if(entry!=null) "${shelf.key}:${entry.series.id}" else "${shelf.key}:more"
                 val view=LinearLayout(context).apply { orientation=VERTICAL; id=View.generateViewId(); tag=key; isFocusable=true; isFocusableInTouchMode=true; setPadding(dp(4),dp(4),dp(4),dp(8)); background=shape(false) }
-                val image=if(entry!=null) ImageView(context).apply { scaleType=ImageView.ScaleType.FIT_CENTER; importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO } else null
-                view.addView(image ?: label("›",36f).apply { gravity=Gravity.CENTER },LayoutParams(-1,((width-dp(8))/TvStyle.POSTER_ASPECT).toInt()))
+                val image=if(entry!=null) ImageView(context).apply { scaleType=ImageView.ScaleType.CENTER_CROP; importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO } else null
+                // 与排行榜一致：按实际宽度固定海报比例，横屏高度不足时由首页滚动承载。
+                val artwork=object: FrameLayout(context) {
+                    override fun onMeasure(widthMeasureSpec: Int,heightMeasureSpec: Int) {
+                        val w=MeasureSpec.getSize(widthMeasureSpec)
+                        super.onMeasure(widthMeasureSpec,MeasureSpec.makeMeasureSpec((w/TvStyle.POSTER_ASPECT).toInt(),MeasureSpec.EXACTLY))
+                    }
+                }
+                artwork.addView(image ?: label("›",36f).apply { gravity=Gravity.CENTER },FrameLayout.LayoutParams(-1,-1))
+                view.addView(artwork,LayoutParams(-1,-2))
                 val title=label(entry?.series?.title ?: "查看全部",14f).apply { gravity=Gravity.TOP; includeFontPadding=true; minLines=2; maxLines=2; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(5),dp(3),0) }
                 val badge=label(entry?.label ?: shelf.title,12f,TvStyle.muted).apply { minLines=1; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(dp(3),dp(2),0,0) }
                 val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply { max=100; progress=entry?.progress ?: 0; visibility=if(entry?.progress==null) INVISIBLE else VISIBLE; progressTintList=android.content.res.ColorStateList.valueOf(accent) }
@@ -174,7 +182,7 @@ class HomeScreen(
         if(requestFocus) target.requestFocus()
         post layout@{
             if(revision!=ticket) return@layout
-            fitArtwork()
+            alignTitleHeights()
             post restore@{
                 if(revision!=ticket) return@restore
                 if(previous!=null) restoreOffsets(previous)
@@ -248,21 +256,12 @@ class HomeScreen(
         }
     }
     override fun onAttachedToWindow() { super.onAttachedToWindow(); post { reloadArtwork() } }
-    override fun onSizeChanged(w: Int,h: Int,oldw: Int,oldh: Int) { super.onSizeChanged(w,h,oldw,oldh); if(w!=oldw || h!=oldh) post { fitArtwork(); loadNearbySelection() } }
-    private fun fitArtwork() {
-        if(height<=0) return
+    override fun onSizeChanged(w: Int,h: Int,oldw: Int,oldh: Int) { super.onSizeChanged(w,h,oldw,oldh); if(w!=oldw || h!=oldh) post { alignTitleHeights(); loadNearbySelection() } }
+    private fun alignTitleHeights() {
         rows.forEach { row ->
             // 部分机型单行/两行标题的实测行高不一致（minLines 保底失效），统一为行内最高标题，保证集数与进度条对齐
             val titleHeight=row.cards.maxOf { item -> item.title.measuredHeight }
             if(titleHeight>0) row.cards.forEach { card -> if(card.title.layoutParams.height!=titleHeight) card.title.layoutParams=card.title.layoutParams.apply { height=titleHeight } }
-            val textHeight=row.cards.maxOf { item -> item.view.paddingTop+item.view.paddingBottom+(1 until item.view.childCount).sumOf { child ->
-                val view=item.view.getChildAt(child); val params=view.layoutParams as LayoutParams
-                (if(params.height>0) params.height else view.measuredHeight)+params.topMargin+params.bottomMargin
-            } }
-            val width=row.cards.first().view.width
-            val desired=((width-dp(8))/TvStyle.POSTER_ASPECT).toInt()
-            val imageHeight=minOf(desired,(height-row.block.getChildAt(0).measuredHeight-textHeight-dp(8)).coerceAtLeast(dp(48)))
-            row.cards.forEach { card -> card.view.getChildAt(0).let { artwork -> if(artwork.layoutParams.height!=imageHeight) artwork.layoutParams=artwork.layoutParams.apply { height=imageHeight } } }
         }
     }
     fun firstId()=rows.firstOrNull()?.cards?.firstOrNull()?.view?.id ?: refresh.id

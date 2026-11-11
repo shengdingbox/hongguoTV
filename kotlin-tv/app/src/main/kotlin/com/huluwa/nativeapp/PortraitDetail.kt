@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.text.TextUtils
@@ -148,7 +149,11 @@ class PortraitDetail(
         content.setPadding(0, dp(78), 0, 0)
         PhoneInsets.listen(scroll) { _, bottomInset, _ -> scroll.setPadding(0, 0, 0, dp(92) + bottomInset) }
 
-        val top = PortraitUi.row(activity).apply { setPadding(dp(18), dp(16), dp(18), dp(20)) }
+        val topBackground = ColorDrawable(Color.WHITE).apply { alpha = 0 }
+        val top = PortraitUi.row(activity).apply {
+            background = topBackground
+            setPadding(dp(18), dp(16), dp(18), dp(20))
+        }
         top.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_page_back)
             setColorFilter(PortraitStyle.text)
@@ -162,6 +167,7 @@ class PortraitDetail(
             setTypeface(null, Typeface.BOLD)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
+            alpha = 0f
             visibility = View.INVISIBLE
         }
         top.addView(titleInBar, lp(0, -2).apply { weight = 1f; leftMargin = dp(14) })
@@ -170,10 +176,12 @@ class PortraitDetail(
         PhoneInsets.listen(top) { topInset, _, _ ->
             top.setPadding(dp(18), dp(16) + topInset, dp(18), dp(20))
         }
+        val topFadeDistance = dp(170).coerceAtLeast(1).toFloat()
         scroll.viewTreeObserver.addOnScrollChangedListener {
-            val pastHero = scroll.scrollY > dp(170)
-            titleInBar.visibility = if (pastHero) View.VISIBLE else View.INVISIBLE
-            top.setBackgroundColor(if (pastHero) Color.WHITE else Color.TRANSPARENT)
+            val progress = (scroll.scrollY / topFadeDistance).coerceIn(0f, 1f)
+            titleInBar.visibility = if (progress > 0f) View.VISIBLE else View.INVISIBLE
+            titleInBar.alpha = progress
+            topBackground.alpha = (255 * progress).toInt()
             backdrop.translationY = -scroll.scrollY.toFloat()
         }
 

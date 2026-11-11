@@ -32,13 +32,13 @@ class PhonePages(
 
     // ---- 首页：接着看 + 收藏有更新 + 热门发现（两列网格） ----
 
-    fun home(scroll: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
+    fun home(scroll: LinearLayout, scrollRoot: NestedScrollView? = null, onSearch: () -> Unit): (Boolean) -> Unit {
         val library = activity.phoneLibrary
         val recent = library.history().filterNot { library.watched(it.series.id) }
         val updates = library.favorites().filter { library.favoriteUpdate(it.id)?.hasUpdate == true }
         val later = library.later()
 
-        // 内容类型切换：漫剧 / 短剧
+        // 首页内容类型栏：漫剧 / 短剧，搜索入口只放在这一行最右侧。
         val typeRow = row().apply { setPadding(dp(14), dp(6), dp(14), dp(2)) }
         listOf(ContentType.COMIC, ContentType.SHORT).forEach { type ->
             val selected = library.contentType == type
@@ -50,7 +50,16 @@ class PhonePages(
             }
             typeRow.addView(chip, PhoneUi.lp(-2, -2).apply { rightMargin = dp(8) })
         }
-        typeRow.addView(PhoneUi.text(activity, "", 13f, TvStyle.muted), PhoneUi.lp(0, -2).apply { weight = 1f })
+        typeRow.addView(android.widget.Space(activity), PhoneUi.lp(0, -2).apply { weight = 1f })
+        typeRow.addView(ImageView(activity).apply {
+            setImageResource(com.huluwa.nativeapp.R.drawable.ic_search)
+            setColorFilter(TvStyle.text)
+            background = TvStyle.shape(activity, TvStyle.raised)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            contentDescription = "搜索"
+            isFocusable = true
+            setOnClickListener { onSearch() }
+        }, PhoneUi.lp(dp(44), dp(44)))
         scroll.addView(typeRow, PhoneUi.lp(-1, -2))
 
         if (recent.isNotEmpty()) {

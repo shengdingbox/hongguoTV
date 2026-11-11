@@ -6295,14 +6295,14 @@ class MainActivity: Activity() {
             return
         }
         val renderedTab=phoneTab
-        val (frame,content,nav)=PhoneUi.scaffold(this,phoneTab,{ switchPhoneTab(it) },{ switchPhoneTab("search") })
+        val (frame,content,nav)=PhoneUi.scaffold(this,phoneTab,{ switchPhoneTab(it) })
         PhoneUi.paintNav(nav,phoneTab)
         // 用 NestedScrollView 接管海报网格的整页拖动。
         val scroll=androidx.core.widget.NestedScrollView(this).apply { isVerticalScrollBarEnabled=false; isFillViewport=true }
         val body=column()
         scroll.addView(body)
         val update: ((Boolean) -> Unit)?=when(phoneTab) {
-            "home" -> phonePages.home(body,scrollRoot=scroll)
+            "home" -> phonePages.home(body,scrollRoot=scroll) { switchPhoneTab("search") }
             "rank" -> phonePages.rank(body,scrollRoot=scroll)
             "fav" -> { phonePages.favorites(body,scrollRoot=scroll); null }
             "mine" -> { phonePages.mine(body); null }
@@ -6477,7 +6477,7 @@ class MainActivity: Activity() {
         markPageShown()
         // 合集页属于它是从哪个页签打开的，底部导航高亮要跟着走
         val active=phoneCollectionTab
-        val (frame,content,nav)=PhoneUi.scaffold(this,active,{ switchPhoneTab(it) },{ switchPhoneTab("search") })
+        val (frame,content,nav)=PhoneUi.scaffold(this,active,{ switchPhoneTab(it) })
         PhoneUi.paintNav(nav,active)
         val scroll=androidx.core.widget.NestedScrollView(this).apply { isVerticalScrollBarEnabled=false; isFillViewport=true }
         val body=column()

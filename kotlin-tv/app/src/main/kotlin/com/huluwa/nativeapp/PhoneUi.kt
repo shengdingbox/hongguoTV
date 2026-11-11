@@ -25,7 +25,7 @@ import com.hongguotv.core.Series
 
 /**
  * 手机竖屏页面的公共基建与首页。TV 原页面（showCatalog/renderHome 等）一律不动，
- * 这里另起一套纵向布局：底部导航 + 顶部搜索入口 + 内容滚动区。
+ * 这里另起一套纵向布局：底部导航 + 内容滚动区，搜索入口由首页内容提供。
  *
  * 约定：所有页面都挂在 MainActivity.root 下，由 PhoneUi 判断「手机竖屏」时接管渲染；
  * 横屏（手机或电视）仍走原有 TV 页面。
@@ -96,7 +96,7 @@ object PhoneUi {
         return view
     }
 
-    /** 手机底部导航 Tab 定义：首页 / 排行 / 收藏 / 我的。搜索在首页顶栏，不单独占 Tab。 */
+    /** 手机底部导航 Tab 定义：首页 / 排行 / 收藏 / 我的。搜索在首页内容类型栏最右侧，不单独占 Tab。 */
     val TABS = listOf(
         Tab("home", "首页", com.huluwa.nativeapp.R.drawable.ic_nav_home),
         Tab("rank", "排行", com.huluwa.nativeapp.R.drawable.ic_nav_rank),
@@ -106,21 +106,12 @@ object PhoneUi {
     data class Tab(val key: String, val label: String, val icon: Int)
 
     /**
-     * 手机版页面骨架：顶栏（品牌 + 搜索入口）+ 中间滚动内容 + 底部导航。
+     * 手机版页面骨架：内容滚动区 + 底部导航，顶部只保留系统栏安全区。
      * [content] 由调用方填充并自行管理滚动。
      */
-    fun scaffold(activity: Activity, activeTab: String, onTab: (String) -> Unit, onSearch: () -> Unit): Triple<FrameLayout, LinearLayout, LinearLayout> {
+    fun scaffold(activity: Activity, activeTab: String, onTab: (String) -> Unit): Triple<FrameLayout, LinearLayout, LinearLayout> {
         val root = FrameLayout(activity).apply { setBackgroundColor(TvStyle.background) }
         val shell = column(activity)
-        // 顶栏：品牌 + 版本。顶部内边距要额外让出状态栏/刘海高度，见文件末尾的 Insets 适配
-        val topBaseTop = dp(activity, 10)
-        val top = row(activity).apply { setPadding(dp(activity, 16), topBaseTop, dp(activity, 16), dp(activity, 8)) }
-        val brand = row(activity)
-        brand.addView(ImageView(activity).apply { setImageResource(com.huluwa.nativeapp.R.drawable.app_icon) }, lp(dp(activity, 24), dp(activity, 24)).apply { rightMargin = dp(activity, 7) })
-        brand.addView(text(activity, "红果", 19f).apply { typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL) })
-        top.addView(brand)
-        top.addView(android.widget.Space(activity), lp(0, -2).apply { weight = 1f })
-        shell.addView(top, lp(-1, -2))
         // 内容区
         val content = column(activity)
         shell.addView(content, lp(-1, 0).apply { weight = 1f })
@@ -144,19 +135,9 @@ object PhoneUi {
         }
         shell.addView(nav, lp(-1, -2))
         root.addView(shell, FrameLayout.LayoutParams(-1, -1))
-        // 搜索入口：顶栏右侧一个圆形按钮，点击进入搜索页（由 MainActivity 路由）
-        val searchEntry = ImageView(activity).apply {
-            setImageResource(com.huluwa.nativeapp.R.drawable.ic_search)
-            background = TvStyle.shape(activity, TvStyle.raised)
-            setPadding(dp(activity, 8), dp(activity, 8), dp(activity, 8), dp(activity, 8))
-            setOnClickListener { onSearch() }
-            contentDescription = "搜索"
-        }
-        top.addView(searchEntry, lp(dp(activity, 36), dp(activity, 36)))
-        // 系统栏适配：顶栏让出状态栏/刘海，底栏让出手势条，内容区让出键盘，
-        // 否则 targetSdk 35 的强制 edge-to-edge 会让状态栏压住品牌行、手势条压住导航 Tab。
+        // 系统栏适配：内容顶部让出状态栏/刘海，底栏让出手势条，内容区让出键盘。
         PhoneInsets.listen(shell) { topInset, bottomInset, imeInset ->
-            top.setPadding(dp(activity, 16), topBaseTop + topInset, dp(activity, 16), dp(activity, 8))
+            shell.setPadding(0, topInset, 0, 0)
             nav.setPadding(0, dp(activity, 6), 0, navBaseBottom + bottomInset)
             // 键盘弹起时窗口不再自动缩放，把多出来的高度补给内容区底部，
             // 保证搜索框/结果能被滚到键盘上方。导航条那部分已经由 nav 自己让过，不重复扣。

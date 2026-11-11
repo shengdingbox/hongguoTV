@@ -825,6 +825,10 @@ class MainActivity: Activity() {
         }
         artwork.load(view,url,if(focused) ArtworkLoader.PRIORITY_FOCUSED else ArtworkLoader.PRIORITY_VISIBLE)
     }
+    /** 海报暂时离屏只暂停请求；真正回收卡片时才释放绑定。 */
+    fun recyclePhoneCover(view: ImageView) = artwork.clear(view)
+    fun refreshPhoneCovers() = artwork.refreshVisible()
+
     private fun cancelWork() {
         phoneRecommendationRetry?.let { main.removeCallbacks(it) }; phoneRecommendationRetry=null
         phoneHomeLoading=false
@@ -6525,25 +6529,34 @@ class MainActivity: Activity() {
         val keepCursor=!more && phoneRecommendationStarted && phoneRecommendationError.isBlank()
         val ticket=generation
         phoneRecommendationError=""; phoneRecommendationFailedMore=more
-        work({ repository.recommendations(cursor) }, { result ->
-            if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="home" && !phoneDetailCollection) {
-                phoneHomeLoading=false
-                // 初次联网和下拉刷新都把新推荐放前面，旧卡片留在后面，跨页始终按 ID 去重。
-                val combined=if(more) previous+result.items else result.items+previous
-                phoneRecommendationItems=combined.distinctBy { it.id }
-                phoneRecommendationCursor=when {
-                    more && phoneRecommendationItems.size==previous.size -> null
-                    keepCursor -> previousCursor
-                    else -> result.cursor
-                }
-                phoneRecommendationStarted=true
-                phoneRecommendationRetries=0
-                phoneRecommendationDiagnostic=result.diagnostic
-                RuntimeLog.add("recommendations ${result.diagnostic} total=${phoneRecommendationItems.size} " +
-                    "visible=${phoneRecommendationItems.count { it.id !in library.hidden() }}")
-                library.cacheRecommendations(phoneRecommendationItems)
-                renderPhone()
+        fun applyPage(result: RecommendationPage, finished: Boolean) {
+            if(!phoneLayout() || ticket!=generation || screen!="catalog" || phoneTab!="home" || phoneDetailCollection) return
+            phoneHomeLoading=!finished
+            // 每个阶段都是本批累计结果，相对加载前的快照合并，追加分页不会重排已显示的海报。
+            val combined=if(more) previous+result.items else result.items+previous
+            phoneRecommendationItems=combined.distinctBy { it.id }
+            phoneRecommendationCursor=when {
+                finished && more && phoneRecommendationItems.size==previous.size -> null
+                keepCursor -> previousCursor
+                else -> result.cursor
             }
+            phoneRecommendationStarted=true
+            phoneRecommendationRetries=0
+            phoneRecommendationDiagnostic=result.diagnostic
+            RuntimeLog.add("recommendations ${result.diagnostic} total=${phoneRecommendationItems.size} " +
+                "visible=${phoneRecommendationItems.count { it.id !in library.hidden() }} finished=$finished")
+            if(finished) library.cacheRecommendations(phoneRecommendationItems)
+            renderPhone()
+        }
+        work({
+            val scope=RequestScope.current()
+            repository.recommendationBatch(cursor) { partial ->
+                main.post {
+                    if(!isDestroyed && foreground && scope?.isCancelled!=true) applyPage(partial,finished=false)
+                }
+            }
+        }, { result ->
+            applyPage(result,finished=true)
         }, { problem ->
             if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="home" && !phoneDetailCollection) {
                 phoneHomeLoading=false
@@ -7625,7 +7638,8 @@ class MainActivity: Activity() {
             }
         } else playbackKeptOnStop=false
         retainedPhoneCatalogs.clear()
-        artwork.cancelPage(clearMemory=true); library.flush()
+        // 取消页面请求，保留有上限的内存图片缓存；真正内存紧张时由 trimMemory 回收。
+        artwork.cancelPage(); library.flush()
         remotePublish(true)
         super.onStop()
     }

@@ -182,10 +182,18 @@ object PortraitUi {
         private val more: (() -> Unit)?,
         private val scrollParent: NestedScrollView? = null,
         private val ranked: Boolean = false,
+        private val loadAheadScreens: Int = 0,
     ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         var items: List<Series> = emptyList()
         private var hasMore = more != null
         private var favoriteIds: Set<String> = emptySet()
+        private val stableIds = mutableMapOf<String, Long>()
+        private var nextStableId = 0L
+
+        init { setHasStableIds(true) }
+
+        override fun getItemId(position: Int): Long = if (position == items.size) -1L
+            else stableIds.getOrPut(items[position].id) { nextStableId++ }
 
         /** 保留未变化的卡片与 ImageView；刷新、追加分页都不再重建整张网格。 */
         fun submitItems(next: List<Series>, nextHasMore: Boolean) {
@@ -217,7 +225,22 @@ object PortraitUi {
             diff.dispatchUpdatesTo(this)
         }
 
-        private class Holder(val card: PosterCard) : RecyclerView.ViewHolder(card)
+        private class Holder(val card: PosterCard) : RecyclerView.ViewHolder(card) {
+            var cover = ""
+        }
+
+        override fun onViewAttachedToWindow(holder: RecyclerView.ViewHolder) {
+            super.onViewAttachedToWindow(holder)
+            if (holder is Holder) loadCover(holder.card.image, holder.cover)
+        }
+
+        override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
+            if (holder is Holder) {
+                activity.recyclePhoneCover(holder.card.image)
+                holder.cover = ""
+            }
+            super.onViewRecycled(holder)
+        }
 
         override fun getItemCount() = items.size + if (hasMore) 1 else 0
         override fun getItemViewType(position: Int) = if (position == items.size) 1 else 0
@@ -250,6 +273,7 @@ object PortraitUi {
             }
             val card = (holder as Holder).card
             val item = items[position]
+            holder.cover = item.cover
             card.title.text = item.title
             card.badge.text = item.badge
             card.contentDescription = item.title
@@ -286,6 +310,7 @@ object PortraitUi {
             recycler.clipToPadding = false
             recycler.isVerticalScrollBarEnabled = false
             recycler.itemAnimator = null
+            recycler.setItemViewCacheSize(9)
             // 外层是 NestedScrollView 时网格随内容展开，整页滚动由外层接管。
             recycler.isNestedScrollingEnabled = false
             val checkLoadMore = {
@@ -293,7 +318,7 @@ object PortraitUi {
                     val nearEnd = if (scrollParent != null) {
                         val content = scrollParent.getChildAt(0)
                         content != null && content.bottom + scrollParent.paddingBottom -
-                            (scrollParent.scrollY + scrollParent.height) <= dp(activity, 240)
+                            (scrollParent.scrollY + scrollParent.height) <= maxOf(dp(activity, 240), scrollParent.height * loadAheadScreens)
                     } else {
                         val last = layoutManager.findLastVisibleItemPosition()
                         last != RecyclerView.NO_POSITION && last >= itemCount - 4
@@ -303,15 +328,17 @@ object PortraitUi {
             }
             recycler.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
                 // 布局结束后再判断，内容不足一屏时也能继续分页。
-                recycler.post { checkLoadMore() }
+                recycler.post { activity.refreshPhoneCovers(); checkLoadMore() }
             }
             if (scrollParent != null) {
                 scrollParent.setOnScrollChangeListener(NestedScrollView.OnScrollChangeListener { _, _, y, _, oldY ->
+                    if (y != oldY) activity.refreshPhoneCovers()
                     if (y > oldY) checkLoadMore()
                 })
             } else {
                 recycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
                     override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                        if (dy != 0) activity.refreshPhoneCovers()
                         if (dy > 0) checkLoadMore()
                     }
                 })

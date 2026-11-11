@@ -196,6 +196,33 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return result
     }
 
+    /** 一次补充约 24 部，沿真实游标最多连续取 4 页；每页立即交给界面展示。 */
+    fun recommendationBatch(
+        cursor: RecommendationCursor? = null,
+        onPage: (RecommendationPage) -> Unit = {},
+    ): RecommendationPage {
+        var next = cursor
+        var batch: RecommendationPage? = null
+        repeat(4) {
+            val page = try { recommendations(next) } catch (problem: Exception) {
+                if (Thread.currentThread().isInterrupted || RequestScope.current()?.isCancelled == true) throw problem
+                // 已成功的页面照常交付，后续失败从最后成功的游标继续，不丢弃已拿到的内容。
+                return batch?.let { it.copy(diagnostic = "${it.diagnostic}; batch stopped=${problem.javaClass.simpleName}") }
+                    ?: throw problem
+            }
+            val previous = batch
+            val items = (previous?.items.orEmpty() + page.items).distinctBy { it.id }
+            val repeated = previous != null && page.items.isNotEmpty() && items.size == previous.items.size
+            val result = RecommendationPage(items, if (repeated) null else page.cursor,
+                listOfNotNull(previous?.diagnostic, page.diagnostic).joinToString("; "))
+            batch = result
+            next = result.cursor
+            onPage(result)
+            if (items.size >= 24 || next == null) return result
+        }
+        return checkNotNull(batch)
+    }
+
     private fun catalogJson(url: String, values: Map<String, String>): JSONObject {
         val signed = signer.signCatalog(url, values)
         val raw = text(signed.url, signed)

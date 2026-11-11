@@ -48,7 +48,7 @@ class PortraitPages(
         val grid = RecyclerView(activity)
         body.addView(grid, lp())
         val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
-            { activity.loadMorePhone() }, scrollRoot)
+            { activity.loadMorePhone() }, scrollRoot, loadAheadScreens = 2)
         adapter.attach(grid)
         val error = text("", 14f, PortraitStyle.muted).apply {
             gravity = Gravity.CENTER

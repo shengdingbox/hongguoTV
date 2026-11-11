@@ -9,6 +9,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.LruCache
 import android.view.View
 import android.widget.ImageView
@@ -22,6 +23,7 @@ import java.util.PriorityQueue
 import java.util.WeakHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -42,6 +44,8 @@ class ArtworkLoader(context: Context) {
         var key: Key? = null
         var applied: Key? = null
         var failed: Key? = null
+        var failures = 0
+        var retryAfter = 0L
         lateinit var layout: View.OnLayoutChangeListener
         lateinit var attach: View.OnAttachStateChangeListener
     }
@@ -54,8 +58,10 @@ class ArtworkLoader(context: Context) {
     }
 
     private val main = Handler(Looper.getMainLooper())
-    private val lowRam = (context.applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.isLowRamDevice == true
-    private val cacheBytes = (if (lowRam) 4 else 8) * 1024 * 1024
+    private val activityManager = context.applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+    private val lowRam = activityManager?.isLowRamDevice == true
+    // 普通设备最多用应用内存预算的 1/8，范围 8–32 MiB；低内存设备保留 4 MiB。
+    private val cacheBytes = (if (lowRam) 4 else ((activityManager?.memoryClass ?: 128) / 8).coerceIn(8, 32)) * 1024 * 1024
     private val cache = object : LruCache<Key, Bitmap>(cacheBytes) {
         override fun sizeOf(key: Key, value: Bitmap) = value.allocationByteCount
     }
@@ -74,6 +80,9 @@ class ArtworkLoader(context: Context) {
     private var owner = 0L
     private var order = 0L
     @Volatile private var closed = false
+    private var viewportRefreshPosted = false
+    private val viewportRefresh = Runnable { viewportRefreshPosted = false; refillVisible() }
+    private val retryVisible = Runnable { refillVisible() }
 
     init { repeat(if (lowRam) 1 else 2) { workers.execute(::work) } }
 
@@ -84,17 +93,21 @@ class ArtworkLoader(context: Context) {
         if (previous != null && previous.owner == owner && previous.url == url && previous.width == widthPx && previous.height == heightPx) {
             // 同一个控件重复请求同一张图时保留已经显示的位图，只调整请求优先级。
             previous.priority = priority.coerceIn(PRIORITY_FOCUSED, PRIORITY_PREFETCH)
-            previous.failed = null
             request(previous)
             return
         }
+        val keepPreviousImage = previous?.url == url && view.drawable != null
         if (previous != null) unbind(previous)
         if (url.isBlank()) { view.setImageDrawable(null); return }
         val binding = Binding(view, owner, url, priority.coerceIn(PRIORITY_FOCUSED, PRIORITY_PREFETCH), widthPx, heightPx)
         binding.layout = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> request(binding) }
         binding.attach = object : View.OnAttachStateChangeListener {
-            override fun onViewAttachedToWindow(v: View) { request(binding) }
-            override fun onViewDetachedFromWindow(v: View) { unbind(binding) }
+            override fun onViewAttachedToWindow(v: View) {
+                binding.failed = null; binding.failures = 0; binding.retryAfter = 0L
+                request(binding)
+            }
+            // RecyclerView 的临时 detach 不代表回收；保留监听器和已显示的图片，重新 attach 时续载。
+            override fun onViewDetachedFromWindow(v: View) { detachJob(binding) }
         }
         bindings[view] = binding
         view.addOnLayoutChangeListener(binding.layout)
@@ -106,8 +119,21 @@ class ArtworkLoader(context: Context) {
             view.setImageBitmap(cached.second)
             binding.key = cached.first
             binding.applied = cached.first
-        } else view.setImageDrawable(null)
+        } else if (!keepPreviousImage) view.setImageDrawable(null)
         request(binding)
+    }
+
+    /** 只在卡片真正回收、换内容或页面销毁时解除绑定。 */
+    fun clear(view: ImageView) {
+        bindings[view]?.let(::unbind)
+        view.setImageDrawable(null)
+    }
+
+    /** 外层滚动时重新提升可见海报的优先级，合并同一帧内的频繁通知。 */
+    fun refreshVisible() {
+        if (closed || viewportRefreshPosted) return
+        viewportRefreshPosted = true
+        main.postDelayed(viewportRefresh, 80L)
     }
 
     /** 尺寸未定时返回 null；命中内存缓存时同时返回实际缓存 key，供 applied 正确登记。 */
@@ -117,39 +143,61 @@ class ArtworkLoader(context: Context) {
         if (width <= 0 || height <= 0) return null
         val scale = min(1.0, 1024.0 / max(width, height))
         val key = Key(url, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
-        return cache.get(key)?.let { key to it }
+        return cachedBitmap(key)?.let { key to it }
+    }
+
+    /** 相同封面的尺寸只差少量像素时直接复用，避免布局微调导致重复下载或解码。 */
+    private fun cachedBitmap(key: Key): Bitmap? {
+        cache.get(key)?.let { return it }
+        val compatible = cache.snapshot().keys.filter { candidate ->
+            candidate.url == key.url && candidate.width * 10 >= key.width * 9 && candidate.height * 10 >= key.height * 9 &&
+                candidate.width <= key.width * 2 && candidate.height <= key.height * 2
+        }.minByOrNull { abs(it.width - key.width) + abs(it.height - key.height) } ?: return null
+        // 读取实际条目更新 LRU 顺序，不为同一位图建立多个别名，避免重复计入内存预算。
+        return cache.get(compatible)
     }
 
     private fun request(binding: Binding) {
         val view = binding.view.get() ?: return
-        if (closed || binding.owner != owner || bindings[view] !== binding) return
+        if (closed || binding.owner != owner || bindings[view] !== binding || !view.isAttachedToWindow) return
         val width = if (binding.width > 0) binding.width else view.width - view.paddingLeft - view.paddingRight
         val height = if (binding.height > 0) binding.height else view.height - view.paddingTop - view.paddingBottom
         if (width <= 0 || height <= 0) return
         // A malformed layout cannot ask an old TV to allocate a full-screen, multi-megapixel thumbnail.
         val scale = min(1.0, 1024.0 / max(width, height))
         val key = Key(binding.url, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
-        if (binding.key != key) { detachJob(binding); binding.key = key; binding.failed = null }
-        if (binding.applied == key || binding.failed == key) return
-        cache.get(key)?.let { bitmap -> view.setImageBitmap(bitmap); binding.applied = key; return }
+        if (binding.key != key) {
+            detachJob(binding); binding.key = key; binding.failed = null
+            binding.failures = 0; binding.retryAfter = 0L
+        }
+        if (binding.applied == key && view.drawable != null) return
+        if (binding.applied == key) binding.applied = null
+        if (binding.failed == key) {
+            if (binding.failures >= 3 || SystemClock.uptimeMillis() < binding.retryAfter) return
+            binding.failed = null
+        }
+        cachedBitmap(key)?.let { bitmap -> view.setImageBitmap(bitmap); binding.applied = key; return }
+        // NestedScrollView 会测量并挂载大量离屏卡片，不能让它们抢占当前可见海报的队列。
+        val priority = if (binding.priority == PRIORITY_VISIBLE && (!view.isShown || !view.getGlobalVisibleRect(Rect())))
+            PRIORITY_PREFETCH else binding.priority
         var cancelled: Job? = null
         synchronized(signal) {
             jobs[key]?.let { job ->
                 job.listeners += binding
-                if (binding.priority < job.priority) {
+                if (priority < job.priority) {
                     val queued = pending.remove(job)
-                    job.priority = binding.priority
+                    job.priority = priority
                     if (queued) pending.add(job)
                 }
                 return
             }
             if (pending.size >= MAX_PENDING) {
                 val worst = pending.maxWithOrNull(compareBy<Job> { it.priority }.thenBy { -it.order })!!
-                if (worst.priority < binding.priority) return
+                if (worst.priority < priority || (worst.priority == priority && priority == PRIORITY_PREFETCH)) return
                 cancelLocked(worst)
                 cancelled = worst
             }
-            val job = Job(key, owner, binding.priority, ++order)
+            val job = Job(key, owner, priority, ++order)
             job.listeners += binding
             jobs[key] = job
             pending += job
@@ -188,6 +236,8 @@ class ArtworkLoader(context: Context) {
 
     /** Release every old-page listener and bitmap binding, including queued and in-flight requests. */
     fun cancelPage(clearMemory: Boolean = false) {
+        main.removeCallbacks(viewportRefresh); viewportRefreshPosted = false
+        main.removeCallbacks(retryVisible)
         owner++
         val old = bindings.values.toList()
         old.forEach { binding -> binding.view.get()?.setImageDrawable(null); unbind(binding) }
@@ -203,8 +253,9 @@ class ArtworkLoader(context: Context) {
     @Suppress("DEPRECATION") // Android 8 devices still report the running-memory pressure levels.
     fun trimMemory(level: Int) {
         when {
-            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> cache.evictAll()
-            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> cache.trimToSize(cacheBytes / 2)
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL || level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE -> cache.evictAll()
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW || level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> cache.trimToSize(cacheBytes / 2)
+            // UI_HIDDEN 仅表示切到后台，不代表内存紧张；保留缓存让返回时直接显示。
         }
     }
 
@@ -240,14 +291,25 @@ class ArtworkLoader(context: Context) {
             }
             if (!job.cancelled && !closed) main.post {
                 if (job.owner == owner && !closed) {
+                    var retry = false
                     listeners.forEach { binding ->
                         val view = binding.view.get()
                         if (view != null && bindings[view] === binding && binding.key == job.key) {
-                            if (bitmap != null) { view.setImageBitmap(bitmap); binding.applied = job.key }
-                            else binding.failed = job.key
+                            if (bitmap != null) {
+                                view.setImageBitmap(bitmap); binding.applied = job.key
+                                binding.failed = null; binding.failures = 0
+                            } else {
+                                binding.failed = job.key; binding.failures++
+                                binding.retryAfter = SystemClock.uptimeMillis() + 2_000L
+                                if (binding.failures < 3) retry = true
+                            }
                         }
                     }
                     refillVisible()
+                    if (retry) {
+                        main.removeCallbacks(retryVisible)
+                        main.postDelayed(retryVisible, 2_000L)
+                    }
                 }
             }
         }
@@ -257,7 +319,9 @@ class ArtworkLoader(context: Context) {
     private fun refillVisible() {
         val visible = Rect()
         bindings.values.toList().filter { binding ->
-            binding.applied != binding.key && binding.failed != binding.key && binding.view.get()?.getGlobalVisibleRect(visible) == true
+            val view = binding.view.get()
+            view?.isShown == true && view.isAttachedToWindow && view.getGlobalVisibleRect(visible) &&
+                (binding.applied != binding.key || view.drawable == null)
         }.sortedBy { it.priority }.take(MAX_PENDING).forEach(::request)
     }
 

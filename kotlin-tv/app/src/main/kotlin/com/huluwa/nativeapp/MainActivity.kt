@@ -3601,7 +3601,7 @@ class MainActivity: Activity() {
                 playbackSession=it; player=it.player; playerView?.player=it.player
             }
             val p=session.player
-            phonePlayer?.updateVideoPosition(p.videoSize)
+            updatePhoneVideoPosition(p.videoSize)
             session.select(requestedId,selectedIndex,resetSource=restarting)
             p.setPlaybackSpeed(effectiveSpeed())
             var episodeStartedAt=playbackStarted
@@ -3694,7 +3694,7 @@ class MainActivity: Activity() {
                     if(sleepTimer.episodeEnded()) { stopForSleep(false); return }
                 }
                 override fun onVideoSizeChanged(videoSize: VideoSize) {
-                    if(active()) phonePlayer?.updateVideoPosition(videoSize)
+                    if(active()) updatePhoneVideoPosition(videoSize)
                 }
                 override fun onRenderedFirstFrame() {
                     if(active() && firstFrame) {
@@ -6672,18 +6672,28 @@ class MainActivity: Activity() {
     private fun showPhoneEpisodeSheet(data: com.hongguotv.core.Detail) {
         // 已开着就先收掉旧的，避免叠两层
         if(phoneEpisodeSheet!=null) { phoneEpisodeSheet?.dismiss(); phoneEpisodeSheet=null }
+        val playerUi=phonePlayer
         var sheet: PhoneEpisodeSheet?=null
         sheet=PhoneEpisodeSheet(this,data,episodeIndex,{ selected ->
             // 弹层已经先关掉了；回调里只负责切集
             if(selected!=episodeIndex) playEpisode(selected,savedPosition(selected))
         },{
             // 只清当前这一个实例的引用：用户重新打开后会换成新实例
-            if(phoneEpisodeSheet===sheet) phoneEpisodeSheet=null
+            if(phoneEpisodeSheet===sheet) {
+                phoneEpisodeSheet=null
+                playerUi?.setEpisodeSheetTop(null)
+            }
+        },previewAspectRatio=playerUi?.episodePreviewAspectRatio(),onPanelTopChanged={ top ->
+            if(phoneEpisodeSheet===sheet) playerUi?.setEpisodeSheetTop(top)
         })
         phoneEpisodeSheet=sheet
         sheet.show()
     }
     private var phoneEpisodeSheet: PhoneEpisodeSheet?=null
+    private fun updatePhoneVideoPosition(size: VideoSize) {
+        phonePlayer?.updateVideoPosition(size)
+        phoneEpisodeSheet?.updatePreviewAspectRatio(phonePlayer?.episodePreviewAspectRatio())
+    }
     fun showPhoneSpeedPicker() { showSpeedPicker(voiceAnchor,true) }
     fun showPhoneQualityPicker() { showQualityPicker(voiceAnchor,true) }
 

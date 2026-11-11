@@ -54,6 +54,9 @@ class PhonePlayer(
     /** 视频区：PlayerView 与弹幕层放在这里。 */
     private var videoHost: FrameLayout? = null
     private var playerView: View? = null
+    private var videoAspectRatio = 0f
+    private var episodeSheetTopOnScreen: Int? = null
+    private var previewDocked = false
     /** 顶部栏 + 底部面板。轻点画面切换显隐，隐藏后即沉浸式观看。 */
     private var controls: FrameLayout? = null
     /** 控件层当前是否隐藏（沉浸模式）。 */
@@ -127,13 +130,13 @@ class PhonePlayer(
             setOnClickListener { activity.togglePlaybackPhone() }
             visibility = View.GONE
         }
-        page.addView(centerPlay, FrameLayout.LayoutParams(dp(64), dp(64), Gravity.CENTER))
+        videoHost?.addView(centerPlay, FrameLayout.LayoutParams(dp(64), dp(64), Gravity.CENTER))
 
         buffering = ProgressBar(activity).apply {
             indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
             visibility = View.GONE
         }
-        page.addView(buffering, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER))
+        videoHost?.addView(buffering, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER))
 
         val error = column().apply {
             background = TvStyle.shape(activity, Color.argb(210, 0, 0, 0), radius = 14)
@@ -148,12 +151,13 @@ class PhonePlayer(
             setOnClickListener { activity.retryPlaybackPhone() }
         }, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(8) })
         errorBlock = error
-        page.addView(error, FrameLayout.LayoutParams(dp(240), -2, Gravity.CENTER))
+        videoHost?.addView(error, FrameLayout.LayoutParams(dp(240), -2, Gravity.CENTER))
 
         buildControls(page)
 
         // 手势只挂在视频区：控件层（按钮/进度条）保持正常点击，不能被整页监听吞掉。
         videoHost?.setOnTouchListener(touchListener)
+        page.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateVideoLayout() }
         root.addView(page, FrameLayout.LayoutParams(-1, -1))
 
         // 系统栏让位：竖屏皮肤顶部栏避开状态栏，底部面板避开手势条，弹幕层跟着顶部栏一起下移。
@@ -170,6 +174,7 @@ class PhonePlayer(
                 // 竖屏底部面板只让手势条；横屏皮肤的侧边安全区不影响竖屏排版
                 bottom?.setPadding(0, dp(34), 0, dp(8) + bottomInset)
             }
+            updateVideoLayout()
             videoHost?.findViewWithTag<View>(TAG_DANMAKU)?.let { view ->
                 (view.layoutParams as? FrameLayout.LayoutParams)?.topMargin = danmakuTopMargin()
                 view.requestLayout()
@@ -184,12 +189,60 @@ class PhonePlayer(
     fun attachPlayerView(view: View) {
         playerView = view
         videoHost?.addView(view, 0, FrameLayout.LayoutParams(-1, -1))
+        updateVideoLayout()
     }
 
-    /** 竖屏播放横向视频时，将画面从居中位置上移 25dp。 */
     fun updateVideoPosition(size: VideoSize) {
-        val landscape = size.height > 0 && size.width * size.pixelWidthHeightRatio > size.height
-        playerView?.translationY = if (!fullscreen && landscape) -dp(25).toFloat() else 0f
+        videoAspectRatio = if (size.height > 0) size.width * size.pixelWidthHeightRatio / size.height else 0f
+        updateVideoLayout()
+    }
+
+    /** 只有竖屏页面中的横向视频需要在选集面板上方预留播放区域。 */
+    fun episodePreviewAspectRatio(): Float? = videoAspectRatio.takeIf { !fullscreen && it > 1f }
+
+    fun setEpisodeSheetTop(topOnScreen: Int?) {
+        episodeSheetTopOnScreen = topOnScreen
+        updateVideoLayout()
+    }
+
+    private fun updateVideoLayout() {
+        val page = host ?: return
+        val video = videoHost ?: return
+        val sheetTop = episodeSheetTopOnScreen
+        var docked = false
+        val params = if (sheetTop != null && episodePreviewAspectRatio() != null && page.width > 0 && page.height > 0) {
+            val location = IntArray(2)
+            page.getLocationOnScreen(location)
+            val videoBottom = (sheetTop - location[1] - dp(8)).coerceIn(1, page.height)
+            val availableHeight = (videoBottom - topInsetPx - dp(8)).coerceAtLeast(1)
+            val videoHeight = minOf(page.width / videoAspectRatio, availableHeight.toFloat()).toInt().coerceAtLeast(1)
+            val videoWidth = (videoHeight * videoAspectRatio).toInt().coerceIn(1, page.width)
+            docked = true
+            FrameLayout.LayoutParams(videoWidth, videoHeight, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = videoBottom - videoHeight
+            }
+        } else {
+            FrameLayout.LayoutParams(-1, -1)
+        }
+        val previous = video.layoutParams as FrameLayout.LayoutParams
+        if (previous.width != params.width || previous.height != params.height ||
+            previous.gravity != params.gravity || previous.topMargin != params.topMargin) {
+            video.layoutParams = params
+        }
+        // 收起选集后恢复原有的全屏视频区及 25dp 上移位置。
+        playerView?.translationY = if (!docked && episodePreviewAspectRatio() != null) -dp(25).toFloat() else 0f
+        if (previewDocked != docked) {
+            previewDocked = docked
+            controls?.apply {
+                animate().cancel()
+                alpha = if (uiHidden) 0f else 1f
+                visibility = if (docked) View.INVISIBLE else if (uiHidden) View.GONE else View.VISIBLE
+            }
+            video.findViewWithTag<View>(TAG_DANMAKU)?.let { view ->
+                (view.layoutParams as? FrameLayout.LayoutParams)?.topMargin = danmakuTopMargin()
+                view.requestLayout()
+            }
+        }
     }
 
     /**
@@ -200,13 +253,13 @@ class PhonePlayer(
      */
     fun attachDanmaku(view: View) {
         view.tag = TAG_DANMAKU
-        videoHost?.addView(view, FrameLayout.LayoutParams(-1, -1).apply { topMargin = danmakuTopMargin() })
+        videoHost?.addView(view, if (playerView == null) 0 else 1, FrameLayout.LayoutParams(-1, -1).apply { topMargin = danmakuTopMargin() })
         // 横屏全屏只在沉浸（控件隐藏）时显示弹幕
         if (fullscreen) view.visibility = if (uiHidden) View.VISIBLE else View.INVISIBLE
     }
 
     /** 弹幕层上边距（px）：横屏贴着标题栏顶部，竖屏让出标题栏整行。 */
-    private fun danmakuTopMargin(): Int = if (fullscreen) 0 else dp(DANMAKU_TOP_DP) + topInsetPx
+    private fun danmakuTopMargin(): Int = if (fullscreen || previewDocked) 0 else dp(DANMAKU_TOP_DP) + topInsetPx
 
     /** 屏幕最底部离线状态条（含条上方的原因提示）：压在视频区底部，不挡控件。 */
     fun attachCacheStrip(view: View) {
@@ -519,6 +572,7 @@ class PhonePlayer(
 
     /** 全屏图标随状态切换（只有竖屏皮肤有这个按钮）。 */
     private fun applyFullscreenUi() {
+        updateVideoLayout()
         fullscreenButton?.setImageResource(if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen)
         playPauseButton?.setImageResource(if (lastPlaying) R.drawable.ic_pause else R.drawable.ic_play_arrow)
         timeText?.text = "${formatTime(lastPosition)} / ${formatTime(lastDuration)}"
@@ -686,6 +740,8 @@ class PhonePlayer(
 
     private fun clearRefs() {
         host = null; videoHost = null; playerView = null; controls = null
+        videoAspectRatio = 0f; episodeSheetTopOnScreen = null; previewDocked = false
+        topInsetPx = 0
         topBar = null; bottom = null; titleText = null; speedLabel = null
         seriesTitleText = null; introText = null; introToggle = null; episodePickerText = null
         playPauseButton = null; timeText = null; fsEpisodeButton = null

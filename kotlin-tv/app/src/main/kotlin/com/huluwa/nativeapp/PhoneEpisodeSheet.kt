@@ -10,11 +10,13 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.Window
+import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Space
 import android.widget.TextView
+import androidx.core.view.WindowCompat
 import com.hongguotv.core.Detail
 
 /**
@@ -32,44 +34,89 @@ class PhoneEpisodeSheet(
     private val current: Int,
     private val onSelect: (Int) -> Unit,
     private val onDismiss: () -> Unit,
+    private var previewAspectRatio: Float? = null,
+    private val onPanelTopChanged: (Int) -> Unit = {},
 ) {
     private fun dp(v: Int) = PhoneUi.dp(activity, v)
     private fun text(v: String, size: Float, color: Int = Color.WHITE) = PhoneUi.text(activity, v, size, color)
 
     private val dialog = Dialog(activity)
+    private var content: FrameLayout? = null
 
     fun show() {
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
-        dialog.setOnDismissListener { onDismiss() }
-        val width = activity.resources.displayMetrics.widthPixels
-        val height = activity.resources.displayMetrics.heightPixels
+        dialog.setOnDismissListener {
+            content = null
+            onDismiss()
+        }
         dialog.setContentView(build())
         dialog.window?.apply {
             setBackgroundDrawableResource(android.R.color.transparent)
-            setLayout(width, height)
+            WindowCompat.setDecorFitsSystemWindows(this, false)
+            decorView.setPadding(0, 0, 0, 0)
+            // 背景只由内容遮罩控制，避免系统调暗与自绘遮罩叠加。
+            clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            setDimAmount(0f)
         }
         dialog.show()
+        dialog.window?.setLayout(-1, -1)
         // 面板要能被手机遥控操作（数字宫格同样登记到统一弹窗栈）
         TvDialog.register(dialog)
     }
 
     fun dismiss() { if (dialog.isShowing) dialog.dismiss() }
 
+    fun updatePreviewAspectRatio(aspectRatio: Float?) {
+        if (previewAspectRatio == aspectRatio) return
+        previewAspectRatio = aspectRatio
+        content?.setBackgroundColor(backdropColor())
+        content?.requestLayout()
+    }
+
+    // 预览视频保持原亮度；普通选集只保留轻量遮罩。
+    private fun backdropColor(): Int = if (previewAspectRatio != null) Color.TRANSPARENT else Color.argb(82, 0, 0, 0)
+
     private fun build(): View {
-        // 深色半透明遮罩；点遮罩关闭
+        // 点击面板外关闭；横向视频预览区不覆盖深色遮罩。
         val root = FrameLayout(activity).apply {
-            setBackgroundColor(Color.argb(199, 0, 0, 0))
+            setBackgroundColor(backdropColor())
             isClickable = true
             setOnClickListener { dismiss() }
         }
 
-        val panel = LinearLayout(activity).apply {
+        content = root
+        var topInsetPx = 0
+        val panel = object : LinearLayout(activity) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val availableHeight = MeasureSpec.getSize(heightMeasureSpec)
+                val maxHeight = (availableHeight * .7f).toInt().coerceAtLeast(1)
+                val ratio = previewAspectRatio
+                val cap = if (ratio != null) {
+                    val previewHeight = (MeasureSpec.getSize(widthMeasureSpec) / ratio).toInt()
+                    // 优先预留完整宽度的视频，小屏幕至少留下标题和两行选集空间。
+                    val minHeight = (dp(200) + paddingBottom).coerceAtMost(maxHeight)
+                    (availableHeight - topInsetPx - dp(16) - previewHeight).coerceIn(minHeight, maxHeight)
+                } else maxHeight
+                super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST))
+            }
+        }.apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 setColor(Color.rgb(0x17, 0x17, 0x17))
                 cornerRadii = floatArrayOf(dp(22).toFloat(), dp(22).toFloat(), dp(22).toFloat(), dp(22).toFloat(), 0f, 0f, 0f, 0f)
             }
             setOnClickListener { }
+        }
+
+        PhoneInsets.listen(root) { topInset, bottomInset, _ ->
+            topInsetPx = topInset
+            panel.setPadding(0, 0, 0, bottomInset)
+            panel.requestLayout()
+        }
+        panel.addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
+            val location = IntArray(2)
+            view.getLocationOnScreen(location)
+            onPanelTopChanged(location[1])
         }
 
         // 标题行：剧名 + 「共N集 · 自动连播」+ 关闭
@@ -89,16 +136,8 @@ class PhoneEpisodeSheet(
         panel.addView(head, LinearLayout.LayoutParams(-1, -2))
 
         // 数字宫格：每行 5 个，打开时滚到当前集所在行。
-        // 高度最多占屏幕 70%（减去标题行），超出由 ScrollView 滚动；集数少时按内容收缩。
-        // ScrollView 没有 maxHeight，这里重写测量把上限写进 heightMeasureSpec。
-        val panelHeight = (activity.resources.displayMetrics.heightPixels * .7f).toInt()
-        val maxGridHeight = (panelHeight - dp(70)).coerceAtLeast(dp(160))
-        val scroll = object : ScrollView(activity) {
-            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-                val cap = MeasureSpec.makeMeasureSpec(maxGridHeight, MeasureSpec.AT_MOST)
-                super.onMeasure(widthMeasureSpec, cap)
-            }
-        }.apply { isVerticalScrollBarEnabled = false }
+        // 面板先为视频预留高度，剩余空间由列表滚动；集数少时按内容收缩。
+        val scroll = ScrollView(activity).apply { isVerticalScrollBarEnabled = false }
         val grid = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(10), dp(16), dp(20)) }
         scroll.addView(grid, LinearLayout.LayoutParams(-1, -2))
         val columns = 5

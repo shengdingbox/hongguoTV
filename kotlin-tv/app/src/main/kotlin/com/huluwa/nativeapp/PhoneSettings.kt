@@ -123,7 +123,10 @@ class PhoneSettings(private val activity: MainActivity) {
             // 弹窗改完焦点回到这一行：顺手把整页取值刷一遍（遥控键盘/电视遥控走这条）
             setOnFocusChangeListener { _, focused -> if (focused) refreshValues() }
         }
-        line.addView(text(label, 15f), PhoneUi.lp(0, -2).apply { weight = 1f })
+        line.addView(text(label, 15f).apply {
+            maxLines = 1
+            gravity = Gravity.CENTER_VERTICAL
+        }, PhoneUi.lp(0, -2).apply { weight = 1f })
         if (value != null) {
             val valueView = text(value, 13f, TvStyle.muted).apply {
                 maxLines = 1

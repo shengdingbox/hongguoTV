@@ -653,12 +653,19 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // multi_video_detail 按 series_id 包装每部剧，真正的卡片与分集在其 video_data 内。
         val v = data.optJSONObject("data")?.optJSONObject(id)?.optJSONObject("video_data")
             ?: throw IOException("剧集详情暂不可用")
-        val series = planCardSeries(v).copy(id = id)
-        val episodes = v.optJSONArray("video_list")?.objects()
-            ?.mapNotNull { row -> row.str("vid").takeIf { vid -> vid.matches(Regex("[0-9]{1,30}")) }?.let { row.optInt("vid_index", Int.MAX_VALUE) to it } }
-            ?.sortedBy { it.first }?.map { it.second }
-            ?: throw IOException("分集暂不可用")
-        if (episodes.isEmpty() || episodes.distinct().size != episodes.size) throw IOException("分集数据异常")
+        val series = planCardSeries(v)
+        if (series.id != id || series.title.isBlank()) throw IOException("剧集详情数据异常")
+        // 与开心果一致：详情有效但尚无分集时仍可展示、收藏；缺失或 null 列表同样视为空。
+        // 非空列表必须逐项合法，避免把格式损坏或无效 ID 误当作暂无分集。
+        val rows = if (v.isNull("video_list")) JSONArray()
+            else v.optJSONArray("video_list") ?: throw IOException("分集数据异常")
+        val episodes = (0 until rows.length()).map { index ->
+            val row = rows.optJSONObject(index) ?: throw IOException("分集数据异常")
+            val vid = row.str("vid")
+            if (!vid.matches(Regex("[0-9]{1,30}"))) throw IOException("分集数据异常")
+            row.optInt("vid_index", Int.MAX_VALUE) to vid
+        }.sortedBy { it.first }.map { it.second }
+        if (episodes.distinct().size != episodes.size) throw IOException("分集数据异常")
         return SeriesPayload(series, episodes, detailSocial(v))
     }
 

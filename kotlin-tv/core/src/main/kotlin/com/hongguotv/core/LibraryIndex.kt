@@ -93,7 +93,8 @@ class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = empt
     }
     fun clearHistory() { historyRows = emptyList(); progressById.clear(); watchedIds = emptySet() }
     fun observeFavorite(id: String, count: Int, now: Long, acknowledge: Boolean, newSeason: Series? = null): Boolean {
-        if (!favorite(id)) return false
+        // 未上线或暂不可取的分集不能写入零集计数，也不能覆盖已有的收藏更新状态。
+        if (count <= 0 || !favorite(id)) return false
         val previous = updateRows[id]
         var next = previous?.observe(count, now, acknowledge) ?: FavoriteUpdate.first(count, now)
         if (!acknowledge) next = next.observeNewSeason(newSeason?.id, newSeason?.title, now)

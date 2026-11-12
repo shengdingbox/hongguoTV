@@ -3035,8 +3035,14 @@ class MainActivity: Activity() {
         pendingDetail=series; detailAutoplay=autoplay; pendingCloudResume=cloud
         invalidatePage(); releaseCatalogViews(); screen="detail"; directPlayback=resume; detail=null; synopsisExpanded=false; detailEpisodePage=-1
         val body=base(series.title); message(body,"正在加载剧集…")
-        val apply:(Detail)->Unit={ result ->
-            detail=result; library.observeFavorite(series.id,result.episodes.size,System.currentTimeMillis(),acknowledge=true)
+        val apply:(Detail)->Unit=loaded@{ result ->
+            detail=result
+            if(result.episodes.isEmpty()) {
+                pendingCloudResume=null; episodeIndex=0; group=0; directPlayback=false
+                showDetail(false)
+                return@loaded
+            }
+            library.observeFavorite(series.id,result.episodes.size,System.currentTimeMillis(),acknowledge=true)
             val cloudResume=pendingCloudResume.takeIf { it?.series?.id==series.id }; pendingCloudResume=null
             val target=if(cloudResume!=null) {
                 // 云端进度续播：episodeId 对不上（换源/集数更新）时退回云端记录的集号；不写本机记录，起播后自然落本机
@@ -3087,7 +3093,7 @@ class MainActivity: Activity() {
      *  起播前不再需要两次网络往返（取模型 + 取清晰度）。预取失败由缓存自己退避，不影响页面。 */
     private fun prefetchDetailWindow(vararg extra: Int) {
         val data=detail ?: return
-        if(!prefetchMemoryReady()) return
+        if(data.episodes.isEmpty() || !prefetchMemoryReady()) return
         val quality=effectiveQuality()
         // 「开始观看」实际会播的集，加上调用方明确关心的集（如跳转集数选中的那集）；
         // 两者都预热，避免焦点所在集与按钮行为不一致时落空。
@@ -3128,13 +3134,17 @@ class MainActivity: Activity() {
     /** focusPager：翻页后焦点留在翻页按钮上（-1=‹，1=›），0=按 focusEpisode 决定，见函数末尾。 */
     private fun showDetail(focusEpisode: Boolean, focusPager: Int = 0) {
         invalidatePage(); releaseCatalogViews(); screen="detail"; val data=detail ?: return showCatalog()
+        val hasEpisodes=data.episodes.isNotEmpty()
         val body=base("剧集详情")
         val scroll=ScrollView(this).apply { isVerticalScrollBarEnabled=false }; val content=column(); scroll.addView(content); body.addView(scroll,lp(-1,0).apply { weight=1f })
         val hero=row(); hero.gravity=Gravity.TOP; hero.setPadding(0,dp(12),0,dp(12))
         val image=ImageView(this).apply { scaleType=ImageView.ScaleType.CENTER_CROP }; hero.addView(image,lp(dp(140),dp(198)).apply { rightMargin=dp(24) }); loadCover(image,data.series.cover)
         val info=column(); hero.addView(info,lp(0,-2).apply { weight=1f })
         info.addView(text(data.series.title,26f).apply { setTypeface(null,Typeface.BOLD); maxLines=2; ellipsize=TextUtils.TruncateAt.END })
-        info.addView(text("${data.episodes.size} 集  ·  ${data.series.tags}"+library.progress(data.series.id)?.let { "  ·  看到第 ${it.episodeIndex+1} 集" }.orEmpty(),13f,muted).apply { maxLines=1; setPadding(0,dp(8),0,dp(8)) })
+        val episodeLabel=if(hasEpisodes) "${data.episodes.size} 集" else data.series.badge
+        val metadata=listOf(episodeLabel,data.series.tags,library.progress(data.series.id)?.let { "看到第 ${it.episodeIndex+1} 集" }.orEmpty())
+            .filter { it.isNotBlank() }.joinToString("  ·  ")
+        info.addView(text(metadata,13f,muted).apply { maxLines=1; setPadding(0,dp(8),0,dp(8)) })
         // 评分与收藏数来自详情页同一份数据，卡片列表没有这些字段；缺失时整行不显示
         if(!data.social.isEmpty) {
             val metrics=mutableListOf<String>()
@@ -3149,7 +3159,7 @@ class MainActivity: Activity() {
             }
             info.addView(TextView(this).apply { text=line; textSize=13f; setTextColor(muted); includeFontPadding=false; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(0,0,0,dp(6)) })
         }
-        val description=data.series.description.ifBlank { "选择剧集开始观看" }
+        val description=data.series.description.ifBlank { if(hasEpisodes) "选择剧集开始观看" else "暂无简介" }
         val synopsis=text(description,15f,muted).apply { maxLines=if(synopsisExpanded) 20 else 2; ellipsize=TextUtils.TruncateAt.END }
         info.addView(synopsis)
         val actions=row(); actions.setPadding(0,dp(12),0,0); info.addView(actions)
@@ -3158,6 +3168,7 @@ class MainActivity: Activity() {
         val resumePosition=progress?.takeIf { !it.completed && resumeIndex==it.episodeIndex }?.position ?: 0
         val watched=library.watched(data.series.id)
         val play=addButton(actions,if(watched) "重新观看" else if(progress!=null && !progress.completed) "继续第 ${resumeIndex+1} 集" else "开始观看") { playEpisode(if(watched) 0 else if(progress?.completed==true) (resumeIndex+1).coerceAtMost(data.episodes.lastIndex) else resumeIndex,if(watched) 0 else resumePosition) }
+            .apply { visibility=if(hasEpisodes) View.VISIBLE else View.GONE; isEnabled=hasEpisodes }
         lateinit var favorite: TextView
         favorite=addButton(actions,if(library.favorite(data.series.id)) "已收藏" else "收藏") {
             favoriteMonitor.stop()
@@ -3174,10 +3185,14 @@ class MainActivity: Activity() {
         }
         lateinit var jump: TextView
         jump=addButton(actions,"跳转集数") { tvTools.episodePicker(data.episodes.size,episodeIndex,jump) { target -> episodeIndex=target; group=target/20; showDetail(true); prefetchDetailWindow(target) } }
+            .apply { visibility=if(hasEpisodes) View.VISIBLE else View.GONE; isEnabled=hasEpisodes }
+        val firstAction=if(hasEpisodes) play else favorite
+        val lastAction=if(hasEpisodes) jump else synopsisButton
         content.addView(hero)
         // 系列剧季导航与集数网格收进海报右侧栏：一屏内完成「看点什么、从哪集看」的决定
         val seasonHost=column()
         info.addView(seasonHost)
+        if(!hasEpisodes) info.addView(text("暂时没有可看的剧集",15f,muted).apply { setPadding(0,dp(12),0,0) })
         val seasonButtons=mutableListOf<TextView>()
         fun renderSeasons(current: Detail) {
             seasonHost.removeAllViews(); seasonButtons.clear()
@@ -3270,7 +3285,7 @@ class MainActivity: Activity() {
             val lastRowStart=((episodes.size-1)/episodeCols)*episodeCols
             val firstRow=extraRows.firstOrNull()
             val pagerRow: View?=prevPager ?: nextPager
-            val aboveEpisodes: View=pagerRow ?: seasonButtons.lastOrNull() ?: jump
+            val aboveEpisodes: View=pagerRow ?: seasonButtons.lastOrNull() ?: lastAction
             episodes.forEachIndexed { i,v ->
                 v.nextFocusLeftId=when {
                     i%episodeCols==0 -> prevPager?.id ?: v.id
@@ -3289,24 +3304,22 @@ class MainActivity: Activity() {
                 }
             }
             // 翻页按钮（集数上方）：↑ 回季条/操作行，↓ 进集数第一行；左右互连
-            val abovePager: View=seasonButtons.lastOrNull() ?: jump
+            val abovePager: View=seasonButtons.lastOrNull() ?: lastAction
             prevPager?.let { it.nextFocusUpId=abovePager.id; it.nextFocusDownId=episodes.firstOrNull()?.id ?: it.id; it.nextFocusRightId=nextPager?.id ?: it.id }
             nextPager?.let { it.nextFocusUpId=abovePager.id; it.nextFocusDownId=episodes.firstOrNull()?.id ?: it.id; it.nextFocusLeftId=prevPager?.id ?: it.id }
             // 季条 ↑ 回操作行、↓ 进翻页/集数；操作行 ↓ 优先进季条，否则直达翻页或第一集
             seasonButtons.forEachIndexed { index,view ->
-                view.nextFocusUpId=jump.id
+                view.nextFocusUpId=lastAction.id
                 view.nextFocusDownId=pagerRow?.id ?: episodes.getOrNull(index.coerceAtMost(episodes.lastIndex))?.id ?: View.NO_ID
             }
-            episodes.firstOrNull()?.let { first ->
-                val down=seasonButtons.firstOrNull()?.id ?: pagerRow?.id ?: first.id
-                listOf(play,favorite,synopsisButton,jump).forEach { it.nextFocusDownId=down }
-            }
+            val down=seasonButtons.firstOrNull()?.id ?: pagerRow?.id ?: episodes.firstOrNull()?.id ?: firstRow?.firstOrNull()?.id ?: View.NO_ID
+            listOf(play,favorite,synopsisButton,jump).forEach { it.nextFocusDownId=down }
             extraRows.forEachIndexed { rowIndex,cards ->
                 cards.forEachIndexed { i,v ->
                     v.nextFocusLeftId=cards[(i-1).coerceAtLeast(0)].id
                     v.nextFocusRightId=cards[(i+1).coerceAtMost(cards.lastIndex)].id
-                    v.nextFocusUpId=if(rowIndex>0) extraRows[rowIndex-1].getOrNull(i.coerceAtMost(extraRows[rowIndex-1].lastIndex))?.id ?: (pagerRow?.id ?: play.id)
-                        else episodes.getOrNull((lastRowStart+i).coerceAtMost(episodes.lastIndex))?.id ?: (pagerRow?.id ?: play.id)
+                    v.nextFocusUpId=if(rowIndex>0) extraRows[rowIndex-1].getOrNull(i.coerceAtMost(extraRows[rowIndex-1].lastIndex))?.id ?: (pagerRow?.id ?: firstAction.id)
+                        else episodes.getOrNull((lastRowStart+i).coerceAtMost(episodes.lastIndex))?.id ?: (pagerRow?.id ?: firstAction.id)
                     v.nextFocusDownId=if(rowIndex<extraRows.lastIndex) extraRows[rowIndex+1].getOrNull(i.coerceAtMost(extraRows[rowIndex+1].lastIndex))?.id ?: v.id else v.id
                 }
             }
@@ -3322,8 +3335,8 @@ class MainActivity: Activity() {
         }
         when {
             pagerTarget!=null -> pagerTarget.requestFocus()
-            focusEpisode -> episodes.getOrNull((episodeIndex-pageStart).coerceIn(0,episodes.lastIndex))?.requestFocus()
-            else -> play.requestFocus()
+            focusEpisode && episodes.isNotEmpty() -> episodes.getOrNull((episodeIndex-pageStart).coerceIn(0,episodes.lastIndex))?.requestFocus()
+            else -> firstAction.requestFocus()
         }
     }
     /** 撤掉还没执行的「不兼容自动跳下一集」：用户已经自己动手换集了，不能再被拖回去。 */
@@ -3331,8 +3344,12 @@ class MainActivity: Activity() {
         skipUnplayableJob?.let { main.removeCallbacks(it) }; skipUnplayableJob=null
     }
     private fun playEpisode(index: Int,position: Long=0,autoplay: Boolean=true,recovering: Boolean=false) {
-        updater.interrupt(); cancelSkipUnplayable()
         val data=detail ?: return
+        if(data.episodes.isEmpty()) {
+            Toast.makeText(this,"暂时没有可看的剧集",Toast.LENGTH_SHORT).show()
+            return
+        }
+        updater.interrupt(); cancelSkipUnplayable()
         val playbackStarted=android.os.SystemClock.elapsedRealtime()
         // 切集先撤掉后台整集下载的带宽占用，首帧和当前集缓冲就绪后逐步恢复。
         playbackFirstFrameRendered=false
@@ -6799,6 +6816,7 @@ class MainActivity: Activity() {
                         }
                     }
                 } else if(result.episodes.isEmpty()) {
+                    episodeIndex=0; group=0
                     renderPhoneDetail(result)
                 } else {
                     library.observeFavorite(series.id,result.episodes.size,System.currentTimeMillis(),acknowledge=true)

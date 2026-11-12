@@ -242,6 +242,7 @@ class PortraitDetail(
         val play = PortraitUi.row(activity).apply {
             gravity = Gravity.CENTER
             background = PortraitStyle.selectable(activity, PortraitStyle.accent, radius = 28)
+            visibility = if (data.episodes.isNotEmpty()) View.VISIBLE else View.GONE
             isEnabled = data.episodes.isNotEmpty()
             alpha = if (isEnabled) 1f else .45f
             contentDescription = playback.label
@@ -284,7 +285,7 @@ class PortraitDetail(
         favoriteIcon.alpha = if (library.favorite(data.series.id)) 1f else .45f
         favorite.addView(favoriteIcon, lp(dp(22), dp(22)).apply { rightMargin = dp(6) })
         favorite.addView(favoriteLabel, lp(-2, -2))
-        actions.addView(favorite, lp(dp(113), dp(54)).apply { leftMargin = dp(9) })
+        actions.addView(favorite, lp(dp(113), dp(54)).apply { leftMargin = if (data.episodes.isNotEmpty()) dp(9) else 0 })
         content.addView(actions, lp())
 
         val seasonHost = PortraitUi.column(activity).apply { setPadding(dp(16), dp(20), dp(16), dp(4)) }
@@ -380,7 +381,7 @@ class PortraitDetail(
             }
             episodeHost.addView(pager, lp())
             if (data.episodes.isEmpty()) {
-                episodeHost.addView(PortraitUi.emptyHint(activity, "暂无剧集"), lp())
+                episodeHost.addView(PortraitUi.emptyHint(activity, "暂时没有可看的剧集"), lp())
                 return
             }
             val pageStart = episodePage * pageSize
@@ -430,6 +431,10 @@ class PortraitDetail(
 
         fun setLoading(seasonId: String?) {
             loadingSeasonId = seasonId
+            play.visibility = if (data.episodes.isNotEmpty()) View.VISIBLE else View.GONE
+            favorite.layoutParams = (favorite.layoutParams as LinearLayout.LayoutParams).apply {
+                leftMargin = if (data.episodes.isNotEmpty()) dp(9) else 0
+            }
             play.isEnabled = seasonId == null && data.episodes.isNotEmpty()
             play.alpha = if (play.isEnabled) 1f else .45f
             episodeStatus?.text = if (seasonId == null) "共 ${data.episodes.size} 集" else "正在切换…"

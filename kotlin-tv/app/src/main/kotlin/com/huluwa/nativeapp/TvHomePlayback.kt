@@ -15,7 +15,6 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.hongguotv.core.ContentRepository
@@ -225,13 +224,13 @@ internal class TvHomePlayback(
         }
         p.setPlaybackSpeed(speed())
         val item = MediaItem.Builder().setMediaId(episodeId).setUri("hongguotv://home/$episodeId").setMimeType(MimeTypes.VIDEO_MP4).build()
-        val source = ProgressiveMediaSource.Factory { VideoDataSource(remote) }.createMediaSource(item)
+        val source = Mp4MediaSources.factory { VideoDataSource(remote) }.createMediaSource(item)
         remote.setPlaybackActive(true)
         p.setMediaSource(source, position); p.prepare(); p.playWhenReady = active && !userPaused
         publish("${episodeLabel()} · 正在加载…")
     }
 
-    private fun createPlayer() = ExoPlayer.Builder(context)
+    private fun createPlayer() = ExoPlayer.Builder(context, Mp4MediaSources.explicitSourceFactory())
         .setRenderersFactory(DefaultRenderersFactory(context).setEnableDecoderFallback(true))
         .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(1_500, 8_000, 250, 750)
             .setTargetBufferBytes(6 * 1024 * 1024).setPrioritizeTimeOverSizeThresholds(false).build())

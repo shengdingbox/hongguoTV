@@ -3812,14 +3812,13 @@ class MainActivity: Activity() {
         }
         refreshCacheStrip()
     }
-    /** 屏幕最底部缓存状态条：三段对应下 1/2/3 集，蓝色=已落盘比例，灰色=未离线。
-     *  只画条，不再在条上方显示任何文字提示。 */
+    /** 屏幕最底部缓存状态条：三段对应下 1/2/3 集，半透明强调色=已落盘比例，淡灰色=未离线。
+     *  全屏时常驻底部，不随播放控件隐藏。 */
     private fun refreshCacheStrip() {
         val strip=cacheStripView ?: return
         val segments=cacheStripSegments ?: return
         val data=detail
-        val visible=library.episodeCache && data!=null && screen=="player" &&
-            (phonePlayerLayout() || (::hud.isInitialized && hud.visibility==View.VISIBLE))
+        val visible=library.episodeCache && data!=null && screen=="player"
         strip.visibility=if(visible) View.VISIBLE else View.GONE
         // 隐藏的缓存条不会参与测量；不再为零宽度反复向主线程投递刷新任务。
         if(!visible || data==null) return
@@ -3850,10 +3849,11 @@ class MainActivity: Activity() {
         val segments=(0 until 3).map {
             val fill=View(this).apply {
                 setBackgroundColor(TvStyle.accent)
+                alpha=.45f
                 layoutParams=FrameLayout.LayoutParams(0,-1,Gravity.START)
             }
             FrameLayout(this).apply {
-                setBackgroundColor(Color.argb(70,255,255,255))
+                setBackgroundColor(Color.argb(32,255,255,255))
                 addView(fill)
                 tag=fill
                 // 首次测量或分段宽度变化后更新；旧页面的尺寸回调不能刷新新页面。
@@ -4125,7 +4125,6 @@ class MainActivity: Activity() {
     private fun hidePlaybackOverlay() {
         main.removeCallbacks(hideHud)
         panel=false; controls.visibility=View.GONE; controls.clearFocus(); hud.visibility=View.GONE
-        if(!phonePlayerLayout()) cacheStripView?.visibility=View.GONE
     }
     /** 播放屏鼠标手势：垂直滑动换集（仿红果原版，不弹选集面板），单击呼出/收起控制条。挂在根布局上，非播放屏直接放行。 */
     private fun setupMouseGestures() {
@@ -4212,7 +4211,7 @@ class MainActivity: Activity() {
         if(screen!="player") return
         refreshPointerUi()
         hud.visibility=View.VISIBLE
-        // 重新显示时立即补上隐藏期间的进度，尺寸未变化也能更新。
+        // 显示播放控件时同步最新缓存进度。
         refreshCacheStrip()
         updatePlaybackText(); scheduleHideHud()
     }
@@ -6942,7 +6941,7 @@ class MainActivity: Activity() {
                 phonePlayer?.isFullscreen()==true -> phonePlayer?.exitFullscreenFromBack()
                 phonePlayerLayout() -> returnToDetail()
                 episodePanel!=null -> episodePanel?.dismiss()
-                !playError && (hud.visibility==View.VISIBLE || controls.visibility==View.VISIBLE || cacheStripView?.visibility==View.VISIBLE) -> hidePlaybackOverlay()
+                !playError && (hud.visibility==View.VISIBLE || controls.visibility==View.VISIBLE) -> hidePlaybackOverlay()
                 else -> returnToDetail()
             }
             "detail" -> showCatalog()

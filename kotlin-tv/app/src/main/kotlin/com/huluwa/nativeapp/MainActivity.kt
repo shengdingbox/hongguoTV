@@ -3815,13 +3815,14 @@ class MainActivity: Activity() {
     /** 屏幕最底部缓存状态条：三段对应下 1/2/3 集，蓝色=已落盘比例，灰色=未离线。
      *  只画条，不再在条上方显示任何文字提示。 */
     private fun refreshCacheStrip() {
-        if(!phonePlayerLayout() && ::hud.isInitialized) cacheStripView?.visibility=if(hud.visibility==View.VISIBLE) View.VISIBLE else View.GONE
+        val strip=cacheStripView ?: return
         val segments=cacheStripSegments ?: return
         val data=detail
-        if(!library.episodeCache || data==null || screen!="player") {
-            segments.forEach { it.visibility=View.GONE }
-            return
-        }
+        val visible=library.episodeCache && data!=null && screen=="player" &&
+            (phonePlayerLayout() || (::hud.isInitialized && hud.visibility==View.VISIBLE))
+        strip.visibility=if(visible) View.VISIBLE else View.GONE
+        // 隐藏的缓存条不会参与测量；不再为零宽度反复向主线程投递刷新任务。
+        if(!visible || data==null) return
         val quality=effectiveQuality()
         val cache=episodeDiskCache
         segments.forEachIndexed { offset,segment ->
@@ -3833,12 +3834,10 @@ class MainActivity: Activity() {
                 segment.visibility=View.VISIBLE
                 val fill=segment.tag as? View ?: return@forEachIndexed
                 val width=segment.width
-                if(width>0) {
-                    fill.layoutParams.width=(width*ratio).toInt()
-                    fill.requestLayout()
-                } else {
-                    // 首帧布局未完成：等测量后再刷新一次
-                    segment.post { refreshCacheStrip() }
+                if(width<=0) return@forEachIndexed
+                val fillWidth=(width*ratio).toInt()
+                if(fill.layoutParams.width!=fillWidth) {
+                    fill.layoutParams=fill.layoutParams.apply { this.width=fillWidth }
                 }
             }
         }
@@ -3857,6 +3856,12 @@ class MainActivity: Activity() {
                 setBackgroundColor(Color.argb(70,255,255,255))
                 addView(fill)
                 tag=fill
+                // 首次测量或分段宽度变化后更新；旧页面的尺寸回调不能刷新新页面。
+                addOnLayoutChangeListener { view,left,_,right,_,oldLeft,_,oldRight,_ ->
+                    if(right-left>0 && right-left!=oldRight-oldLeft && cacheStripSegments?.contains(view)==true) {
+                        refreshCacheStrip()
+                    }
+                }
             }
         }
         segments.forEachIndexed { index,segment ->
@@ -4207,7 +4212,8 @@ class MainActivity: Activity() {
         if(screen!="player") return
         refreshPointerUi()
         hud.visibility=View.VISIBLE
-        if(!phonePlayerLayout()) cacheStripView?.visibility=View.VISIBLE
+        // 重新显示时立即补上隐藏期间的进度，尺寸未变化也能更新。
+        refreshCacheStrip()
         updatePlaybackText(); scheduleHideHud()
     }
     private fun playButtonLabel(): String {

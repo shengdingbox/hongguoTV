@@ -284,7 +284,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
         return MobileDiscoveryParser.rank(catalogJson("$API/reading/bookapi/bookmall/cell/change/v1/", values), content, board, cursor)
     }
-    /** 官方榜单每页固定约 10 部；每批沿游标最多取 3 页，逐页展示，目标约 30 部。 */
+    /** 官方榜单每页固定约 10 部；每批沿游标最多取 2 页，逐页展示，目标约 20 部。 */
     fun mobileRankingBatch(
         contentId: String = "",
         boardId: String = "",
@@ -293,7 +293,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     ): MobileRankPage {
         var next = cursor
         var batch: MobileRankPage? = null
-        repeat(3) {
+        repeat(2) {
             val page = try {
                 mobileRanking(next?.contentId ?: contentId, next?.boardId ?: boardId, next)
             } catch (problem: Exception) {
@@ -306,7 +306,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             batch = result
             next = result.cursor
             onPage(result)
-            if (items.size >= 30 || next == null) return result
+            if (items.size >= 20 || next == null) return result
         }
         return checkNotNull(batch)
     }

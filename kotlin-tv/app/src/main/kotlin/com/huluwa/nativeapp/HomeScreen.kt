@@ -10,6 +10,7 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.widget.*
 import com.hongguotv.core.Series
 
@@ -79,6 +80,15 @@ class HomeScreen(
     private var lastFocus=""
     private var footerMore: (() -> Unit)?=null
     private var revision=0
+    var onPreviewSelected: ((Series)->Unit)?=null
+    var onPreviewToggle: (() -> Unit)?=null
+    var onPreviewActions: (() -> Unit)?=null
+    var onPreviewCleared: (() -> Unit)?=null
+    private var previewView: View?=null
+    private var previewSeriesId=""
+    private var previewVisible=false
+    private var previewPlaying=false
+    private var previewFailed=false
     private val selectorButtons=mutableListOf<TextView>()
     private val selectorLine=LinearLayout(context).apply { gravity=Gravity.CENTER_VERTICAL }
     private val selectors=HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled=false; addView(selectorLine) }
@@ -92,7 +102,7 @@ class HomeScreen(
         background=TvVisual.panel(context); clipToOutline=true
     }
     private val backdrop=cover().apply { alpha=.3f }
-    private val poster=cover().apply { scaleType=ImageView.ScaleType.FIT_CENTER }
+    private val poster=cover().apply { scaleType=ImageView.ScaleType.FIT_CENTER; setBackgroundColor(TvStyle.background) }
     private val previousCover=cover()
     private val nextCover=cover()
     private val previousTitle=label("",14f)
@@ -109,15 +119,22 @@ class HomeScreen(
         maxLines=1; setPadding(dp(10),dp(6),dp(10),dp(6)); background=TvVisual.row(context,false,true)
     }
     private val empty=label("正在发现好剧…",15f,TvStyle.muted).apply { gravity=Gravity.CENTER; maxLines=3 }
+    private val previewStatus=label("",11f).apply {
+        gravity=Gravity.CENTER_VERTICAL; maxLines=1; ellipsize=TextUtils.TruncateAt.END
+        setPadding(dp(10),dp(5),dp(10),dp(5)); visibility=GONE
+        background=TvStyle.shape(context,
+            if(TvStyle.theme==TvStyle.Theme.NIGHT) Color.argb(210,11,15,21) else Color.argb(225,255,250,241),radius=6)
+        importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
     private val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply {
         max=100; progressTintList=ColorStateList.valueOf(TvStyle.accent); visibility=GONE
     }
     private val actionLine=LinearLayout(context).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(8),0,0) }
     private val play=button("播放全集","home:play") { openCurrent() }
-    private val manage=button("收藏 / 更多","home:actions") { current()?.let { rememberCurrent(); actions(it.series,manageAnchor()) } }
+    private val manage=button("收藏 / 更多","home:actions") { openActions(manageAnchor()) }
     private val resume=button("接着看","home:resume") { continueWatching() }
     private val positionLabel=label("",12f,TvStyle.accent).apply { gravity=Gravity.CENTER }
-    private val help=label("← →  换剧     确定  看全集     ↓  操作     ↑  分类",11f,TvStyle.muted).apply {
+    private val help=label("← →  换剧     确定  暂停 / 继续     ↓  操作     ↑  分类",11f,TvStyle.muted).apply {
         gravity=Gravity.CENTER; maxLines=1; ellipsize=TextUtils.TruncateAt.END
     }
     val refresh=button("换一批","home:refresh") {}.apply { textSize=12f }
@@ -145,6 +162,9 @@ class HomeScreen(
         stage.addView(info,FrameLayout.LayoutParams(dp(260),-2,Gravity.START or Gravity.BOTTOM).apply {
             leftMargin=dp(10); bottomMargin=dp(10)
         })
+        stage.addView(previewStatus,FrameLayout.LayoutParams(-1,dp(28),Gravity.BOTTOM).apply {
+            leftMargin=dp(8); rightMargin=dp(8); bottomMargin=dp(7)
+        })
         stage.addView(progress,FrameLayout.LayoutParams(-1,dp(3),Gravity.BOTTOM))
         hero.addView(stage,LayoutParams(-1,0,1f))
         listOf(play,manage,resume).forEachIndexed { index,view ->
@@ -167,8 +187,8 @@ class HomeScreen(
             hero.background=if(focused) TvVisual.card(context,true) else TvVisual.panel(context)
             if(focused) rememberCurrent()
         }
-        stage.setOnClickListener { openCurrent() }
-        stage.setOnLongClickListener { current()?.let { rememberCurrent(); actions(it.series,stage) }; true }
+        stage.setOnClickListener { togglePreview() }
+        stage.setOnLongClickListener { openActions(stage); true }
         stage.setOnKeyListener { _,key,event ->
             when(key) {
                 KeyEvent.KEYCODE_DPAD_LEFT,KeyEvent.KEYCODE_DPAD_RIGHT -> {
@@ -176,7 +196,11 @@ class HomeScreen(
                     true
                 }
                 KeyEvent.KEYCODE_MENU -> {
-                    if(event.action==KeyEvent.ACTION_UP) current()?.let { rememberCurrent(); actions(it.series,stage) }
+                    if(event.action==KeyEvent.ACTION_UP) openActions(stage)
+                    true
+                }
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,KeyEvent.KEYCODE_SPACE -> {
+                    if(event.action==KeyEvent.ACTION_UP) togglePreview()
                     true
                 }
                 else -> false
@@ -209,6 +233,65 @@ class HomeScreen(
         }
     }
     private fun openCurrent() { current()?.let { rememberCurrent(); open(it.series,it.resume) } }
+    private fun togglePreview() {
+        if(current()==null) return
+        rememberCurrent()
+        onPreviewToggle?.invoke() ?: openCurrent()
+    }
+    private fun openActions(anchor: View) {
+        current()?.let { entry ->
+            rememberCurrent(); onPreviewActions?.invoke(); actions(entry.series,anchor)
+        }
+    }
+
+    /** Keeps the TV playback surface below the cover and all focusable browsing controls. */
+    fun attachPreview(view: View) {
+        if(previewView===view) return
+        previewView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        (view.parent as? ViewGroup)?.removeView(view)
+        previewView=view
+        view.isFocusable=false; view.isFocusableInTouchMode=false; view.isClickable=false
+        view.importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        (view as? ViewGroup)?.descendantFocusability=FOCUS_BLOCK_DESCENDANTS
+        view.visibility=VISIBLE
+        stage.addView(view,stage.indexOfChild(poster),FrameLayout.LayoutParams(-1,-1))
+    }
+
+    /** MainActivity installs the callbacks after constructing the page, then selects its first work. */
+    fun selectPreview() {
+        val entry=current()
+        if(entry!=null) onPreviewSelected?.invoke(entry.series) else onPreviewCleared?.invoke()
+    }
+
+    fun showPreview(seriesId: String,label: String,showCover: Boolean,playing: Boolean,failed: Boolean=false) {
+        if(current()?.series?.id!=seriesId) return
+        previewSeriesId=seriesId; previewVisible=!showCover; previewPlaying=playing; previewFailed=failed
+        poster.visibility=if(showCover) VISIBLE else GONE
+        previewView?.visibility=VISIBLE
+        previewStatus.text=label
+        previewStatus.setTextColor(if(failed) TvStyle.accent else TvStyle.text)
+        previewStatus.visibility=if(label.isBlank()) GONE else VISIBLE
+        applyPreviewInfo()
+        describeStage()
+    }
+
+    private fun applyPreviewInfo() {
+        val compact=height>0 && height<dp(300)
+        intro.visibility=if(compact || previewVisible) GONE else VISIBLE
+        title.maxLines=if(compact || previewVisible) 1 else 2
+        title.textSize=if(compact || previewVisible) 17f else 21f
+        val margin=if(previewStatus.visibility==VISIBLE) dp(40) else dp(10)
+        (info.layoutParams as? FrameLayout.LayoutParams)?.takeIf { it.bottomMargin!=margin }?.let {
+            it.bottomMargin=margin; info.layoutParams=it
+        }
+    }
+
+    private fun describeStage() {
+        stage.contentDescription=current()?.let {
+            val action=if(onPreviewToggle==null) "确定看全集" else if(previewFailed) "确定重试播放" else if(previewPlaying) "确定暂停" else "确定继续播放"
+            "${it.series.title}，${it.label}，${previewStatus.text}，左右换剧，$action，长按打开片单操作"
+        } ?: "暂无剧集，请刷新"
+    }
     private fun continueWatching() {
         val more=activeShelf()?.more ?: footerMore?.takeIf { activeShelfKey=="hot" }
         if(more!=null) { rememberCurrent(); more(); return }
@@ -305,6 +388,12 @@ class HomeScreen(
     private fun paintSelection() {
         val shelf=activeShelf(); val entry=current(); val entries=shelf?.entries.orEmpty(); val index=currentIndex()
         stage.tag=currentKey()
+        val nextId=entry?.series?.id.orEmpty()
+        if(previewSeriesId!=nextId) {
+            previewSeriesId=nextId; previewVisible=false; previewPlaying=false; previewFailed=false
+            poster.visibility=VISIBLE; previewView?.visibility=VISIBLE
+            previewStatus.text=""; previewStatus.visibility=GONE
+        }
         title.text=entry?.series?.title ?: "发现下一部好剧"
         metadata.text=entry?.let { listOf(it.label,it.series.tags).filter(String::isNotBlank).distinct().joinToString("  ·  ") }.orEmpty()
         intro.text=entry?.series?.description?.takeIf(String::isNotBlank) ?: "左右换剧，挑选喜欢的故事"
@@ -328,7 +417,7 @@ class HomeScreen(
         nextCard.visibility=if(entries.size>1) VISIBLE else INVISIBLE
         previousCard.contentDescription="上一部，${previousTitle.text}"; nextCard.contentDescription="下一部，${nextTitle.text}"
         positionLabel.text=if(entry!=null) "${index+1} / ${entries.size}  ·  ${shelf?.title.orEmpty()}" else "好故事，即将开始"
-        stage.contentDescription=entry?.let { "${it.series.title}，${it.label}，左右换剧，确定看全集，长按打开片单操作" } ?: "暂无剧集，请刷新"
+        describeStage()
         stage.nextFocusUpId=selectorButtons.firstOrNull { it.tag=="home:shelf:$activeShelfKey" }?.id ?: top.id
         selectorButtons.forEach { button ->
             button.isSelected=button.tag=="home:shelf:$activeShelfKey"
@@ -336,7 +425,9 @@ class HomeScreen(
             button.setTextColor(if(button.isSelected) TvStyle.accent else TvStyle.text)
             button.setTypeface(null,if(button.isSelected) Typeface.BOLD else Typeface.NORMAL)
         }
+        applyPreviewInfo()
         loadArtwork()
+        selectPreview()
     }
     private fun loadArtwork() {
         val entries=activeShelf()?.entries.orEmpty(); val index=currentIndex(); val entry=entries.getOrNull(index)
@@ -360,10 +451,7 @@ class HomeScreen(
         val sideWidth=if(compact) dp(70) else dp(112)
         listOf(previousCard,nextCard).forEach { it.layoutParams=it.layoutParams.apply { width=sideWidth } }
         info.layoutParams=info.layoutParams.apply { width=minOf(dp(260),(w-edge*2-dp(34)).coerceAtLeast(dp(140))) }
-        val short=h<dp(300)
-        intro.visibility=if(short) GONE else VISIBLE
-        title.maxLines=if(short) 1 else 2
-        title.textSize=if(short) 17f else 21f
+        applyPreviewInfo()
         help.visibility=if(h<dp(240)) GONE else VISIBLE
         post { loadArtwork() }
     }

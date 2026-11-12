@@ -130,7 +130,7 @@ class EpisodePanel(
                     }
                     contentDescription = "第 ${index + 1} 集" + when {
                         index == current -> "，当前播放"
-                        marker.isNotBlank() -> "，$marker观看"
+                        marker.isNotBlank() -> "，${marker}观看"
                         else -> ""
                     }
                     val paint = onFocusChangeListener

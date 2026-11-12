@@ -56,3 +56,9 @@ openhongguo 的 `SignedHotSearchPairs` / `ParseHotSearch`、`ShortRank` / `Parse
 - JUnit（仅测试）：https://github.com/junit-team/junit4 — EPL-1.0
 
 应用图标和 TV banner 沿用本仓库素材。这里的应用不是内容平台官方客户端。
+
+TV 浏览页布局与原生绘制样式参考并改写自 N3urda/hongguoTV（GPL-3.0-only）：
+
+- https://github.com/N3urda/hongguoTV/tree/4c261cc362bb0833839673c9a209b677603e5297
+- 对照组件：`CatalogShell.kt`、`HomeFeedScreen.kt`、`DiscoveryScreen.kt`、`RankingScreen.kt`、`TvVisual.kt` 与设置页。
+- 本版改动：仅迁移 TV 六页的视觉布局，接入本仓库的收藏、历史、筛选、播放和焦点恢复；背景与控件直接绘制，未引入参考项目的账号业务、字体、噪点位图或媒体资源。

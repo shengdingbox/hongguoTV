@@ -5,12 +5,18 @@
 - 应用名称：红果
 - 包名：`com.huluwa.nativeapp`。
 - 收藏和历史保存在本机，可通过手机扫码导入导出备份。
-- TV 默认显示首页、搜索、排行榜和我的；设置入口固定显示。遥控地址、小爱同学、快传文件、本地自动备份、片源、本地库及导航模块显隐已移除。
+- TV 导航独立显示首页、找剧、排行榜、收藏、观看历史和设置；手机遥控、手机快传与备份入口位于设置的常用区。
 - APK 不含 JNI 库，可由 Android 在 ARM32、ARM64、x86、x86_64 上运行；视频解码能力依赖设备。
 - 源码分支：`main`；推送不会自动发版，正式版由维护者手动触发 `.github/workflows/release.yml`。
 - [下载正式签名 APK](https://github.com/jycao2/hongguoTV/releases/latest)
 - 手机遥控端：[hongguoTV-remote](https://github.com/jycao2/hongguoTV-remote)（扫码录入并管理电视入口；遥控页面与按键逻辑内置在本 APK）
 - 问题反馈与功能建议：请到 [hongguoTV-updates issues](https://github.com/jycao2/hongguoTV-updates/issues) 提交（该仓库同时承载版本更新与下载）
+
+## TV 页面布局迁移（未发布）
+
+- 参考 [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV) 的顶部文字导航、首页大卡片轮播、找剧三栏、排行榜海报网格与左右分栏设置；收藏和观看历史使用独立入口。
+- 继续使用本仓库的数据和播放流程，保留题材筛选、榜种切换、收藏分组、观看进度、自适应、横竖屏切换与界面缩放；手机竖屏页面保持原有外观，不新增红果账号登录功能。
+- 首页封面轮播按确认进入现有播放流程；默认背景、面板、焦点与设置开关使用原生绘制，保留显式选择的背景图，不增加字体、图片资源或 UI 依赖，沿用正式包的代码压缩与资源裁剪。
 
 ## 安装包体积优化（未发布）
 

@@ -1134,7 +1134,7 @@ class PlaybackModelCache(private val limit: Int = 120, private val ttlMillis: Lo
     }
 }
 
-private val SeasonPattern=Regex("第([0-9零〇一二三四五六七八九十百千]+)(?:季|部)")
+internal val SeasonPattern=Regex("第([0-9零〇一二三四五六七八九十百千]+)(?:季|部)")
 fun seasonNumber(title: String): Int {
     val matched=SeasonPattern.find(title)?.groupValues?.get(1) ?: return Int.MAX_VALUE
     return chineseNumber(matched)

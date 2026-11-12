@@ -3528,6 +3528,7 @@ class MainActivity: Activity() {
             session.select(requestedId,selectedIndex,resetSource=restarting)
             p.setPlaybackSpeed(effectiveSpeed())
             var episodeStartedAt=playbackStarted
+            var videoPrepareStartedAt=android.os.SystemClock.elapsedRealtime()
             val listener=object: Player.Listener {
                 // 页面请求的 generation 在 onStop 时会变，但保留下来的播放器仍使用这个监听器。
                 // 按当前监听器身份判定归属，切集或释放后旧回调失效，原地续播后的回调继续有效。
@@ -3590,7 +3591,7 @@ class MainActivity: Activity() {
                     if(p.currentMediaItemIndex>0) runCatching { p.removeMediaItem(0) }
                     stopDanmaku()
                     // 为新一集重置所有逐集状态；解码器与播放器实例保持不变。
-                    firstReady=true; firstFrame=true; rebufferStart=0; episodeStartedAt=android.os.SystemClock.elapsedRealtime(); readySince=0
+                    firstReady=true; firstFrame=true; rebufferStart=0; episodeStartedAt=android.os.SystemClock.elapsedRealtime(); videoPrepareStartedAt=episodeStartedAt; readySince=0
                     playbackReady=false; playError=false; incompatibleSkips=0
                     recovery.reset(); autoRecovery=false; cancelRecovery()
                     downgradeEpisode=nextId; downgradeCount=0
@@ -3627,7 +3628,7 @@ class MainActivity: Activity() {
                         playbackFirstFrameRendered=true
                         if(phonePlayerLayout()) phonePlayer?.onFirstFrame()
                         maybePrefetch()
-                        android.util.Log.w("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-episodeStartedAt}")
+                        android.util.Log.w("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-episodeStartedAt} prepareMs=${android.os.SystemClock.elapsedRealtime()-videoPrepareStartedAt}")
                     }
                 }
                 override fun onEvents(player: Player,events: Player.Events) {
@@ -3664,7 +3665,7 @@ class MainActivity: Activity() {
             main.post { if(!isDestroyed && foreground && screen=="player" && generation==ticket) preparePlaybackSession() }
         }
     }
-    /** 已有视频缓冲仍不出首帧时按解码失败处理，避免硬解静默卡住后一直转圈。 */
+    /** 慢首帧单独记录；是否降档由播放器实际报告的解码错误决定。 */
     private fun checkTvVideoFirstFrame() {
         val p=player
         val view=playerView
@@ -3677,10 +3678,9 @@ class MainActivity: Activity() {
         if(!waiting) { tvVideoFrameWaitStartedAt=0L; return }
         val now=android.os.SystemClock.elapsedRealtime()
         if(tvVideoFrameWaitStartedAt==0L) { tvVideoFrameWaitStartedAt=now; return }
-        if(now-tvVideoFrameWaitStartedAt<15_000L) return
-        tvVideoFrameWaitStartedAt=0L
-        android.util.Log.w("HongguoTV","Video first frame timeout episode=${episodeIndex+1} format=${p?.videoFormat?.sampleMimeType} bufferedMs=${p?.let { it.bufferedPosition-it.currentPosition }}")
-        playerFailure(PlaybackException("视频已缓冲但电视解码器未输出画面",null,PlaybackException.ERROR_CODE_DECODING_FAILED))
+        if(tvVideoFrameWaitStartedAt<0L || now-tvVideoFrameWaitStartedAt<15_000L) return
+        tvVideoFrameWaitStartedAt=-1L
+        android.util.Log.w("HongguoTV","Video first frame delayed episode=${episodeIndex+1} format=${p?.videoFormat?.sampleMimeType} bufferedMs=${p?.let { it.bufferedPosition-it.currentPosition }}")
     }
     private fun preparePlaybackSession(): EpisodePlaybackSession {
         val session=playbackSession ?: EpisodePlaybackSession(this,disk={ remote ->
@@ -3941,6 +3941,13 @@ class MainActivity: Activity() {
         val session=playbackSession ?: return
         if(queuedNextId.isNotEmpty() && (!library.autoNext || sleepStopped)) dropQueuedNext(preserveCurrent=true)
         if(!foreground || !p.playWhenReady || playError || sleepStopped || pausedForLifecycle || video==null) return
+        // 电视先让当前集出画面并积累三秒缓冲，再准备相邻集的地址、索引和媒体样本。
+        // 仅限制 Media3 样本预载仍会提前发起取址与分块读取，在低性能电视上挤占起播资源。
+        if(!touchPlayback) {
+            if(!playbackReady || !playbackFirstFrameRendered || p.playbackState!=Player.STATE_READY) return
+            val bufferedMs=(p.bufferedPosition-p.currentPosition).coerceAtLeast(0).toDouble()/p.playbackParameters.speed.coerceAtLeast(.1f)
+            if(p.bufferedPercentage<100 && bufferedMs<3_000L) return
+        }
         if(!networkAvailable()) return
         if(!prefetchMemoryReady()) return
         if(data.episodes.getOrNull(episodeIndex)!=p.currentMediaItem?.mediaId) return

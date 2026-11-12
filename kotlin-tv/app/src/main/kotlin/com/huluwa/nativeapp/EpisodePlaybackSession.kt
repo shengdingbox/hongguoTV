@@ -29,9 +29,11 @@ internal class EpisodePlaybackSession(context: Context, private val disk: (Remot
     // 同时参考系统低内存标记与应用堆预算，避免小堆电视因长预加载挤压解码内存。
     private val memoryManager = context.applicationContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
     private val lowMemoryDevice = memoryManager?.let { it.isLowRamDevice || it.memoryClass <= 128 } ?: true
+    private val tvPlayback = !TouchControls.isHandheld(context)
     private val nextPreloadMs = if (lowMemoryDevice) 5_000L else 15_000L
     private val previousPreloadMs = if (lowMemoryDevice) 3_000L else 5_000L
-    private val targetBufferBytes = (if (lowMemoryDevice) 16 else 24) * 1024 * 1024
+    // 电视沿用首页单路预览的缓冲预算，避免起播阶段解析和解密过多样本。
+    private val targetBufferBytes = (if (tvPlayback) 6 else if (lowMemoryDevice) 16 else 24) * 1024 * 1024
     private val sources = mutableMapOf<String, Source>()
     private var currentId: String? = null
     private var currentRanking = 0
@@ -51,8 +53,9 @@ internal class EpisodePlaybackSession(context: Context, private val disk: (Remot
     }.setMediaSourceFactory(mediaSourceFactory)
         .setRenderersFactory(PlaybackRenderersFactory(context))
         .setLoadControl(DefaultLoadControl.Builder()
-            .setBufferDurationsMs(10_000, 25_000, 250, 750)
+            .setBufferDurationsMs(if (tvPlayback) 1_500 else 10_000, if (tvPlayback) 8_000 else 25_000, 250, 750)
             .setTargetBufferBytes(targetBufferBytes)
+            .setPrioritizeTimeOverSizeThresholds(!tvPlayback)
             .build())
     private val preloadManager = builder.build()
     val player = builder.buildExoPlayer(ExoPlayer.Builder(context, mediaSourceFactory)).apply {

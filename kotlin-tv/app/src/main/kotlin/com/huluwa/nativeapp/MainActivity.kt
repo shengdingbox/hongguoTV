@@ -6110,7 +6110,9 @@ class MainActivity: Activity() {
         // 从播放页（黑底白图标）返回或切换主题后，状态栏图标外观跟当前主题对齐
         phoneStatusBarFollowTheme()
         if(!phoneCatalogViewsValid()) retainedPhoneCatalogs.clear()
+        val previousNavigation=retainedPhoneCatalogs[phoneNavigationTab]?.nav as? PortraitGlassNavigation
         retainedPhoneCatalogs[phoneTab]?.let { retained ->
+            previousNavigation?.let { (retained.nav as? PortraitGlassNavigation)?.continueFrom(it) }
             PortraitUi.paintNav(retained.nav,phoneTab,phoneNavigationTab)
             phoneNavigationTab=phoneTab
             // 联网刷新和翻页只更新差异卡片；页签切换只改变可见性，不触发 detach。
@@ -6128,6 +6130,7 @@ class MainActivity: Activity() {
         }
         val renderedTab=phoneTab
         val (frame,content,nav)=PortraitUi.scaffold(this,phoneTab,::switchPhoneTab,phoneNavigationTab)
+        previousNavigation?.let { (nav as? PortraitGlassNavigation)?.continueFrom(it) }
         val feedPager=when(phoneTab) {
             "rank" -> portraitPages.rankPager(::refreshPortraitFeed)
             "new" -> portraitPages.newReleasesPager(::refreshPortraitFeed)

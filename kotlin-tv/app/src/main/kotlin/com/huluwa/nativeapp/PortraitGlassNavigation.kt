@@ -13,6 +13,7 @@ import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
+import android.os.SystemClock
 import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.ViewTreeObserver
@@ -21,6 +22,8 @@ import android.widget.LinearLayout
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.exp
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /** 手机竖屏导航的玻璃底板，只采样导航后方内容，图标和文字保持原始清晰度。 */
@@ -43,6 +46,7 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
     }
     private var selectedIndex = -1
     private var pendingFromIndex = -1
+    private var pendingSelectionOrigin: RectF? = null
     private var selectionAnimator: ValueAnimator? = null
     private val backdropPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
         colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(1.2f) })
@@ -64,6 +68,10 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
     private var pixels = IntArray(0)
     private var previousPixels = IntArray(0)
     private var scratch = IntArray(0)
+    private var displayedPixels = IntArray(0)
+    private var hasBackdrop = false
+    private var backdropSettling = false
+    private var lastBackdropFrameTime = 0L
     private var observer: ViewTreeObserver? = null
     private val preDraw = ViewTreeObserver.OnPreDrawListener {
         if (isShown && width > 0 && height > 0) updateBackdrop()
@@ -92,6 +100,7 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
         selectionAnimator?.cancel()
         selectionAnimator = null
         selectionBounds.set(selectionTarget)
+        pendingSelectionOrigin = null
         observer?.takeIf { it.isAlive }?.removeOnPreDrawListener(preDraw)
         observer = null
         captured = null
@@ -100,14 +109,46 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
         pixels = IntArray(0)
         previousPixels = IntArray(0)
         scratch = IntArray(0)
+        displayedPixels = IntArray(0)
+        hasBackdrop = false
+        backdropSettling = false
+        lastBackdropFrameTime = 0L
         super.onDetachedFromWindow()
     }
 
-    /** 页面切换会复用或重建底板，均从上一个可见 Tab 的位置开始过渡。 */
+    /** 页签各自缓存底板；切换时接续屏幕上正在显示的颜色与胶囊位置。 */
+    fun continueFrom(previous: PortraitGlassNavigation) {
+        if (previous === this) return
+        if (!previous.selectionBounds.isEmpty && previous.width > 0 && previous.height > 0) {
+            pendingSelectionOrigin = RectF(
+                previous.selectionBounds.left / previous.width,
+                previous.selectionBounds.top / previous.height,
+                previous.selectionBounds.right / previous.width,
+                previous.selectionBounds.bottom / previous.height,
+            )
+        }
+        val source = previous.blurred ?: return
+        if (!previous.hasBackdrop || previous.paletteRevision != PortraitStyle.revision) return
+        if (blurred?.width != source.width || blurred?.height != source.height) {
+            blurred = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+        }
+        if (displayedPixels.size != previous.displayedPixels.size) {
+            displayedPixels = IntArray(previous.displayedPixels.size)
+        }
+        previous.displayedPixels.copyInto(displayedPixels)
+        blurred!!.setPixels(displayedPixels, 0, source.width, 0, 0, source.width, source.height)
+        hasBackdrop = true
+        backdropSettling = true
+        lastBackdropFrameTime = SystemClock.uptimeMillis() - 16L
+    }
+
+    /** 页面切换会复用或重建底板，均从上一个可见位置开始过渡。 */
     fun selectItem(index: Int, fromIndex: Int = -1) {
         if (index !in 0 until childCount) return
+        // 数据刷新不重新启动仍在进行的选中动画，也不覆盖尚未布局的起点。
+        if (selectedIndex == index && pendingSelectionOrigin == null) return
+        pendingFromIndex = if (fromIndex in 0 until childCount) fromIndex else selectedIndex
         selectedIndex = index
-        pendingFromIndex = fromIndex
         if (getChildAt(index).width > 0) updateSelection()
     }
 
@@ -127,16 +168,22 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
         val target = itemBounds(selectedIndex)
         val fromIndex = pendingFromIndex
         pendingFromIndex = -1
-        val animate = fromIndex in 0 until childCount && fromIndex != selectedIndex
+        val inheritedOrigin = pendingSelectionOrigin?.let {
+            RectF(it.left * width, it.top * height, it.right * width, it.bottom * height)
+        }
+        pendingSelectionOrigin = null
+        val animate = inheritedOrigin != null || fromIndex in 0 until childCount && fromIndex != selectedIndex
         if (!animate && target == selectionTarget && !selectionBounds.isEmpty) return
+        val origin = inheritedOrigin ?: if (animate) {
+            if (selectionAnimator?.isRunning == true) RectF(selectionBounds) else itemBounds(fromIndex)
+        } else null
         selectionAnimator?.cancel()
         selectionTarget.set(target)
-        if (!animate) {
+        if (origin == null || origin == target) {
             selectionBounds.set(target)
             invalidate()
             return
         }
-        val origin = itemBounds(fromIndex)
         selectionBounds.set(origin)
         val stretch = (abs(target.centerX() - origin.centerX()) * .08f).coerceAtMost(6f * density)
         selectionAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -222,11 +269,16 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
         val bitmapHeight = ceil((height + 2f * blurPadding) / sampleSize).toInt()
         if (captured?.width != bitmapWidth || captured?.height != bitmapHeight) {
             captured = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
-            blurred = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
             captureCanvas = Canvas(captured!!)
             pixels = IntArray(bitmapWidth * bitmapHeight)
             previousPixels = IntArray(pixels.size)
             scratch = IntArray(pixels.size)
+        }
+        if (blurred?.width != bitmapWidth || blurred?.height != bitmapHeight) {
+            blurred = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
+            displayedPixels = IntArray(bitmapWidth * bitmapHeight)
+            hasBackdrop = false
+            backdropSettling = false
         }
         content.getLocationInWindow(sourceLocation)
         getLocationInWindow(navLocation)
@@ -239,13 +291,50 @@ class PortraitGlassNavigation(context: Context, private val content: View) : Lin
         // content 与导航是同级视图，不会把导航自身、文字或高光再次采样进去。
         content.draw(canvas)
         canvas.restoreToCount(save)
-        captured!!.getPixels(pixels, 0, bitmapWidth, 0, 0, bitmapWidth, bitmapHeight)
-        if (pixels.contentEquals(previousPixels)) return
-        pixels.copyInto(previousPixels)
-        blur(bitmapWidth, bitmapHeight)
-        blurred!!.setPixels(pixels, 0, bitmapWidth, 0, 0, bitmapWidth, bitmapHeight)
-        // 后方内容没有变化时不刷新，避免玻璃底板自行产生持续绘制。
+        // scratch 暂存原始采样，pixels 始终保留最近一次模糊后的目标色。
+        captured!!.getPixels(scratch, 0, bitmapWidth, 0, 0, bitmapWidth, bitmapHeight)
+        val changed = !scratch.contentEquals(previousPixels)
+        if (changed) {
+            scratch.copyInto(previousPixels)
+            scratch.copyInto(pixels)
+            blur(bitmapWidth, bitmapHeight)
+        }
+        if (!changed && !backdropSettling && hasBackdrop) return
+        val now = SystemClock.uptimeMillis()
+        if (!hasBackdrop) {
+            pixels.copyInto(displayedPixels)
+            hasBackdrop = true
+        } else {
+            // 按真实帧间隔追随目标色，约 56ms 的响应时间吸收海报进入时的突变。
+            val elapsed = (now - lastBackdropFrameTime).coerceIn(1L, 32L)
+            val amount = ((1.0 - exp(-elapsed / 56.0)) * 256).roundToInt().coerceIn(1, 256)
+            backdropSettling = false
+            for (index in pixels.indices) {
+                val current = displayedPixels[index]
+                val target = pixels[index]
+                if (current == target) continue
+                val blended = Color.rgb(
+                    blendChannel(Color.red(current), Color.red(target), amount),
+                    blendChannel(Color.green(current), Color.green(target), amount),
+                    blendChannel(Color.blue(current), Color.blue(target), amount),
+                )
+                displayedPixels[index] = blended
+                if (blended != target) backdropSettling = true
+            }
+        }
+        lastBackdropFrameTime = now
+        blurred!!.setPixels(displayedPixels, 0, bitmapWidth, 0, 0, bitmapWidth, bitmapHeight)
+        // 收敛后停止主动刷新；滚动中的新采样直接更新目标，不反复重启动画。
         invalidate()
+        if (backdropSettling) postInvalidateOnAnimation()
+    }
+
+    private fun blendChannel(current: Int, target: Int, amount: Int): Int {
+        val difference = target - current
+        if (difference == 0) return current
+        // 向目标至少前进一步，避免整数舍入让最后几个色阶持续刷新。
+        val step = (abs(difference) * amount + 255) / 256
+        return current + if (difference > 0) step else -step
     }
 
     /** 小尺寸取样做三轮可分离均值模糊，兼容本项目支持的 Android 版本。 */

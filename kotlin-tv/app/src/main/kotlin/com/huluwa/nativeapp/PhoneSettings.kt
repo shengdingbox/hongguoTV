@@ -353,9 +353,6 @@ class PhoneSettings(private val activity: MainActivity) {
             addRow(group, row("接口自检") { activity.phoneInterfaceCheck() })
             addRow(group, row("运行日志") { activity.phoneRuntimeLogs() })
             addRow(group, row("异常日志", "${CrashReporter.count(activity)} 份", { "${CrashReporter.count(activity)} 份" }) { activity.phoneCrashLogs() })
-            addRow(group, row("开源许可") {
-                TvDialog.info(activity, "开源许可", "本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\n请求签名算法移植自 openhongguo（GPL-3.0），在本机完成计算与匿名设备注册。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\n完整源码和许可证见 GitHub：jycao2/hongguoTV。").show()
-            })
         }
         parent.addView(text("红果 ${BuildConfig.VERSION_NAME}", 12f, secondaryColor).apply { gravity = Gravity.CENTER }, lp())
         parent.addView(text("收藏与本机记录保存在设备，登录后可同步到红果账号。", 12f, secondaryColor).apply {

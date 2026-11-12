@@ -2379,9 +2379,6 @@ class MainActivity: Activity() {
                 main.post { if(!isDestroyed) { if(records.isEmpty()) Toast.makeText(this,"应用启动以来未发生崩溃",Toast.LENGTH_SHORT).show() else CrashDialog.showList(this@MainActivity,records) } }
             }
         }
-        val license=setting(about,"开源许可") {
-            TvDialog.info(this,"开源许可","本原生版以 GPL-3.0 发布。\n内容协议与加密处理移植自 drpys（22261ad）。\n请求签名算法移植自 openhongguo（GPL-3.0），在本机完成计算与匿名设备注册。\nAndroidX Media3 / OkHttp：Apache-2.0\nKotlin：Apache-2.0\n完整源码和许可证见 GitHub：jycao2/hongguoTV。").show()
-        }
         // 页脚固定在滚动区之外（屏幕底部居中）：始终可见，因此不再需要抢焦点
         val settingsFooter=text("红果  /  ${BuildConfig.VERSION_NAME}    ·    收藏与本机记录保存在设备 · 登录后可同步到红果账号",12f,muted).apply {
             id=View.generateViewId(); isFocusable=false; setPadding(dp(10),dp(8),dp(10),dp(3))

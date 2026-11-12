@@ -17,7 +17,7 @@ import com.hongguotv.core.RemoteVideo
 
 /** 相邻集与葫芦娃共用同样的 Media3 预加载策略，不为后台分集创建播放器或解码器。 */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-internal class EpisodePlaybackSession(context: Context, private val disk: () -> com.hongguotv.core.EpisodeDiskCache? = { null }) {
+internal class EpisodePlaybackSession(context: Context, private val disk: (RemoteVideo) -> com.hongguotv.core.EpisodeDiskCache? = { null }) {
     data class Episode(
         val id: String,
         val index: Int,
@@ -132,7 +132,7 @@ internal class EpisodePlaybackSession(context: Context, private val disk: () -> 
         episode.video.setPlaybackActive(episode.id == currentId)
         val item = MediaItem.Builder().setMediaId(episode.id)
             .setUri("hongguotv://episode/${episode.id}").setMimeType(MimeTypes.VIDEO_MP4).build()
-        val mediaSource = ProgressiveMediaSource.Factory { VideoDataSource(episode.video, disk) }.createMediaSource(item)
+        val mediaSource = ProgressiveMediaSource.Factory { VideoDataSource(episode.video, disk = { disk(episode.video) }) }.createMediaSource(item)
         return Source(episode, item).also {
             sources[episode.id] = it
             preloadManager.add(mediaSource, episode.index * 2)

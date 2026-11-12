@@ -10,6 +10,7 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import java.io.File
+import java.io.RandomAccessFile
 import java.nio.file.Files
 
 class EpisodeDiskCacheTest {
@@ -61,10 +62,10 @@ class EpisodeDiskCacheTest {
 
     // ---------- 窗口与逐出 ----------
 
-    @Test fun windowRetainDropsOutsideEpisodes() {
+    @Test fun emptyDownloadWindowKeepsCachedEpisodes() {
         val info = { id: String, q: Int -> StreamInfo(server.url("/v/$id").toString(), null, "720P") }
         val cache = EpisodeDiskCache(http, dir, resolver = info)
-        // 手工塞 6 条假条目（伪造 meta+mp4），再 schedule 窗口收缩
+        // 跨剧共享池不以全局 5 集裁剪，空下载窗口也保留已缓存文件
         for (n in 1..6) {
             val key = "10$n"
             File(dir, "$key-q720.mp4").writeBytes(ByteArray(1024))
@@ -73,11 +74,9 @@ class EpisodeDiskCacheTest {
             writeMeta(key, 720, meta, listOf(longArrayOf(0, 1024)))
         }
         val reloaded = EpisodeDiskCache(http, dir, resolver = info)
-        val kept = (2..6).map { "10$it" }
-        reloaded.schedule(emptyList(), 720, kept.toSet(), 720)
-        assertNull(reloaded.meta("101", 720))
-        assertNotNull(reloaded.meta("106", 720))
-        assertFalse(File(dir, "101-q720.mp4").exists())
+        reloaded.schedule(emptyList(), 720)
+        for (n in 1..6) assertNotNull(reloaded.meta("10$n", 720))
+        assertTrue(File(dir, "101-q720.mp4").exists())
         reloaded.close(); cache.close()
     }
     @Test fun pauseKeepsCachedEpisodes() {
@@ -90,7 +89,7 @@ class EpisodeDiskCacheTest {
                 1024, ByteArray(16), emptyList(), n.toLong(), true), listOf(longArrayOf(0, 1024)))
         }
         val cache = EpisodeDiskCache(http, dir, resolver = info)
-        cache.schedule(listOf("301", "302", "303"), 720, setOf("301", "302", "303"), 720)
+        cache.schedule(listOf("301", "302", "303"), 720)
         cache.pause()
         // 暂停只停调度，不清条目：切界面回来三条进度条仍然是满的
         for (n in 1..3) {
@@ -99,25 +98,24 @@ class EpisodeDiskCacheTest {
         }
         assertEquals(0, cache.queuedCount)
         // 恢复调度后仍能命中原文件
-        cache.schedule(listOf("301", "302", "303"), 720, setOf("301", "302", "303"), 720)
+        cache.schedule(listOf("301", "302", "303"), 720)
         assertNotNull(cache.meta("302", 720))
         cache.close()
     }
     @Test fun poolCapDropsOldestEntry() {
         val info = { id: String, q: Int -> StreamInfo(server.url("/v/$id").toString(), null, "720P") }
-        for (n in 1..5) {
-            File(dir, "20$n-q720.mp4").writeBytes(ByteArray(1024))
-            val meta = EpisodeDiskCache.Meta("20$n", 720, server.url("/v/20$n").toString(), null, "720P", 0,
-                1024, ByteArray(16), emptyList(), n.toLong(), true)
-            writeMeta("20$n", 720, meta, listOf(longArrayOf(0, 1024)))
+        val episodeBytes = 100L * 1024 * 1024
+        // 六部剧各一集共 600 MB，超出共享池的 500 MB，淘汰最早缓存的一集。
+        for (n in 1..6) {
+            val id = "20$n"
+            RandomAccessFile(File(dir, "$id-q720.mp4"), "rw").use { it.setLength(episodeBytes) }
+            writeMeta(id, 720, EpisodeDiskCache.Meta(id, 720, server.url("/v/$id").toString(), null, "720P", 0,
+                episodeBytes, ByteArray(16), emptyList(), n.toLong(), true, seriesId = "series-$n"),
+                listOf(longArrayOf(0, episodeBytes)))
         }
-        // 全部 6 条都在构造前写盘，缓存启动扫描时一次性看到 6 条 → 超上限逐出最旧的 201
-        File(dir, "206-q720.mp4").writeBytes(ByteArray(1024))
-        writeMeta("206", 720, EpisodeDiskCache.Meta("206", 720, server.url("/v/206").toString(), null, "720P", 0,
-            1024, ByteArray(16), emptyList(), 6, true), listOf(longArrayOf(0, 1024)))
         val cache = EpisodeDiskCache(http, dir, resolver = info)
         assertNull(cache.meta("201", 720))
-        assertNotNull(cache.meta("206", 720))
+        for (n in 2..6) assertNotNull(cache.meta("20$n", 720))
         cache.close()
     }
     @Test fun completeCacheRemainsReadableAfterAddressExpires() {
@@ -139,7 +137,7 @@ class EpisodeDiskCacheTest {
         val info = { id: String, q: Int -> StreamInfo(server.url("/v/$id").toString(), null, "720P") }
         val cache = EpisodeDiskCache(http, dir, resolver = info)
         // 夹具不含加密索引（无 saiz/saio），prepare 会失败 → 下载落空，队列自动跳过，不崩溃不死循环
-        cache.schedule(listOf("401"), 720, setOf("401"), 720)
+        cache.schedule(listOf("401"), 720)
         Thread.sleep(1500)
         assertNull(cache.meta("401", 720))
         cache.close()
@@ -168,7 +166,7 @@ class EpisodeDiskCacheTest {
         val o = org.json.JSONObject().put("id", id).put("quality", quality).put("url", meta.url)
             .put("key", "").put("qualityLabel", meta.qualityLabel).put("expiresAt", meta.expiresAt)
             .put("total", meta.total).put("header", java.util.Base64.getEncoder().encodeToString(meta.header))
-            .put("samples", samples).put("updatedAt", meta.updatedAt).put("done", meta.done)
+            .put("samples", samples).put("updatedAt", meta.updatedAt).put("done", meta.done).put("seriesId", meta.seriesId)
             .put("ranges", EpisodeDiskCache.rangesToJson(ranges))
         File(dir, "$id-q$quality.meta").writeText(o.toString())
     }

@@ -11,13 +11,12 @@ import java.io.IOException
 import java.io.RandomAccessFile
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 
 /** 整集落盘缓存池：播放页后台静默下载相邻集，命中后改由本地文件喂数据。
  *
- *  窗口策略：上一集 + 当前集 + 下三集共 5 条，随当前集滑动；
- *  划出窗口的条目立即连同元数据删除（播完即删最早一条）。
- *  完整缓存不依赖在线地址有效期；总字节超限或磁盘空间不足时收缩，播放端可回落在线读取。
+ *  只主动下载后三集；离开下载窗口、切剧或切画质时保留已有文件。
+ *  播放到某集的下下集后才清理该集；池满时按缓存时间淘汰最旧的非播放条目。
+ *  完整缓存不依赖在线地址有效期；池容量按整集大小预留，避免并发下载突破上限。
  *  磁盘上存的是与在线字节完全一致的密文；解密仍走 [MediaCrypto.decrypt]，
  *  元数据（改写后的明文头 + 加密样本索引 + 已落盘区间）单独存 JSON。 */
 class EpisodeDiskCache(
@@ -53,7 +52,7 @@ class EpisodeDiskCache(
     /** 元数据视图：播放端只需要这些，样本索引与区间列表不往上传。 */
     data class Meta(val id: String, val quality: Int, val url: String, val key: ByteArray?, val qualityLabel: String,
         val expiresAt: Long, val total: Long, val header: ByteArray, val samples: List<MediaCrypto.Sample>,
-        val updatedAt: Long, val done: Boolean) {
+        val updatedAt: Long, val done: Boolean, val seriesId: String = "") {
         val prepared = MediaCrypto.Prepared(header, samples)
     }
     private class Entry(var meta: Meta, var ranges: List<LongArray>) {
@@ -66,6 +65,7 @@ class EpisodeDiskCache(
     private class Row(val key: Key, val entry: Entry, val file: File, val metaFile: File)
 
     companion object {
+        const val SERIES_LIMIT_EPISODES = 5
         const val POOL_LIMIT_BYTES = 500L * 1024 * 1024
         const val FREE_FLOOR_BYTES = 1024L * 1024 * 1024
         /** 缓冲充足时的并发上限，对应下 1/2/3 集。 */
@@ -125,6 +125,9 @@ class EpisodeDiskCache(
     @Volatile private var closed = false
     /** 实际下载目标，按调用方提供的优先级排列。 */
     private var want = emptyList<Key>()
+    private var downloadSeriesId = ""
+    /** 容量淘汰过的下载目标在本窗口内不重下，避免池满时循环淘汰、反复消耗流量。 */
+    private val capacityEvicted = mutableSetOf<Key>()
     private var scheduled = false
     /** 此刻真在下载的集：[want] 是目标窗口，这里是线程池里实际跑着的子集。 */
     private val active = mutableSetOf<Key>()
@@ -133,10 +136,9 @@ class EpisodeDiskCache(
     private var downloadParallelism = MAX_PARALLEL
     /** 失败后的退避截止时间：同一集失败后 10 秒内不再重提，避免每个 tick 都重试。 */
     private val retryAt = mutableMapOf<Key, Long>()
-    /** 本轮累计下载字节：超过 [POOL_LIMIT_BYTES] 就整体停手，由下一次播放会话重新计数。 */
-    private val downloadedThisRun = AtomicLong()
-    /** 预算是否已被本轮耗尽：耗尽后要等 schedule() 里显式复位，避免每个 tick 重启一轮。 */
-    @Volatile private var budgetExhausted = false
+    /** 当前播放文件不参与容量淘汰；已被播放进度淘汰的在途下载先取消、退出后再删。 */
+    private var playingId: String? = null
+    private val discardAfterDownload = mutableSetOf<Key>()
 
     init {
         directory.mkdirs()
@@ -174,7 +176,7 @@ class EpisodeDiskCache(
         val meta = Meta(id, quality, o.getString("url"),
             o.optString("key").takeIf { it.isNotEmpty() }?.let(::decode64),
             o.optString("qualityLabel"), o.optLong("expiresAt"), o.getLong("total"),
-            decode64(o.getString("header")), samples, o.optLong("updatedAt"), o.optBoolean("done"))
+            decode64(o.getString("header")), samples, o.optLong("updatedAt"), o.optBoolean("done"), o.optString("seriesId"))
         require(meta.total > 0)
         val data = dataFile(key)
         val entry = Entry(meta, rangesFromJson(o.optJSONArray("ranges")))
@@ -191,7 +193,7 @@ class EpisodeDiskCache(
         val o = JSONObject().put("id", m.id).put("quality", m.quality).put("url", m.url)
             .put("key", if (m.key != null) base64(m.key) else "").put("qualityLabel", m.qualityLabel)
             .put("expiresAt", m.expiresAt).put("total", m.total).put("header", base64(m.header))
-            .put("samples", samples).put("updatedAt", m.updatedAt).put("done", m.done)
+            .put("samples", samples).put("updatedAt", m.updatedAt).put("done", m.done).put("seriesId", m.seriesId)
             .put("ranges", rangesToJson(entry.ranges))
         val tmp = File(directory, key.fileName + ".tmp")
         tmp.writeText(o.toString())
@@ -207,6 +209,14 @@ class EpisodeDiskCache(
         if (!entry.meta.done || !covered(entry.ranges, 0, entry.meta.total) || dataFile(key).length() < entry.meta.total)
             return@synchronized null
         entry.meta
+    }
+
+    /** 起播先选完整缓存：优先当前画质，其次不高于目标的最高画质，最后选已有的最低画质。 */
+    fun playbackMeta(id: String, quality: Int): Meta? = synchronized(lock) {
+        meta(id, quality)?.let { return@synchronized it }
+        val qualities = entries.keys.filter { it.id == id }.map { it.quality }.distinct()
+        val ordered = qualities.filter { it <= quality }.sortedDescending() + qualities.filter { it > quality }.sorted()
+        ordered.firstNotNullOfOrNull { meta(id, it) }
     }
 
     /** 部分下载也可供播放端读取；调用方核对索引后，每次 read 再检查区间是否已落盘。 */
@@ -245,10 +255,33 @@ class EpisodeDiskCache(
 
     // ---------- 调度 ----------
 
-    /** 下载目标窗口：ordered 按调用方提供的优先级排列。
-     *  保留窗口保留所有已有条目（含部分下载），再按播放窗口裁剪；
-     *  返回 false 表示磁盘空间不足，本轮放弃调度。 */
-    fun schedule(orderedIds: List<String>, quality: Int, retainedIds: Set<String>, retainedQuality: Int, parallelism: Int? = null): Boolean {
+    /** 确认某集开始播放后，清理同一部剧中落后至少两集的缓存，其他剧集保持原样。 */
+    fun onPlaybackStarted(seriesId: String, episodeIds: List<String>, index: Int) {
+        if (index !in episodeIds.indices) return
+        synchronized(lock) {
+            playingId = episodeIds[index]
+            val seriesEpisodes = episodeIds.toSet()
+            entries.forEach { (key, entry) ->
+                if (key.id in seriesEpisodes && entry.meta.seriesId != seriesId) {
+                    entry.meta = entry.meta.copy(seriesId = seriesId)
+                    runCatching { saveMeta(key, entry) }
+                }
+            }
+            val obsolete = episodeIds.take((index - 1).coerceAtLeast(0)).toSet()
+            want = want.filter { it.id !in obsolete }
+            retryAt.keys.removeAll { it.id in obsolete }
+            entries.keys.filter { it.id in obsolete }.toList().forEach { key ->
+                if (key in active) {
+                    discardAfterDownload += key
+                    activeScopes[key]?.cancel()
+                } else dropLocked(key)
+            }
+            evictLocked()
+        }
+    }
+
+    /** 下载窗口只决定后台任务，不删除窗口外的缓存；返回 false 表示本轮无法调度。 */
+    fun schedule(orderedIds: List<String>, quality: Int, parallelism: Int? = null, seriesId: String = ""): Boolean {
         if (closed) { markSkip("缓存池已关闭"); return false }
         val keys = orderedIds.filter { ID_PATTERN.matches(it) }.distinct().map { Key(it, quality) }
         synchronized(lock) {
@@ -257,51 +290,48 @@ class EpisodeDiskCache(
                 onLog("Episode disk cache paused: storage or memory constrained, free=${freeBytes() / 1048576}MB lowMemory=${lowMemory()}")
                 return false
             }
-            // 空目标列表是「播放失败/收尾时收缩窗口」的正常调用，不应覆盖真实的跳过原因
             if (keys.isNotEmpty()) markSkip("")
-            val before = entries.size
-            if (keys != want) onLog("Episode disk cache schedule: targets=${keys.joinToString(",") { "${it.id}-q${it.quality}" }}")
-            // 保留窗口外才删。正在下载的集如果刚好滑出窗口，不在这里硬删：
-            // 并发下载期间频繁删条目会让工作者反复「下到一半被打断 → 重新排队」。
-            entries.keys.filter { it.id !in retainedIds || it.quality != retainedQuality }
-                .filter { it !in active }.toList().forEach { dropLocked(it) }
-            // 总量与集数上限：最旧的非窗口目标先删，窗口内的下载目标永远受保护。
-            evictLocked()
-            if (entries.size != before) onLog("Episode disk cache evicted, ${entries.size} entries left")
-            // 目标窗口变了（切集 / 换画质）才算新的一轮，复位下载预算；同一窗口每秒重复调度
-            // 不清零，否则「本轮上限」形同虚设。进入播放页由 MainActivity 调 resetBudget() 显式复位。
-            if (keys != want && budgetExhausted) { budgetExhausted = false; downloadedThisRun.set(0L) }
+            if (keys != want || downloadSeriesId != seriesId) {
+                capacityEvicted.clear()
+                onLog("Episode disk cache schedule: series=$seriesId targets=${keys.joinToString(",") { "${it.id}-q${it.quality}" }}")
+            }
             want = keys
+            downloadSeriesId = seriesId
             parallelism?.let { downloadParallelism = it.coerceIn(0, MAX_PARALLEL) }
             scheduled = true
             cancelExcessDownloadsLocked()
-            // 保留窗口内且符合带宽预算的下载，空槽位按下一集优先补齐。
             ensureWorkerLocked()
         }
         return true
     }
 
-    private fun evictLocked() {
-        // 正在下载的条目不能被逐出：download() 里发现 entries 里已没有自己会抛异常退出，
-        // 刚下的几 MiB 全部白费，而且下一轮 schedule 又会重新排队——正是「老是卡在排队」的来源之一。
-        fun candidates() = entries.keys.filter { it !in active }
-        while (entries.size > 5) {
-            val pool = candidates()
-            if (pool.isEmpty()) break
-            val victim = pool.filter { it !in want }.minByOrNull { entries[it]!!.meta.updatedAt }
-                ?: pool.minByOrNull { entries[it]!!.meta.updatedAt } ?: break
-            dropLocked(victim)
-        }
-        while (entries.values.sumOf { it.doneBytes } > POOL_LIMIT_BYTES) {
-            val pool = candidates()
-            if (pool.isEmpty()) break
-            val victim = pool.filter { it !in want }.minByOrNull { entries[it]!!.meta.updatedAt }
-                ?: pool.minByOrNull { entries[it]!!.meta.updatedAt } ?: break
-            dropLocked(victim)
+    /** 所有剧共用字节上限，每部剧单独最多五条；新下载先预留整集空间。 */
+    private fun evictLocked(additionalBytes: Long = 0, seriesId: String = "", episodeId: String = ""): Boolean {
+        if (additionalBytes > POOL_LIMIT_BYTES) return false
+        while (true) {
+            val seriesEpisodes = entries.values.filter { it.meta.seriesId.isNotEmpty() }
+                .groupBy { it.meta.seriesId }
+                .mapValues { (_, rows) -> rows.mapTo(mutableSetOf()) { it.meta.id } }.toMutableMap()
+            if (seriesId.isNotEmpty() && episodeId.isNotEmpty())
+                seriesEpisodes.getOrPut(seriesId) { mutableSetOf() }.add(episodeId)
+            val overfullSeries = seriesEpisodes.entries.firstOrNull { it.value.size > SERIES_LIMIT_EPISODES }?.key
+            if (overfullSeries == null && entries.values.sumOf { it.meta.total } + additionalBytes <= POOL_LIMIT_BYTES)
+                return true
+            val downloadingIds = active.mapTo(mutableSetOf()) { it.id }
+            val victim = entries.keys.filter { it.id !in downloadingIds && it.id != playingId }
+                .filter { overfullSeries == null || entries[it]!!.meta.seriesId == overfullSeries }
+                .minByOrNull { entries[it]!!.meta.updatedAt } ?: return false
+            // 同一集的不同画质占一个集数名额，淘汰时一起回收。
+            entries.keys.filter { it.id == victim.id }.toList().forEach { key ->
+                if (key in want) capacityEvicted += key
+                dropLocked(key)
+            }
         }
     }
 
     private fun dropLocked(key: Key) {
+        discardAfterDownload.remove(key)
+        retryAt.remove(key)
         entries.remove(key)
         dataFile(key).delete()
         metaFile(key).delete()
@@ -309,7 +339,7 @@ class EpisodeDiskCache(
 
     fun clear() {
         synchronized(lock) {
-            want = emptyList(); scheduled = false; retryAt.clear()
+            want = emptyList(); scheduled = false; retryAt.clear(); capacityEvicted.clear()
             activeScopes.values.forEach { it.cancel() }
             setQueued(0); markSkip("缓存已清空")
             entries.keys.toList().forEach { dropLocked(it) }
@@ -323,7 +353,7 @@ class EpisodeDiskCache(
      *  用户切走再回来看到的就是三条进度条全空。 */
     fun pause() {
         synchronized(lock) {
-            want = emptyList(); scheduled = false
+            want = emptyList(); scheduled = false; capacityEvicted.clear()
             activeScopes.values.forEach { it.cancel() }
             setQueued(0); markSkip("")
         }
@@ -346,16 +376,7 @@ class EpisodeDiskCache(
         activeScopes.filterKeys { it !in allowed }.values.forEach { it.cancel() }
     }
 
-    /** 新一轮播放会话开始（进入/切换播放页）：复位本轮下载预算，并允许重新调度。 */
-    fun resetBudget() {
-        budgetExhausted = false
-        downloadedThisRun.set(0L)
-        synchronized(lock) {
-            if (!closed && want.isNotEmpty()) { scheduled = true; ensureWorkerLocked() }
-        }
-    }
-
-    /** 地址失效级联：废弃该集全部画质的落盘条目，下载线程下一轮会跳过。 */
+    /** 本地索引损坏时废弃该集缓存；在线地址失效不会调用此方法。 */
     fun invalidate(id: String) {
         synchronized(lock) {
             entries.keys.filter { it.id == id }.toList().forEach { dropLocked(it) }
@@ -378,7 +399,7 @@ class EpisodeDiskCache(
         if (closed || !scheduled || downloadParallelism == 0) return
         val now = clock()
         val pending = want.filter { key ->
-            key !in active && (retryAt[key] ?: 0L) <= now && needsDownloadLocked(key)
+            key !in active && key !in capacityEvicted && (retryAt[key] ?: 0L) <= now && needsDownloadLocked(key)
         }
         // 未开始下载的集按优先级补到并发上限（下 1/2/3 集同时开工）
         pending.take((downloadParallelism - active.size).coerceAtLeast(0)).forEach { key ->
@@ -388,10 +409,11 @@ class EpisodeDiskCache(
             executor.execute { downloadWorker(key, scope) }
         }
         // 队列长度 = 还没下完的集数（含正在下的），供日志/摘要显示
-        setQueued(want.count { needsDownloadLocked(it) })
+        setQueued(want.count { it !in capacityEvicted && needsDownloadLocked(it) })
         // 目标窗口全部下完时把摘要恢复成空串（= 正常）。这里曾经写「队列已清空，等待下一次
         // 播放调度」，界面会照着显示成还在排队，和「已全部缓存」正好相反。
-        if (queueIsEmptyLocked() && skipReason.isNotEmpty() && retryAt.isEmpty()) markSkip("")
+        if (capacityEvicted.isNotEmpty()) markSkip("缓存池已满，部分目标等待播放推进后继续缓存")
+        else if (queueIsEmptyLocked() && skipReason.isNotEmpty() && retryAt.isEmpty()) markSkip("")
     }
 
     /** 这一集是否还需要下载：没有条目、没标记完成，或者有区间缺口。 */
@@ -438,9 +460,11 @@ class EpisodeDiskCache(
             }
         } finally {
             synchronized(lock) {
+                if (closed || scope.isCancelled) entries[key]?.let { runCatching { saveMeta(key, it) } }
                 active -= key
                 activeScopes.remove(key)
-                setQueued(if (scheduled) want.count { needsDownloadLocked(it) } else 0)
+                if (key in discardAfterDownload) dropLocked(key)
+                setQueued(if (scheduled) want.count { it !in capacityEvicted && needsDownloadLocked(it) } else 0)
                 // 这一集收工后立刻补位：窗口里还有没下的集就继续开工
                 ensureWorkerLocked()
             }
@@ -475,7 +499,11 @@ class EpisodeDiskCache(
 
     /** 缺元数据则解析地址并整段 prepare（约两三跳网络），之后按 4MiB 段续传。锁外执行。 */
     private fun openRow(key: Key): Row? {
-        synchronized(lock) { entries[key]?.let { return Row(key, it, dataFile(key), metaFile(key)) } }
+        val seriesId = synchronized(lock) {
+            entries[key]?.let { return Row(key, it, dataFile(key), metaFile(key)) }
+            if (key !in want) return null
+            downloadSeriesId
+        }
         val info = runCatching { resolver(key.id, key.quality) }.getOrElse {
             if (RequestScope.current()?.isCancelled == true || Thread.currentThread().isInterrupted)
                 throw InterruptedException("下载已取消")
@@ -495,10 +523,14 @@ class EpisodeDiskCache(
             remote.prepare()
             val snapshot = remote.preparedSnapshot()
             val meta = Meta(key.id, key.quality, info.url, info.key, info.quality, info.expiresAt,
-                remote.total, snapshot.header, snapshot.samples, clock(), false)
+                remote.total, snapshot.header, snapshot.samples, clock(), false, seriesId)
             val entry = Entry(meta, emptyList())
             synchronized(lock) {
-                if (closed || entries.containsKey(key) || key !in want && entries.size >= 5) return null
+                if (closed || RequestScope.current()?.isCancelled == true || entries.containsKey(key) || key !in want) return null
+                if (!evictLocked(additionalBytes = meta.total, seriesId = seriesId, episodeId = key.id)) {
+                    markSkip("缓存池容量不足，等待播放推进后继续缓存")
+                    return null
+                }
                 entries[key] = entry
                 saveMeta(key, entry)
             }
@@ -560,18 +592,6 @@ class EpisodeDiskCache(
                     if (total <= 0) 0f else (row.entry.doneBytes.toFloat() / total).coerceIn(0f, 1f)
                 }
                 runCatching { onProgress(row.key.id, row.key.quality, ratio) }
-                // 并发下载下没有「本轮循环」可退出了：超出预算就整体停手，
-                // 由下一次播放会话（重新进播放页 / 切集时 schedule 复位）重新开始。
-                if (downloadedThisRun.addAndGet(bytes.size.toLong()) > POOL_LIMIT_BYTES && !budgetExhausted) {
-                    budgetExhausted = true
-                    markSkip("本轮下载量已达上限，暂停到下次播放")
-                    onLog("Episode disk cache paused: run budget exhausted")
-                    // 只停调度，不清 want：want 一变就会被当成「新一轮」而复位预算
-                    synchronized(lock) { scheduled = false; setQueued(0) }
-                    throw InterruptedException("本轮下载量已达上限")
-                }
-                // 其他线程看到预算耗尽后也随下一段让出
-                if (budgetExhausted) throw InterruptedException("本轮下载量已达上限")
                 if (++pendingMeta >= COMPACT_EVERY) { pendingMeta = 0; runCatching { saveMeta(row.key, row.entry) } }
                 at = end
             }

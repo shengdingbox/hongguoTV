@@ -493,7 +493,10 @@ class MainActivity: Activity() {
             if(!foreground || isDestroyed) return
             if(screen=="player") {
                 if(sleepTimer.poll()) stopForSleep()
-                if(phonePlayerLayout()) refreshPhonePlayer() else if(hud.visibility==View.VISIBLE) updatePlaybackText()
+                if(phonePlayerLayout()) refreshPhonePlayer() else {
+                    refreshTvPlaybackLoading()
+                    if(hud.visibility==View.VISIBLE) updatePlaybackText()
+                }
                 // 三段缓存条带也要跟着每秒刷新：切集后它对应的「下 1/2/3 集」变了，
                 // 下载进度也在持续变化。只在条带已挂载时做，其他页面零开销。
                 if(cacheStripSegments!=null) refreshCacheStrip()
@@ -3396,11 +3399,12 @@ class MainActivity: Activity() {
         playerScreenOn=true; refreshScreenOn()
         if(!reuse) {
             root.removeAllViews(); root.setBackgroundColor(Color.BLACK)
-            val view=(if(phonePlayerLayout()) layoutInflater.inflate(R.layout.phone_player_view,root,false) as PlayerView else PlayerView(this)).apply {
+            // 横竖屏共用竖屏已采用的 TextureView，视频输出不再随页面方向切换类型。
+            val view=(layoutInflater.inflate(R.layout.playback_player_view,root,false) as PlayerView).apply {
                 useController=false; resizeMode=frameResizeMode(); isFocusable=false
                 setKeepContentOnPlayerReset(true); setShutterBackgroundColor(Color.BLACK)
-                // 手机外壳已有白色缓冲圈，关闭内置转圈，避免竖屏和横屏全屏时重复显示。
-                setShowBuffering(if(phonePlayerLayout()) PlayerView.SHOW_BUFFERING_NEVER else PlayerView.SHOW_BUFFERING_ALWAYS)
+                // 加载圈由页面按首帧与缓冲回调统一控制，沿用竖屏的加载流程。
+                setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
             }
             playerView=view
             if(phonePlayerLayout()) {
@@ -3520,8 +3524,8 @@ class MainActivity: Activity() {
             val sourceKind=when { diskMeta==null -> "在线"; diskMeta.done -> "完整缓存"; else -> "部分缓存" }
             RuntimeLog.add("Playback source episode=${selectedIndex+1} source=$sourceKind elapsedMs=${android.os.SystemClock.elapsedRealtime()-playbackStarted}")
             video=remote; quality=remote.info.quality
-            // 取址成功，后面的「缓冲」交给 PlayerView 自己的缓冲圈。
-            recoverySpinner?.visibility=View.GONE
+            // 与竖屏一样等首帧后再结束起播加载；横屏沿用页面自己的加载圈。
+            if(phonePlayerLayout()) recoverySpinner?.visibility=View.GONE
             val session=preparePlaybackSession()
             val p=session.player
             updatePhoneVideoPosition(p.videoSize)
@@ -3558,6 +3562,7 @@ class MainActivity: Activity() {
                 override fun onPlaybackStateChanged(state: Int) {
                     if(!active()) return
                     if(state==Player.STATE_READY) markReady()
+                    refreshTvPlaybackLoading()
                     if(state==Player.STATE_BUFFERING || state==Player.STATE_IDLE) scheduleDiskCache()
                     if(state==Player.STATE_BUFFERING && !firstReady && rebufferStart==0L) { rebufferStart=android.os.SystemClock.elapsedRealtime(); android.util.Log.w("HongguoTV","Rebuffer start episode=${episodeIndex+1} positionMs=${p.currentPosition}") }
                     syncMediaSession()
@@ -3627,6 +3632,7 @@ class MainActivity: Activity() {
                         firstFrame=false
                         playbackFirstFrameRendered=true
                         if(phonePlayerLayout()) phonePlayer?.onFirstFrame()
+                        refreshTvPlaybackLoading()
                         maybePrefetch()
                         android.util.Log.w("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-episodeStartedAt} prepareMs=${android.os.SystemClock.elapsedRealtime()-videoPrepareStartedAt}")
                     }
@@ -3665,11 +3671,23 @@ class MainActivity: Activity() {
             main.post { if(!isDestroyed && foreground && screen=="player" && generation==ticket) preparePlaybackSession() }
         }
     }
+    /** 横屏与竖屏一样用首帧、缓冲状态驱动加载提示，取到地址后仍等待视频画面。 */
+    private fun refreshTvPlaybackLoading() {
+        if(screen!="player" || phonePlayerLayout() || playError) return
+        val p=player
+        val loading=video==null || !playbackFirstFrameRendered || p==null ||
+            p.playbackState==Player.STATE_BUFFERING || p.playbackState==Player.STATE_IDLE
+        recoverySpinner?.visibility=if(loading) View.VISIBLE else View.GONE
+    }
     /** 慢首帧单独记录；是否降档由播放器实际报告的解码错误决定。 */
     private fun checkTvVideoFirstFrame() {
         val p=player
         val view=playerView
-        val surfaceReady=(view?.videoSurfaceView as? SurfaceView)?.holder?.surface?.isValid==true
+        val surfaceReady=when(val output=view?.videoSurfaceView) {
+            is TextureView -> output.isAvailable
+            is SurfaceView -> output.holder.surface.isValid
+            else -> false
+        }
         val waiting=!phonePlayerLayout() && foreground && !playError && !playbackFirstFrameRendered &&
             p!=null && p.playWhenReady && !pausedForLifecycle && view?.isShown==true && surfaceReady &&
             p.currentMediaItem?.mediaId==detail?.episodes?.getOrNull(episodeIndex) &&

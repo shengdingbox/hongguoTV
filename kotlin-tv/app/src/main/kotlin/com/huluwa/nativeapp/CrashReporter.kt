@@ -12,7 +12,7 @@ import java.util.Locale
 /**
  * 崩溃日志收集：进程内任何线程抛出未捕获异常时，先把完整堆栈落到应用私有目录，
  * 再交回系统原有的崩溃处理器，「应用已停止」的系统流程不受影响。
- * 下次冷启动由 MainActivity 检出未提示过的记录并弹窗（CrashDialog 展示全文），
+ * 下次冷启动在主界面就绪后提示未读记录，手机仅提示入口，电视可弹窗查看全文，
  * 「设置 → 关于红果 → 异常日志」可随时查看与一键复制历史。
  *
  * 磁盘上只保留最近 [MAX_REPORTS] 份，超出删最旧；收集过程的任何失败都静默吞掉——
@@ -21,6 +21,7 @@ import java.util.Locale
 object CrashReporter {
     private const val PREFS="crash_reports"
     private const val KEY_PROMPTED="prompted_at"
+    private const val KEY_NAVIGATION_RECOVERED="navigation_recovered_at"
     private const val DIR="crash"
     /** 最多保留的份数：够回溯最近几次异常，又不至于让堆栈文件无限堆积。 */
     private const val MAX_REPORTS=5
@@ -87,7 +88,21 @@ object CrashReporter {
     fun count(context: Context): Int=
         File(context.applicationContext.filesDir,DIR).listFiles { f -> f.isFile }?.size ?: 0
 
-    /** 上次已提示到的时刻：仅比它新的崩溃才会在下次启动弹窗。 */
+    /** 崩溃后的首次启动放弃临时导航现场；收藏、观看进度和设置均不参与恢复处理。
+     *  仅扫描最多五份日志的文件名，旧版已经留下的崩溃同样可以触发恢复。 */
+    fun consumeNavigationRecovery(context: Context): Boolean {
+        val application = context.applicationContext
+        val newest = File(application.filesDir, DIR).listFiles { file -> file.isFile }
+            ?.maxOfOrNull { file ->
+                file.name.removePrefix("crash-").removeSuffix(".txt").toLongOrNull() ?: file.lastModified()
+            } ?: return false
+        val preferences = application.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (newest <= preferences.getLong(KEY_NAVIGATION_RECOVERED, 0L)) return false
+        preferences.edit().putLong(KEY_NAVIGATION_RECOVERED, newest).apply()
+        return true
+    }
+
+    /** 上次已提示到的时刻：仅比它新的崩溃才会在下次启动提示。 */
     fun promptedAt(context: Context): Long=
         context.applicationContext.getSharedPreferences(PREFS,Context.MODE_PRIVATE).getLong(KEY_PROMPTED,0L)
 

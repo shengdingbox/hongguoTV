@@ -8,4 +8,12 @@
      改成非浮窗后 generateLayout 不再重置宽高，styleWindow 在 show 前写入的尺寸和 x/y 首帧即生效；
      代代价是浮窗自带的变暗遮罩（FLAG_DIM_BEHIND）没了，由 styleWindow 显式补上。 -->
 <style name="TvAlertDialog" parent="android:style/Theme.Material.Dialog.Alert"><item name="android:windowIsFloating">false</item><item name="android:windowBackground">@android:color/transparent</item><item name="android:windowMinWidthMajor">20%</item><item name="android:windowMinWidthMinor">20%</item></style>
+<!-- 手机底部弹框使用独立浮窗主题，窗口宽度在内容安装后、首次显示前设置。 -->
+<style name="PhoneAlertDialog" parent="android:style/Theme.Material.Dialog.Alert">
+    <item name="android:windowIsFloating">true</item>
+    <item name="android:windowNoTitle">true</item>
+    <item name="android:windowBackground">@android:color/transparent</item>
+    <item name="android:windowMinWidthMajor">0dp</item>
+    <item name="android:windowMinWidthMinor">0dp</item>
+</style>
 </resources>

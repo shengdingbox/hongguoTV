@@ -7,6 +7,7 @@ import android.app.Dialog
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Bundle
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -53,12 +54,31 @@ object PhoneDialog {
      */
     fun sheet(activity: Activity, title: String, subtitle: String? = null, content: View): AlertDialog {
         PortraitStyle.refresh(activity)
-        val dialog = AlertDialog.Builder(activity).create()
+        val dialog = object : AlertDialog(activity, R.style.PhoneAlertDialog) {
+            override fun onCreate(savedInstanceState: Bundle?) {
+                super.onCreate(savedInstanceState)
+                // 先让 AlertDialog 安装内容，再配置窗口，避免提前创建 decor 干扰系统初始化。
+                window?.let { window ->
+                    WindowCompat.setDecorFitsSystemWindows(window, false)
+                    window.setBackgroundDrawableResource(android.R.color.transparent)
+                    @Suppress("DEPRECATION")
+                    window.navigationBarColor = Color.TRANSPARENT
+                    window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                    window.setDimAmount(.4f)
+                    window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or
+                        WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+                    window.setLayout(minOf(activity.resources.displayMetrics.widthPixels, dp(activity, 560)),
+                        ViewGroup.LayoutParams.WRAP_CONTENT)
+                    window.setGravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+                }
+            }
+        }
         var safeTop = 0
         val root = object : LinearLayout(activity) {
             override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
                 val screenHeight = resources.displayMetrics.heightPixels
-                val screenLimit = minOf((screenHeight * .9f).toInt(), screenHeight - safeTop - dp(activity, 12))
+                val screenLimit = minOf((screenHeight * .9f).toInt(),
+                    screenHeight - safeTop - dp(activity, 12)).coerceAtLeast(1)
                 val parentLimit = View.MeasureSpec.getSize(heightMeasureSpec).takeIf { it > 0 } ?: screenLimit
                 super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(
                     minOf(screenLimit, parentLimit), View.MeasureSpec.AT_MOST))
@@ -120,37 +140,27 @@ object PhoneDialog {
             clipToPadding = false
             addView(scrollingContent, ViewGroup.LayoutParams(-1, -2))
         }
-        root.addView(scroll, lp())
+        root.addView(scroll, lp().apply { weight = 1f })
         dialog.setView(root, 0, 0, 0, 0)
         dialog.setCanceledOnTouchOutside(true)
-        val width = minOf(activity.resources.displayMetrics.widthPixels, dp(activity, 560))
-        dialog.window?.let { window ->
-            WindowCompat.setDecorFitsSystemWindows(window, false)
-            window.setBackgroundDrawableResource(android.R.color.transparent)
-            @Suppress("DEPRECATION")
-            window.navigationBarColor = Color.TRANSPARENT
-            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            window.setDimAmount(.4f)
-            window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or
-                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
-            window.attributes = window.attributes.apply {
-                this.width = width
-                height = ViewGroup.LayoutParams.WRAP_CONTENT
-                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-                x = 0
-                y = 0
-            }
-            WindowCompat.getInsetsController(window, root).apply {
-                isAppearanceLightNavigationBars = !PortraitStyle.isDark
-                isAppearanceLightStatusBars = !PortraitStyle.isDark
-            }
-        }
         PhoneInsets.listen(root) { top, bottom, ime ->
-            safeTop = top
-            root.setPadding(dp(activity, 20), 0, dp(activity, 20), dp(activity, 20) + maxOf(bottom, ime))
-            root.requestLayout()
+            if (safeTop != top) {
+                safeTop = top
+                root.requestLayout()
+            }
+            val padding = dp(activity, 20) + maxOf(bottom, ime)
+            if (root.paddingBottom != padding) root.setPadding(dp(activity, 20), 0, dp(activity, 20), padding)
         }
-        dialog.setOnShowListener { TvDialog.register(dialog) }
+        dialog.setOnShowListener {
+            TvDialog.register(dialog)
+            // 系统栏控制器只在窗口已经挂载后访问。
+            dialog.window?.let { window ->
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    isAppearanceLightNavigationBars = !PortraitStyle.isDark
+                    isAppearanceLightStatusBars = !PortraitStyle.isDark
+                }
+            }
+        }
         return dialog
     }
 

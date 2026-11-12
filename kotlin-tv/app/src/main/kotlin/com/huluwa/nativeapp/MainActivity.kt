@@ -140,6 +140,7 @@ class MainActivity: Activity() {
     /** 落盘池始终供播放读取；缓存开关只控制后台下载，关闭时保留已有文件。 */
     @Volatile private var episodeDiskCache: EpisodeDiskCache?=null
     private var episodeCacheOn=false
+    private var episodeCacheLoading=false
     private var episodeCacheParallelism=0
     /** 上一次记录过的「调度为什么没跑」：同一条原因只写一次日志，避免每秒 tick 刷屏。 */
     private var lastScheduleIdle=""
@@ -689,13 +690,15 @@ class MainActivity: Activity() {
         library.loadAsync(onFailure={ problem ->
             if(!isDestroyed) { libraryLoadError=problem; if(foreground) showLibraryError(problem) }
         }) {
-            // 记录加载完成后同步落盘缓存开关：恢复出厂/重装后首次进入也要按偏好创建缓存池
+            if(isDestroyed || isFinishing) return@loadAsync
+            // 按本机偏好异步创建缓存池，记录加载完成即可显示首页。
             applyEpisodeCacheSetting()
             if(!isDestroyed && foreground) {
                 // 手机竖屏使用手机首页，电视与横屏使用电视目录。
                 if(pendingPhoneSettings && phoneLayout()) { pendingPhoneSettings=false; showPhoneSettings(); favoriteMonitor.check() }
                 else if(phoneLayout()) { showInitialPhonePage(); favoriteMonitor.check() }
                 else { showCatalog(load=true); favoriteMonitor.check() }
+                maybePromptCrash()
             }
         }
     }
@@ -787,20 +790,23 @@ class MainActivity: Activity() {
             }
         }
     }
-    /** 上次运行留下的崩溃日志：本次启动首次进入前台时弹窗展示，支持一键复制。
-     *  读取走后台线程（磁盘 IO），只在有未提示过的新崩溃时才建弹窗。 */
+    /** 主界面显示后再提示上次异常；手机不自动打开导致上次崩溃的弹框通道。 */
     private fun maybePromptCrash() {
-        if(crashPromptDone) return
+        if(crashPromptDone || !foreground || isFinishing || isDestroyed || !library.isLoaded || initialCatalogPending) return
         crashPromptDone=true
         io.execute {
-            val records=CrashReporter.reports(this)
+            val records=runCatching { CrashReporter.reports(this) }.onFailure {
+                RuntimeLog.add("读取异常日志失败：${it.javaClass.simpleName}")
+            }.getOrNull() ?: return@execute
             val prompted=CrashReporter.promptedAt(this)
-            val fresh=records.filter { it.at>prompted }
-            if(fresh.isEmpty()) return@execute
+            if(records.none { it.at>prompted }) return@execute
             main.post {
-                if(isDestroyed || !foreground) return@post
-                // 弹窗会盖在当前页面上；不预取任何锚点，居中展示即可
-                CrashDialog.showList(this@MainActivity,records,fromStartup=true)
+                if(isDestroyed || isFinishing) return@post
+                if(!foreground || initialCatalogPending) { crashPromptDone=false; return@post }
+                if(phoneLayout()) {
+                    CrashReporter.markPrompted(this,records)
+                    PhoneUi.toast(this,"上次运行异常退出，可在设置 → 异常日志查看详情")
+                } else CrashDialog.showList(this@MainActivity,records,fromStartup=true)
             }
         }
     }
@@ -3718,34 +3724,53 @@ class MainActivity: Activity() {
         playbackSession?.retain(ids,effectiveQuality())
         playbackCache.retain(ids,effectiveQuality())
     }
-    /** 开关只控制后三集下载；初始化时载入旧文件，关闭后仍可优先使用已有缓存播放。 */
-    private fun applyEpisodeCacheSetting() {
+    /** 开关只控制后三集下载；缓存扫描走后台，不阻塞本机记录加载后的首屏。 */
+    private fun applyEpisodeCacheSetting(force: Boolean=false) {
         val want=library.episodeCache
-        if(want==episodeCacheOn && episodeDiskCache!=null) return
-        episodeCacheOn=want
+        if(!force && want==episodeCacheOn && episodeDiskCache!=null) return
         if(episodeDiskCache==null) {
-            val cache=EpisodeDiskCache(repository.http,java.io.File(cacheDir,"episode-cache"),
-                freeBytes={ runCatching { android.os.StatFs(cacheDir.absolutePath).availableBytes }.getOrDefault(Long.MAX_VALUE) },
-                lowMemory={ (getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.let { it.isLowRamDevice || it.memoryClass<=128 } ?: false },
-                resolver={ id,q -> playbackCache.resolveStream(id,q) },
-                onState={ reason ->
-                    // 只在状态翻转时记录，避免每轮调度都刷一行；这也是「三条灰条」的第一手原因
-                    RuntimeLog.add(if(reason.isEmpty()) "cache state: 调度正常" else "cache state: 未下载 · $reason")
-                },
-                onLog={ message -> RuntimeLog.add(message) })
-            // 三集并发时每段完成都会回调一次，节流后再画：tick 本来也每秒刷一次条带
-            cache.onProgress={ _,_,_ ->
-                val now=android.os.SystemClock.elapsedRealtime()
-                if(now-cacheStripPaintedAt>=200) {
-                    cacheStripPaintedAt=now
-                    main.post { if(!isDestroyed) refreshCacheStrip() }
+            if(episodeCacheLoading) return
+            episodeCacheLoading=true
+            val application=applicationContext
+            val cacheDirectory=cacheDir
+            val directory=java.io.File(cacheDirectory,"episode-cache")
+            val http=repository.http
+            io.execute {
+                if(isDestroyed || isFinishing) return@execute
+                val result=runCatching {
+                    EpisodeDiskCache(http,directory,
+                        freeBytes={ runCatching { android.os.StatFs(cacheDirectory.absolutePath).availableBytes }.getOrDefault(Long.MAX_VALUE) },
+                        lowMemory={ (application.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.let { it.isLowRamDevice || it.memoryClass<=128 } ?: false },
+                        resolver={ id,q -> playbackCache.resolveStream(id,q) },
+                        onState={ reason -> RuntimeLog.add(if(reason.isEmpty()) "cache state: 调度正常" else "cache state: 未下载 · $reason") },
+                        onLog={ message -> RuntimeLog.add(message) }).also { it.setDownloadParallelism(0) }
+                }
+                if(isDestroyed || isFinishing) { result.getOrNull()?.close(); return@execute }
+                main.post {
+                    episodeCacheLoading=false
+                    if(isDestroyed || isFinishing) { result.getOrNull()?.close(); return@post }
+                    result.onSuccess { cache ->
+                        // 三集并发时节流刷新条带；库与播放器均可在缓存尚未就绪时正常使用。
+                        cache.onProgress={ _,_,_ ->
+                            val now=android.os.SystemClock.elapsedRealtime()
+                            if(now-cacheStripPaintedAt>=200) {
+                                cacheStripPaintedAt=now
+                                main.post { if(!isDestroyed) refreshCacheStrip() }
+                            }
+                        }
+                        episodeCacheParallelism=0
+                        episodeDiskCache=cache
+                        playbackCache.onInvalidate={ id -> cache.invalidate(id) }
+                        // 扫描期间用户可能已经切过开关，按此刻的偏好重新应用。
+                        applyEpisodeCacheSetting(force=true)
+                    }.onFailure { failure ->
+                        RuntimeLog.add("视频缓存初始化失败：${failure.javaClass.simpleName}，本机记录与首页仍可使用")
+                    }
                 }
             }
-            cache.setDownloadParallelism(0)
-            episodeCacheParallelism=0
-            episodeDiskCache=cache
-            playbackCache.onInvalidate={ id -> cache.invalidate(id) }
+            return
         }
+        episodeCacheOn=want
         // 数据源始终可读取落盘池；停用预缓存只暂停网络任务。
         if(want) scheduleDiskCache() else {
             episodeDiskCache?.pause()
@@ -7718,7 +7743,6 @@ class MainActivity: Activity() {
         if(PortraitStyle.refresh(this)) redrawPhoneTheme()
         phoneConfiguration=android.content.res.Configuration(resources.configuration)
         updater.resume()
-        maybePromptCrash()
         autoStartRemote()
         // 从「安装未知应用」授权页返回：同一个包继续安装，不用重新扫码
         pendingQuickApk?.let { apk -> if(Build.VERSION.SDK_INT<26 || packageManager.canRequestPackageInstalls()) { pendingQuickApk=null; installQuickApk(apk) } }
@@ -7751,6 +7775,7 @@ class MainActivity: Activity() {
             if(screen=="catalog") favoriteMonitor.check()
             if(screen=="player") syncMediaSession()
         } else libraryLoadError?.let(::showLibraryError)
+        maybePromptCrash()
         // 回到前台：先把状态推给手机（页面从「电视已暂停」恢复），缓存意图由 remotePublish 内部补上
         remotePublish(true)
     }

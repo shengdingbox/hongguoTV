@@ -25,10 +25,16 @@ data class PhoneSessionSnapshot(
 )
 
 class PhoneSessionStore(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences("phone-session-v1", Context.MODE_PRIVATE)
+    private val app = context.applicationContext
+    private val prefs = app.getSharedPreferences("phone-session-v1", Context.MODE_PRIVATE)
     private var lastSaved: String? = null
 
     fun load(): PhoneSessionSnapshot? = runCatching {
+        if (CrashReporter.consumeNavigationRecovery(app)) {
+            prefs.edit().remove("session").apply()
+            lastSaved = null
+            return null
+        }
         val raw = prefs.getString("session", null) ?: return null
         if (raw.length > MAX_LENGTH) return null
         val json = JSONObject(raw)

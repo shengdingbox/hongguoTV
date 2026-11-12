@@ -16,7 +16,8 @@ import com.hongguotv.core.DanmakuPrefs
  * from the right edge when playback crosses its anchor and drifts left at a fixed speed, so
  * pausing, seeking and playback-speed changes need no extra handling. Comments are assigned
  * to the first track whose previous comment has fully entered; when every track is busy the
- * comment is dropped, matching common danmaku behavior.
+ * comment is dropped, matching common danmaku behavior. Identical rendered text appears
+ * only once on screen, even when the source supplies distinct comment IDs or emoji codes.
  */
 class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_000L) : View(context) {
     private data class Active(val danmaku: Danmaku, val text: String, val width: Float, val track: Int)
@@ -103,6 +104,7 @@ class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_0
 
     fun unbind() {
         running = false
+        removeCallbacks(frame)
         loader = null
         needMore = {}
         active.clear()
@@ -145,6 +147,8 @@ class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_0
             lastEmit = position
             dirty = true
         }
+        // Release expired comments before checking duplicate text and available tracks.
+        if (active.removeAll { x(it, position) + it.width < 0 }) dirty = true
         if (position > lastEmit) {
             for (comment in loader.between(lastEmit, position)) emit(comment, position)
             lastEmit = position
@@ -155,8 +159,6 @@ class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_0
             lastPumpAt = now
             needMore(position)
         }
-        val widthF = width.toFloat()
-        if (active.removeAll { x(it, position) + it.width < 0 }) dirty = true
         if (dirty) {
             dirty = false
             invalidate()
@@ -167,7 +169,9 @@ class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_0
         if (pxPerMs <= 0f) return
         if (blocked(comment.text)) return
         // Expand emoji codes once here: measure and draw must see the same text.
-        val text = DanmakuEmoji.display(comment.text)
+        val text = DanmakuEmoji.display(comment.text).trim()
+        // Different IDs can carry the same visible text; keep just one while it is on screen.
+        if (text.isEmpty() || active.any { it.text == text }) return
         val textWidth = paint.measureText(text)
         val widthF = width.toFloat()
         for (track in 0 until tracks) {

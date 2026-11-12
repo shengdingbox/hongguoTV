@@ -9,7 +9,7 @@ import com.hongguotv.core.EpisodeDiskCache
 import com.hongguotv.core.MediaCrypto
 import com.hongguotv.core.RemoteVideo
 
-/** 播放取数：优先命中已完成的整集落盘缓存，未命中回落在线分块读取。 */
+/** 播放取数：完整与部分缓存均按已落盘区间优先读取，缺口回落在线分块读取。 */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class VideoDataSource(private val video: RemoteVideo, private val disk: () -> EpisodeDiskCache? = { null }): BaseDataSource(true) {
     private var position=0L
@@ -35,10 +35,11 @@ class VideoDataSource(private val video: RemoteVideo, private val disk: () -> Ep
         val cache=disk()
         if(cache!==activeDisk) { activeDisk=cache; meta=null; diskUnavailable=false }
         if(cache!=null && !diskUnavailable) {
-            val snapshot=meta ?: cache.meta(video.info.idHint,video.info.qualityNumber)
-                ?.takeIf { it.total==video.total }?.also { meta=it }
+            val snapshot=meta ?: cache.readableMeta(video.info.idHint,video.info.qualityNumber)
+                ?.takeIf { it.total==video.total && it.key.contentEquals(video.info.key) &&
+                    it.header.contentEquals(video.preparedSnapshot().header) }?.also { meta=it }
             if(snapshot!=null) {
-                val count=cache.read(video.info.idHint,video.info.qualityNumber,position,target,targetOffset,want)
+                val count=cache.read(video.info.idHint,video.info.qualityNumber,position,target,targetOffset,want,snapshot)
                 if(count>0) {
                     val decrypted=MediaCrypto.decrypt(target.copyOfRange(targetOffset,targetOffset+count),position,snapshot.key,snapshot.prepared)
                     decrypted.copyInto(target,targetOffset)

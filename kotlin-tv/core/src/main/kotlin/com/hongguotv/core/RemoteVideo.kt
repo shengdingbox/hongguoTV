@@ -18,6 +18,22 @@ class RemoteVideo(
     private val chunkBytes: Int = 2*1024*1024,
     private val aheadBytes: Long = 8*1024*1024L,
 ): Closeable {
+    companion object {
+        /** 直接复用落盘缓存保存的明文头与加密索引，起播无需重新访问取址接口和 CDN。 */
+        internal fun fromPrepared(http: OkHttpClient, info: StreamInfo, length: Long, snapshot: MediaCrypto.Prepared): RemoteVideo {
+            if (length <= 0 || snapshot.header.size.toLong() > length ||
+                MediaCrypto.headerEnd(snapshot.header, length) != snapshot.header.size ||
+                snapshot.samples.any { it.start < 0 || it.end <= it.start || it.end > length || it.iv.size != 16 || it.encryptedOffset < 0 } ||
+                snapshot.samples.asSequence().zipWithNext().any { (a, b) -> a.end > b.start }) {
+                throw IOException("本地视频索引异常")
+            }
+            return RemoteVideo(http, info, chunkBytes = 256 * 1024).also {
+                it.total = length
+                it.prepared = snapshot
+                it.setPlaybackActive(false)
+            }
+        }
+    }
     @Volatile private var closed=false
     private val calls=mutableSetOf<Call>()
     data class Range(val bytes: ByteArray,val total: Long)

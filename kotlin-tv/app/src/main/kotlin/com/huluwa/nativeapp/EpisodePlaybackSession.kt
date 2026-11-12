@@ -60,7 +60,6 @@ internal class EpisodePlaybackSession(context: Context, private val disk: () -> 
         setHandleAudioBecomingNoisy(true)
         addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState != Player.STATE_READY) canPreload = false
                 preloadWhenBuffered()
             }
         })
@@ -103,14 +102,18 @@ internal class EpisodePlaybackSession(context: Context, private val disk: () -> 
         }
     }
 
-    /** 当前集先积累三秒缓冲；仅窗口或加载目标变化时重排，避免每秒清理预加载队列。 */
+    /** 缓冲按实际倍速折算：积累三秒再预载，降到一秒或发生缓冲时立即让出带宽。 */
     private fun preloadWhenBuffered() {
-        if (!preloadingEnabled || currentId == null || player.playbackState != Player.STATE_READY) return
-        if (!canPreload && (player.bufferedPosition - player.currentPosition >= 3_000L || player.bufferedPercentage == 100)) {
-            canPreload = true
+        if (!preloadingEnabled || currentId == null) return
+        val bufferedMs = (player.bufferedPosition - player.currentPosition).coerceAtLeast(0).toDouble() /
+            player.playbackParameters.speed.coerceAtLeast(.1f)
+        val enough = player.playbackState == Player.STATE_READY &&
+            (player.bufferedPercentage == 100 || bufferedMs >= if (canPreload) 1_000L else 3_000L)
+        if (canPreload != enough) {
+            canPreload = enough
             dirty = true
         }
-        if (canPreload && dirty) {
+        if (dirty) {
             dirty = false
             preloadManager.invalidate()
         }

@@ -120,14 +120,16 @@ class EpisodeDiskCacheTest {
         assertNotNull(cache.meta("206", 720))
         cache.close()
     }
-    @Test fun expiredAddressMarksEntryStale() {
+    @Test fun completeCacheRemainsReadableAfterAddressExpires() {
         var now = 1_000_000L
         val info = { id: String, q: Int -> StreamInfo(server.url("/v/$id").toString(), null, "720P", expiresAt = now - 10_000) }
         File(dir, "301-q720.mp4").writeBytes(ByteArray(1024))
         writeMeta("301", 720, EpisodeDiskCache.Meta("301", 720, server.url("/v/301").toString(), null, "720P", now - 10_000,
             1024, ByteArray(16), emptyList(), 1, true), listOf(longArrayOf(0, 1024)))
         val cache = EpisodeDiskCache(http, dir, clock = { now }, resolver = info)
-        assertNull(cache.meta("301", 720))
+        assertNotNull(cache.meta("301", 720))
+        val buffer = ByteArray(32)
+        assertEquals(buffer.size, cache.read("301", 720, 0, buffer, 0, buffer.size))
         cache.close()
     }
 

@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  *  窗口策略：上一集 + 当前集 + 下三集共 5 条，随当前集滑动；
  *  划出窗口的条目立即连同元数据删除（播完即删最早一条）。
- *  地址过期 / 总字节超限 / 磁盘空间不足时整体收缩，播放端永远可以回落在线读取。
+ *  完整缓存不依赖在线地址有效期；总字节超限或磁盘空间不足时收缩，播放端可回落在线读取。
  *  磁盘上存的是与在线字节完全一致的密文；解密仍走 [MediaCrypto.decrypt]，
  *  元数据（改写后的明文头 + 加密样本索引 + 已落盘区间）单独存 JSON。 */
 class EpisodeDiskCache(
@@ -54,7 +54,7 @@ class EpisodeDiskCache(
     data class Meta(val id: String, val quality: Int, val url: String, val key: ByteArray?, val qualityLabel: String,
         val expiresAt: Long, val total: Long, val header: ByteArray, val samples: List<MediaCrypto.Sample>,
         val updatedAt: Long, val done: Boolean) {
-        val prepared: MediaCrypto.Prepared get() = MediaCrypto.Prepared(header, samples)
+        val prepared = MediaCrypto.Prepared(header, samples)
     }
     private class Entry(var meta: Meta, var ranges: List<LongArray>) {
         var doneBytes: Long = ranges.sumOf { it[1] - it[0] }
@@ -68,7 +68,7 @@ class EpisodeDiskCache(
     companion object {
         const val POOL_LIMIT_BYTES = 500L * 1024 * 1024
         const val FREE_FLOOR_BYTES = 1024L * 1024 * 1024
-        /** 并发下载线程数：正好对应状态条的三段（下 1/2/3 集）。 */
+        /** 缓冲充足时的并发上限，对应下 1/2/3 集。 */
         const val MAX_PARALLEL = 3
         /** 某一集下载失败后的退避时间：期间不再重提，避免每个 tick 都重试同一集。 */
         private const val RETRY_BACKOFF_MS = 10_000L
@@ -123,11 +123,14 @@ class EpisodeDiskCache(
         Thread(action, "episode-disk-${threadCount.incrementAndGet()}").apply { isDaemon = true }
     }
     @Volatile private var closed = false
-    /** 目标窗口，按优先级排列（下一集 > +2 > +3 > 当前集 > 上一集）。 */
+    /** 实际下载目标，按调用方提供的优先级排列。 */
     private var want = emptyList<Key>()
     private var scheduled = false
     /** 此刻真在下载的集：[want] 是目标窗口，这里是线程池里实际跑着的子集。 */
     private val active = mutableSetOf<Key>()
+    private val activeScopes = mutableMapOf<Key, RequestScope>()
+    /** 起播/缓冲时为 0，缓冲充足后从下一集单路下载逐步恢复到三路。 */
+    private var downloadParallelism = MAX_PARALLEL
     /** 失败后的退避截止时间：同一集失败后 10 秒内不再重提，避免每个 tick 都重试。 */
     private val retryAt = mutableMapOf<Key, Long>()
     /** 本轮累计下载字节：超过 [POOL_LIMIT_BYTES] 就整体停手，由下一次播放会话重新计数。 */
@@ -142,9 +145,6 @@ class EpisodeDiskCache(
         directory.listFiles { f -> f.isFile && f.name.endsWith(".meta") }?.forEach { metaFile ->
             runCatching { loadRow(metaFile) }.onSuccess { row -> row?.let { entries[it.key] = it.entry } }
                 .onFailure { metaFile.delete(); File(directory, metaFile.name.removeSuffix(".meta") + ".mp4").delete() }
-        }
-        entries.values.forEach { entry ->
-            if (entry.meta.expiresAt > 0 && entry.meta.expiresAt <= clock()) entry.meta = entry.meta.copy(done = false)
         }
         evictLocked()
     }
@@ -200,15 +200,18 @@ class EpisodeDiskCache(
 
     // ---------- 播放端查询 ----------
 
+    /** 完整文件和索引都在本地时，CDN 地址过期不影响继续播放。 */
     fun meta(id: String, quality: Int): Meta? = synchronized(lock) {
-        val entry = entries[Key(id, quality)] ?: return@synchronized null
-        if (!entry.meta.done) return@synchronized null
-        if (entry.meta.expiresAt > 0 && entry.meta.expiresAt <= clock() + 60_000L) {
-            entry.meta = entry.meta.copy(done = false)
-            runCatching { saveMeta(Key(id, quality), entry) }
+        val key = Key(id, quality)
+        val entry = entries[key] ?: return@synchronized null
+        if (!entry.meta.done || !covered(entry.ranges, 0, entry.meta.total) || dataFile(key).length() < entry.meta.total)
             return@synchronized null
-        }
         entry.meta
+    }
+
+    /** 部分下载也可供播放端读取；调用方核对索引后，每次 read 再检查区间是否已落盘。 */
+    fun readableMeta(id: String, quality: Int): Meta? = synchronized(lock) {
+        entries[Key(id, quality)]?.takeIf { it.doneBytes > 0 }?.meta
     }
 
     /** 判定 [offset, offset+length) 是否完全落盘；失败视为未覆盖，调用方回落在线。 */
@@ -225,8 +228,10 @@ class EpisodeDiskCache(
     }
 
     /** 提取器会越过文件末尾多读一点：按总长截断，只答应真正落盘的部分。 */
-    fun read(id: String, quality: Int, offset: Long, target: ByteArray, targetOffset: Int, length: Int): Int = synchronized(lock) {
+    fun read(id: String, quality: Int, offset: Long, target: ByteArray, targetOffset: Int, length: Int, expected: Meta? = null): Int = synchronized(lock) {
         val entry = entries[Key(id, quality)] ?: return 0
+        // 条目被刷新或重建后不混用旧密钥/索引；Meta.copy 保留同一份 header 引用。
+        if (expected != null && expected.header !== entry.meta.header) return 0
         val safeOffset = offset.coerceIn(0, entry.meta.total)
         val end = (safeOffset + length).coerceAtMost(entry.meta.total)
         if (!covered(entry.ranges, safeOffset, end - safeOffset)) return 0
@@ -240,10 +245,10 @@ class EpisodeDiskCache(
 
     // ---------- 调度 ----------
 
-    /** 下载目标窗口：ordered 按优先级排列（下一集 > +2 > +3 > 当前集 > 上一集）。
+    /** 下载目标窗口：ordered 按调用方提供的优先级排列。
      *  保留窗口保留所有已有条目（含部分下载），再按播放窗口裁剪；
      *  返回 false 表示磁盘空间不足，本轮放弃调度。 */
-    fun schedule(orderedIds: List<String>, quality: Int, retainedIds: Set<String>, retainedQuality: Int): Boolean {
+    fun schedule(orderedIds: List<String>, quality: Int, retainedIds: Set<String>, retainedQuality: Int, parallelism: Int? = null): Boolean {
         if (closed) { markSkip("缓存池已关闭"); return false }
         val keys = orderedIds.filter { ID_PATTERN.matches(it) }.distinct().map { Key(it, quality) }
         synchronized(lock) {
@@ -255,7 +260,7 @@ class EpisodeDiskCache(
             // 空目标列表是「播放失败/收尾时收缩窗口」的正常调用，不应覆盖真实的跳过原因
             if (keys.isNotEmpty()) markSkip("")
             val before = entries.size
-            onLog("Episode disk cache schedule: targets=${keys.joinToString(",") { "${it.id}-q${it.quality}" }}")
+            if (keys != want) onLog("Episode disk cache schedule: targets=${keys.joinToString(",") { "${it.id}-q${it.quality}" }}")
             // 保留窗口外才删。正在下载的集如果刚好滑出窗口，不在这里硬删：
             // 并发下载期间频繁删条目会让工作者反复「下到一半被打断 → 重新排队」。
             entries.keys.filter { it.id !in retainedIds || it.quality != retainedQuality }
@@ -267,8 +272,10 @@ class EpisodeDiskCache(
             // 不清零，否则「本轮上限」形同虚设。进入播放页由 MainActivity 调 resetBudget() 显式复位。
             if (keys != want && budgetExhausted) { budgetExhausted = false; downloadedThisRun.set(0L) }
             want = keys
+            parallelism?.let { downloadParallelism = it.coerceIn(0, MAX_PARALLEL) }
             scheduled = true
-            // 切集只换目标窗口：正在下的三条不必打断，空出来的槽位立刻补上新的「下 1/2/3 集」
+            cancelExcessDownloadsLocked()
+            // 保留窗口内且符合带宽预算的下载，空槽位按下一集优先补齐。
             ensureWorkerLocked()
         }
         return true
@@ -302,12 +309,13 @@ class EpisodeDiskCache(
 
     fun clear() {
         synchronized(lock) {
-            want = emptyList(); scheduled = false; active.clear(); retryAt.clear()
+            want = emptyList(); scheduled = false; retryAt.clear()
+            activeScopes.values.forEach { it.cancel() }
             setQueued(0); markSkip("缓存已清空")
             entries.keys.toList().forEach { dropLocked(it) }
         }
         // 线程池不 shutdown：clear() 只是清队列，开关重新打开后还要继续用。
-        // 正在跑的 download 会在下一段开头发现条目已被移除而自行退出。
+        // 在途请求由作用域取消，工作者退出前不会为同一集重复启动任务。
     }
 
     /** 暂停后台下载但保留已落盘内容：切界面 / 退到后台 / 播放失败收尾都走这里。
@@ -316,10 +324,26 @@ class EpisodeDiskCache(
     fun pause() {
         synchronized(lock) {
             want = emptyList(); scheduled = false
+            activeScopes.values.forEach { it.cancel() }
             setQueued(0); markSkip("")
         }
-        // 不碰 entries 与线程池：正在下的段会在下一段开头发现已停调度而退出，
-        // 已落盘区间写进 meta，之后的 schedule() 从缺口续传。
+        // 保留已落盘区间；取消在途请求，让当前集立即拿回带宽，之后从缺口续传。
+    }
+
+    /** 根据当前集的缓冲余量调整并发；缩减时立即取消低优先级的在途网络请求。 */
+    fun setDownloadParallelism(value: Int) {
+        synchronized(lock) {
+            val next = value.coerceIn(0, MAX_PARALLEL)
+            if (closed || downloadParallelism == next) return
+            downloadParallelism = next
+            cancelExcessDownloadsLocked()
+            ensureWorkerLocked()
+        }
+    }
+
+    private fun cancelExcessDownloadsLocked() {
+        val allowed = want.filter { it in active }.take(downloadParallelism).toSet()
+        activeScopes.filterKeys { it !in allowed }.values.forEach { it.cancel() }
     }
 
     /** 新一轮播放会话开始（进入/切换播放页）：复位本轮下载预算，并允许重新调度。 */
@@ -342,24 +366,26 @@ class EpisodeDiskCache(
 
     override fun close() {
         closed = true
-        synchronized(lock) { active.clear() }
+        synchronized(lock) { activeScopes.values.forEach { it.cancel() } }
         executor.shutdownNow()
     }
 
     /**
      * 每次 schedule 后补齐下载线程：窗口里还没下完、且没在下载的集，
-     * 逐个提交到线程池。已经跑着的集不会重复提交，切集只换目标窗口、不打断正在下的段。
+     * 逐个提交到线程池。同一集不重复提交，缓冲不足时可取消低优先级请求。
      */
     private fun ensureWorkerLocked() {
-        if (closed || !scheduled) return
+        if (closed || !scheduled || downloadParallelism == 0) return
         val now = clock()
         val pending = want.filter { key ->
             key !in active && (retryAt[key] ?: 0L) <= now && needsDownloadLocked(key)
         }
         // 未开始下载的集按优先级补到并发上限（下 1/2/3 集同时开工）
-        pending.take(MAX_PARALLEL - active.size).forEach { key ->
+        pending.take((downloadParallelism - active.size).coerceAtLeast(0)).forEach { key ->
+            val scope = RequestScope()
             active += key
-            executor.execute { downloadWorker(key) }
+            activeScopes[key] = scope
+            executor.execute { downloadWorker(key, scope) }
         }
         // 队列长度 = 还没下完的集数（含正在下的），供日志/摘要显示
         setQueued(want.count { needsDownloadLocked(it) })
@@ -379,31 +405,9 @@ class EpisodeDiskCache(
     // ---------- 下载线程（并发，每个线程一条集） ----------
 
     /** 单个下载工作者：一次只负责一集，下完就退出，由下一次 schedule 决定要不要继续。 */
-    private fun downloadWorker(key: Key) {
+    private fun downloadWorker(key: Key, scope: RequestScope) {
         try {
-            // 地址解析与索引 prepare 要走网络：在锁外做，否则几秒内所有读取/调度都被堵死
-            val existing = synchronized(lock) { entries[key]?.let { Row(key, it, dataFile(key), metaFile(key)) } }
-            // 切集后这一集可能已经划出窗口：不再白下一遍
-            if (existing == null && synchronized(lock) { key !in want || closed }) return
-            val row = existing ?: openRow(key)
-            if (row == null) {
-                synchronized(lock) {
-                    retryAt[key] = clock() + RETRY_BACKOFF_MS
-                    markSkip(skipReason.ifBlank { "取址失败，稍后重试" })
-                }
-                return
-            }
-            download(row)
-            synchronized(lock) {
-                if (entries[row.key] === row.entry) {
-                    row.entry.meta = row.entry.meta.copy(done = true, updatedAt = clock())
-                    row.entry.doneBytes = row.entry.meta.total
-                    runCatching { saveMeta(row.key, row.entry) }
-                    if (skipReason.isNotEmpty()) markSkip("")
-                    onLog("Episode cached ${row.key.id} q${row.key.quality} ${row.entry.meta.total / 1048576}MB")
-                }
-            }
-            runCatching { onProgress(row.key.id, row.key.quality, 1f) }
+            scope.run { downloadEpisode(key) }
         } catch (cancelled: InterruptedException) {
             // 线程池关闭、暂停调度或切出窗口：把已落盘区间写回元数据，
             // 之后再排到这一集时从缺口续传，已经下好的部分不会白费。
@@ -413,7 +417,11 @@ class EpisodeDiskCache(
             }
         } catch (problem: Throwable) {
             if (closed) return
-            // 地址过期：整条作废，等下一轮 schedule 用新地址重新整集下载
+            if (scope.isCancelled) {
+                synchronized(lock) { entries[key]?.let { runCatching { saveMeta(key, it) } } }
+                return // 带宽让路或页面暂停是正常取消，不记失败、不进入十秒退避。
+            }
+            // 地址过期：未完成的条目需要重新取址。
             val stale = synchronized(lock) {
                 val entry = entries[key]
                 if (entry == null) { retryAt[key] = clock() + RETRY_BACKOFF_MS; false }
@@ -431,17 +439,46 @@ class EpisodeDiskCache(
         } finally {
             synchronized(lock) {
                 active -= key
-                setQueued(want.count { needsDownloadLocked(it) })
+                activeScopes.remove(key)
+                setQueued(if (scheduled) want.count { needsDownloadLocked(it) } else 0)
                 // 这一集收工后立刻补位：窗口里还有没下的集就继续开工
                 ensureWorkerLocked()
             }
         }
     }
 
+    private fun downloadEpisode(key: Key) {
+        // 地址解析与索引 prepare 要走网络：在锁外做，否则几秒内所有读取/调度都被堵死
+        val existing = synchronized(lock) { entries[key]?.let { Row(key, it, dataFile(key), metaFile(key)) } }
+        // 切集后这一集可能已经划出窗口：不再白下一遍
+        if (existing == null && synchronized(lock) { key !in want || closed }) return
+        val row = existing ?: openRow(key)
+        if (row == null) {
+            synchronized(lock) {
+                retryAt[key] = clock() + RETRY_BACKOFF_MS
+                markSkip(skipReason.ifBlank { "取址失败，稍后重试" })
+            }
+            return
+        }
+        download(row)
+        synchronized(lock) {
+            if (entries[row.key] === row.entry) {
+                row.entry.meta = row.entry.meta.copy(done = true, updatedAt = clock())
+                row.entry.doneBytes = row.entry.meta.total
+                runCatching { saveMeta(row.key, row.entry) }
+                if (skipReason.isNotEmpty()) markSkip("")
+                onLog("Episode cached ${row.key.id} q${row.key.quality} ${row.entry.meta.total / 1048576}MB")
+            }
+        }
+        runCatching { onProgress(row.key.id, row.key.quality, 1f) }
+    }
+
     /** 缺元数据则解析地址并整段 prepare（约两三跳网络），之后按 4MiB 段续传。锁外执行。 */
     private fun openRow(key: Key): Row? {
         synchronized(lock) { entries[key]?.let { return Row(key, it, dataFile(key), metaFile(key)) } }
         val info = runCatching { resolver(key.id, key.quality) }.getOrElse {
+            if (RequestScope.current()?.isCancelled == true || Thread.currentThread().isInterrupted)
+                throw InterruptedException("下载已取消")
             // 整部剧都下不来时最常见的原因是取址失败：这条必须留下，否则界面只能看到一片灰
             val reason = "取址失败：${it.javaClass.simpleName} ${it.message.orEmpty().take(120)}"
             markSkip(reason)
@@ -467,6 +504,8 @@ class EpisodeDiskCache(
             }
             return Row(key, entry, dataFile(key), metaFile(key))
         } catch (problem: Throwable) {
+            if (RequestScope.current()?.isCancelled == true || Thread.currentThread().isInterrupted)
+                throw InterruptedException("下载已取消")
             // prepare 失败同样静默：补一条带原因的日志与状态摘要
             val reason = "解析视频信息失败：${problem.javaClass.simpleName} ${problem.message.orEmpty().take(120)}"
             markSkip(reason)
@@ -479,13 +518,13 @@ class EpisodeDiskCache(
 
     private fun download(row: Row) {
         val total = row.entry.meta.total
-        // 4MiB 一段：一次请求失败只重传这一段，进度按段落盘
-        val segment = 4L * 1024 * 1024
+        // 单路下载用 1MiB，尽早提供可播放区间、减少让路时丢弃的在途数据；宽裕时用 4MiB。
         var pendingMeta = 0
         RandomAccessFile(row.file, "rw").use { file ->
             var at = 0L
             while (at < total) {
-                if (Thread.currentThread().isInterrupted || closed) throw InterruptedException("下载已取消")
+                if (Thread.currentThread().isInterrupted || closed || RequestScope.current()?.isCancelled == true)
+                    throw InterruptedException("下载已取消")
                 synchronized(lock) {
                     if (entries[row.key] !== row.entry) throw InterruptedException("下载已取消")
                     // 这一集已经滑出下载窗口（用户切到别的集了）：立刻让出线程槽位给新的下 1/2/3 集。
@@ -493,6 +532,7 @@ class EpisodeDiskCache(
                     // 已落盘的部分保留在磁盘上（meta 里有区间），以后排到时从缺口续传。
                     if (row.key !in want) throw InterruptedException("已移出下载窗口")
                 }
+                val segment = synchronized(lock) { (if (downloadParallelism == 1) 1L else 4L) * 1024 * 1024 }
                 val end = minOf(total, at + segment)
                 synchronized(lock) {
                     if (covered(row.entry.ranges, at, end - at)) { at = end; return@synchronized }
@@ -509,7 +549,7 @@ class EpisodeDiskCache(
                     rangeStart = s; rangeEnd = e
                 }
                 if (rangeStart >= rangeEnd) { at = end; continue }
-                val bytes = fetch(row.entry.meta.url, rangeStart, rangeEnd - 1)
+                val bytes = fetch(row.entry.meta, rangeStart, rangeEnd - 1)
                 file.seek(rangeStart)
                 file.write(bytes)
                 file.fd.sync()
@@ -539,8 +579,8 @@ class EpisodeDiskCache(
         if (pendingMeta > 0) runCatching { saveMeta(row.key, row.entry) }
     }
 
-    private fun fetch(url: String, start: Long, end: Long): ByteArray {
-        val request = Request.Builder().url(url).header("User-Agent", VendorConstants.VIDEO_UA)
+    private fun fetch(meta: Meta, start: Long, end: Long): ByteArray {
+        val request = Request.Builder().url(meta.url).header("User-Agent", VendorConstants.VIDEO_UA)
             .header("Referer", "https://novel.snssdk.com/").header("Range", "bytes=$start-$end")
             .header("Accept-Encoding", "identity").build()
         val call = http.newCall(request)
@@ -549,9 +589,12 @@ class EpisodeDiskCache(
                 if (response.code != 206) throw IOException("视频服务器不支持分段读取（HTTP ${response.code}）")
                 val match = Regex("bytes (\\d+)-(\\d+)/(\\d+)").matchEntire(response.header("Content-Range").orEmpty())
                     ?: throw IOException("视频分段响应异常")
-                if (match.destructured.component1().toLong() != start || match.destructured.component2().toLong() != end)
+                val (begin, finish, total) = match.destructured
+                if (begin.toLong() != start || finish.toLong() != end || total.toLong() != meta.total)
                     throw IOException("视频分段范围不匹配")
-                response.body?.bytes() ?: throw IOException("视频分段为空")
+                val body = response.body ?: throw IOException("视频分段为空")
+                // 只把完整收到的区间标记为可读，避免短响应留下被误判为已缓存的空洞。
+                body.source().readByteArray(end - start + 1)
             }
         } finally {
             call.cancel()

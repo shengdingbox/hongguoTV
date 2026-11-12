@@ -120,7 +120,12 @@ class MainActivity: Activity() {
     // 复用同一台设备身份：弹幕与内容/播放必须签同一份档案，否则平台会当成两台设备。
     private val danmakuRepo by lazy { DanmakuRepository(repository.http, signer=repository.signer) }
     private val playbackCache by lazy {
-        EpisodePlaybackCache(repository,onPrepared={ _,_ ->
+        EpisodePlaybackCache(repository,cachedEpisode={ id,q ->
+            val cache=episodeDiskCache
+            cache?.meta(id,q) ?: cache?.readableMeta(id,q)?.takeIf {
+                !it.done && (it.expiresAt<=0 || it.expiresAt>System.currentTimeMillis()+60_000L)
+            }
+        },onPrepared={ _,_ ->
             // 地址和索引一就绪便交给 Media3，不再等下一次一秒定时刷新。
             main.post { if(!isDestroyed && screen=="player") maybePrefetch() }
         })
@@ -131,6 +136,7 @@ class MainActivity: Activity() {
     private var episodeCacheOn=false
     /** 播放中切换清晰度：落盘池整体换档重建，旧画质条目全部废弃。 */
     private var episodeCacheQuality=0
+    private var episodeCacheParallelism=0
     /** 上一次记录过的「调度为什么没跑」：同一条原因只写一次日志，避免每秒 tick 刷屏。 */
     private var lastScheduleIdle=""
     /** 最近一次的调度阻塞原因（不受去重影响）：日志弹窗的现场摘要直接读它。 */
@@ -463,6 +469,7 @@ class MainActivity: Activity() {
     private var player: ExoPlayer?=null
     private var video: RemoteVideo?=null
     private var playbackReady=false
+    private var playbackFirstFrameRendered=false
     private var pausedForLifecycle=false
     /** 这次 onStop 只停不拆：播放器与媒体源留着，回到前台原地续播。
      *  正在播放时切到别的 App（或锁屏/下拉通知栏）会走 onStop，以前一律 releasePlayer()，
@@ -3047,7 +3054,12 @@ class MainActivity: Activity() {
         if(ids.isEmpty()) return
         // retain 决定哪些集允许预取；详情页还没有播放页的窗口，这里先自己设一个。
         playbackCache.retain(ids.toSet(),quality)
-        ids.forEach { id -> playbackCache.prefetch(id,quality) }
+        val progress=library.progress(data.series.id)
+        ids.forEach { id ->
+            val index=data.episodes.indexOf(id)
+            val position=if(progress?.episodeId==id && !progress.completed) progress.position else savedPosition(index)
+            playbackCache.prefetch(id,quality,warmStart=episodeStartPosition(index,position)==0L)
+        }
     }
     /** 「开始观看」按钮实际会播的集号：与 showDetail 里播放按钮的取值口径一致。
      *  已看完 → 第 1 集；有未完成进度 → 该集；否则第 1 集。 */
@@ -3271,6 +3283,10 @@ class MainActivity: Activity() {
         updater.interrupt(); cancelSkipUnplayable()
         val data=detail ?: return
         val playbackStarted=android.os.SystemClock.elapsedRealtime()
+        // 切集先撤掉后台整集下载的带宽占用，首帧和当前集缓冲就绪后逐步恢复。
+        playbackFirstFrameRendered=false
+        episodeCacheParallelism=0
+        episodeDiskCache?.setDownloadParallelism(0)
         // 从详情页重新进播放器时丢弃上一轮的临时设置；自动连播保持在同一条降档链上。
         if(screen!="player") { resetPlaybackSession(); downgradeEpisode=""; downgradeCount=0 }
         // 从别的页面进播放页才算新会话：复位整集预载的本轮下载预算
@@ -3420,12 +3436,13 @@ class MainActivity: Activity() {
         if(requestedId!=downgradeEpisode) { downgradeEpisode=requestedId; downgradeCount=0 }
         val beginPlayback: (EpisodePlaybackCache.PreparedEpisode)->Unit={ prepared ->
             val remote=prepared.video
+            val diskMeta=prepared.diskMeta
+            val sourceKind=when { diskMeta==null -> "在线"; diskMeta.done -> "完整缓存"; else -> "部分缓存" }
+            RuntimeLog.add("Playback source episode=${selectedIndex+1} source=$sourceKind elapsedMs=${android.os.SystemClock.elapsedRealtime()-playbackStarted}")
             video=remote; quality=remote.info.quality
             // 取址成功，后面的「缓冲」交给 PlayerView 自己的缓冲圈。
             recoverySpinner?.visibility=View.GONE
-            val session=playbackSession ?: EpisodePlaybackSession(this,disk={ episodeDiskCache }).also {
-                playbackSession=it; player=it.player; playerView?.player=it.player
-            }
+            val session=preparePlaybackSession()
             val p=session.player
             updatePhoneVideoPosition(p.videoSize)
             session.select(requestedId,selectedIndex,resetSource=restarting)
@@ -3459,6 +3476,7 @@ class MainActivity: Activity() {
                 override fun onPlaybackStateChanged(state: Int) {
                     if(!active()) return
                     if(state==Player.STATE_READY) markReady()
+                    if(state==Player.STATE_BUFFERING || state==Player.STATE_IDLE) scheduleDiskCache()
                     if(state==Player.STATE_BUFFERING && !firstReady && rebufferStart==0L) { rebufferStart=android.os.SystemClock.elapsedRealtime(); android.util.Log.w("HongguoTV","Rebuffer start episode=${episodeIndex+1} positionMs=${p.currentPosition}") }
                     syncMediaSession()
                     if(state==Player.STATE_ENDED) {
@@ -3525,7 +3543,9 @@ class MainActivity: Activity() {
                 override fun onRenderedFirstFrame() {
                     if(active() && firstFrame) {
                         firstFrame=false
+                        playbackFirstFrameRendered=true
                         if(phonePlayerLayout()) phonePlayer?.onFirstFrame()
+                        maybePrefetch()
                         android.util.Log.w("HongguoTV","Playback first frame episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${android.os.SystemClock.elapsedRealtime()-episodeStartedAt}")
                     }
                 }
@@ -3556,7 +3576,18 @@ class MainActivity: Activity() {
         // 命中相邻集缓存时直接交接，省掉后台线程排队和再投递一次主线程。
         if(prefetched!=null) {
             try { beginPlayback(prefetched) } catch(problem: Exception) { playerFailure(problem) }
-        } else work({ playbackCache.load(requestedId,maxQuality) },beginPlayback,{ problem -> playerFailure(problem) })
+        } else {
+            work({ playbackCache.load(requestedId,maxQuality) },beginPlayback,{ problem -> playerFailure(problem) })
+            // 取址在后台进行时并行初始化播放器；先让播放外壳进入主线程队列。
+            val ticket=generation
+            main.post { if(!isDestroyed && foreground && screen=="player" && generation==ticket) preparePlaybackSession() }
+        }
+    }
+    private fun preparePlaybackSession(): EpisodePlaybackSession {
+        val session=playbackSession ?: EpisodePlaybackSession(this,disk={ episodeDiskCache }).also { playbackSession=it }
+        player=session.player
+        if(playerView?.player!==session.player) playerView?.player=session.player
+        return session
     }
     private fun episodeStartPosition(index: Int,position: Long=savedPosition(index)): Long =
         if(position>0) position else (detail?.series?.id?.let { library.skipMark(it)?.introSeconds } ?: 0)*1000L
@@ -3631,6 +3662,8 @@ class MainActivity: Activity() {
                     main.post { if(!isDestroyed) refreshCacheStrip() }
                 }
             }
+            cache.setDownloadParallelism(0)
+            episodeCacheParallelism=0
             episodeDiskCache=cache
             playbackCache.onInvalidate={ id -> cache.invalidate(id) }
             // 数据源通过提供函数读取当前缓存池，现有播放器及已预加载的下一集也能接入新缓存。
@@ -3705,7 +3738,7 @@ class MainActivity: Activity() {
             addView(strip,LinearLayout.LayoutParams(-1,dp(cacheStripHeightDp).coerceAtLeast(1)))
         }
     }
-    /** 整集落盘调度：上一集/当前集/下三集保留窗口，下载优先级下一集 > +2 > +3 > 当前集 > 上一集。 */
+    /** 仅主动下载下三集；上一集和当前集保留已有缓存，避免与当前在线读取重复下载。 */
     private fun scheduleDiskCache() {
         // 提前返回的每一种情况都记一笔（同一原因只记一次）：用户导出的日志里必须能看到
         // 「为什么三条进度条一直不填」，而不是只有一片空白
@@ -3726,16 +3759,30 @@ class MainActivity: Activity() {
             cache.clear()
         }
         episodeCacheQuality=quality
-        if(!networkAvailable()) { idle("当前无网络"); return }
-        if(!prefetchMemoryReady()) { idle("内存紧张，预载暂停"); return }
-        val ordered=listOf(episodeIndex+1,episodeIndex+2,episodeIndex+3,episodeIndex,episodeIndex-1)
+        if(!networkAvailable()) { cache.setDownloadParallelism(0); episodeCacheParallelism=0; idle("当前无网络"); return }
+        if(!prefetchMemoryReady()) { cache.setDownloadParallelism(0); episodeCacheParallelism=0; idle("内存紧张，预载暂停"); return }
+        val p=player
+        val currentId=data.episodes.getOrNull(episodeIndex)
+        val ready=p!=null && p.currentMediaItem?.mediaId==currentId && playbackReady && playbackFirstFrameRendered && !playError && p.playbackState==Player.STATE_READY
+        val bufferedMs=if(ready) ((p!!.bufferedPosition-p.currentPosition).coerceAtLeast(0).toDouble()/p.playbackParameters.speed.coerceAtLeast(.1f)).toLong() else 0L
+        val parallelism=when {
+            !ready -> 0
+            p!!.bufferedPercentage==100 || bufferedMs>=12_000L -> EpisodeDiskCache.MAX_PARALLEL
+            episodeCacheParallelism==EpisodeDiskCache.MAX_PARALLEL && bufferedMs>=8_000L -> EpisodeDiskCache.MAX_PARALLEL
+            bufferedMs>=5_000L || episodeCacheParallelism>0 && bufferedMs>=3_000L -> 1
+            else -> 0
+        }
+        episodeCacheParallelism=parallelism
+        if(parallelism==0) { cache.setDownloadParallelism(0); idle("优先加载当前集，缓冲充足后继续缓存后三集"); return }
+        val ordered=listOf(episodeIndex+1,episodeIndex+2,episodeIndex+3)
             .mapNotNull { data.episodes.getOrNull(it) }
         val from=(episodeIndex-1).coerceAtLeast(0)
         val to=(episodeIndex+4).coerceAtMost(data.episodes.size)
         // 排上调度：清掉上次的 idle 记录，之后若再卡住还能重新记一笔
         lastScheduleIdle=""
         lastIdleForSummary=""
-        cache.schedule(ordered,quality,data.episodes.subList(from,to).toSet(),quality)
+        // 新窗口与并发预算一起生效，避免恢复时先为上一集的旧队列发起网络请求。
+        cache.schedule(ordered,quality,data.episodes.subList(from,to).toSet(),quality,parallelism)
     }
     /** 移除自动连播队列时保留相邻集的媒体源，手动切集继续复用。 */
     private fun dropQueuedNext(preserveCurrent: Boolean=false) {
@@ -3776,9 +3823,7 @@ class MainActivity: Activity() {
         android.util.Log.i("HongguoTV","Next episode queued episode=${queuedIndex+1} quality=$quality")
     }
     private fun maybePrefetch() {
-        // 整集落盘独立于播放器实例与播放状态：它走自己的线程池，边播边下，
-        // 暂停/缓冲/地址还在路上时也继续。以前它挂在下面的播放条件之后，
-        // 第一次进播放页（player 尚为 null）、缓冲或暂停时整段空窗，用户看到的就是「一直卡在排队」。
+        // 整集缓存根据当前集缓冲量恢复 1～3 路下载；起播和再次缓冲时先让出带宽。
         if(foreground && screen=="player") scheduleDiskCache()
         val p=player ?: return; val data=detail ?: return
         val session=playbackSession ?: return
@@ -4947,7 +4992,7 @@ class MainActivity: Activity() {
         video?.let { android.util.Log.w("HongguoTV","Prefetch end ${it.stats()}") }
         video?.pauseReadAhead(cancelReads=true)
         playerView?.player=null; playerView=null
-        playbackSession?.release(); playbackSession=null; player=null; playbackReady=false; transportPlay=null; sleepButton=null
+        playbackSession?.release(); playbackSession=null; player=null; playbackReady=false; playbackFirstFrameRendered=false; transportPlay=null; sleepButton=null
         playerVideo=null; switchingVideos.clear(); protectPlaybackVideos()
         // 手机播放面板的控件引用随页面一起作废，避免 tick 写到已移除的视图上
         // （旋转重建时由调用方先 takeFullscreenState，release 不会再抢方向）
@@ -6984,7 +7029,7 @@ class MainActivity: Activity() {
         val p=player
         val failure=phoneFailureText()
         val playing=p?.isPlaying==true
-        val buffering=p!=null && (p.playbackState==Player.STATE_BUFFERING || p.playbackState==Player.STATE_IDLE || !playbackReady) && failure==null
+        val buffering=(p==null || p.playbackState==Player.STATE_BUFFERING || p.playbackState==Player.STATE_IDLE || !playbackReady) && failure==null
         val duration=p?.duration?.coerceAtLeast(0) ?: 0L
         val position=pendingSeek ?: p?.currentPosition ?: 0L
         ui.refresh(

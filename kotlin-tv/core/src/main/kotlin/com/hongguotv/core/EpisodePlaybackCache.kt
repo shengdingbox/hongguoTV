@@ -14,14 +14,16 @@ class EpisodePlaybackCache(
     private val repository: ContentRepository,
     private val clock: () -> Long = System::currentTimeMillis,
     private val onPrepared: (String, Int) -> Unit = { _, _ -> },
+    private val cachedEpisode: (String, Int) -> EpisodeDiskCache.Meta? = { _, _ -> null },
 ) : Closeable {
     // 包装结果，资源始终由缓存持有；取消某个页面的等待不能关闭其他页面即将复用的视频。
-    data class PreparedEpisode(val video: RemoteVideo, val createdAt: Long)
+    data class PreparedEpisode(val video: RemoteVideo, val createdAt: Long, val diskMeta: EpisodeDiskCache.Meta? = null)
     private data class Key(val id: String, val quality: Int)
     private class Entry {
         val scope = RequestScope()
         lateinit var task: FutureTask<PreparedEpisode>
         var prepared: PreparedEpisode? = null
+        @Volatile var warmStart = false
     }
     private data class Attempts(val count: Int, val lastAt: Long)
     private val entries = mutableMapOf<Key, Entry>()
@@ -42,8 +44,13 @@ class EpisodePlaybackCache(
 
     private fun fresh(prepared: PreparedEpisode): Boolean {
         val now = clock()
+        if (now - prepared.createdAt !in 0..600_000L) return false
+        prepared.diskMeta?.let { meta ->
+            val current = cachedEpisode(meta.id, meta.quality)
+            return current != null && current.header === meta.header
+        }
         val expires = prepared.video.info.expiresAt
-        return now - prepared.createdAt in 0..600_000L && (expires <= 0 || expires > now + 60_000L)
+        return expires <= 0 || expires > now + 60_000L
     }
 
     @Synchronized fun peek(id: String, quality: Int): PreparedEpisode? =
@@ -65,18 +72,21 @@ class EpisodePlaybackCache(
         }
     }
 
-    fun prefetch(id: String, quality: Int) { request(Key(id, quality), speculative = true) }
+    fun prefetch(id: String, quality: Int, warmStart: Boolean = false) {
+        request(Key(id, quality), speculative = true, warmStart = warmStart)
+    }
 
     @Synchronized fun isLoading(id: String, quality: Int): Boolean =
         entries[Key(id, quality)]?.task?.isDone == false
 
-    @Synchronized private fun request(key: Key, speculative: Boolean): FutureTask<PreparedEpisode>? {
+    @Synchronized private fun request(key: Key, speculative: Boolean, warmStart: Boolean = false): FutureTask<PreparedEpisode>? {
         if (key !in retained) {
             if (speculative) return null
             throw InterruptedIOException("播放请求已取消")
         }
         val previous = entries[key]
         if (previous != null) {
+            if (warmStart) previous.warmStart = true
             val prepared = previous.prepared
             if (prepared != null && fresh(prepared)) return previous.task
             if (prepared == null && !previous.task.isDone) return previous.task
@@ -87,30 +97,40 @@ class EpisodePlaybackCache(
         val tried = attempts[key]
         if (speculative && tried != null && (tried.count >= 3 || now - tried.lastAt < 15_000L)) return null
         if (speculative) attempts[key] = Attempts((tried?.count ?: 0) + 1, now)
-        val entry = Entry()
+        val entry = Entry().apply { this.warmStart = warmStart }
         entry.task = FutureTask {
             var video: RemoteVideo? = null
             try {
+                var diskMeta: EpisodeDiskCache.Meta? = null
                 val prepared = entry.scope.run {
-                    // 优先复用 modelCache 里的模型：详情页/相邻集预取已经取好地址时，这里应当零网络。
-                    // 只有解析出的地址即将过期才强制重取，避免把「预取」变成白做（每次多两跳网络）。
-                    var info = repository.stream(key.id, key.quality)
-                    if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
-                        info = repository.stream(key.id, key.quality, refreshModel = true)
+                    val local = cachedEpisode(key.id, key.quality)
+                    val restored = local?.let { meta ->
+                        val info = StreamInfo(meta.url, meta.key, meta.qualityLabel, meta.expiresAt, key.id, key.quality)
+                        try { RemoteVideo.fromPrepared(repository.http, info, meta.total, meta.prepared) }
+                        catch (_: IOException) {
+                            onInvalidate(key.id)
+                            null // 本地索引不可用时清除该条目，再走正常在线准备。
+                        }
                     }
-                    info = info.copy(idHint = key.id, qualityNumber = key.quality)
-                    if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
-                        throw IOException("播放地址即将过期，请重试")
-                    }
-                    // 地址与索引请求共用；相邻集的媒体字节交给 Media3 按实际续播位置预加载，
-                    // 不在这里额外下载开头分块或启动持续预读。
-                    RemoteVideo(repository.http, info, chunkBytes = 256 * 1024).also {
-                        video = it
-                        it.setPlaybackActive(false)
-                        it.prepare()
+                    if (restored != null) {
+                        video = restored
+                        diskMeta = local
+                        restored
+                    } else {
+                        val info = resolveStream(key.id, key.quality).copy(idHint = key.id, qualityNumber = key.quality)
+                        if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
+                            throw IOException("播放地址即将过期，请重试")
+                        }
+                        RemoteVideo(repository.http, info, chunkBytes = 256 * 1024).also {
+                            video = it
+                            it.setPlaybackActive(false)
+                            it.prepare()
+                            // 详情页只为从头播放的目标多留一个媒体块，不开启持续预读。
+                            if (entry.warmStart) it.preload()
+                        }
                     }
                 }
-                val result = PreparedEpisode(prepared, clock())
+                val result = PreparedEpisode(prepared, clock(), diskMeta)
                 synchronized(this) {
                     if (entries[key] !== entry || entry.scope.isCancelled) throw InterruptedIOException("播放请求已取消")
                     entry.prepared = result

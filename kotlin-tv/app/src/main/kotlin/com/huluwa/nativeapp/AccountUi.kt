@@ -268,6 +268,9 @@ object AccountUi {
         onSync: () -> Unit,
         onLogout: () -> Unit,
     ): AlertDialog {
+        if (PhoneDialog.shouldUse(activity)) {
+            return PhoneAccountDialogs.account(activity, name, signedIn, cloudCount, status, onLogin, onRefresh, onSync, onLogout)
+        }
         val content = PhoneUi.column(activity)
         lateinit var dialog: AlertDialog
         var firstFocus: View? = null
@@ -325,6 +328,7 @@ object AccountUi {
 
     /** 二维码本体和扫码步骤；取消按钮由调用方添加，便于在轮询结束后统一收窗口。 */
     fun qrDialogBody(activity: Activity, bitmap: Bitmap): LinearLayout {
+        if (PhoneDialog.shouldUse(activity)) return PhoneAccountDialogs.qrBody(activity, bitmap)
         val content = PhoneUi.column(activity)
         content.addView(text(activity, "扫码登录红果账号", 21f).apply { typeface = medium(21f) })
         content.addView(text(activity, "打开手机红果 App，扫描下方二维码并确认登录", 12f, TvStyle.muted).apply {

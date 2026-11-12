@@ -25,6 +25,10 @@ object RuntimeLogDialog {
     private fun dp(activity: Activity, value: Int) = (value * activity.resources.displayMetrics.density).toInt()
 
     fun show(activity: Activity, summary: () -> String) {
+        if (PhoneDialog.shouldUse(activity)) {
+            PhoneDiagnosticDialogs.runtime(activity, summary)
+            return
+        }
         val content = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         content.addView(TvDialog.title(activity, "运行日志"))
         content.addView(TvDialog.body(activity, "复现推荐或播放问题后再复制日志。仅保留本次运行，不含视频地址。"))

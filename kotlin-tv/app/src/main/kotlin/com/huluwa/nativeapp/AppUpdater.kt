@@ -46,7 +46,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
     private var statusView: TextView? = null
     private var statusScroll: ScrollView? = null
     private var anchor: View? = null
-    private var actionButton: android.widget.Button? = null
+    private var actionButton: TextView? = null
     private var status = "当前版本 ${BuildConfig.VERSION_NAME}"
     private var retryAfter = 0L
     private var promptedThisSession = false
@@ -126,6 +126,10 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         // One nag per process lifetime: the user may close it, but the next app restart re-prompts.
         val updatePending = available != null
         if (updatePending) promptedThisSession = true
+        if (PhoneDialog.shouldUse(activity)) {
+            showPhone(from, updatePending)
+            return
+        }
         val dp = activity.resources.displayMetrics.density
         val body = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; setPadding((24*dp).toInt(), (12*dp).toInt(), (24*dp).toInt(), 0) }
         body.addView(TvDialog.title(activity,"版本与更新 · ${BuildConfig.VERSION_NAME}"))
@@ -174,6 +178,55 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         fitStatus()
         action.post { if (dialog === next) action.requestFocus() }
     }
+    /** 竖屏设置使用纵向操作与独立外观，更新状态机和安装入口继续共用。 */
+    private fun showPhone(from: View?, updatePending: Boolean) {
+        val body = PhoneUi.column(activity)
+        statusView = PhoneUi.text(activity, status, 16f, PortraitStyle.text).apply {
+            setLineSpacing(0f, 1.2f)
+        }
+        statusScroll = ScrollView(activity).apply {
+            isFillViewport = false
+            addView(statusView, ViewGroup.LayoutParams(-1, -2))
+        }
+        body.addView(statusScroll, PhoneUi.lp())
+        if (!updatePending) {
+            val row = PhoneUi.row(activity).apply { minimumHeight = PhoneUi.dp(activity, 56) }
+            row.addView(PhoneUi.text(activity, "自动检查更新", 17f, PortraitStyle.text),
+                PhoneUi.lp(0, -2).apply { weight = 1f; rightMargin = PhoneUi.dp(activity, 12) })
+            row.addView(PhoneSettingsSwitch(activity).apply {
+                isChecked = auto
+                setOnCheckedChangeListener { _, enabled ->
+                    preferences.edit().putBoolean("automatic", enabled).apply()
+                    if (!enabled && busy) { interrupt(); updateStatus("自动更新已关闭，可手动检查"); renderActions() }
+                }
+            }, PhoneUi.lp(PhoneUi.dp(activity, 55), PhoneUi.dp(activity, 44)))
+            body.addView(row, PhoneUi.lp().apply { topMargin = PhoneUi.dp(activity, 12) })
+        }
+        body.addView(PhoneUi.text(activity,
+            if (updatePending) "发现新版本，点击即可更新" else "只在前台浏览时检查，播放中不打扰。新版来自局域网打包服务，安装后保留收藏与观看记录。",
+            13f, PortraitStyle.muted).apply {
+            setLineSpacing(0f, 1.2f)
+            setPadding(0, PhoneUi.dp(activity, 12), 0, PhoneUi.dp(activity, 16))
+        }, PhoneUi.lp())
+        lateinit var next: AlertDialog
+        val action = PhoneDialog.button(activity, "检查更新", primary = true) {
+            when { ready -> install(); available != null -> download(); else -> check(true) }
+        }
+        actionButton = action
+        body.addView(action, PhoneUi.lp())
+        body.addView(PhoneDialog.button(activity, "稍后") { next.dismiss() },
+            PhoneUi.lp().apply { topMargin = PhoneUi.dp(activity, 10) })
+        next = PhoneDialog.sheet(activity, "版本与更新", "当前版本 ${BuildConfig.VERSION_NAME}", body)
+        dialog = next
+        next.setOnDismissListener {
+            if (dialog === next) { dialog = null; statusView = null; statusScroll = null; actionButton = null }
+            if (from?.isAttachedToWindow == true) from.requestFocus()
+        }
+        next.show()
+        renderActions()
+        fitStatus()
+    }
+
     /**
      * 语音/外部指令入口：打开面板并立刻查一次。
      *

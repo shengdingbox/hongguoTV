@@ -2958,6 +2958,17 @@ class MainActivity: Activity() {
         val fromUpdates=updated.isNotEmpty()
         // 收藏更新优先，其次随机荐剧池，最后退化到首页 7 天缓存随机抽 3 部，全部为本地数据
         val items=if(fromUpdates) updated else randomRecommender.pick(3).ifEmpty { library.cachedHome(library.contentType)?.items?.shuffled()?.take(3) ?: emptyList() }
+        if(phoneLayout()) {
+            val dlg=PhoneExitDialog.create(this,items,fromUpdates,
+                badge={ item -> if(fromUpdates) library.favoriteLabel(item.id) else item.badge },
+                loadCover=::loadCover,
+                onOpen={ item -> openDetail(item,false) },
+                onExit={ killOnDestroy=true; library.flush(); finish() })
+            exitDialog=dlg
+            dlg.setOnDismissListener { exitDialog=null }
+            dlg.show()
+            return
+        }
         val body=column().apply { setPadding(0,0,0,0) }
         val heading=TvDialog.title(this,if(fromUpdates) "收藏更新，看完再走？" else if(items.isNotEmpty()) "猜你喜欢，再看一会儿？" else "确定要退出红果吗？")
         heading.gravity=Gravity.CENTER; heading.setPadding(0,0,0,dp(14))
@@ -4226,6 +4237,16 @@ class MainActivity: Activity() {
         VideoFrameMode.FILL -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL
     }
     private fun showFramePicker(anchor: TextView,inPlayer: Boolean) {
+        if(PhoneDialog.shouldUse(this)) {
+            val current=if(inPlayer) effectiveFrame() else library.frameMode
+            PhoneDialog.choose(this,if(inPlayer) "本剧画面模式" else "画面模式",listOf("完整画面 · 保留比例与全部内容","等比铺满 · 会裁掉部分画面与字幕","拉伸铺满 · 画面比例会改变"),{ index ->
+                if(inPlayer) sessionFrame=VideoFrameMode.entries[index] else library.frameMode=VideoFrameMode.entries[index]
+                playerView?.resizeMode=frameResizeMode()
+                phoneRefreshSettingsValues()
+                if(inPlayer) refreshPhonePlayerNow()
+            },focusIndex=VideoFrameMode.entries.indexOf(current)).show()
+            return
+        }
         tvTools.choose(if(inPlayer) "本剧画面模式" else "全局画面模式",listOf("完整画面 · 保留比例与全部内容","等比铺满 · 会裁掉部分画面与字幕","拉伸铺满 · 画面比例会改变"),anchor,{ index ->
             // 播放中只改这一部剧，全局默认留给设置页
             if(inPlayer) sessionFrame=VideoFrameMode.entries[index] else library.frameMode=VideoFrameMode.entries[index]
@@ -4292,6 +4313,7 @@ class MainActivity: Activity() {
     }
     /** 弹幕屏蔽词：常用词多选 + 手动添加自定义词；确认后立即对正在播放的弹幕生效。 */
     private fun showBlockedWordDialog(anchor: TextView) {
+        if(PhoneDialog.shouldUse(this)) { showPhoneBlockedWordDialog(); return }
         val presets=listOf("加群","微信","公众号","QQ群","QQ","广告","私聊","代看","抖音","快手")
         val current=extras.blockedWords
         // words/checked 用可变列表：手动添加后要就地插入一行，索引也跟着变长
@@ -4416,6 +4438,98 @@ class MainActivity: Activity() {
         dialog.setOnDismissListener { if(anchor.isAttachedToWindow) anchor.requestFocus() }
         dialog.show()
     }
+    /** 手机屏蔽词：使用竖屏分组列表，输入与勾选保留在弹层内，保存后统一生效。 */
+    private fun showPhoneBlockedWordDialog() {
+        val presets=listOf("加群","微信","公众号","QQ群","QQ","广告","私聊","代看","抖音","快手")
+        val current=extras.blockedWords
+        val words=(presets+current.filterNot { it in presets }).distinct().toMutableList()
+        val selected=current.toMutableSet()
+        val content=PhoneUi.column(this)
+        val input=EditText(PortraitStyle.popupContext(this)).apply {
+            hint="输入要屏蔽的词"
+            textSize=17f
+            setTextColor(PortraitStyle.text)
+            setHintTextColor(PortraitStyle.muted)
+            isSingleLine=true
+            filters=arrayOf(android.text.InputFilter.LengthFilter(20))
+            imeOptions=android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            background=PortraitStyle.shape(this@MainActivity,PortraitStyle.surface,12)
+            setPadding(dp(14),dp(13),dp(14),dp(13))
+        }
+        val inputRow=PhoneUi.row(this)
+        inputRow.addView(input,lp(0,-2).apply { weight=1f; rightMargin=dp(10) })
+        val add=PhoneDialog.button(this,"添加") {}
+        inputRow.addView(add,lp(-2,-2))
+        content.addView(inputRow,lp(-1,-2).apply { bottomMargin=dp(18) })
+        val list=PhoneUi.column(this).apply {
+            background=PortraitStyle.shape(this@MainActivity,PortraitStyle.surface,12)
+            clipToOutline=true
+        }
+        content.addView(list,lp(-1,-2))
+        fun rebuild() {
+            list.removeAllViews()
+            words.forEachIndexed { index,word ->
+                if(index>0) list.addView(View(this).apply {
+                    setBackgroundColor(PortraitStyle.outline)
+                    importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                },lp(-1,1).apply { leftMargin=dp(16) })
+                val line=PhoneUi.row(this).apply {
+                    minimumHeight=dp(50)
+                    setPadding(dp(16),dp(12),dp(16),dp(12))
+                    background=PortraitStyle.selectable(this@MainActivity,Color.TRANSPARENT,0)
+                    isFocusable=true
+                    isClickable=true
+                }
+                line.addView(PhoneUi.text(this,word,17f,PortraitStyle.text),lp(0,-2).apply { weight=1f })
+                val check=PhoneUi.text(this,"✓",19f,PortraitStyle.navigationSelected)
+                line.addView(check,lp(dp(25),-2))
+                fun paint() {
+                    check.visibility=if(word in selected) View.VISIBLE else View.INVISIBLE
+                    line.isSelected=word in selected
+                    line.contentDescription="$word，${if(word in selected) "已屏蔽" else "未屏蔽"}"
+                }
+                paint()
+                line.setOnClickListener {
+                    if(!selected.add(word)) selected.remove(word)
+                    paint()
+                }
+                list.addView(line,lp(-1,-2))
+            }
+        }
+        fun commitInput(): Boolean {
+            val word=input.text.toString().trim()
+            if(word.isEmpty()) return false
+            val existing=words.firstOrNull { it.equals(word,ignoreCase=true) }
+            if(existing==null) { words.add(word); selected.add(word) } else selected.add(existing)
+            input.setText("")
+            input.clearFocus()
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken,0)
+            rebuild()
+            return true
+        }
+        add.setOnClickListener { if(!commitInput()) PhoneUi.toast(this,"请输入要屏蔽的词") }
+        input.setOnEditorActionListener { _,_,_ -> commitInput(); true }
+        rebuild()
+        lateinit var dialog: AlertDialog
+        content.addView(PhoneDialog.button(this,"保存",primary=true) {
+            commitInput()
+            extras.blockedWords=selected.toSet()
+            applyBlockedWords()
+            phoneRefreshSettingsValues()
+            dialog.dismiss()
+            PhoneUi.toast(this,"屏蔽词已保存，立即生效")
+        },lp(-1,-2).apply { topMargin=dp(20) })
+        content.addView(PhoneDialog.button(this,"清空屏蔽词",destructive=true) {
+            selected.clear()
+            extras.blockedWords=emptySet()
+            applyBlockedWords()
+            phoneRefreshSettingsValues()
+            rebuild()
+        },lp(-1,-2).apply { topMargin=dp(10) })
+        dialog=PhoneDialog.sheet(this,"弹幕屏蔽词","勾选要屏蔽的内容，也可以添加自定义词。",content)
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+        dialog.show()
+    }
     private fun applyBlockedWords() = danmakuView?.setBlockedFilter { text -> extras.blocks(text) }
 
     /** 本机观看统计：直接按最近观看记录汇总，不额外存储、不产生任何网络请求。 */
@@ -4446,14 +4560,15 @@ class MainActivity: Activity() {
     /** 接口自检：用户逐项点击，单次串行请求，失败只提示不重试，避免给站点增加并发压力。
      *  状态圆点内嵌在按钮文字前：灰=未检测，橙=检测中，绿=通，红=不通；3 秒内重复点击直接忽略。 */
     private fun showInterfaceCheck(anchor: TextView) {
+        val phone=PhoneDialog.shouldUse(this)
         val content=column()
-        val status=text("选择一项开始检测",14f,muted).apply { setPadding(dp(8),0,dp(8),dp(10)) }
+        val status=text("选择一项开始检测",14f,if(phone) PortraitStyle.secondaryText else muted).apply { setPadding(dp(8),0,dp(8),dp(10)) }
         content.addView(status)
         lateinit var dialog: AlertDialog
         // 6 项拆两行各 3 个：弹窗收窄后单行 6 个 weight 均分会把按钮压到逐字竖排换行
-        val rows=List(2) { row() }
+        val rows=List(if(phone) 6 else 2) { row() }
         val buttons=mutableListOf<TextView>()
-        val dotIdle=TvStyle.outline
+        val dotIdle=if(phone) PortraitStyle.outline else TvStyle.outline
         val dotOk=Color.rgb(86,196,122)
         val dotFail=Color.rgb(235,95,95)
         // 每个按钮独立的冷却与在检状态，互不影响
@@ -4480,7 +4595,7 @@ class MainActivity: Activity() {
             if(name in busy || now-(lastAt[name] ?: 0L)<3_000) { status.text="$name 请稍候再试"; return }
             lastAt[name]=now
             busy+=name; status.text="正在检测 $name…"
-            btn.text=dotLabel(name,accent)
+            btn.text=dotLabel(name,if(phone) PortraitStyle.navigationSelected else accent)
             val started=android.os.SystemClock.elapsedRealtime()
             io.execute {
                 val result=runCatching(probe)
@@ -4496,10 +4611,11 @@ class MainActivity: Activity() {
         }
         fun add(name: String,probe: ()->String): TextView {
             lateinit var btn: TextView
-            btn=button(name) { check(name,btn,probe) }
+            btn=if(phone) PhoneDialog.button(this,name) { check(name,btn,probe) }
+                else button(name) { check(name,btn,probe) }
             btn.text=dotLabel(name,dotIdle)
             buttons+=btn
-            rows[(buttons.size-1)/3].addView(btn,LinearLayout.LayoutParams(0,-2,1f).apply { rightMargin=dp(6) })
+            rows[if(phone) buttons.size-1 else (buttons.size-1)/3].addView(btn,LinearLayout.LayoutParams(0,-2,1f).apply { if(!phone) rightMargin=dp(6) })
             return btn
         }
         val phoneRecommendationCheck=phoneLayout()
@@ -4521,13 +4637,16 @@ class MainActivity: Activity() {
         add("联想") { val words=repository.suggest("修仙"); "联想 ${words.size} 个" }
         add("账号") { accountManager.checkAccountHealth() }
         add("云端") { accountManager.checkCloudHistory() }
-        content.addView(rows[0])
-        content.addView(rows[1],lp(-1,-2).apply { topMargin=dp(8) })
-        content.addView(text("说明：每项只检测一次；账号与云端检测需要先登录，未登录会跳过。",12f,muted).apply { setPadding(dp(8),dp(10),dp(8),0) })
-        dialog=AlertDialog.Builder(this).setView(TvDialog.card(this,content)).create()
-        TvDialog.styleWindow(this,dialog,widthDp=340)
-        dialog.setOnDismissListener { if(anchor.isAttachedToWindow) anchor.requestFocus() }
-        dialog.show(); buttons.first().requestFocus()
+        rows.forEachIndexed { index,line -> content.addView(line,lp(-1,-2).apply { if(index>0) topMargin=dp(8) }) }
+        content.addView(text("说明：每项只检测一次；账号与云端检测需要先登录，未登录会跳过。",12f,if(phone) PortraitStyle.muted else muted).apply { setPadding(dp(8),dp(10),dp(8),0) })
+        dialog=if(phone) PhoneDialog.sheet(this,"接口自检",content=content)
+            else AlertDialog.Builder(this).setView(TvDialog.card(this,content)).create()
+        if(!phone) {
+            TvDialog.styleWindow(this,dialog,widthDp=340)
+            dialog.setOnDismissListener { if(anchor.isAttachedToWindow) anchor.requestFocus() }
+        }
+        dialog.show()
+        if(!phone) buttons.first().requestFocus()
     }
 
     /** 遥控器按键：就地循环切换取值，避免多层弹窗来回跳焦点。 */
@@ -4771,6 +4890,20 @@ class MainActivity: Activity() {
         if(speedDialog!=null) return
         val speeds=PlaybackSpeed.options
         val current=if(inPlayer) effectiveSpeed() else library.playbackSpeed
+        if(PhoneDialog.shouldUse(this)) {
+            val dialog=PhoneDialog.choose(this,if(inPlayer) "本剧倍速" else "默认倍速",speeds.map(PlaybackSpeed::label),{ index ->
+                val speed=speeds[index]
+                if(inPlayer) sessionSpeed=speed else library.playbackSpeed=speed
+                if(inPlayer) player?.setPlaybackSpeed(speed)
+                if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "倍速 " else "默认倍速  ·  ")+PlaybackSpeed.label(speed)
+                if(inPlayer) { updatePlaybackText(); refreshPhonePlayerNow() }
+                phoneRefreshSettingsValues()
+            },focusIndex=speeds.indexOf(current))
+            speedDialog=dialog
+            dialog.setOnDismissListener { speedDialog=null }
+            dialog.show()
+            return
+        }
         val content=column()
         content.addView(TvDialog.title(this,if(inPlayer) "本剧倍速" else "全局默认倍速"))
         if(inPlayer) content.addView(text("只对当前这部剧生效，不改「设置 → 播放」里的默认倍速",12f,muted).apply { setPadding(dp(8),0,dp(8),dp(8)) })
@@ -4813,6 +4946,18 @@ class MainActivity: Activity() {
     private fun showQualityPicker(anchor: TextView,inPlayer: Boolean) {
         val options=PlaybackQuality.options
         val current=if(inPlayer) effectiveQuality() else library.maxQuality
+        if(PhoneDialog.shouldUse(this)) {
+            PhoneDialog.choose(this,if(inPlayer) "本剧清晰度" else "默认清晰度",options.map { "${it}P" },{ index ->
+                val quality=options[index]
+                if(inPlayer) sessionQuality=quality else { library.maxQuality=quality; sessionQuality=null }
+                downgradeEpisode=""; downgradeCount=0
+                if(anchor.tag!="playback-settings") anchor.text=(if(inPlayer) "清晰度 " else "默认清晰度  ·  ")+"${quality}P"
+                phoneRefreshSettingsValues()
+                if(inPlayer && quality!=current) playEpisode(episodeIndex,currentPosition(),player?.playWhenReady ?: requestedAutoplay)
+                if(inPlayer) refreshPhonePlayerNow()
+            },focusIndex=options.indexOf(current)).show()
+            return
+        }
         val content=column()
         content.addView(TvDialog.title(this,if(inPlayer) "本剧清晰度" else "全局默认清晰度"))
         if(inPlayer) content.addView(text("只对当前这部剧生效，不改「设置 → 播放」里的默认清晰度",12f,muted).apply { setPadding(dp(8),0,dp(8),dp(8)) })
@@ -7221,10 +7366,10 @@ class MainActivity: Activity() {
     fun phoneQualityPicker() = showQualityPicker(voiceAnchor,false)
     fun phoneSpeedPicker() = showSpeedPicker(voiceAnchor,false)
     fun phoneFramePicker() = showFramePicker(voiceAnchor,false)
-    fun phoneDanmakuOpacity() = showDanmakuOpacityPicker(voiceAnchor)
-    fun phoneDanmakuFont() = showDanmakuFontPicker(voiceAnchor)
-    fun phoneDanmakuSpeed() = showDanmakuSpeedPicker(voiceAnchor)
-    fun phoneDanmakuRows() = showDanmakuRowsPicker(voiceAnchor)
+    fun phoneDanmakuOpacity() = showDanmakuOpacityPicker(voiceAnchor) { phoneRefreshSettingsValues() }
+    fun phoneDanmakuFont() = showDanmakuFontPicker(voiceAnchor) { phoneRefreshSettingsValues() }
+    fun phoneDanmakuSpeed() = showDanmakuSpeedPicker(voiceAnchor) { phoneRefreshSettingsValues() }
+    fun phoneDanmakuRows() = showDanmakuRowsPicker(voiceAnchor) { phoneRefreshSettingsValues() }
     fun phoneBlockedWords() = showBlockedWordDialog(voiceAnchor)
     fun phoneWatchStats() = showWatchStats(voiceAnchor)
     fun phoneInterfaceCheck() = showInterfaceCheck(voiceAnchor)

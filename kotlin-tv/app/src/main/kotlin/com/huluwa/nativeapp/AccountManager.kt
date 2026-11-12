@@ -373,6 +373,19 @@ class AccountManager(
         onAction: () -> Unit,
         backToAccount: Boolean = true,
     ) {
+        if (PhoneDialog.shouldUse(activity)) {
+            val content = PhoneUi.column(activity)
+            lateinit var dialog: android.app.AlertDialog
+            content.addView(PhoneDialog.button(activity, actionLabel, primary = true) {
+                dialog.dismiss(); onAction()
+            }, PhoneUi.lp())
+            if (backToAccount) content.addView(PhoneDialog.button(activity, "返回账号") {
+                dialog.dismiss(); showLoginDialog(activity)
+            }, PhoneUi.lp().apply { topMargin = PhoneUi.dp(activity, 10) })
+            dialog = PhoneDialog.sheet(activity, title, message, content)
+            dialog.show()
+            return
+        }
         val dp = { v: Int -> (v * activity.resources.displayMetrics.density).toInt() }
         val content = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
@@ -417,13 +430,18 @@ class AccountManager(
                     gravity = android.view.Gravity.END
                     setPadding(0, dp(14), 0, 0)
                 }
-                val dialog = android.app.AlertDialog.Builder(activity)
-                    .setView(TvDialog.card(activity, panel))
-                    .create()
-                val cancel = TvDialog.capsuleButton(activity, "取消") { dialog.dismiss() }
-                buttons.addView(cancel)
-                panel.addView(buttons)
-                TvDialog.styleWindow(activity, dialog, widthDp = 352, capPx = (activity.resources.displayMetrics.heightPixels * 0.9f).toInt()) { cancel.requestFocus() }
+                val phone = PhoneDialog.shouldUse(activity)
+                val dialog = if (phone) PhoneDialog.sheet(activity, "扫码登录红果账号", "使用红果 App 扫码并确认登录", panel)
+                    else android.app.AlertDialog.Builder(activity).setView(TvDialog.card(activity, panel)).create()
+                val cancel = if (phone) PhoneDialog.button(activity, "取消") { dialog.dismiss() }
+                    else TvDialog.capsuleButton(activity, "取消") { dialog.dismiss() }
+                if (phone) {
+                    panel.addView(cancel, PhoneUi.lp().apply { topMargin = dp(16) })
+                } else {
+                    buttons.addView(cancel)
+                    panel.addView(buttons)
+                    TvDialog.styleWindow(activity, dialog, widthDp = 352, capPx = (activity.resources.displayMetrics.heightPixels * 0.9f).toInt()) { cancel.requestFocus() }
+                }
                 dialog.show()
                 val token = generation
                 val deadline = android.os.SystemClock.elapsedRealtime() + qr.expiresIn.coerceIn(1, 300) * 1000L

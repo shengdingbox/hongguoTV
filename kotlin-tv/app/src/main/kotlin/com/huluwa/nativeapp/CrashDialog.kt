@@ -31,6 +31,10 @@ object CrashDialog {
     fun showDetail(activity: Activity,report: CrashReporter.Report,
                    records: List<CrashReporter.Report>?=null) {
         val history=records ?: CrashReporter.reports(activity)
+        if (PhoneDialog.shouldUse(activity)) {
+            PhoneDiagnosticDialogs.crash(activity, report, history)
+            return
+        }
         val content=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL }
         content.addView(TvDialog.title(activity,"崩溃详情"))
         content.addView(TvDialog.body(activity,report.summary))

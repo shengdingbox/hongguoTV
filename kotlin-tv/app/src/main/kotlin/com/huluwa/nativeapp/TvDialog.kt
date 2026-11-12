@@ -282,6 +282,8 @@ object TvDialog {
         focusIndex: Int = -1,
         anchorView: View? = null
     ): AlertDialog {
+        if (PhoneDialog.shouldUse(activity)) return PhoneDialog.choose(
+            activity, title, labels, onChoice, extra, onExtra, focusIndex, anchorView)
         val dialog = AlertDialog.Builder(activity).create()
         // 标题钉在卡片顶部，不进滚动区：特大/极大档选项行变高放不下时只滚选项，标题始终可见
         val heading = title(activity, title)
@@ -360,6 +362,7 @@ object TvDialog {
      * 原本会把按钮顶出屏幕，现在是正文自己滚，按钮始终可见。
      */
     fun info(activity: Activity, title: String, message: String): AlertDialog {
+        if (PhoneDialog.shouldUse(activity)) return PhoneDialog.info(activity, title, message)
         val content = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         content.addView(title(activity, title))
         val scroll = scrollBody(activity, message)
@@ -385,6 +388,7 @@ object TvDialog {
 
     /** 确认弹窗：标题 + 正文 + 取消/确认双按钮。 */
     fun confirm(activity: Activity, title: String, message: String, action: () -> Unit): AlertDialog {
+        if (PhoneDialog.shouldUse(activity)) return PhoneDialog.confirm(activity, title, message, action)
         val content = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         content.addView(title(activity, title))
         content.addView(body(activity, message))

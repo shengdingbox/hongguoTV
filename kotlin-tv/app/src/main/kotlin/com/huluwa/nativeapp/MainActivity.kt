@@ -100,6 +100,7 @@ class MainActivity: Activity() {
     private var randomReplenishing=false
     private var randomDialog: AlertDialog?=null
     private var exitDialog: AlertDialog?=null
+    private var phoneExitArtwork: ArtworkLoader?=null
     private var killOnDestroy=false
     /** 手机遥控会话。独立于 TvTools 持有：那边每次打开新弹窗都会 dismiss 上一个。 */
     private var remote: PhoneRemoteSession?=null
@@ -2925,13 +2926,20 @@ class MainActivity: Activity() {
         // 收藏更新优先，其次随机荐剧池，最后退化到首页 7 天缓存随机抽 3 部，全部为本地数据
         val items=if(fromUpdates) updated else randomRecommender.pick(3).ifEmpty { library.cachedHome(library.contentType)?.items?.shuffled()?.take(3) ?: emptyList() }
         if(phoneLayout()) {
+            // 弹框会跨后台恢复保留，封面不能随主页面清理或重建而解绑。
+            val dialogArtwork=ArtworkLoader(this)
+            phoneExitArtwork=dialogArtwork
             val dlg=PhoneExitDialog.create(this,items,fromUpdates,
                 badge={ item -> if(fromUpdates) library.favoriteLabel(item.id) else item.badge },
-                loadCover=::loadCover,
-                onOpen={ item -> openDetail(item,false) },
+                loadCover={ view,url -> dialogArtwork.load(view,url) },
+                onOpen={ item -> openDetailPhone(item,false) },
                 onExit={ killOnDestroy=true; library.flush(); finish() })
             exitDialog=dlg
-            dlg.setOnDismissListener { exitDialog=null }
+            dlg.setOnDismissListener {
+                dialogArtwork.close()
+                if(phoneExitArtwork===dialogArtwork) phoneExitArtwork=null
+                if(exitDialog===dlg) exitDialog=null
+            }
             dlg.show()
             return
         }
@@ -7738,6 +7746,8 @@ class MainActivity: Activity() {
             if(screen=="catalog") favoriteMonitor.check()
             if(screen=="player") syncMediaSession()
         } else libraryLoadError?.let(::showLibraryError)
+        // 弹框窗口不随主页面重建，回到前台时续载尚未显示的封面。
+        phoneExitArtwork?.refreshVisible()
         maybePromptCrash()
         // 回到前台：先把状态推给手机（页面从「电视已暂停」恢复），缓存意图由 remotePublish 内部补上
         remotePublish(true)
@@ -7827,6 +7837,8 @@ class MainActivity: Activity() {
     }
     override fun onDestroy() {
         generation++; cancelWork(); cancelDetailExtras()
+        exitDialog?.dismiss(); exitDialog=null
+        phoneExitArtwork?.close(); phoneExitArtwork=null
         // 全屏播放中点着返回退出 App：方向已经交给「启动方向」，别把横屏留给下一次启动
         if(phoneFullscreenPlayback) requestedOrientation=PhoneUi.requestedOrientation(this)
         phoneFullscreenPlayback=false; phonePlayerRenderedFullscreen=false

@@ -80,7 +80,12 @@ class ArtworkLoader(context: Context) {
     private val workers = Executors.newFixedThreadPool(if (lowRam) 1 else 2) { runnable ->
         Thread(runnable, "hongguotv-artwork").apply { priority = Thread.NORM_PRIORITY - 1 }
     }
+    // 本地读盘和解码不等待网络线程，已有封面不会被慢下载堵住。
+    private val cacheWorker = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "hongguotv-artwork-cache").apply { priority = Thread.NORM_PRIORITY - 1 }
+    }
     private val signal = Object()
+    private val cachedPending = PriorityQueue<Job>()
     private val pending = PriorityQueue<Job>()
     private val jobs = mutableMapOf<Key, Job>()
     private val bindings = WeakHashMap<ImageView, Binding>()
@@ -91,7 +96,10 @@ class ArtworkLoader(context: Context) {
     private val viewportRefresh = Runnable { viewportRefreshPosted = false; refillVisible() }
     private val retryVisible = Runnable { refillVisible() }
 
-    init { repeat(if (lowRam) 1 else 2) { workers.execute(::work) } }
+    init {
+        cacheWorker.execute { work(localOnly = true) }
+        repeat(if (lowRam) 1 else 2) { workers.execute { work(localOnly = false) } }
+    }
 
     /** Size defaults to the laid-out content bounds, including the detail page's portrait artwork. */
     fun load(view: ImageView, url: String, priority: Int = PRIORITY_VISIBLE, widthPx: Int = 0, heightPx: Int = 0,
@@ -147,25 +155,28 @@ class ArtworkLoader(context: Context) {
     fun refreshVisible() {
         if (closed || viewportRefreshPosted) return
         viewportRefreshPosted = true
-        main.postDelayed(viewportRefresh, 80L)
+        main.post(viewportRefresh)
     }
 
-    /** 尺寸未定时返回 null；命中内存缓存时同时返回实际缓存 key，供 applied 正确登记。 */
+    /** 布局前先显示同封面的已有位图；布局后再按实际尺寸决定是否补充更清晰的图片。 */
     private fun peekCached(view: ImageView, url: String, widthPx: Int, heightPx: Int): Pair<Key, Bitmap>? {
         val width = if (widthPx > 0) widthPx else view.width - view.paddingLeft - view.paddingRight
         val height = if (heightPx > 0) heightPx else view.height - view.paddingTop - view.paddingBottom
-        if (width <= 0 || height <= 0) return null
+        if (width <= 0 || height <= 0) {
+            val key = cache.snapshot().keys.filter { it.url == url }
+                .minByOrNull { it.width.toLong() * it.height } ?: return null
+            return cache.get(key)?.let { key to it }
+        }
         val scale = min(1.0, 1024.0 / max(width, height))
         val key = Key(url, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
         return cachedBitmap(key)?.let { key to it }
     }
 
-    /** 相同封面的尺寸只差少量像素时直接复用，避免布局微调导致重复下载或解码。 */
+    /** 大海报可直接用于最近观看的小卡片；少量尺寸误差也不重复解码。 */
     private fun cachedBitmap(key: Key): Bitmap? {
         cache.get(key)?.let { return it }
         val compatible = cache.snapshot().keys.filter { candidate ->
-            candidate.url == key.url && candidate.width * 10 >= key.width * 9 && candidate.height * 10 >= key.height * 9 &&
-                candidate.width <= key.width * 2 && candidate.height <= key.height * 2
+            candidate.url == key.url && candidate.width * 10 >= key.width * 9 && candidate.height * 10 >= key.height * 9
         }.minByOrNull { abs(it.width - key.width) + abs(it.height - key.height) } ?: return null
         // 读取实际条目更新 LRU 顺序，不为同一位图建立多个别名，避免重复计入内存预算。
         return cache.get(compatible)
@@ -201,14 +212,17 @@ class ArtworkLoader(context: Context) {
             jobs[key]?.let { job ->
                 job.listeners += binding
                 if (priority < job.priority) {
-                    val queued = pending.remove(job)
+                    val queuedCache = cachedPending.remove(job)
+                    val queuedNetwork = pending.remove(job)
                     job.priority = priority
-                    if (queued) pending.add(job)
+                    if (queuedCache) cachedPending.add(job)
+                    if (queuedNetwork) pending.add(job)
                 }
                 return
             }
-            if (pending.size >= MAX_PENDING) {
-                val worst = pending.maxWithOrNull(compareBy<Job> { it.priority }.thenBy { -it.order })!!
+            if (cachedPending.size + pending.size >= MAX_PENDING) {
+                val worst = (cachedPending.asSequence() + pending.asSequence())
+                    .maxWithOrNull(compareBy<Job> { it.priority }.thenBy { -it.order })!!
                 if (worst.priority < priority || (worst.priority == priority && priority == PRIORITY_PREFETCH)) return
                 cancelLocked(worst)
                 cancelled = worst
@@ -216,7 +230,7 @@ class ArtworkLoader(context: Context) {
             val job = Job(key, binding.url, owner, priority, ++order)
             job.listeners += binding
             jobs[key] = job
-            pending += job
+            cachedPending += job
             signal.notifyAll()
         }
         cancelled?.call?.cancel()
@@ -224,6 +238,7 @@ class ArtworkLoader(context: Context) {
 
     private fun cancelLocked(job: Job) {
         job.cancelled = true
+        cachedPending.remove(job)
         pending.remove(job)
         if (jobs[job.key] === job) jobs.remove(job.key)
         job.listeners.clear()
@@ -281,6 +296,7 @@ class ArtworkLoader(context: Context) {
         cancelPage()
         synchronized(signal) { signal.notifyAll() }
         workers.shutdownNow()
+        cacheWorker.shutdownNow()
         // TLS socket pool disposal can block and must not happen on the UI thread.
         Thread({
             http.dispatcher.cancelAll()
@@ -289,17 +305,29 @@ class ArtworkLoader(context: Context) {
         }, "hongguotv-artwork-cleanup").start()
     }
 
-    private fun work() {
+    private fun work(localOnly: Boolean) {
+        val queue = if (localOnly) cachedPending else pending
         while (!closed) {
             val job = try {
                 synchronized(signal) {
-                    while (pending.isEmpty() && !closed) signal.wait()
-                    if (closed) null else pending.poll()
+                    while (queue.isEmpty() && !closed) signal.wait()
+                    if (closed) null else queue.poll()
                 }
             } catch (_: InterruptedException) { return } ?: return
             val bitmap = try {
-                if (job.cancelled) null else cache.get(job.key) ?: fetch(job)
+                if (job.cancelled) null else cache.get(job.key) ?: if (localOnly) {
+                    disk.get(job.url)?.let { decode(job, it) }
+                } else fetch(job)
             } catch (_: Exception) { null } catch (_: OutOfMemoryError) { cache.evictAll(); null }
+            if (localOnly && bitmap == null && !job.cancelled) {
+                synchronized(signal) {
+                    if (!closed && !job.cancelled && jobs[job.key] === job) {
+                        pending += job
+                        signal.notifyAll()
+                    }
+                }
+                continue
+            }
             val listeners = synchronized(signal) {
                 if (jobs[job.key] === job) jobs.remove(job.key)
                 if (!job.cancelled && !closed && bitmap != null) cache.put(job.key, bitmap)
@@ -366,6 +394,10 @@ class ArtworkLoader(context: Context) {
                 out.toByteArray()
             }
         } ?: return null
+        return decode(job, bytes)
+    }
+
+    private fun decode(job: Job, bytes: ByteArray): Bitmap? {
         if (job.cancelled) return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)

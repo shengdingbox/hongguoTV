@@ -311,22 +311,8 @@ class PortraitPages(
         }, lp())
     }
 
-    /** 切页保留最近观看和收藏的海报控件；记录实际变化时才更新内容。 */
+    /** 最近观看按剧集复用卡片，进度和收藏变化只更新各自的内容。 */
     fun mine(body: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
-        var shownHistory: List<WatchProgress>? = null
-        var shownFavorites: List<Series>? = null
-        return { _ ->
-            val history = activity.phoneLibrary.history().take(30)
-            val favorites = activity.phoneLibrary.favorites()
-            if (shownHistory != history || shownFavorites != favorites) {
-                shownHistory = history; shownFavorites = favorites
-                body.removeAllViews()
-                buildMine(body, scrollRoot, history)
-            }
-        }
-    }
-
-    private fun buildMine(body: LinearLayout, scrollRoot: NestedScrollView?, history: List<WatchProgress>) {
         val head = row()
         head.addView(PortraitUi.pageTitle(activity, "我的"), lp(0, -2).apply { weight = 1f })
         head.addView(ImageView(activity).apply {
@@ -338,49 +324,100 @@ class PortraitPages(
             setOnClickListener { activity.showPhoneSettings() }
         }, lp(dp(44), dp(44)).apply { gravity = Gravity.BOTTOM; rightMargin = dp(10) })
         body.addView(head, lp())
-        if (history.isNotEmpty()) {
-            section(body, "最近观看")
-            val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
-            val cards = row().apply { gravity = Gravity.TOP; setPadding(dp(16), 0, dp(16), 0) }
-            strip.addView(cards)
-            strip.viewTreeObserver.addOnScrollChangedListener { activity.refreshPhoneCovers() }
-            history.forEach { watch ->
-                val card = PortraitUi.PosterCard(activity)
-                card.title.text = watch.series.title
-                card.title.textSize = 13f
-                card.badge.text = if (watch.completed) "看完第 ${watch.episodeIndex + 1} 集" else "看到第 ${watch.episodeIndex + 1} 集"
-                card.badge.textSize = 11f
-                loadCover(card.image, watch.series.cover)
-                if (!watch.completed && watch.duration > 0) {
-                    card.poster.addView(ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
-                        max = 1000
-                        progress = (watch.position * 1000 / watch.duration).toInt().coerceIn(0, 1000)
-                        progressTintList = ColorStateList.valueOf(PortraitStyle.accent)
-                        progressBackgroundTintList = ColorStateList.valueOf(Color.argb(100, 255, 255, 255))
-                    }, FrameLayout.LayoutParams(-1, dp(3), Gravity.BOTTOM).apply {
-                        leftMargin = dp(8); rightMargin = dp(8); bottomMargin = dp(7)
-                    })
-                }
-                card.contentDescription = "${watch.series.title}，${card.badge.text}"
-                card.setOnClickListener { activity.openDetailPhone(watch.series) }
-                card.setOnLongClickListener {
-                    val menu = PopupMenu(PortraitStyle.popupContext(activity), card)
-                    menu.menu.add(0, 0, 0, "继续播放")
-                    menu.menu.add(0, 1, 1, "从最近观看中移除")
-                    menu.setOnMenuItemClickListener { item ->
-                        if (item.itemId == 0) activity.openDetailPhone(watch.series, resume = true)
-                        else { activity.phoneLibrary.removeHistory(watch.series.id); activity.renderPhoneTab() }
-                        true
-                    }
-                    menu.show()
-                    true
-                }
-                cards.addView(card, lp(dp(96), -2).apply { rightMargin = dp(12) })
-            }
-            body.addView(strip, lp())
-        }
+        val recent = column()
+        section(recent, "最近观看")
+        val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
+        val cards = row().apply { gravity = Gravity.TOP; setPadding(dp(16), 0, dp(16), 0) }
+        strip.addView(cards)
+        strip.viewTreeObserver.addOnScrollChangedListener { activity.refreshPhoneCovers() }
+        recent.addView(strip, lp())
+        body.addView(recent, lp())
+        val retainedCards = mutableMapOf<String, RecentWatchCard>()
+
         section(body, "收藏")
-        favoritesGrid(body, scrollRoot)
+        val emptyFavorites = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
+        body.addView(emptyFavorites, lp())
+        val grid = RecyclerView(activity)
+        body.addView(grid, lp())
+        val favoritesAdapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) }, null, scrollRoot)
+        favoritesAdapter.attach(grid)
+        var shownHistory: List<WatchProgress>? = null
+        var shownFavorites: List<Series>? = null
+        return { _ ->
+            val history = activity.phoneLibrary.history().take(30)
+            if (shownHistory != history) {
+                val ids = history.map { it.series.id }.toSet()
+                retainedCards.keys.filter { it !in ids }.forEach { id ->
+                    retainedCards.remove(id)?.let { entry ->
+                        activity.recyclePhoneCover(entry.card.image)
+                        cards.removeView(entry.card)
+                    }
+                }
+                history.forEachIndexed { index, watch ->
+                    val entry = retainedCards.getOrPut(watch.series.id) { recentWatchCard(watch) }
+                    if (cards.indexOfChild(entry.card) != index) {
+                        cards.removeView(entry.card)
+                        cards.addView(entry.card, index, lp(dp(96), -2).apply { rightMargin = dp(12) })
+                    }
+                    updateRecentWatchCard(entry, watch)
+                }
+                recent.visibility = if (history.isEmpty()) View.GONE else View.VISIBLE
+                shownHistory = history
+            }
+            val favorites = activity.phoneLibrary.favorites()
+            if (shownFavorites != favorites) {
+                emptyFavorites.visibility = if (favorites.isEmpty()) View.VISIBLE else View.GONE
+                grid.visibility = if (favorites.isEmpty()) View.GONE else View.VISIBLE
+                favoritesAdapter.submitItems(favorites, false)
+                shownFavorites = favorites
+            }
+        }
+    }
+
+    private class RecentWatchCard(val card: PortraitUi.PosterCard, val progress: ProgressBar, var watch: WatchProgress)
+
+    private fun recentWatchCard(watch: WatchProgress): RecentWatchCard {
+        val card = PortraitUi.PosterCard(activity)
+        card.title.textSize = 13f
+        card.badge.textSize = 11f
+        val progress = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 1000
+            progressTintList = ColorStateList.valueOf(PortraitStyle.accent)
+            progressBackgroundTintList = ColorStateList.valueOf(Color.argb(100, 255, 255, 255))
+            visibility = View.GONE
+        }
+        card.poster.addView(progress, FrameLayout.LayoutParams(-1, dp(3), Gravity.BOTTOM).apply {
+            leftMargin = dp(8); rightMargin = dp(8); bottomMargin = dp(7)
+        })
+        val entry = RecentWatchCard(card, progress, watch)
+        card.setOnClickListener { activity.openDetailPhone(entry.watch.series) }
+        card.setOnLongClickListener {
+            val current = entry.watch
+            val menu = PopupMenu(PortraitStyle.popupContext(activity), card)
+            menu.menu.add(0, 0, 0, "继续播放")
+            menu.menu.add(0, 1, 1, "从最近观看中移除")
+            menu.setOnMenuItemClickListener { item ->
+                if (item.itemId == 0) activity.openDetailPhone(current.series, resume = true)
+                else { activity.phoneLibrary.removeHistory(current.series.id); activity.renderPhoneTab() }
+                true
+            }
+            menu.show()
+            true
+        }
+        return entry
+    }
+
+    private fun updateRecentWatchCard(entry: RecentWatchCard, watch: WatchProgress) {
+        val previous = entry.watch
+        entry.watch = watch
+        val card = entry.card
+        card.title.text = watch.series.title
+        card.badge.text = if (watch.completed) "看完第 ${watch.episodeIndex + 1} 集" else "看到第 ${watch.episodeIndex + 1} 集"
+        card.contentDescription = "${watch.series.title}，${card.badge.text}"
+        if (card.image.drawable == null) loadCover(card.image, watch.series.cover)
+        else if (previous.series.cover != watch.series.cover) activity.updatePhoneCover(card.image, watch.series.cover)
+        entry.progress.visibility = if (!watch.completed && watch.duration > 0) View.VISIBLE else View.GONE
+        entry.progress.progress = if (watch.duration > 0) (watch.position * 1000 / watch.duration).toInt().coerceIn(0, 1000) else 0
     }
 
     fun favorites(body: LinearLayout, scrollRoot: NestedScrollView? = null) {

@@ -3325,7 +3325,9 @@ class MainActivity: Activity() {
             root.removeAllViews(); root.setBackgroundColor(Color.BLACK)
             val view=(if(phonePlayerLayout()) layoutInflater.inflate(R.layout.phone_player_view,root,false) as PlayerView else PlayerView(this)).apply {
                 useController=false; resizeMode=frameResizeMode(); isFocusable=false
-                setKeepContentOnPlayerReset(true); setShutterBackgroundColor(Color.BLACK); setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                setKeepContentOnPlayerReset(true); setShutterBackgroundColor(Color.BLACK)
+                // 手机外壳已有白色缓冲圈，关闭内置转圈，避免竖屏和横屏全屏时重复显示。
+                setShowBuffering(if(phonePlayerLayout()) PlayerView.SHOW_BUFFERING_NEVER else PlayerView.SHOW_BUFFERING_ALWAYS)
             }
             playerView=view
             if(phonePlayerLayout()) {

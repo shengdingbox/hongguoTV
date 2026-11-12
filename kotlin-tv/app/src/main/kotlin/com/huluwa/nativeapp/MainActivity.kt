@@ -6477,7 +6477,7 @@ class MainActivity: Activity() {
         }
     }
 
-    /** 手机榜单按内容与子榜缓存；续页只接受当前榜单返回的游标。 */
+    /** 手机榜单按内容与子榜缓存；每批按真实游标逐页补足，续页保留已显示的顺序。 */
     private fun showPhoneRank(more: Boolean=false) {
         if(phoneRankLoading || !phoneLayout() || phoneTab!="rank") return
         prepareMobileRankCachePhone()
@@ -6486,30 +6486,42 @@ class MainActivity: Activity() {
         val previous=phoneMobileRankPages[key]
         val cursor=if(more) previous?.cursor ?: return else null
         val ticket=generation
+        var activeContent=content; var activeBoard=board
         phoneCatalogSource="rank"; phoneRankFailedMore=more
         phoneMobileRankErrors.remove(key)
-        work({ repository.mobileRanking(content,board,cursor) }, { result ->
-            if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="rank" &&
-                phoneRankContent==content && phoneRankBoard==board && !phoneDetailCollection) {
-                phoneRankLoading=false; phoneRankReady=true
-                if(result.contents.isNotEmpty()) phoneRankContents=result.contents
-                phoneRankContent=result.contentId; phoneRankBoard=result.boardId
-                val items=if(more) (previous!!.items+result.items).distinctBy { it.id } else result.items
-                val loaded=result.copy(items=items,contents=phoneRankContents)
-                phoneMobileRankLoadedKeys+=key
-                phoneMobileRankLoadedKeys+=mobileRankCacheKey()
-                phoneMobileRankPages[key]=loaded
-                phoneMobileRankPages[mobileRankCacheKey()]=loaded
-                phoneMobileRankErrors.remove(mobileRankCacheKey())
-                catalog=items; hasMore=loaded.cursor!=null; rankingPhone=null
-                library.cacheMobileRank(loaded)
-                renderPhone()
+        fun applyPage(result: MobileRankPage, finished: Boolean) {
+            if(!phoneLayout() || ticket!=generation || screen!="catalog" || phoneTab!="rank" ||
+                phoneRankContent!=activeContent || phoneRankBoard!=activeBoard || phoneDetailCollection) return
+            phoneRankLoading=!finished; phoneRankReady=true
+            if(result.contents.isNotEmpty()) phoneRankContents=result.contents
+            phoneRankContent=result.contentId; phoneRankBoard=result.boardId
+            activeContent=result.contentId; activeBoard=result.boardId
+            // 分阶段回调是本批累计结果，始终相对加载前的快照追加，避免重复插入。
+            val items=if(more) (previous!!.items+result.items).distinctBy { it.id } else result.items
+            val loaded=result.copy(items=items,contents=phoneRankContents)
+            phoneMobileRankLoadedKeys+=key
+            phoneMobileRankLoadedKeys+=mobileRankCacheKey()
+            phoneMobileRankPages[key]=loaded
+            phoneMobileRankPages[mobileRankCacheKey()]=loaded
+            phoneMobileRankErrors.remove(mobileRankCacheKey())
+            catalog=items; hasMore=loaded.cursor!=null; rankingPhone=null
+            library.cacheMobileRank(loaded)
+            renderPhone()
+        }
+        work({
+            val scope=RequestScope.current()
+            repository.mobileRankingBatch(content,board,cursor) { partial ->
+                main.post {
+                    if(!isDestroyed && foreground && scope?.isCancelled!=true) applyPage(partial,finished=false)
+                }
             }
+        }, { result ->
+            applyPage(result,finished=true)
         }, { problem ->
             if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="rank" &&
-                phoneRankContent==content && phoneRankBoard==board && !phoneDetailCollection) {
+                phoneRankContent==activeContent && phoneRankBoard==activeBoard && !phoneDetailCollection) {
                 phoneRankLoading=false
-                phoneMobileRankErrors[key]=(if(more) "更多榜单加载失败" else "榜单加载失败")+
+                phoneMobileRankErrors[mobileRankCacheKey()]=(if(more) "更多榜单加载失败" else "榜单加载失败")+
                     "："+problem.message.orEmpty().lineSequence().firstOrNull().orEmpty().take(120)+"\n点此重试"
                 renderPhone()
             }

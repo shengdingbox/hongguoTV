@@ -195,7 +195,7 @@ class PortraitPages(
             body.addView(empty,lp())
             val grid=RecyclerView(activity); body.addView(grid,lp())
             val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },
-                { if(feed.isCurrent(key)) activity.loadMorePhone() },scroll,ranked=true)
+                { if(feed.isCurrent(key)) activity.loadMorePhone() },scroll,ranked=true,loadAheadScreens=1)
             adapter.attach(grid)
             val error=text("",14f,PortraitStyle.muted).apply {
                 gravity=Gravity.CENTER; setPadding(dp(16),dp(24),dp(16),dp(24))

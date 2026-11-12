@@ -284,6 +284,32 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
         return MobileDiscoveryParser.rank(catalogJson("$API/reading/bookapi/bookmall/cell/change/v1/", values), content, board, cursor)
     }
+    /** 官方榜单每页固定约 10 部；每批沿游标最多取 3 页，逐页展示，目标约 30 部。 */
+    fun mobileRankingBatch(
+        contentId: String = "",
+        boardId: String = "",
+        cursor: MobileRankCursor? = null,
+        onPage: (MobileRankPage) -> Unit = {},
+    ): MobileRankPage {
+        var next = cursor
+        var batch: MobileRankPage? = null
+        repeat(3) {
+            val page = try {
+                mobileRanking(next?.contentId ?: contentId, next?.boardId ?: boardId, next)
+            } catch (problem: Exception) {
+                if (Thread.currentThread().isInterrupted || RequestScope.current()?.isCancelled == true) throw problem
+                // 后续页失败仍保留已展示的数据和最后成功的游标，下次继续续页。
+                return batch ?: throw problem
+            }
+            val items = (batch?.items.orEmpty() + page.items).distinctBy { it.id }
+            val result = page.copy(items = items)
+            batch = result
+            next = result.cursor
+            onPage(result)
+            if (items.size >= 30 || next == null) return result
+        }
+        return checkNotNull(batch)
+    }
     fun comicRanking(page: Int = 1)=ranking(RankBoard.COMIC,page)
     fun realRanking(page: Int = 1)=ranking(RankBoard.REAL,page)
     /** Genre selectors from the website's category page; cached briefly because they rarely change. */

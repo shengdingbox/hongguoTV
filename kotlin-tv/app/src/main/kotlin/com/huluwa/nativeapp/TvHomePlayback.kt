@@ -13,7 +13,6 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -231,7 +230,7 @@ internal class TvHomePlayback(
     }
 
     private fun createPlayer() = ExoPlayer.Builder(context, Mp4MediaSources.explicitSourceFactory())
-        .setRenderersFactory(DefaultRenderersFactory(context).setEnableDecoderFallback(true))
+        .setRenderersFactory(PlaybackRenderersFactory(context))
         .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(1_500, 8_000, 250, 750)
             .setTargetBufferBytes(6 * 1024 * 1024).setPrioritizeTimeOverSizeThresholds(false).build())
         .build().apply {

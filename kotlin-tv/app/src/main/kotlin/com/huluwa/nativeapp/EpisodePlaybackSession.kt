@@ -9,7 +9,6 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
@@ -50,7 +49,7 @@ internal class EpisodePlaybackSession(context: Context, private val disk: (Remot
             }
         }
     }.setMediaSourceFactory(mediaSourceFactory)
-        .setRenderersFactory(DefaultRenderersFactory(context).setEnableDecoderFallback(true))
+        .setRenderersFactory(PlaybackRenderersFactory(context))
         .setLoadControl(DefaultLoadControl.Builder()
             .setBufferDurationsMs(10_000, 25_000, 250, 750)
             .setTargetBufferBytes(targetBufferBytes)

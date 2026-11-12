@@ -451,6 +451,7 @@ class MainActivity: Activity() {
     private var video: RemoteVideo?=null
     private var playbackReady=false
     private var playbackFirstFrameRendered=false
+    private var tvVideoFrameWaitStartedAt=0L
     private var pausedForLifecycle=false
     /** 这次 onStop 只停不拆：播放器与媒体源留着，回到前台原地续播。
      *  正在播放时切到别的 App（或锁屏/下拉通知栏）会走 onStop，以前一律 releasePlayer()，
@@ -497,6 +498,7 @@ class MainActivity: Activity() {
                 // 下载进度也在持续变化。只在条带已挂载时做，其他页面零开销。
                 if(cacheStripSegments!=null) refreshCacheStrip()
                 danmakuLoader?.let { loader -> if(player?.isPlaying==true) { val position=currentPosition(); io.execute { runCatching { loader.loadUpTo(position) } } } }
+                checkTvVideoFirstFrame()
                 maybePrefetch()
                 val p=player; val data=detail
                 if(p!=null && data!=null && playbackReady && !playError && outroSkipSeconds>0 && !outroTriggered && p.isPlaying) {
@@ -3346,7 +3348,7 @@ class MainActivity: Activity() {
         cancelSkipUnplayable()
         val playbackStarted=android.os.SystemClock.elapsedRealtime()
         // 切集先撤掉后台整集下载的带宽占用，首帧和当前集缓冲就绪后逐步恢复。
-        playbackFirstFrameRendered=false
+        playbackFirstFrameRendered=false; tvVideoFrameWaitStartedAt=0L
         episodeCacheParallelism=0
         episodeDiskCache?.setDownloadParallelism(0)
         // 从详情页重新进播放器时丢弃上一轮的临时设置；自动连播保持在同一条降档链上。
@@ -3661,6 +3663,24 @@ class MainActivity: Activity() {
             val ticket=generation
             main.post { if(!isDestroyed && foreground && screen=="player" && generation==ticket) preparePlaybackSession() }
         }
+    }
+    /** 已有视频缓冲仍不出首帧时按解码失败处理，避免硬解静默卡住后一直转圈。 */
+    private fun checkTvVideoFirstFrame() {
+        val p=player
+        val view=playerView
+        val surfaceReady=(view?.videoSurfaceView as? SurfaceView)?.holder?.surface?.isValid==true
+        val waiting=!phonePlayerLayout() && foreground && !playError && !playbackFirstFrameRendered &&
+            p!=null && p.playWhenReady && !pausedForLifecycle && view?.isShown==true && surfaceReady &&
+            p.currentMediaItem?.mediaId==detail?.episodes?.getOrNull(episodeIndex) &&
+            (p.playbackState==Player.STATE_BUFFERING || p.playbackState==Player.STATE_READY) &&
+            p.videoFormat!=null && (p.bufferedPosition-p.currentPosition>=1_000L || p.isPlaying)
+        if(!waiting) { tvVideoFrameWaitStartedAt=0L; return }
+        val now=android.os.SystemClock.elapsedRealtime()
+        if(tvVideoFrameWaitStartedAt==0L) { tvVideoFrameWaitStartedAt=now; return }
+        if(now-tvVideoFrameWaitStartedAt<15_000L) return
+        tvVideoFrameWaitStartedAt=0L
+        android.util.Log.w("HongguoTV","Video first frame timeout episode=${episodeIndex+1} format=${p?.videoFormat?.sampleMimeType} bufferedMs=${p?.let { it.bufferedPosition-it.currentPosition }}")
+        playerFailure(PlaybackException("视频已缓冲但电视解码器未输出画面",null,PlaybackException.ERROR_CODE_DECODING_FAILED))
     }
     private fun preparePlaybackSession(): EpisodePlaybackSession {
         val session=playbackSession ?: EpisodePlaybackSession(this,disk={ remote ->
@@ -5219,6 +5239,7 @@ class MainActivity: Activity() {
         playerListener?.let { player?.removeListener(it) }; playerListener=null
         video?.let { android.util.Log.w("HongguoTV","Prefetch end ${it.stats()}") }
         video?.pauseReadAhead(cancelReads=true)
+        tvVideoFrameWaitStartedAt=0L
         playerView?.player=null; playerView=null
         playbackSession?.release(); playbackSession=null; player=null; playbackReady=false; playbackFirstFrameRendered=false; transportPlay=null; sleepButton=null
         playerVideo=null; switchingVideos.clear(); protectPlaybackVideos()
@@ -7100,6 +7121,7 @@ class MainActivity: Activity() {
         if(hasFocus && screen=="settings") phoneRefreshSettingsValues()
     }
     override fun onPause() {
+        tvVideoFrameWaitStartedAt=0L
         homePlayback?.setActive(false)
         foreground=false; main.removeCallbacks(tick); cancelRecovery(); cancelPrefetch(); mediaSession.deactivate()
         sleepTimer.cancel(); favoriteMonitor.stop(); detailAutoplay=false; requestedAutoplay=false; pausedForLifecycle=true

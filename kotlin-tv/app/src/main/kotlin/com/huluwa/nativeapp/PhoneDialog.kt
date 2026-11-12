@@ -7,6 +7,7 @@ import android.app.Dialog
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.MotionEvent
@@ -61,9 +62,21 @@ object PhoneDialog {
                 window?.let { window ->
                     WindowCompat.setDecorFitsSystemWindows(window, false)
                     window.setBackgroundDrawableResource(android.R.color.transparent)
+                    window.decorView.setPadding(0, 0, 0, 0)
+                    // 浮窗也铺到导航栏底部，由面板背景覆盖安全区，避免底部露出主页面。
+                    window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND or
+                        WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN)
+                    if (Build.VERSION.SDK_INT >= 30) {
+                        window.attributes = window.attributes.apply { setFitInsetsTypes(0) }
+                    }
                     @Suppress("DEPRECATION")
-                    window.navigationBarColor = Color.TRANSPARENT
-                    window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                    window.navigationBarColor = sheetColor
+                    if (Build.VERSION.SDK_INT >= 28) {
+                        @Suppress("DEPRECATION")
+                        window.navigationBarDividerColor = Color.TRANSPARENT
+                    }
+                    if (Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
                     window.setDimAmount(.4f)
                     window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or
                         WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)

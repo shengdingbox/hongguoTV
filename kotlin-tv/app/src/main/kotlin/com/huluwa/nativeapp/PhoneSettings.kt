@@ -266,7 +266,7 @@ class PhoneSettings(private val activity: MainActivity) {
     }
 
     private fun playbackSection(parent: LinearLayout) {
-        section(parent, "播放与观看", "默认设置适用于所有剧集。整集预载会占用设备存储空间。") { group ->
+        section(parent, "播放与观看", "默认设置适用于所有剧集。缓存后续三集会占用设备存储空间。") { group ->
             addRow(group, row("默认清晰度", "${library.maxQuality}P", { "${library.maxQuality}P" }) { activity.phoneQualityPicker() })
             addRow(group, row("默认倍速", PlaybackSpeed.label(library.playbackSpeed), { PlaybackSpeed.label(library.playbackSpeed) }) { activity.phoneSpeedPicker() })
             addRow(group, row("画面模式", library.frameMode.label, { library.frameMode.label }) { activity.phoneFramePicker() })
@@ -278,7 +278,7 @@ class PhoneSettings(private val activity: MainActivity) {
                 library.autoSeason = !library.autoSeason
                 activity.phoneRefreshSettingsValues()
             })
-            addRow(group, toggleRow("整集预载缓存", { library.episodeCache }) {
+            addRow(group, toggleRow("缓存后三集", { library.episodeCache }) {
                 library.episodeCache = !library.episodeCache
                 activity.phoneApplyEpisodeCache()
                 activity.phoneRefreshSettingsValues()

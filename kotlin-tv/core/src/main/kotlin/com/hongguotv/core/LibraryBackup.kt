@@ -23,7 +23,7 @@ data class BackupProgress(val series: Series,val episodeId: String,val episodeIn
 }
 data class BackupSettings(val quality: Int=1080,val speed: Float=1f,val autoNext: Boolean=true,val type: ContentType=ContentType.COMIC,val frame: VideoFrameMode=VideoFrameMode.FIT,val autoSeason: Boolean=true,val danmaku: Boolean=true,
     val danmakuOpacity: Int=DanmakuPrefs.OPACITY_DEFAULT,val danmakuFont: Int=DanmakuPrefs.FONT_DEFAULT,val danmakuSpeed: Int=DanmakuPrefs.SPEED_DEFAULT,val danmakuRows: Int=DanmakuPrefs.ROWS_DEFAULT,
-    val showClock: Boolean=true,val episodeCache: Boolean=false) {
+    val showClock: Boolean=true,val episodeCache: Boolean=true) {
     fun json()=JSONObject().put("quality",quality).put("speed",speed.toDouble()).put("autoNext",autoNext).put("type",type.storedValue).put("frame",frame.name).put("autoSeason",autoSeason).put("danmaku",danmaku)
         .put("danmakuOpacity",danmakuOpacity).put("danmakuFont",danmakuFont).put("danmakuSpeed",danmakuSpeed).put("danmakuRows",danmakuRows).put("showClock",showClock).put("episodeCache",episodeCache)
 }
@@ -121,8 +121,8 @@ object LibraryBackup {
         val danmakuSpeed=DanmakuPrefs.speed(settings.optInt("danmakuSpeed",DanmakuPrefs.SPEED_DEFAULT))
         val danmakuRows=DanmakuPrefs.rows(settings.optInt("danmakuRows",DanmakuPrefs.ROWS_DEFAULT))
         val showClock=settings.optBoolean("showClock",true)
-        // 旧备份没有该字段时按默认「关闭」处理：整集落盘占磁盘，升级后不擅自打开
-        val episodeCache=settings.optBoolean("episodeCache",false)
+        // 旧备份没有该字段时使用默认开启的后三集缓存。
+        val episodeCache=settings.optBoolean("episodeCache",true)
         return BackupData(favorites,history,watchedIds,searches,BackupSettings(quality,speed.toFloat(),autoNext,type,frame,autoSeason,danmaku,danmakuOpacity,danmakuFont,danmakuSpeed,danmakuRows,showClock,episodeCache),later,hiddenIds,favoriteGroups)
     }
     /** Existing favorites stay first; only newer imported progress replaces a local record. */

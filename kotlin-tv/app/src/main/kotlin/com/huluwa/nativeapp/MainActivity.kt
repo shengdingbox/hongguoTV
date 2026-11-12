@@ -2224,7 +2224,7 @@ class MainActivity: Activity() {
             autoSeasonButton.text="系列剧连播  ·  ${if(library.autoSeason) "开启" else "关闭"}"
         }
         lateinit var episodeCacheButton: TextView
-        fun episodeCacheLabel()="整集预载缓存  ·  ${if(library.episodeCache) "开启" else "关闭"}"
+        fun episodeCacheLabel()="缓存后三集  ·  ${if(library.episodeCache) "开启" else "关闭"}"
         episodeCacheButton=setting(playback,episodeCacheLabel()) {
             library.episodeCache=!library.episodeCache
             episodeCacheButton.text=episodeCacheLabel()
@@ -3715,7 +3715,7 @@ class MainActivity: Activity() {
             lastScheduleIdle=reason
             RuntimeLog.add("cache idle: $reason")
         }
-        if(!episodeCacheOn) { idle("整集预载缓存开关关闭"); return }
+        if(!episodeCacheOn) { idle("缓存后三集开关关闭"); return }
         val data=detail
         if(data==null) { idle("没有剧集详情"); return }
         val quality=effectiveQuality()
@@ -7118,7 +7118,7 @@ class MainActivity: Activity() {
             " · 已请求 $phoneRecommendationStarted · 加载中 $phoneHomeLoading · 可翻页 ${phoneRecommendationCursor!=null}")
         appendLine("推荐接口: $phoneRecommendationDiagnostic")
         if(phoneRecommendationError.isNotBlank()) appendLine("推荐错误: ${phoneRecommendationError.lineSequence().firstOrNull().orEmpty()}")
-        appendLine("整集预载缓存: " + when {
+        appendLine("缓存后三集: " + when {
             !library.episodeCache -> "开关关闭"
             cache == null -> "已开启但缓存池未创建（设置里开关一次即可重建）"
             else -> "运行中 · 画质 ${effectiveQuality()}P · 队列 ${cache.queuedCount} 条"

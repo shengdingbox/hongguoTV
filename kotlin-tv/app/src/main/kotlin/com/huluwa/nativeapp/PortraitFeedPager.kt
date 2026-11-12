@@ -10,6 +10,7 @@ import androidx.core.view.NestedScrollingParent3
 import androidx.core.view.NestedScrollingParentHelper
 import androidx.core.view.ViewCompat
 import androidx.core.widget.NestedScrollView
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 
@@ -155,10 +156,19 @@ class PortraitFeedPager(
                 if (pager.scrollState == ViewPager2.SCROLL_STATE_IDLE) post { update() }
                 return
             }
+            val previousKeys = pageKeys
+            val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+                override fun getOldListSize() = previousKeys.size
+                override fun getNewListSize() = nextKeys.size
+                override fun areItemsTheSame(oldPosition: Int, newPosition: Int) =
+                    previousKeys[oldPosition] == nextKeys[newPosition]
+                // 页面内容由 updatePages 就地更新，日期/榜单位置变化不重绑整个页面。
+                override fun areContentsTheSame(oldPosition: Int, newPosition: Int) = true
+            })
             syncing = true
             pageKeys = nextKeys
             positions.keys.retainAll(nextKeys.toSet())
-            adapter.notifyDataSetChanged()
+            diff.dispatchUpdatesTo(adapter)
             pager.setCurrentItem(nextKeys.indexOf(selectedKey).coerceAtLeast(0), false)
             syncing = false
         } else {

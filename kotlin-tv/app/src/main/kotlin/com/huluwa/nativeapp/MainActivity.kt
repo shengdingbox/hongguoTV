@@ -709,6 +709,8 @@ class MainActivity: Activity() {
         }
         artwork.load(view,url,if(focused) ArtworkLoader.PRIORITY_FOCUSED else ArtworkLoader.PRIORITY_VISIBLE)
     }
+    /** 同一剧集更新封面地址时保留旧图，等新图就绪后直接替换。 */
+    fun updatePhoneCover(view: ImageView,url: String) = artwork.load(view,url,keepCurrentImage=true)
     /** 海报暂时离屏只暂停请求；真正回收卡片时才释放绑定。 */
     fun recyclePhoneCover(view: ImageView) = artwork.clear(view)
     fun refreshPhoneCovers() = artwork.refreshVisible()
@@ -5920,8 +5922,12 @@ class MainActivity: Activity() {
         val today=NewReleaseCalendar.today()
         if(phoneNewReleaseCalendarDay==today) return
         val saved=if(phoneNewReleaseCalendarDay.isEmpty()) library.newReleaseDay else phoneNewReleaseDay
-        phoneNewReleaseDates=NewReleaseCalendar.nearbyDates()
-        phoneNewReleaseDay=saved.takeIf { it in phoneNewReleaseDates }.orEmpty()
+        val nearbyDates=NewReleaseCalendar.nearbyDates()
+        phoneNewReleaseDay=saved.takeIf { it in nearbyDates }.orEmpty()
+        val date=newReleaseDatePhone
+        // 首屏直接复用快照的日期栏，避免联网后从本地兜底日期切换导致整页重排。
+        phoneNewReleaseDates=library.cachedNewReleases(date)?.dates?.takeIf { it.isNotEmpty() } ?: nearbyDates
+        if(date !in phoneNewReleaseDates) phoneNewReleaseDates=(phoneNewReleaseDates+date).sorted()
         phoneNewReleaseCalendarDay=today
         phoneNewReleasePages.clear(); phoneNewReleaseLoadedDates.clear(); phoneNewReleaseError=""
     }

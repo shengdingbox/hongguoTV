@@ -207,6 +207,7 @@ object PortraitUi {
             val nextFavoriteIds = nextItems.filter { activity.phoneLibrary.favorite(it.id) }.map { it.id }.toSet()
             val previousFooter = hasMore
             val nextFooter = nextHasMore && more != null
+            if (previous == nextItems && favoriteIds == nextFavoriteIds && previousFooter == nextFooter) return
             val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
                 override fun getOldListSize() = previous.size + if (previousFooter) 1 else 0
                 override fun getNewListSize() = nextItems.size + if (nextFooter) 1 else 0
@@ -218,9 +219,11 @@ object PortraitUi {
                 }
                 override fun areContentsTheSame(oldPosition: Int, newPosition: Int): Boolean =
                     if (oldPosition == previous.size) true else {
-                        val id = previous[oldPosition].id
-                        previous[oldPosition] == nextItems[newPosition] &&
-                            (id in favoriteIds) == (id in nextFavoriteIds) &&
+                        val before = previous[oldPosition]
+                        val after = nextItems[newPosition]
+                        // 简介和分类不在卡片上展示，快照裁剪或后台补全不应触发封面重绑。
+                        before.title == after.title && before.badge == after.badge && before.cover == after.cover &&
+                            (before.id in favoriteIds) == (before.id in nextFavoriteIds) &&
                             (!ranked || oldPosition == newPosition)
                     }
             })
@@ -231,6 +234,7 @@ object PortraitUi {
         }
 
         private class Holder(val card: PosterCard) : RecyclerView.ViewHolder(card) {
+            var seriesId = ""
             var cover = ""
         }
 
@@ -242,6 +246,7 @@ object PortraitUi {
         override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
             if (holder is Holder) {
                 activity.recyclePhoneCover(holder.card.image)
+                holder.seriesId = ""
                 holder.cover = ""
             }
             super.onViewRecycled(holder)
@@ -278,7 +283,8 @@ object PortraitUi {
             }
             val card = (holder as Holder).card
             val item = items[position]
-            holder.cover = item.cover
+            val sameSeries = holder.seriesId == item.id
+            holder.seriesId = item.id
             card.title.text = item.title
             card.badge.text = item.badge
             card.contentDescription = item.title
@@ -294,11 +300,18 @@ object PortraitUi {
                 }
                 card.rank.background = PortraitStyle.shape(activity, color, radius = 6)
             }
-            loadCover(card.image, item.cover)
-            card.setOnClickListener { open(item) }
+            // 文案、收藏状态或排名变化时沿用已显示的封面；签名更新仍交给图片缓存复用。
+            if (holder.cover != item.cover || card.image.drawable == null) {
+                holder.cover = item.cover
+                if (sameSeries) activity.updatePhoneCover(card.image, item.cover)
+                else loadCover(card.image, item.cover)
+            }
+            // 未展示字段更新时不重绑卡片，交互始终读取当前列表中的最新剧集数据。
+            card.setOnClickListener { items.getOrNull(holder.bindingAdapterPosition)?.let(open) }
             card.setOnLongClickListener {
-                favoriteMenu(activity, card, item) {
-                    card.saved.visibility = if (activity.phoneLibrary.favorite(item.id)) View.VISIBLE else View.GONE
+                val current = items.getOrNull(holder.bindingAdapterPosition) ?: return@setOnLongClickListener false
+                favoriteMenu(activity, card, current) {
+                    card.saved.visibility = if (activity.phoneLibrary.favorite(current.id)) View.VISIBLE else View.GONE
                 }
                 true
             }

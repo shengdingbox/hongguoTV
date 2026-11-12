@@ -83,7 +83,7 @@ class PhoneEpisodeSheet(
         }
         dialog.show()
         dialog.window?.setLayout(-1, -1)
-        // 面板要能被手机遥控操作（数字宫格同样登记到统一弹窗栈）
+        // 面板登记到统一弹窗栈，播放控制条据此判断弹窗状态
         TvDialog.register(dialog)
     }
 

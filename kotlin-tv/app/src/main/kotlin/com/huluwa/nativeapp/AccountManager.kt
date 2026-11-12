@@ -120,8 +120,6 @@ class AccountManager(
     /** 云端观看记录数量；只在账号 UI 读取，避免各页面重复解析 accountLabel。 */
     val cloudCount: Int get() = cloudRows().size
 
-    /** 云端历史是否已成功拉取过；手机遥控等外部只读方用它判断要不要顺手触发一次 refreshHistory。 */
-    val cloudHistoryLoaded get() = historyLoaded
     val accountLabel: String get() {
         val p = profile
         return when {

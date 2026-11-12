@@ -25,17 +25,12 @@ check('cancel preserves original record',card('16-delete-cancelled')==card('12-h
 check('watched detail offers restart',focus('17-watched-detail').get('text')=='重新观看')
 check('delete removes selected record',card('12-history') not in texts('18-deleted-record') and card('18-deleted-record')!=card('12-history'))
 check('delete retains favorite',card('19-favorite-retained')==card('12-history'))
-check('phone input shows local URL',any(t.startswith('http://10.') for t in texts('20-phone-input')))
-check('phone input triggers Chinese search','末日漂流' in texts('22-search-ready') and '末日漂流' in card('22-search-ready'))
 check('search history includes content type','漫剧 · 末日漂流' in texts('23-search-history'))
 check('search history survives restart','漫剧 · 末日漂流' in texts('25-persisted-search-history'))
 check('history selection restores query','末日漂流' in texts('26-history-search'))
-check('closing phone input restores its button',focus('29-phone-closed-focus').get('text')=='手机输入')
-check('update dialog shows installed version',any('当前版本 0.3.0' in t for t in texts('30-updates-large')))
-check('update dialog explains browser access',any('GitHub' in t for t in texts('30-updates-large')))
 check('invalid episode stays in picker with error','请输入 1—152 之间的集数' in texts('33-invalid-episode'))
 check('cancel restores jump button',focus('34-jump-cancel-focus').get('text')=='跳转集数')
-for name in ['28-large-phone','30-updates-large','32-large-jump','33-invalid-episode']:
+for name in ['32-large-jump','33-invalid-episode']:
     b=list(map(int,re.findall(r'\d+',focus(name).get('bounds'))))
     check(name+': focused action visible at 720p / large font',0<=b[0]<b[2]<=1280 and 0<=b[1]<b[3]<=720)
 check('ranking still displays source rank',card('36-ranking-regression').startswith('第 1 名'))

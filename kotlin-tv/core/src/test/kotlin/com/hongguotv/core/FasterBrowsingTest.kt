@@ -52,18 +52,6 @@ class FasterBrowsingTest {
         assertNull(CatalogSnapshot.decode(tampered.toString(),1100))
         assertNull(CatalogSnapshot.decode(org.json.JSONObject(value).put("ranking",JSONObject().put("positions","bad")).toString(),1100))
     }
-    @Test fun oldBackupStillImportsAndNewQuickActionListsMergeWithinLimits() {
-        val base=BackupData(listOf(Series("1","收藏")),emptyList(),emptySet(),emptyList(),BackupSettings())
-        val old=JSONObject(LibraryBackup.encode(base)).apply { remove("later"); remove("hidden") }.toString()
-        assertTrue(LibraryBackup.decode(old).later.isEmpty())
-        val extra=base.copy(later=listOf(Series("2","稍后看")),hidden=setOf("3"))
-        val imported=LibraryBackup.decode(LibraryBackup.encode(extra))
-        assertEquals(extra,imported)
-        val merged=LibraryBackup.merge(base.copy(later=listOf(Series("4","本机"))),imported,false)
-        assertEquals(listOf("4","2"),merged.later.map { it.id }); assertEquals(setOf("3"),merged.hidden)
-        val invalid=JSONObject(LibraryBackup.encode(extra)).put("hidden",org.json.JSONArray(listOf("bad")))
-        assertThrows(IllegalArgumentException::class.java) { LibraryBackup.decode(invalid.toString()) }
-    }
     private fun videoServer(data: ByteArray,ranges: MutableList<String>): HttpServer {
         val server=HttpServer.create(InetSocketAddress("127.0.0.1",0),0)
         server.createContext("/video") { exchange ->

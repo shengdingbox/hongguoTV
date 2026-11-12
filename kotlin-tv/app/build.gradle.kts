@@ -9,7 +9,7 @@ android {
     compileSdk = 36
     defaultConfig {
         applicationId = "com.huluwa.nativeapp"
-        // 更新通道包默认 minSdk 26（旧客户端安装校验要求实际值与清单声明一致）；
+        // 默认包最低支持 Android 8；
         // Android 5-7 兼容包用 -PHONGGUOTV_MIN_SDK=21 出 android5 变体
         minSdk = findProperty("HONGGUOTV_MIN_SDK")?.toString()?.toInt() ?: 26
         targetSdk = 36
@@ -36,11 +36,9 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.viewpager2:viewpager2:1.1.0")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
-    implementation("com.google.zxing:core:3.5.3")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation(project(":core")) { exclude(group = "org.json") }
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
-    testImplementation("junit:junit:4.13.2")
 }

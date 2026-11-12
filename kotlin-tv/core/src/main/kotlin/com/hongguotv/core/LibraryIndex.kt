@@ -5,7 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Main-thread-owned library. JSON is parsed once, and getters never parse or sort. */
-class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = emptyMap()) {
+class LibraryIndex(data: LibraryData, updates: Map<String, FavoriteUpdate> = emptyMap()) {
     private var favoriteRows = data.favorites.distinctBy { it.id }.take(500)
     private var favoriteIds = favoriteRows.map { it.id }.toSet()
     private var laterRows = data.later.distinctBy { it.id }.take(100)
@@ -68,7 +68,7 @@ class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = empt
         return added
     }
     /** A paused player's identical checkpoint does not refresh its timestamp or trigger a write. */
-    fun save(progress: BackupProgress): Boolean {
+    fun save(progress: LibraryProgress): Boolean {
         val previous = progressById[progress.series.id]
         val next = progress.withWatchedEpisodes(previous?.watchedEpisodeIds.orEmpty())
         if (previous != null && previous.copy(updatedAt = next.updatedAt) == next) return false
@@ -103,7 +103,7 @@ class LibraryIndex(data: BackupData, updates: Map<String, FavoriteUpdate> = empt
         updateCount += (if (next.hasUpdate) 1 else 0) - (if (previous?.hasUpdate == true) 1 else 0)
         return true
     }
-    fun snapshot() = BackupData(favoriteRows, historyRows, watchedIds, searchRows, settings, laterRows, hiddenIds, groupById)
+    fun snapshot() = LibraryData(favoriteRows, historyRows, watchedIds, searchRows, settings, laterRows, hiddenIds, groupById)
 }
 
 /** Keeps the native-library-v1 disk keys and rich local metadata compatible with older APKs. */
@@ -119,16 +119,16 @@ object LibraryDisk {
             (0 until rows.length()).mapNotNull { i -> runCatching {
                 val o = rows.getJSONObject(i)
                 val seen = o.optJSONArray("watchedEpisodeIds") ?: JSONArray()
-                val watchedEpisodeIds = (0 until minOf(seen.length(), BackupProgress.MAX_WATCHED_EPISODES)).mapNotNull { index ->
+                val watchedEpisodeIds = (0 until minOf(seen.length(), LibraryProgress.MAX_WATCHED_EPISODES)).mapNotNull { index ->
                     (seen.opt(index) as? String)?.takeIf { it.matches(Regex("[0-9]{1,30}")) }
                 }.toSet()
-                BackupProgress(Series.fromJson(o.getJSONObject("series")), o.getString("episodeId"), o.getInt("episodeIndex"),
+                LibraryProgress(Series.fromJson(o.getJSONObject("series")), o.getString("episodeId"), o.getInt("episodeIndex"),
                     o.getLong("position"), o.getLong("duration"), o.optBoolean("completed"), o.getLong("updatedAt"), watchedEpisodeIds)
             }.getOrNull() }
         }
         val rawUpdates = runCatching { JSONObject(values["favoriteUpdates"] as? String ?: "{}") }.getOrDefault(JSONObject())
         val updates = rawUpdates.keys().asSequence().mapNotNull { id -> FavoriteUpdate.decode(rawUpdates.optJSONObject(id))?.let { id to it } }.toMap()
-        val settings = BackupSettings(PlaybackQuality.normalize((values["quality"] as? Number)?.toInt() ?: 1080),
+        val settings = LibrarySettings(PlaybackQuality.normalize((values["quality"] as? Number)?.toInt() ?: 1080),
             PlaybackSpeed.normalize((values["playbackSpeed"] as? Number)?.toFloat() ?: 1f), values["autoNext"] as? Boolean ?: true,
             ContentType.fromStored(values["contentType"] as? String), VideoFrameMode.fromStored(values["frameMode"] as? String), values["autoSeason"] as? Boolean ?: true,
             values["danmaku"] as? Boolean ?: true,
@@ -140,11 +140,11 @@ object LibraryDisk {
             values["episodeCache"] as? Boolean ?: true)
         val groupMap = runCatching { JSONObject(values["favoriteGroups"] as? String ?: "{}") }.getOrDefault(JSONObject())
             .let { o -> o.keys().asSequence().mapNotNull { k -> (o.opt(k) as? String)?.let { k to it } }.toMap() }
-        return LibraryIndex(BackupData(series("favorites"), history, ids("watched"),
+        return LibraryIndex(LibraryData(series("favorites"), history, ids("watched"),
             SearchHistory.decode(values["searches"] as? String ?: "[]"), settings, series("later"), ids("hidden"), groupMap), updates)
     }
     fun series(rows: List<Series>) = JSONArray(rows.map { it.toJson() }).toString()
-    fun history(rows: List<BackupProgress>) = JSONArray(rows.map { p ->
+    fun history(rows: List<LibraryProgress>) = JSONArray(rows.map { p ->
         JSONObject().put("series", p.series.toJson()).put("episodeId", p.episodeId).put("episodeIndex", p.episodeIndex)
             .put("position", p.position).put("duration", p.duration).put("completed", p.completed).put("updatedAt", p.updatedAt)
             .put("watchedEpisodeIds", JSONArray(p.watchedEpisodeIds.sorted()))

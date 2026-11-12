@@ -18,10 +18,9 @@ import android.widget.Toast
 /**
  * 崩溃日志弹窗：摘要列表挑一份，或直接看完整全文。
  * 视觉沿用 [TvDialog] 卡片与胶囊按钮；日志正文等宽小字 + 常显滚动条，
- * 遥控上下键翻正文（复用 TvDialog 的 TAG_BODY 通道，见 [showDetail]）。
+ * 实体遥控器上下键翻正文，见 [showDetail]。
  *
- * 「一键复制」把全部历史日志（不只当前这份）复制进剪贴板，
- * TV 上可粘进手机遥控输入页，手机也可通过遥控会话直接粘贴。
+ * 「一键复制」把全部历史日志（不只当前这份）复制进剪贴板。
  */
 object CrashDialog {
     private fun dp(activity: Activity,value: Int)=(value*activity.resources.displayMetrics.density).toInt()
@@ -78,9 +77,6 @@ object CrashDialog {
         val cap=(activity.resources.displayMetrics.heightPixels*0.65f).toInt()
         TvDialog.styleWindow(activity,dialog,capPx=cap) {
             close.requestFocus()
-            // 复用 TvDialog 的 TAG_BODY 通道让手机遥控上下键翻正文（实体遥控由下方
-            // OnKeyListener 处理）；常量是 private，字面量与 TvDialog 保持同步
-            scroll.tag="tvdialog:body"
         }
         close.setOnClickListener { dialog.dismiss() }
         dialog.show()

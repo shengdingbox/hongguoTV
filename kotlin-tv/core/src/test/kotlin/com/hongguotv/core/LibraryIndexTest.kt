@@ -6,9 +6,9 @@ import org.junit.Test
 class LibraryIndexTest {
     private fun series(id: Int) = Series("$id", "剧 $id", "https://example.com/$id.jpg", "完整本机简介", "全 80 集", "剧情")
     private fun progress(id: Int, position: Long = 100, updated: Long = id.toLong()) =
-        BackupProgress(series(id), "${id + 1000}", 2, position, 60_000, false, updated)
-    private fun data() = BackupData((1..500).map(::series), (1..200).map { progress(it) }, setOf("2"),
-        listOf(RecentSearch("测试", ContentType.SHORT)), BackupSettings(720, 1.5f, false, ContentType.SHORT, VideoFrameMode.FIT),
+        LibraryProgress(series(id), "${id + 1000}", 2, position, 60_000, false, updated)
+    private fun data() = LibraryData((1..500).map(::series), (1..200).map { progress(it) }, setOf("2"),
+        listOf(RecentSearch("测试", ContentType.SHORT)), LibrarySettings(720, 1.5f, false, ContentType.SHORT, VideoFrameMode.FIT),
         listOf(series(3)), setOf("4"))
 
     @Test fun `legacy keys round trip without dropping metadata or settings`() {
@@ -61,7 +61,7 @@ class LibraryIndexTest {
         assertEquals(498, state.updatedFavorites())
     }
 
-    @Test fun `captured snapshots survive later mutations and keep backup merge semantics`() {
+    @Test fun `captured snapshots survive later mutations`() {
         val state = LibraryIndex(data(), mapOf("1" to FavoriteUpdate(81, 80, 10)))
         val saved = state.snapshot()
         val updates = state.updates()
@@ -76,9 +76,6 @@ class LibraryIndexTest {
         assertEquals(1, updates.getValue("1").added)
         assertEquals(5, state.favoriteUpdate("1")!!.added)
         assertFalse(state.watched("2"))
-        val merged = LibraryBackup.merge(state.snapshot(), saved, false)
-        assertEquals(200, merged.history.size)
-        assertEquals(state.settings, merged.settings)
     }
 
     @Test fun `malformed rows do not discard valid records`() {

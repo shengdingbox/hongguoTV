@@ -11,7 +11,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 // The backup and native library use the same immutable progress shape.
-typealias WatchProgress = BackupProgress
+typealias WatchProgress = LibraryProgress
 
 /** Memory-only UI access; disk reads, JSON serialization and commits run on workers. */
 class Library(context: Context) {
@@ -406,23 +406,23 @@ class Library(context: Context) {
         set(value) { prefs.edit().putString("theme", value).apply() }
     /** 启动方向偏好：默认 auto 跟随系统，可选 landscape 强制横屏 / portrait 强制竖屏。
      *  落盘用大写枚举名（AUTO / LANDSCAPE / PORTRAIT），与 [OrientationMode.name] 一致。
-     *  本机偏好，不进备份（同一份备份可能恢复到方向习惯不同的设备上）。 */
+     *  本机方向偏好。 */
     var orientationMode: String
         get() = OrientationMode.of(prefs.getString("orientationMode", null)).name
         set(value) { prefs.edit().putString("orientationMode", OrientationMode.of(value).name).apply() }
-    /** 收藏页排序：update 最近更新 / watch 最近观看 / name 名称。本机视图偏好，不进备份。 */
+    /** 收藏页排序：update 最近更新 / watch 最近观看 / name 名称。本机视图偏好。 */
     var favoriteSort: String
         get() = prefs.getString("favoriteSort", null)?.takeIf { it in listOf("update", "watch", "name") } ?: "update"
         set(value) { prefs.edit().putString("favoriteSort", value).apply() }
-    /** 排行榜「上新」视图上次用的时间窗：记住偏好，下次进区不用重新选。本机偏好，不进备份。 */
+    /** 排行榜「上新」视图上次用的时间窗：记住偏好，下次进区不用重新选。本机偏好。 */
     var newReleaseWindow: String
         get() = prefs.getString("newReleaseWindow", null).orEmpty()
         set(value) { prefs.edit().putString("newReleaseWindow", value).apply() }
-    /** 手机新剧日历上次选中的日期；过期日期由页面回退到今天。本机偏好，不进备份。 */
+    /** 手机新剧日历上次选中的日期；过期日期由页面回退到今天。本机偏好。 */
     var newReleaseDay: String
         get() = prefs.getString("newReleaseDay", null).orEmpty()
         set(value) { prefs.edit().putString("newReleaseDay", value).apply() }
-    // Per-series intro/outro skips stay on this device, outside the backup, like the theme.
+    // Per-series intro/outro skips stay on this device, like the theme.
     private var marksCache: LinkedHashMap<String, SkipMark>? = null
     private fun marks(): LinkedHashMap<String, SkipMark> =
         marksCache ?: SkipMarks.decode(prefs.getString("skipMarks", null)).also { marksCache = it }
@@ -431,20 +431,6 @@ class Library(context: Context) {
         val next = SkipMarks.set(marks(), id, mark)
         marksCache = next
         prefs.edit().putString("skipMarks", SkipMarks.encode(next)).apply()
-    }
-    fun snapshot() = state().snapshot()
-
-    fun restore(incoming: BackupData, restoreSettings: Boolean) {
-        val merged = LibraryBackup.merge(snapshot(), incoming, restoreSettings)
-        index = LibraryIndex(merged, state().updates())
-        persist("favorites", "later", "progress", "watched", "hidden", "searches", "favoriteUpdates", "favoriteGroups")
-        writes.submit(mapOf("quality" to { merged.settings.quality }, "playbackSpeed" to { merged.settings.speed },
-            "autoNext" to { merged.settings.autoNext }, "contentType" to { merged.settings.type.storedValue }, "frameMode" to { merged.settings.frame.name },
-            "autoSeason" to { merged.settings.autoSeason }, "danmaku" to { merged.settings.danmaku },
-            "danmakuOpacity" to { merged.settings.danmakuOpacity }, "danmakuFont" to { merged.settings.danmakuFont },
-            "danmakuSpeed" to { merged.settings.danmakuSpeed }, "danmakuRows" to { merged.settings.danmakuRows }, "showClock" to { merged.settings.showClock },
-            "episodeCache" to { merged.settings.episodeCache }))
-        flush()
     }
     /** Requests prompt background commit, without lifecycle-thread disk waits. */
     fun flush() {

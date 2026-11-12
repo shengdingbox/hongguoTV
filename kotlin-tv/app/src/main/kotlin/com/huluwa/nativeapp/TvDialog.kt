@@ -4,19 +4,14 @@ package com.huluwa.nativeapp
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.Dialog
-import android.graphics.Bitmap
-import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.qrcode.QRCodeWriter
 
 /**
  * 统一弹窗视觉层：深色玻璃卡片底、大圆角、细描边、胶囊按钮、 accent 焦点高亮。
@@ -27,10 +22,7 @@ object TvDialog {
 
     private fun dp(activity: Activity, value: Int) = (value * activity.resources.displayMetrics.density).toInt()
 
-    /** 弹窗正文滚动区的标记：遥控上下键靠它找到该滚哪一块（见 [dispatchRemoteKey]）。 */
-    private const val TAG_BODY = "tvdialog:body"
-
-    /** 当前存活的弹窗，后进的在最上层。遥控要作用在它上面，见 [topmostDialog]。
+    /** 当前存活的弹窗，后进的在最上层，见 [topmostDialog]。
      *  用 Dialog 而非 AlertDialog 登记：选集面板（EpisodePanel）和 NAS 播放器是独立 Dialog 窗口，同样要能被遥控。 */
     private val live = ArrayList<Dialog>()
 
@@ -46,44 +38,11 @@ object TvDialog {
      * 屏幕上最上层的弹窗，没有就返回 null。
      *
      * Activity.currentFocus 只认 Activity 自己的窗口，弹窗一旦盖上来它就是 null，
-     * 遥控那套「手动 focusSearch + performClick」会全部落空——真机上的表现正是
-     * 「弹窗弹出来，遥控器就点不动了」。所以遥控命令要先问这里。
+     * 播放器隐藏控制条前通过这里判断是否仍有弹窗。
      */
     fun topmostDialog(): Dialog? {
         live.removeAll { !it.isShowing }
         return live.lastOrNull()
-    }
-
-    /**
-     * 把遥控按键作用到弹窗上。
-     *
-     * 不用 dispatchKeyEvent 注入：弹窗是独立窗口，注入的按键会先经过 Dialog 的
-     * callback，不确定能落到焦点搜索上，实测按下去毫无反应。这里直接对弹窗自己的
-     * 视图树做和主界面一样的「焦点搜索 + 点击」，行为确定。
-     */
-    fun dispatchRemoteKey(dialog: Dialog, key: String): Boolean {
-        val decor = dialog.window?.decorView ?: return false
-        if(key == "back") { dialog.dismiss(); return true }
-        val focus = decor.findFocus()
-        if(key == "center") return focus?.performClick() == true
-        val direction = when(key) {
-            "up" -> View.FOCUS_UP
-            "down" -> View.FOCUS_DOWN
-            "left" -> View.FOCUS_LEFT
-            "right" -> View.FOCUS_RIGHT
-            else -> return false
-        }
-        // 正文超高的弹窗：上下键翻正文，翻到头再放焦点走。
-        // 实体遥控那条路在 bindScrollKeys，这里管的是手机遥控。
-        val body = decor.findViewWithTag<android.widget.ScrollView>(TAG_BODY)
-        if(body != null && (direction == View.FOCUS_UP || direction == View.FOCUS_DOWN)
-            && (body.canScrollVertically(1) || body.canScrollVertically(-1))) {
-            val page = (body.height * 2 / 3).coerceAtLeast(1)
-            body.scrollBy(0, if(direction == View.FOCUS_DOWN) page else -page)
-            return true
-        }
-        val next = (focus ?: decor).focusSearch(direction) ?: decor.focusSearch(direction)
-        return next != null && next.requestFocus()
     }
 
     /** 弹窗内容卡片：圆角 + 细描边 + 主题 surface 底色。 */
@@ -131,7 +90,6 @@ object TvDialog {
             isVerticalScrollBarEnabled = true
             isScrollbarFadingEnabled = false
             scrollBarStyle = View.SCROLLBARS_INSIDE_INSET
-            tag = TAG_BODY
             addView(label, ViewGroup.LayoutParams(-1, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
     }
@@ -139,7 +97,7 @@ object TvDialog {
     /**
      * 让遥控器的上下键直接翻正文，而不是先要求焦点落到滚动区上。
      *
-     * 实体遥控器的按键走 Dialog.dispatchKeyEvent，压根不经过 [dispatchRemoteKey]，
+     * 实体遥控器的按键走 Dialog.dispatchKeyEvent，
      * 而正文区里没有可聚焦子项，ScrollView 自己永远等不到焦点——遥控按下去就是没反应。
      * 这里在弹窗层拦截：焦点停在「知道了」上也能滚，代价是这条弹窗里上下键不再用于移动焦点
      * （只有一个按钮，本来也没别的去处）。内容不超高时不拦截。
@@ -186,83 +144,6 @@ object TvDialog {
                 setTypeface(null, if(focused) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
             }
             setOnClickListener { onClick() }
-        }
-    }
-
-    /**
-     * 二维码弹窗的标准行：左侧二维码（默认 132dp 见方，比早先的 185dp 收小近三成，
-     * 避免二维码压过文案成为视觉主体），右侧文案列**顶边与二维码顶边齐平**、高度随文案自适应。
-     * 文案列用 wrap 而不是早先的固定 185dp 高：固定高 + 垂直居中时，多行文案会把二维码压得很小、
-     * 少行文案又显得空；地址行改成整段换行后（见 [urlLabel]），列高天然接近 132dp，两端对齐更自然。
-     * 文案列宽度约 200dp，说明建议 3-4 行、地址行交给 [urlLabel] 自动折行，避免整块高过二维码太多。
-     */
-    fun qrRow(activity: Activity, qr: View, vararg texts: TextView, qrDp: Int = 132): LinearLayout {
-        val row = LinearLayout(activity).apply { gravity = Gravity.TOP }
-        row.addView(qr, LinearLayout.LayoutParams(dp(activity, qrDp), dp(activity, qrDp)))
-        val col = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.TOP
-            setPadding(dp(activity, 12), dp(activity, 2), 0, 0)
-        }
-        texts.forEachIndexed { i, t ->
-            // 左右 padding 一并清零：label() 自带 8dp 左内边距、urlLabel 是 0，
-            // 保留的话地址会比上面的说明整体左移 8dp（看上去「地址没和文案左对齐」）。
-            // 内缩统一由文案列自己的左 padding 给，所有行从同一 x 起排。
-            t.setPadding(0, 0, 0, 0)
-            t.gravity = Gravity.START
-            col.addView(t, LinearLayout.LayoutParams(-1, -2).apply { if(i > 0) topMargin = dp(activity, 6) })
-        }
-        row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
-        return row
-    }
-
-    /** 二维码旁的地址行：muted 小字，整段完整显示、按字符强制折行（不省略）。
-     *  扫码失败时用户要靠这行手输地址，截断就失去意义；BREAK_STRATEGY_SIMPLE 让超长无空白串也能任意断行。
-     *  常量取 Layout 里的同名值（=0）：LineBreaker 的版本要 API 29，这里全版本都要生效。 */
-    @Suppress("WrongConstant")
-    fun urlLabel(activity: Activity, url: String): TextView = TextView(activity).apply {
-        text = url
-        textSize = 10f
-        setTextColor(TvStyle.muted)
-        // setBreakStrategy / setHyphenationFrequency 要 API 23，低版本本身就没有这两项排版策略
-        if (android.os.Build.VERSION.SDK_INT >= 23) {
-            breakStrategy = android.text.Layout.BREAK_STRATEGY_SIMPLE
-            hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
-        }
-    }
-
-    /**
-     * 生成二维码视图，白框（静区）固定只留码体宽度的 6%。
-     *
-     * ZXing 默认静区 4 个模块，再叠加「按整倍数缩放后居中补齐」的留白，360px 里每边约 48px 全是白，
-     * 缩到 132dp 显示就是一圈很厚的白框，二维码本体反而被压小。这里先按默认参数编码，
-     * 裁掉自带静区，再按固定 6% 补白重建像素图：白框厚度与二维码版本号、缩放取整都无关，
-     * 1:1 像素映射不糊边，扫码区稳定占满 88%（6% 约 1.7 个模块，深色卡片底上仍能正常识别）。
-     */
-    fun qrView(activity: Activity, url: String, description: String = "二维码"): ImageView {
-        val size = 420
-        val bits = QRCodeWriter().encode(url, BarcodeFormat.QR_CODE, size, size)
-        var minX = size; var minY = size; var maxX = -1; var maxY = -1
-        for(y in 0 until size) for(x in 0 until size) if(bits[x, y]) {
-            if(x < minX) minX = x
-            if(x > maxX) maxX = x
-            if(y < minY) minY = y
-            if(y > maxY) maxY = y
-        }
-        val codeW = maxX - minX + 1
-        val codeH = maxY - minY + 1
-        val side = maxOf(codeW, codeH)
-        val pad = (side * 0.06f).toInt().coerceAtLeast(2)
-        val out = side + pad * 2
-        val pixels = IntArray(out * out) { i ->
-            val dx = i % out - pad
-            val dy = i / out - pad
-            if(dx in 0 until codeW && dy in 0 until codeH && bits[minX + dx, minY + dy]) Color.BLACK else Color.WHITE
-        }
-        return ImageView(activity).apply {
-            setImageBitmap(Bitmap.createBitmap(pixels, out, out, Bitmap.Config.ARGB_8888))
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            contentDescription = description
         }
     }
 

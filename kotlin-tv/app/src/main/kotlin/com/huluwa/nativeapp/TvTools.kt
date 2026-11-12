@@ -3,66 +3,27 @@ package com.huluwa.nativeapp
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.content.Context
 import android.graphics.drawable.GradientDrawable
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.os.Build
-import android.os.Handler
-import android.os.Looper
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.widget.*
 import com.hongguotv.core.EpisodeTarget
-import com.hongguotv.core.PhoneForm
-import com.hongguotv.core.PhoneInputServer
-import com.hongguotv.core.QuickTransferServer
-import com.hongguotv.core.TransferKind
-import com.hongguotv.core.TransferRules
-import com.hongguotv.core.LibraryTransferServer
-import com.hongguotv.core.BackdropTransferServer
-import com.hongguotv.core.BackupData
-import java.io.File
-import java.net.Inet4Address
-import java.util.concurrent.Executors
 
 /** Native modal controls kept separate from catalog/player navigation. */
 class TvTools(private val activity: Activity) {
-    private val main=Handler(Looper.getMainLooper())
-    private val worker=Executors.newSingleThreadExecutor()
     private var dialog: AlertDialog?=null
     val showing: Boolean get()=dialog?.isShowing==true
-    private var phone: java.io.Closeable?=null
     private fun dp(value: Int)=(value*activity.resources.displayMetrics.density).toInt()
-    /** 当前可用的局域网 IPv4：只认 Wi-Fi / 有线，手机必须和电视在同一网段才能扫码。 */
-    fun lanAddress(): String? {
-        val connectivity=activity.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return null
-        if(Build.VERSION.SDK_INT>=23) {
-            val network=connectivity.activeNetwork ?: return null
-            val capabilities=connectivity.getNetworkCapabilities(network) ?: return null
-            if(!(capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))) return null
-            return connectivity.getLinkProperties(network)?.linkAddresses?.map { it.address }?.firstOrNull { it is Inet4Address && it.isSiteLocalAddress }?.hostAddress
-        }
-        // API 21/22 没有 Network API，改为直接枚举网卡上的局域网地址
-        return runCatching {
-            java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).asSequence()
-                .flatMap { it.inetAddresses.asSequence() }
-                .firstOrNull { it is Inet4Address && !it.isLoopbackAddress && it.isSiteLocalAddress }?.hostAddress
-        }.getOrNull()
-    }
-    private fun freeBytes()=runCatching { android.os.StatFs(activity.filesDir.absolutePath).availableBytes }.getOrDefault(0L)
-    /** 快传落盘目录：都在 filesDir 下，卸载应用时随应用数据一起清除。 */
-    private fun quickDirectory(kind: TransferKind)=File(activity.filesDir,TransferRules.directoryName(kind))
     private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(TvStyle.text); setPadding(dp(8),dp(4),dp(8),dp(4)) }
     private fun column()=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(16),dp(4),dp(16),dp(8)) }
     private fun open(next: AlertDialog,anchor: View?,onDismiss: (()->Unit)?=null) {
         dialog?.dismiss(); dialog=next
-        next.setOnDismissListener { if(dialog===next) { phone?.close(); phone=null; dialog=null }; if(anchor?.isAttachedToWindow==true) anchor.requestFocus(); onDismiss?.invoke() }
+        next.setOnDismissListener { if(dialog===next) { dialog=null }; if(anchor?.isAttachedToWindow==true) anchor.requestFocus(); onDismiss?.invoke() }
         next.show()
     }
-    fun close() { dialog?.dismiss(); phone?.close(); phone=null }
-    fun destroy() { close(); worker.shutdownNow() }
+    fun close() { dialog?.dismiss() }
+    fun destroy() { close() }
     fun info(title: String,message: String,anchor: View?) = open(TvDialog.info(activity,title,message),anchor)
     fun confirm(title: String,message: String,anchor: View?,action: ()->Unit) {
         open(TvDialog.confirm(activity,title,message,action),anchor)
@@ -141,208 +102,4 @@ class TvTools(private val activity: Activity) {
         locate.nextFocusUpId=buttons[10].id; cancel.nextFocusUpId=buttons[9].id
         buttons.first().requestFocus()
     }
-    private fun qr(url: String)=TvDialog.qrView(activity,url)
-    /** 搜索剧名场景的手机输入（文案固定为剧名）。 */
-    fun phoneInput(anchor: View?,submit: (String)->Unit)=phoneForm(anchor,PhoneForm.search()) { values->submit(values["query"].orEmpty()) }
-    /** 通用手机填写页：表单内容由调用方定义，填写完成后回传全部字段值。 */
-    fun phoneForm(anchor: View?,form: PhoneForm,onSubmit: (Map<String,String>)->Unit) {
-        val address=lanAddress()
-        if(address==null) { info("手机填写","请让电视和手机连接同一局域网（Wi-Fi 或有线网络）后重试。",anchor); return }
-        val content=column(); content.addView(TvDialog.title(activity,form.heading))
-        val status=label("正在生成二维码…"); content.addView(status)
-        val dialog=AlertDialog.Builder(activity).setView(TvDialog.card(activity,content)).create()
-        // 二维码 + weight 文字列：自然测宽量不出文字列（0 宽消失），必须固定宽度
-        TvDialog.styleWindow(activity,dialog,widthDp=440)
-        open(dialog,anchor)
-        worker.execute {
-            try {
-                val session=PhoneInputServer(address,form,{ values -> main.post { if(this@TvTools.dialog===dialog) { dialog.dismiss(); onSubmit(values) } } },{ main.post { if(this@TvTools.dialog===dialog) { content.removeAllViews(); content.addView(label("二维码已过期，请关闭后重新打开。")) } } })
-                main.post {
-                    if(this@TvTools.dialog!==dialog) { session.close(); return@post }
-                    phone=session; content.removeAllViews()
-                    content.addView(TvDialog.qrRow(activity, qr(session.url),
-                        label("手机扫码打开，按提示填写，提交后发送到电视。\n仅限同一局域网，关闭即失效。",16f),
-                        TvDialog.urlLabel(activity, session.url)))
-                }
-            } catch(_: Exception) { main.post { if(this@TvTools.dialog===dialog) status.text="无法开启手机填写，请检查网络后重试。" } }
-        }
-    }
-    /** 收藏与观看记录的手机扫码备份及恢复。 */
-    fun libraryTransfer(backup: String,anchor: View?,restore: (BackupData,Boolean)->Unit) {
-        val address=lanAddress()
-        if(address==null) { info("备份与恢复","请让电视和手机连接同一局域网后重试。",anchor); return }
-        val content=column(); content.addView(TvDialog.title(activity,"手机备份与恢复"))
-        val status=label("正在生成二维码…"); content.addView(status)
-        val dialog=AlertDialog.Builder(activity).setView(TvDialog.card(activity,content)).create()
-        // 二维码 + weight 文字列：必须固定宽度（同 phoneForm）
-        TvDialog.styleWindow(activity,dialog,widthDp=440)
-        open(dialog,anchor)
-        worker.execute {
-            try {
-                val session=LibraryTransferServer(address,backup,{ data -> main.post {
-                    if(this@TvTools.dialog!==dialog) return@post
-                    dialog.dismiss()
-                    val preview=column()
-                    preview.addView(TvDialog.title(activity,"确认恢复本机记录"))
-                    preview.addView(label("备份含 ${data.favorites.size} 部收藏、${data.history.size} 条观看记录、${data.searches.size} 条搜索、${data.later.size} 部稍后看、${data.hidden.size} 部已隐藏推荐。\n\n收藏合并，观看位置以较新的记录为准；已有收藏优先保留（最多 500 部），历史保留最近 200 条。",16f))
-                    val settings=CheckBox(activity).apply { text="同时恢复播放设置和内容分类"; isChecked=false; setTextColor(TvStyle.text) }; preview.addView(settings)
-                    val confirmDialog=AlertDialog.Builder(activity).setView(TvDialog.card(activity,preview)).create()
-                    TvDialog.styleWindow(activity,confirmDialog)
-                    val actions=LinearLayout(activity).apply {
-                        orientation=LinearLayout.HORIZONTAL
-                        gravity=Gravity.END
-                        setPadding(0,dp(14),0,0)
-                    }
-                    val cancel=TvDialog.capsuleButton(activity,"取消") { confirmDialog.dismiss() }
-                    val ok=TvDialog.capsuleButton(activity,"合并恢复") { confirmDialog.dismiss(); restore(data,settings.isChecked) }
-                    actions.addView(cancel,LinearLayout.LayoutParams(-2,-2).apply { rightMargin=dp(12) })
-                    actions.addView(ok,LinearLayout.LayoutParams(-2,-2))
-                    preview.addView(actions)
-                    open(confirmDialog,anchor); cancel.requestFocus()
-                } },{ main.post { if(this@TvTools.dialog===dialog) { content.removeAllViews(); content.addView(label("二维码已过期，请关闭后重新打开。")) } } })
-                main.post {
-                    if(this@TvTools.dialog!==dialog) { session.close(); return@post }
-                    phone=session; content.removeAllViews()
-                    content.addView(TvDialog.qrRow(activity, qr(session.url),
-                        label("扫码用浏览器下载备份，或选择备份文件恢复。\n仅限同一局域网，恢复需在电视确认。",16f),
-                        TvDialog.urlLabel(activity, session.url)))
-                }
-            } catch(_: Exception) { main.post { if(this@TvTools.dialog===dialog) status.text="无法开启备份传输，请检查网络后重试。" } }
-        }
-    }
-    fun backdropTransfer(anchor: View?,onImage: (ByteArray,String)->Unit) {
-        val address=lanAddress()
-        if(address==null) { info("自定义背景","请让电视和手机连接同一无线网后重试。",anchor); return }
-        val content=column(); content.addView(TvDialog.title(activity,"自定义背景"))
-        val status=label("正在生成二维码…"); content.addView(status)
-        val dialog=AlertDialog.Builder(activity).setView(TvDialog.card(activity,content)).create()
-        // 二维码 + weight 文字列：必须固定宽度（同 phoneForm）
-        TvDialog.styleWindow(activity,dialog,widthDp=440)
-        open(dialog,anchor)
-        worker.execute {
-            try {
-                val session=BackdropTransferServer(address,{ bytes,ext -> main.post { if(this@TvTools.dialog===dialog) dialog.dismiss(); onImage(bytes,ext) } },
-                    { main.post { if(this@TvTools.dialog===dialog) { content.removeAllViews(); content.addView(label("二维码已过期，请关闭后重新打开。")) } } })
-                main.post {
-                    if(this@TvTools.dialog!==dialog) { session.close(); return@post }
-                    phone=session; content.removeAllViews()
-                    content.addView(TvDialog.qrRow(activity, qr(session.url),
-                        label("扫码或打开下方地址，上传图片设为电视背景。\n手机与电视需同一无线网。",16f),
-                        TvDialog.urlLabel(activity, session.url)))
-                }
-            } catch(_: Exception) { main.post { if(this@TvTools.dialog===dialog) status.text="无法开启图片上传，请检查网络后重试。" } }
-        }
-    }
-    /** 手机快传：扫码直传文件。APK 收到后交给调用方引导安装，其余文件落私有目录。 */
-    fun quickTransfer(anchor: View?,onReceived: (File,TransferKind)->Unit) {
-        val handheld = PhoneDialog.shouldUse(activity)
-        val accent = if (handheld) PortraitStyle.navigationSelected else TvStyle.accent
-        val muted = if (handheld) PortraitStyle.muted else TvStyle.muted
-        fun transferLabel(value: String, size: Float = 17f) = if (handheld) {
-            PhoneUi.text(activity, value, size, PortraitStyle.text).apply {
-                setLineSpacing(0f, 1.2f)
-                setPadding(0, dp(4), 0, dp(4))
-            }
-        } else label(value, size)
-        val address=lanAddress()
-        if(address==null) { info("手机快传",if (handheld) "请连接 Wi-Fi 后重试，并让发送文件的设备处于同一局域网。" else "请让电视和手机连接同一局域网（Wi-Fi 或有线网络）后重试。",anchor); return }
-        val content=if (handheld) PhoneUi.column(activity) else column().apply { addView(TvDialog.title(activity,"手机快传")) }
-        val status=transferLabel("正在生成二维码…").apply { isFocusable=true }; content.addView(status)
-        val dialog=if (handheld) PhoneDialog.sheet(activity,"手机快传","从同一局域网内的设备发送 APK、视频与图片",content)
-            else AlertDialog.Builder(activity).setView(TvDialog.card(activity,content)).create()
-        // 电视二维码横排必须固定宽度；手机使用 sheet 里的纵向布局。
-        if (!handheld) TvDialog.styleWindow(activity,dialog,widthDp=440)
-        var views: QuickViews?=null
-        var receivedFiles=0
-        var session: QuickTransferServer?=null
-        var countdown: TextView?=null
-        val sessionStart=java.util.concurrent.atomic.AtomicLong(0)
-        val TTL_MS=600_000L
-        val spaceLabel={ "${if (handheld) "本机" else "电视"}可用 ${TransferRules.humanBytes(freeBytes())}  ·  单个文件不超过 ${TransferRules.humanBytes(TransferRules.MAX_BYTES)}" }
-        val countdownTick=object: Runnable {
-            override fun run() {
-                val cd=countdown ?: return
-                if(this@TvTools.dialog!==dialog) return
-                val elapsed=(System.nanoTime()-sessionStart.get())/1_000_000L
-                val remain=(TTL_MS-elapsed).coerceAtLeast(0)
-                val mm=remain/60_000; val ss=(remain%60_000)/1000
-                cd.text=if(remain>0) "二维码有效期 · 剩余 %02d:%02d".format(mm,ss) else "二维码已过期，请刷新"
-                cd.setTextColor(if(remain>0) accent else muted)
-                if(remain>0) main.postDelayed(this,1000L)
-            }
-        }
-        open(dialog,anchor) { main.removeCallbacks(countdownTick) }
-        if (!handheld) dialog.window?.decorView?.post { status.requestFocus() }
-        fun startSession() {
-            status.text="正在生成二维码…"
-            worker.execute {
-                try {
-                    val s=QuickTransferServer(address,{ kind -> quickDirectory(kind) },{ freeBytes() },
-                        { name,received,total,index,count -> main.post {
-                            if(this@TvTools.dialog!==dialog) return@post
-                            val current=views ?: return@post
-                            current.name.text="$name  ·  第 $index/$count 个"
-                            current.bar.progress=((received*100)/total.coerceAtLeast(1)).toInt()
-                            current.detail.text="${TransferRules.humanBytes(received)} / ${TransferRules.humanBytes(total)}"
-                        } },
-                        { file,kind -> main.post {
-                            if(this@TvTools.dialog===dialog) {
-                                receivedFiles++
-                                views?.let { current->
-                                    current.received.text="本次已接收 $receivedFiles 个文件"
-                                    current.name.text="${file.name} 已保存到${if (handheld) "本机" else "电视"}"
-                                    current.bar.progress=100
-                                    current.space.text=spaceLabel()
-                                }
-                            }
-                            onReceived(file,kind)
-                        } },
-                        { main.post { if(this@TvTools.dialog===dialog) { countdown?.text="二维码已过期，请刷新"; countdown?.setTextColor(muted) } } })
-                    main.post {
-                        if(this@TvTools.dialog!==dialog) { s.close(); return@post }
-                        session?.close(); session=s; phone=s; sessionStart.set(System.nanoTime())
-                        content.removeAllViews()
-                        if (handheld) {
-                            content.addView(qr(s.url), PhoneUi.lp(dp(184), dp(184)).apply {
-                                gravity = Gravity.CENTER_HORIZONTAL
-                                bottomMargin = dp(12)
-                            })
-                            content.addView(transferLabel("用其他设备扫码，选择文件发送到本机。APK 收到后可安装，视频和图片保存在本机。", 15f))
-                            content.addView(transferLabel(s.url, 12f).apply {
-                                setTextColor(muted)
-                                setTextIsSelectable(true)
-                            })
-                        } else content.addView(TvDialog.qrRow(activity, qr(s.url),
-                            label("手机扫码打开，选择文件发送到电视。\nAPK 会提示安装，视频图片存入电视。",16f),
-                            TvDialog.urlLabel(activity, s.url)))
-                        countdown=transferLabel("二维码有效期 · 剩余 10:00",13f).apply { setTextColor(accent); setPadding(0,dp(6),0,dp(2)) }; content.addView(countdown)
-                        val space=transferLabel(spaceLabel(),13f).apply { setTextColor(muted) }; content.addView(space)
-                        val name=transferLabel("等待手机发送…",15f); content.addView(name)
-                        val bar=ProgressBar(activity,null,android.R.attr.progressBarStyleHorizontal).apply {
-                            max=100; progress=0
-                            progressTintList=android.content.res.ColorStateList.valueOf(accent)
-                            progressBackgroundTintList=android.content.res.ColorStateList.valueOf(if (handheld) PortraitStyle.outline else TvStyle.outline)
-                        }
-                        content.addView(bar,LinearLayout.LayoutParams(-1,dp(6)))
-                        val detail=transferLabel("",13f).apply { setTextColor(muted) }; content.addView(detail)
-                        val received=transferLabel("本次已接收 0 个文件",13f).apply { setTextColor(muted) }; content.addView(received)
-                        val actions=LinearLayout(activity).apply { orientation=if (handheld) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL; gravity=Gravity.END; setPadding(0,dp(12),0,0) }
-                        val refresh=if (handheld) PhoneDialog.button(activity,"刷新二维码") { startSession() }
-                            else TvDialog.capsuleButton(activity,"刷新二维码") { startSession() }
-                        val close=if (handheld) PhoneDialog.button(activity,"完成",primary=true) { dialog.dismiss() }
-                            else TvDialog.capsuleButton(activity,"完成") { dialog.dismiss() }
-                        refresh.nextFocusRightId=close.id; close.nextFocusLeftId=refresh.id
-                        actions.addView(refresh,LinearLayout.LayoutParams(if (handheld) -1 else -2,-2).apply { if (handheld) bottomMargin=dp(10) else rightMargin=dp(8) })
-                        actions.addView(close,LinearLayout.LayoutParams(if (handheld) -1 else -2,-2))
-                        content.addView(actions)
-                        views=QuickViews(name,bar,detail,received,space)
-                        main.removeCallbacks(countdownTick); main.post(countdownTick)
-                        if (!handheld) dialog.window?.decorView?.post { close.requestFocus() }
-                    }
-                } catch(_: Exception) { main.post { if(this@TvTools.dialog===dialog) status.text="无法开启手机快传，请检查网络后重试。" } }
-            }
-        }
-        startSession()
-    }
-    private class QuickViews(val name: TextView,val bar: ProgressBar,val detail: TextView,val received: TextView,val space: TextView)
 }

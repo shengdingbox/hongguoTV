@@ -5,7 +5,7 @@ import android.content.Context
 
 /**
  * 电视端本地播放增强设置：弹幕屏蔽词、按剧弹幕记忆、遥控器按键与不兼容集跳过。
- * 只保存在本机，不进入备份，换机后重新设置即可。
+ * 只保存在本机，换机后重新设置即可。
  */
 class PlaybackExtras(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

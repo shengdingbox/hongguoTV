@@ -46,7 +46,6 @@ openhongguo 的 `SignedHotSearchPairs` / `ParseHotSearch`、`ShortRank` / `Parse
 
 其他依赖：
 
-- ZXing core（本机生成手机输入与更新二维码）：https://github.com/zxing/zxing — Apache-2.0
 - Kotlin 标准库：https://github.com/JetBrains/kotlin — Apache-2.0
 - AndroidX Media3：https://github.com/androidx/media — Apache-2.0
 - OkHttp / Okio：https://github.com/square/okhttp / https://github.com/square/okio — Apache-2.0

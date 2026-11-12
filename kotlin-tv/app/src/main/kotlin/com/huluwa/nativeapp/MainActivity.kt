@@ -18,7 +18,6 @@ import android.view.*
 import android.view.inputmethod.InputMethodManager
 import android.content.Context
 import android.content.Intent
-import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -102,25 +101,11 @@ class MainActivity: Activity() {
     private var exitDialog: AlertDialog?=null
     private var phoneExitArtwork: ArtworkLoader?=null
     private var killOnDestroy=false
-    /** 手机遥控会话。独立于 TvTools 持有：那边每次打开新弹窗都会 dismiss 上一个。 */
-    private var remote: PhoneRemoteSession?=null
-    private var remoteHolding=false
     /** 播放器自己是否要求常亮。显式持有位，不靠 screen/requestedAutoplay 反推。 */
     private var playerScreenOn=false
-    private var remotePublishedAt=0L
-    /** 正在兑现缓存意图，防止 remotePublish 递归消费。 */
-    private var remoteApplying=false
-    private var remotePendingSeek: Long?=null
-    /** 云端记录懒拉取只踢一次：登录后云端历史若还没拉过，手机第一次要 /resume 时触发，避免反复刷新打扰电视页面。 */
-    private var remoteCloudKicked=false
-    /**
-     * 列表页顶栏那个「手机遥控」入口。会话状态一变就要跟着改文案，
-     * 但每次 `showCatalog()` 都会重建视图，所以这里只在重建时重新绑定。
-     */
-    private var remoteEntryView: TextView?=null
     /**
      * 顶栏空间吃紧（特大缩放 + 高密度屏，有效宽度可能只剩 700dp 出头）：
-     * 品牌去掉版本号、工具与遥控入口改用短文案，否则「设置」会被挤出屏幕外、
+     * 品牌去掉版本号、工具入口改用短文案，否则「设置」会被挤出屏幕外、
      * 方向键也走不过去（模拟器 320dpi / 特大档实测）。由 showCatalog 每次重建时赋值。
      */
     private var navTight=false
@@ -225,7 +210,6 @@ class MainActivity: Activity() {
     private var accountButton: TextView?=null
     private lateinit var tvTools: TvTools
     private lateinit var extras: PlaybackExtras
-    private lateinit var updater: AppUpdater
     private lateinit var mediaSession: TvMediaSession
     private val sleepTimer=SleepTimer { android.os.SystemClock.elapsedRealtime() }
     private var sleepStopped=false
@@ -302,14 +286,8 @@ class MainActivity: Activity() {
     private var screen="catalog"
     private var tab=0
 
-    /**
-     * 语音触发设置类弹窗时的锚点。
-     *
-     * 设置页里的弹窗都要求一个 anchor，用来在关窗后把焦点还回去、并顺手刷新那一行的文案。
-     * 语音场景下设置页根本不在场：给一个永不 attach 的 TextView，`isAttachedToWindow`
-     * 恒为 false，弹窗关闭时的焦点恢复会自动跳过，写文案也只是写进一个没人看的对象。
-     */
-    private val voiceAnchor by lazy { TextView(this).apply { id=View.generateViewId() } }
+    /** 手机设置与播放弹窗共用的焦点锚点，不挂载到页面。 */
+    private val pickerAnchor by lazy { TextView(this).apply { id=View.generateViewId() } }
     private var page=1
     private var query=""
     // TV 列表与手机列表共用同一份当前数据：两侧页面互斥渲染，切换方向时各自重新加载，
@@ -443,7 +421,6 @@ class MainActivity: Activity() {
     private var suggestFocusIndex=-1
     private var searchBody: LinearLayout?=null
     private var searchColumns=6
-    private var phoneSearched=false
     private var keyboardLastLabel: String?=null
     private var keyboardKeys=emptyMap<String,TextView>()
     private var keyboardRows=emptyList<List<TextView>>()
@@ -463,10 +440,6 @@ class MainActivity: Activity() {
     private var pendingCloudResume: CloudProgress?=null
     /** 设置页重建后要恢复焦点的设置项标签前缀。 */
     private var settingsFocusKey: String?=null
-    /** 手机快传来的 APK：等用户在系统设置里完成授权后自动续装，不必重新扫码。 */
-    private var pendingQuickApk: java.io.File?=null
-    /** 设置页「自定义背景」文案刷新：快传图片一键设为背景后同步显示。 */
-    private var refreshBackdropSetting: (()->Unit)?=null
     private var detail: Detail?=null
     private var episodeIndex=0
     private var group=0
@@ -514,8 +487,6 @@ class MainActivity: Activity() {
     private val tick=object: Runnable {
         override fun run() {
             if(!foreground || isDestroyed) return
-            // 定时同步手机遥控的播放进度和前台状态。
-            remotePublish()
             if(screen=="player") {
                 if(sleepTimer.poll()) stopForSleep()
                 if(phonePlayerLayout()) refreshPhonePlayer() else if(hud.visibility==View.VISIBLE) updatePlaybackText()
@@ -620,8 +591,6 @@ class MainActivity: Activity() {
         // 上新区沿用上次选择的时间窗（只在本机记，识别不了的值回落到默认档）
         newReleaseWindow=library.newReleaseWindow.takeIf { id -> NEW_RELEASE_WINDOWS.any { it.first==id } } ?: NEW_RELEASE_WINDOWS[0].first
         setupMouseGestures()
-        // 永久遥控的密钥/端口落盘，必须先于任何 PhoneRemoteSession 构造
-        RemoteAccess.init(this)
         accountManager=AccountManager(this,library,repository.signer)
         accountManager.onAccountChanged={
             accountButton?.text=accountManager.accountLabel
@@ -637,7 +606,6 @@ class MainActivity: Activity() {
         InstallStatsPing.startOnce(applicationContext)
         backdropView=ImageView(this).apply { scaleType=ImageView.ScaleType.FIT_XY; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }
         loadBackdrop()
-        updater=AppUpdater(this) { foreground && library.isLoaded && screen=="catalog" && !tvTools.showing }
         connectivity=getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         // registerDefaultNetworkCallback 要 API 24，低版本退回全量回调
         runCatching {
@@ -794,7 +762,7 @@ class MainActivity: Activity() {
         tabState[tab]=CatalogState(page,catalog,hasMore,ranking,rankBoard,genre,aiCatalog,aiGenre,newRelease,newReleaseWindow,discoveryCursor,discoverySelection); tabFocus[tab]=catalogFocus
         // 从其他模块切回搜索页时重置为全新搜索状态，不保留上次的搜索词与结果
         if(next==1) {
-            query=""; phoneSearched=false; lastSuggestWords=emptyList<String>(); lastSuggestKey=""; suggestFocusIndex=-1; keyboardLastLabel=null
+            query=""; lastSuggestWords=emptyList<String>(); lastSuggestKey=""; suggestFocusIndex=-1; keyboardLastLabel=null
             advancedSearch=false; discoverySelection=DiscoverySelection(); discoveryGroups=emptyList(); discoveryCursor=null; filterExpanded=true
             tabState.remove(1); tabFocus.remove(1)
         }
@@ -885,7 +853,7 @@ class MainActivity: Activity() {
         (searchInput as? EditText)?.let { query=it.text.toString().trim() }
         library.contentType=type
         // 切换内容类型后旧联想不再适用，清空回显记忆
-        lastSuggestWords=emptyList<String>(); lastSuggestKey=""; phoneSearched=false
+        lastSuggestWords=emptyList<String>(); lastSuggestKey=""
         for(index in 0..1) { tabState.remove(index); tabFocus.remove(index) }
         releaseCatalogViews()
         page=1; catalog=emptyList(); hasMore=false; ranking=null; catalogFocus=""; homePosition=null; genre=null
@@ -1034,8 +1002,6 @@ class MainActivity: Activity() {
                 override fun beforeTextChanged(s: CharSequence?,start: Int,count: Int,after: Int) {}
                 override fun onTextChanged(s: CharSequence?,start: Int,before: Int,count: Int) {}
                 override fun afterTextChanged(s: android.text.Editable?) {
-                    // 用户编辑输入框后解除手机输入的联想抑制，恢复常规联想
-                    if(phoneSearched && s?.toString()?.trim()!=query) phoneSearched=false
                     scheduleSuggest()
                 }
             })
@@ -1051,7 +1017,7 @@ class MainActivity: Activity() {
                 view.setOnFocusChangeListener { _,focused -> view.background=TvVisual.card(this,focused); if(focused) keyboardLastLabel=label }
                 return view
             }
-            // 统一键盘：6 列×7 行（字母数字混排），末行删除/清空/手机输入各占两列
+            // 统一键盘：6 列×7 行（字母数字混排），末行删除和清空各占三列
             val keyboard=column()
             val keyLines=mutableListOf<List<TextView>>()
             val keyViews=linkedMapOf<String,TextView>()
@@ -1061,25 +1027,18 @@ class MainActivity: Activity() {
                 keyboard.addView(line); keyLines+=views
             }
             val lastLine=row().apply { setPadding(0,0,0,dp(4)) }
-            val del=azKey("删除").also { lastLine.addView(it,lp(0,-2).apply { weight=2f; rightMargin=dp(6) }); keyViews["删除"]=it }
-            val clear=azKey("清空").also { lastLine.addView(it,lp(0,-2).apply { weight=2f; rightMargin=dp(6) }); keyViews["清空"]=it }
-            lateinit var phone: TextView
-            phone=button("手机输入") { (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(input.windowToken,0); tvTools.phoneInput(phone) { runSearch(it,fromPhone=true) } }
-            phone.textSize=12f; phone.minHeight=keyHeight; phone.setPadding(dp(2),dp(4),dp(2),dp(4)); phone.maxLines=1
-            phone.background=TvVisual.card(this,false)
-            phone.setOnFocusChangeListener { _,focused -> phone.background=TvVisual.card(this,focused) }
-            keyViews["手机输入"]=phone
-            lastLine.addView(phone,lp(0,-2).apply { weight=2f })
+            val del=azKey("删除").also { lastLine.addView(it,lp(0,-2).apply { weight=3f; rightMargin=dp(6) }); keyViews["删除"]=it }
+            val clear=azKey("清空").also { lastLine.addView(it,lp(0,-2).apply { weight=3f }); keyViews["清空"]=it }
             keyboard.addView(lastLine)
-            val lastViews=listOf(del,clear,phone); keyLines+=lastViews
+            val lastViews=listOf(del,clear); keyLines+=lastViews
             keyLines.forEachIndexed { r,views ->
                 views.forEachIndexed { c,key ->
                     key.nextFocusLeftId=views[if(c==0) 0 else c-1].id
                     key.nextFocusRightId=views[if(c==views.size-1) c else c+1].id
                     val up=keyLines.getOrNull(r-1); val down=keyLines.getOrNull(r+1)
-                    // 末行三键各覆盖两列：向下按列折半、向上按列展开，保持同列直觉
-                    key.nextFocusUpId=up?.get(if(r==keyLines.size-1) minOf(c*2,up.size-1) else minOf(c,up.size-1))?.id ?: input.id
-                    key.nextFocusDownId=down?.get(if(r==5) minOf(c/2,down.size-1) else minOf(c,down.size-1))?.id ?: key.id
+                    // 末行两键各覆盖三列：上下键按覆盖列数映射，保持同列直觉
+                    key.nextFocusUpId=up?.get(if(r==keyLines.size-1) minOf(c*3,up.size-1) else minOf(c,up.size-1))?.id ?: input.id
+                    key.nextFocusDownId=down?.get(if(r==5) minOf(c/3,down.size-1) else minOf(c,down.size-1))?.id ?: key.id
                 }
             }
             azFirst=keyLines.first().first(); azLastRow.clear(); azLastRow.addAll(lastViews)
@@ -1391,7 +1350,7 @@ class MainActivity: Activity() {
                 if(requestTab==0 && requestPage==1 && requestGenre==null) library.cacheHome(requestType,result.items,result.hasMore)
                 // 榜单第 1 页到手先落缓存，无论界面是否立即换新
                 if(requestTab==2 && requestPage==1 && !requestAi) library.cacheRank(requestBoard,result.items,result.hasMore,result.ranking)
-                if(requestTab==0 && requestPage==1 && requestGenre==null && (homeFromCache || tvTools.showing || updater.showing)) {
+                if(requestTab==0 && requestPage==1 && requestGenre==null && (homeFromCache || tvTools.showing)) {
                     homeScreen?.refresh?.text="查看新推荐"
                     homeScreen?.refresh?.setOnClickListener { catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; showCatalog() }
                 } else if(requestTab==2 && requestPage==1 && !requestAi && rankFromCache) {
@@ -1407,7 +1366,7 @@ class MainActivity: Activity() {
                 } else {
                     catalog=result.items; hasMore=result.hasMore; ranking=result.ranking
                     // 手机输入的精确剧名搜索零结果时自动恢复联想，帮助用户纠正剧名
-                    if(requestTab==1 && result.items.isEmpty()) { phoneSearched=false; scheduleSuggest() }
+                    if(requestTab==1 && result.items.isEmpty()) { scheduleSuggest() }
                     val keepNav=nav.any { it.hasFocus() }; val keepType=typeButtons.values.any { it.hasFocus() }
                     if(requestTab==2) rankSubtitle?.text=if(requestAi) "来源：红果AI剧分类" else ranking?.updatedText?.ifBlank { "来源：红果${rankBoard.label}热播榜" } ?: "来源：红果${rankBoard.label}热播榜"
                     body.removeAllViews(); catalogGrid(body,keepNav || focusNav,keepType || focusType)
@@ -2044,16 +2003,27 @@ class MainActivity: Activity() {
         tvTools.choose("选择分组 · ${series.title}",options,anchor,{ index ->
             when {
                 index==0 -> { library.setGroup(series.id,null); apply() }
-                index==options.lastIndex -> tvTools.phoneForm(anchor,PhoneForm(
-                    heading="新建收藏分组",
-                    description="输入分组名称后发送到电视，电视会立即创建该分组。",
-                    fields=listOf(PhoneField("name","分组名称","最多 12 个字",12)),
-                    doneHint="请回到电视查看新建的分组。",
-                    invalidMessage="请输入 1—12 个字符的分组名称"
-                )) { values ->
-                    val name=values["name"].orEmpty()
-                    if(!library.setGroup(series.id,name)) Toast.makeText(this,"分组数量已达上限或名称无效",Toast.LENGTH_SHORT).show()
-                    apply()
+                index==options.lastIndex -> {
+                    val input=EditText(this).apply {
+                        hint="分组名称，最多 12 个字"; isSingleLine=true
+                        filters=arrayOf(android.text.InputFilter.LengthFilter(12))
+                        setTextColor(white); setHintTextColor(muted)
+                    }
+                    val content=column().apply {
+                        addView(TvDialog.title(this@MainActivity,"新建收藏分组"))
+                        addView(input,lp(-1,-2))
+                    }
+                    val dialog=AlertDialog.Builder(this).setView(TvDialog.card(this,content)).create()
+                    val create=TvDialog.capsuleButton(this,"创建") {
+                        val name=input.text.toString().trim()
+                        if(name.isBlank()) input.error="请输入分组名称"
+                        else if(!library.setGroup(series.id,name)) input.error="分组数量已达上限或名称无效"
+                        else { dialog.dismiss(); apply() }
+                    }
+                    content.addView(create,lp(-1,-2).apply { topMargin=dp(12) })
+                    TvDialog.styleWindow(this,dialog,widthDp=360)
+                    dialog.setOnDismissListener { if(anchor.isAttachedToWindow) anchor.requestFocus() }
+                    dialog.show(); input.requestFocus()
                 }
                 else -> { library.setGroup(series.id,options[index]); apply() }
             }
@@ -2068,7 +2038,7 @@ class MainActivity: Activity() {
         val home=homeScreen
         if(screen=="catalog" && tab==0 && page==1 && collection==null && home!=null && library.updatedFavorites()!=homeUpdateCount) {
             // A stable resume key can be restored without moving the user's selection.
-            if(!tvTools.showing && !updater.showing && currentFocus?.tag?.toString()?.startsWith("resume:")==true) {
+            if(!tvTools.showing && currentFocus?.tag?.toString()?.startsWith("resume:")==true) {
                 homeUpdateCount=library.updatedFavorites(); home.updateShelves(homeShelves())
             } else {
                 home.refresh.text="收藏更新 ${library.updatedFavorites()} 部"
@@ -2142,18 +2112,11 @@ class MainActivity: Activity() {
             groupRows.getOrPut(group){mutableListOf()}+=view
             return view
         }
-        fun railAction(label: String,action: ()->Unit)=button(label,onClick=action).apply {
-            gravity=Gravity.CENTER_VERTICAL; textSize=12f; minHeight=dp(44); maxLines=2
-            setPadding(dp(18),dp(8),dp(10),dp(8))
-            background=TvVisual.row(this@MainActivity,false,category=true)
-            setOnFocusChangeListener { _,focused -> background=TvVisual.row(this@MainActivity,focused,category=true) }
-        }
-
         val categories=listOf(
             Triple("播放与观看","所有剧集共用，播放中也可调整",playback),
             Triple("外观与界面","主题与背景",look),
             Triple("设备与数据","账号、本机记录与缓存",device),
-            Triple("关于红果","版本更新、接口自检与许可",about))
+            Triple("关于红果","版本信息、接口自检与许可",about))
         var active=0
         val railButtons=categories.map { entry ->
             button(entry.first,onClick={}).apply {
@@ -2262,54 +2225,22 @@ class MainActivity: Activity() {
             },focusIndex=current)
         }
         lateinit var backdropButton: TextView
-        fun backdropLabel()="自定义背景  ·  ${if(backdropFile()!=null) "已启用" else if(backdropStyle()=="forced") "强制欣赏" else "默认风格"}"
+        fun backdropLabel()="背景风格  ·  ${if(backdropFile()!=null) "自定义图片" else if(backdropStyle()=="forced") "强制欣赏" else "默认风格"}"
         backdropButton=setting(look,backdropLabel()) {
-            tvTools.choose("自定义背景",listOf("手机上传图片","恢复默认背景"),backdropButton,{ choice ->
-                when(choice) {
-                    0 -> tvTools.backdropTransfer(backdropButton) { bytes,ext -> saveBackdrop(bytes,ext) { refreshBackdropSetting?.invoke() } }
-                    1 -> tvTools.choose("恢复默认背景",listOf("强制欣赏","默认风格"),backdropButton,{ style ->
-                        resetBackdrop(if(style==0) "forced" else "plain")
-                        backdropButton.text=backdropLabel()
-                    })
-                }
+            tvTools.choose("背景风格",listOf("强制欣赏","默认风格"),backdropButton,{ style ->
+                resetBackdrop(if(style==0) "forced" else "plain")
+                backdropButton.text=backdropLabel()
             })
         }
-        refreshBackdropSetting={ backdropButton.text=backdropLabel() }
         // 电视/盒子本身锁定横屏，这一项只在手机等触屏设备上才有意义
         if(TouchControls.isHandheld(this)) {
             setting(look,"启动方向  ·  ${OrientationMode.of(library.orientationMode).label}") {
-                showOrientationPicker(voiceAnchor)
+                showOrientationPicker(pickerAnchor)
             }
         }
 
         heading(device,"设备与数据",categories[2].second)
         accountButton=setting(device,accountManager.accountLabel) { accountManager.showLoginDialog(this) }
-        lateinit var backup: TextView
-        backup=railAction("备份与恢复  ·  手机扫码") {
-            runCatching { LibraryBackup.encode(library.snapshot()) }.onSuccess { encoded ->
-                tvTools.libraryTransfer(encoded,backup) { data,restoreSettings ->
-                    favoriteMonitor.stop(); library.restore(data,restoreSettings)
-                    tabState.clear(); tabFocus.clear(); catalogFocus=""; page=1
-                    showCatalog(); favoriteMonitor.check()
-                    Toast.makeText(this,"本机收藏与记录已合并；云端记录请登录账号后拉取",Toast.LENGTH_LONG).show()
-                }
-            }.onFailure { tvTools.info("无法生成备份","本机记录暂时无法导出，请重试。",backup) }
-        }
-        lateinit var quickSend: TextView
-        quickSend=railAction("手机快传  ·  传 APK / 视频") {
-            tvTools.quickTransfer(quickSend,::handleQuickTransfer)
-        }
-        val remote=remoteEntryButton().apply {
-            gravity=Gravity.CENTER_VERTICAL; textSize=12f; minHeight=dp(44); maxLines=2
-            setPadding(dp(18),dp(8),dp(10),dp(8))
-            background=TvVisual.row(this@MainActivity,false,category=true)
-            setOnFocusChangeListener { _,focused -> background=TvVisual.row(this@MainActivity,focused,category=true) }
-        }
-        rail.addView(text("常用",11f,muted).apply { setPadding(dp(22),dp(16),0,dp(8)) })
-        rail.addView(remote,lp(-1,-2).apply { bottomMargin=dp(6) })
-        rail.addView(quickSend,lp(-1,-2).apply { bottomMargin=dp(6) })
-        rail.addView(backup,lp(-1,-2).apply { bottomMargin=dp(6) })
-        val commonButtons=listOf(remote,quickSend,backup)
         lateinit var hidden: TextView
         hidden=setting(device,"恢复隐藏推荐  ·  ${library.hidden().size} 部") {
             library.unhideAll(); hidden.text="恢复隐藏推荐  ·  0 部"; Toast.makeText(this,"热门推荐已恢复",Toast.LENGTH_SHORT).show()
@@ -2342,8 +2273,6 @@ class MainActivity: Activity() {
             main.post { if(!isDestroyed) clearCache.text=cacheLabel(bytes) }
         }
         heading(about,"关于红果",categories[3].second)
-        lateinit var updates: TextView
-        updates=setting(about,"版本与更新  ·  ${BuildConfig.VERSION_NAME}") { updater.show(updates) }
         lateinit var checkButton: TextView
         checkButton=setting(about,"接口自检  ·  首页 / 搜索 / 播放") { showInterfaceCheck(checkButton) }
         setting(about,"运行日志  ·  预载缓存 / 一键复制") { RuntimeLogDialog.show(this, ::runtimeLogSummary) }
@@ -2373,15 +2302,9 @@ class MainActivity: Activity() {
             }
             railButtons.forEachIndexed { index,item ->
                 item.nextFocusUpId=railButtons.getOrNull(index-1)?.id ?: nav[tab].id
-                item.nextFocusDownId=railButtons.getOrNull(index+1)?.id ?: commonButtons.firstOrNull()?.id ?: View.NO_ID
+                item.nextFocusDownId=railButtons.getOrNull(index+1)?.id ?: item.id
                 item.nextFocusLeftId=item.id
                 item.nextFocusRightId=if(index==active) items.firstOrNull()?.id ?: item.id else item.id
-            }
-            commonButtons.forEachIndexed { index,item ->
-                item.nextFocusUpId=if(index==0) railButtons.last().id else commonButtons[index-1].id
-                item.nextFocusDownId=commonButtons.getOrNull(index+1)?.id ?: item.id
-                item.nextFocusLeftId=item.id
-                item.nextFocusRightId=items.firstOrNull()?.id ?: item.id
             }
             nav.forEach { it.nextFocusDownId=railButtons.first().id }
         }
@@ -2420,7 +2343,7 @@ class MainActivity: Activity() {
             target.requestFocus()
         } else nav[tab].requestFocus()
     }
-    private fun runSearch(value: String,type: ContentType=library.contentType,fromPhone: Boolean=false) {
+    private fun runSearch(value: String,type: ContentType=library.contentType) {
         val clean=value.trim(); if(clean.isEmpty() || clean.length>80) return
         cancelSearchSuggestions(); main.removeCallbacks(pendingSuggest)
         (searchInput as? EditText)?.let { (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(it.windowToken,0) }
@@ -2428,7 +2351,6 @@ class MainActivity: Activity() {
         advancedSearch=false
         if(library.contentType!=type) { library.contentType=type; for(index in 0..1) { tabState.remove(index); tabFocus.remove(index) } }
         // 手机输入的精确剧名默认不再联想，纯首拼或编辑输入后恢复
-        phoneSearched=fromPhone
         library.rememberSearch(clean,type); query=clean; tab=1; page=1; catalogFocus=""; searchFocusPending=true; showCatalog(true)
     }
     private fun onAzKey(key: String) {
@@ -2455,9 +2377,9 @@ class MainActivity: Activity() {
     private fun fetchSuggest() {
         if(isDestroyed || tab!=1 || screen!="catalog") return
         val key=(searchInput as? EditText)?.text?.toString()?.trim().orEmpty()
-        if(key.isEmpty() || key.length>40 || key==query && (phoneSearched || catalog.isNotEmpty() || searchFocusPending)) {
+        if(key.isEmpty() || key.length>40 || key==query && (catalog.isNotEmpty() || searchFocusPending)) {
             cancelSearchSuggestions()
-            val keep=if(!phoneSearched && lastSuggestWords.isNotEmpty() && key==lastSuggestKey && key!=query) lastSuggestWords else emptyList()
+            val keep=if(lastSuggestWords.isNotEmpty() && key==lastSuggestKey && key!=query) lastSuggestWords else emptyList()
             renderSuggest(keep); return
         }
         loadSuggestions(key) { words ->
@@ -3012,8 +2934,7 @@ class MainActivity: Activity() {
         })
     }
     /**
-     * @param preloaded 已经取到的详情。语音开播要「先确认有剧集再起播」，
-     *   那时详情已经拉过一次，这里复用，不再重复请求（电视上多一次往返就是多等一秒）。
+     * @param preloaded 已经取到的详情，在进入详情页时复用，避免重复请求。
      */
     private fun openDetail(series: Series,resume: Boolean=false,autoplay: Boolean=true,cloud: CloudProgress?=null,preloaded: Detail?=null) {
         favoriteMonitor.stop()
@@ -3334,7 +3255,7 @@ class MainActivity: Activity() {
             Toast.makeText(this,"暂时没有可看的剧集",Toast.LENGTH_SHORT).show()
             return
         }
-        updater.interrupt(); cancelSkipUnplayable()
+        cancelSkipUnplayable()
         val playbackStarted=android.os.SystemClock.elapsedRealtime()
         // 切集先撤掉后台整集下载的带宽占用，首帧和当前集缓冲就绪后逐步恢复。
         playbackFirstFrameRendered=false
@@ -3383,7 +3304,6 @@ class MainActivity: Activity() {
         panel=false; playError=false; playbackReady=false; quality=""; pausedForLifecycle=!autoplay
         retainPlaybackWindow()
         playerScreenOn=true; refreshScreenOn()
-        remotePublish(true)
         if(!reuse) {
             root.removeAllViews(); root.setBackgroundColor(Color.BLACK)
             val view=(if(phonePlayerLayout()) layoutInflater.inflate(R.layout.phone_player_view,root,false) as PlayerView else PlayerView(this)).apply {
@@ -3516,7 +3436,7 @@ class MainActivity: Activity() {
                         android.util.Log.w("HongguoTV","Playback ready episode=${episodeIndex+1} preloaded=${prefetched!=null} reused=$reuse elapsedMs=${readySince-episodeStartedAt}")
                         startDanmaku()
                         maybePrefetch()
-                        // 起播后再补系列信息，继续观看和语音开播同样保留跨季连播。
+                        // 起播后再补系列信息，继续观看同样保留跨季连播。
                         detail?.let { loadDetailExtras(it) }
                     } else if(rebufferStart>0) {
                         android.util.Log.w("HongguoTV","Rebuffer end episode=${episodeIndex+1} stalledMs=${android.os.SystemClock.elapsedRealtime()-rebufferStart}")
@@ -4138,7 +4058,6 @@ class MainActivity: Activity() {
         return if(playing) "暂停" else "播放"
     }
     private fun updatePlaybackText() {
-        remotePublish()
         transportPlay?.text=playButtonLabel()
         sleepButton?.text="定时 ${sleepTimer.label()}"
         if(screen!="player" || playError) return
@@ -4194,7 +4113,6 @@ class MainActivity: Activity() {
         playEpisode(target,savedPosition(target)); showHud(); return true
     }
     private fun syncMediaSession() {
-        remotePublish()
         if(!foreground || screen!="player") { mediaSession.deactivate(); return }
         val data=detail ?: return; val p=player
         val state=when {
@@ -4315,7 +4233,7 @@ class MainActivity: Activity() {
         val content=column()
         content.addView(TvDialog.title(this,"弹幕屏蔽词"))
         // 选项用可聚焦的按钮行：多选 ListView 的 performClick 触发不了 OnItemClickListener，
-        // 手机遥控确认键点不动；这里和清晰度选择器同一套做法，行内自绘勾选态。
+        // 确认键点不动；这里和清晰度选择器同一套做法，行内自绘勾选态。
         fun paint(row: Button,index: Int,focus: Boolean) {
             row.text=(if(checked[index]) "✓ " else "　")+words[index]
             row.background=GradientDrawable().apply {
@@ -5075,59 +4993,12 @@ class MainActivity: Activity() {
             }
         }
     }
-    private fun saveBackdrop(bytes: ByteArray,extension: String,onDone: ()->Unit={}) {
-        io.execute {
-            val bitmap=runCatching {
-                filesDir.listFiles()?.filter { it.name.startsWith("backdrop.") }?.forEach { it.delete() }
-                java.io.File(filesDir,"backdrop.$extension").writeBytes(bytes)
-                decodeBackdrop(bytes)
-            }.getOrNull()
-            main.post {
-                if(isDestroyed) return@post
-                if(bitmap==null) { Toast.makeText(this@MainActivity,"图片无法使用，请换一张试试",Toast.LENGTH_LONG).show(); return@post }
-                backdropBitmap=bitmap
-                backdropView?.let {
-                    if(it.parent==null && screen!="player") root.addView(it,0,FrameLayout.LayoutParams(-1,-1))
-                    it.setImageBitmap(bitmap)
-                }
-                Toast.makeText(this@MainActivity,"背景已更新",Toast.LENGTH_SHORT).show()
-                onDone()
-            }
-        }
-    }
     /** Drop any uploaded picture and switch back to one of the built-in styles. */
     private fun resetBackdrop(style: String) {
         io.execute { filesDir.listFiles()?.filter { it.name.startsWith("backdrop.") }?.forEach { it.delete() } }
         getSharedPreferences("native-library-v1", Context.MODE_PRIVATE).edit().putString("backdropStyle",style).apply()
         loadBackdrop()
         Toast.makeText(this,if(style=="forced") "已恢复为强制欣赏" else "已恢复默认背景",Toast.LENGTH_SHORT).show()
-    }
-    /** 快传接收后按文件类型处理。 */
-    private fun handleQuickTransfer(file: java.io.File,kind: TransferKind) {
-        when(kind) {
-            TransferKind.APK -> {
-                pendingQuickApk=file
-                TvDialog.confirm(this,"安装手机传来的应用","已收到 ${file.name}。\n确认后打开电视的系统安装界面，按提示完成安装。") { installQuickApk(file) }.show()
-            }
-            TransferKind.IMAGE -> TvDialog.confirm(this,"设为电视背景","已收到图片 ${file.name}，是否用作电视背景？") { setQuickBackdrop(file) }.show()
-            TransferKind.VIDEO -> Toast.makeText(this,"视频已保存到电视：${file.name}",Toast.LENGTH_LONG).show()
-            TransferKind.OTHER -> Toast.makeText(this,"文件已保存到电视：${file.name}",Toast.LENGTH_LONG).show()
-        }
-    }
-    /** 图片直接生效（可逆：设置页可恢复默认背景），后台读图，完成后刷新设置页文案。 */
-    private fun setQuickBackdrop(file: java.io.File) {
-        io.execute {
-            val bytes=runCatching { file.readBytes() }.getOrNull()
-            if(bytes==null) main.post { Toast.makeText(this,"图片无法读取，请换一张试试",Toast.LENGTH_SHORT).show() }
-            else saveBackdrop(bytes,TransferRules.extensionOf(file.name) ?: "jpg") { refreshBackdropSetting?.invoke() }
-        }
-    }
-    private fun installQuickApk(apk: java.io.File) {
-        when(ApkInstaller.install(this,apk)) {
-            ApkInstaller.Result.LAUNCHED -> { pendingQuickApk=null; Toast.makeText(this,"已打开安装界面",Toast.LENGTH_SHORT).show() }
-            ApkInstaller.Result.NEEDS_PERMISSION -> Toast.makeText(this,"请允许本应用安装应用，返回后会自动继续安装",Toast.LENGTH_LONG).show()
-            ApkInstaller.Result.FAILED -> { pendingQuickApk=null; tvTools.info("无法安装","电视没有可用的安装入口，请用系统文件管理器安装。",null) }
-        }
     }
     private fun saveProgress(completed: Boolean=false) {
         val p=player ?: return; val data=detail ?: return; if(!playbackReady || episodeIndex !in data.episodes.indices) return
@@ -5243,690 +5114,9 @@ class MainActivity: Activity() {
         if(directPlayback && !forceDetail) showCatalog()
         else { directPlayback=false; showDetail(true); prefetchDetailWindow(episodeIndex) }
     }
-    // ================= 手机遥控 =================
-
     private fun refreshScreenOn() {
-        if(remoteHolding || playerScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if(playerScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-    }
-
-    private fun openRemote(anchor: View?) {
-        // 已经开过就从原会话再打开窗口：token 不变，手机上不用重新扫码
-        remote?.let { syncRemoteEntry(); it.show(anchor); return }
-        autoStartRemote()
-        val session=remote
-        if(session==null) { tvTools.info("手机遥控","请让电视和手机连接同一局域网（Wi-Fi 或有线网络）后重试。",anchor); return }
-        session.show(anchor)
-        syncRemoteEntry()
-        remotePublish(true)
-    }
-
-    /** 网络未就绪时的静默重试次数上限；超过就等用户手动点「手机遥控」再报错。 */
-    private var remoteStartTries=0
-
-    /**
-     * 永久遥控：应用一起来就把局域网服务挂上，不弹任何窗口。
-     * 手机里存着旧地址的用户随时打开都能直连，电视端不用先开二维码窗。
-     * onCreate 时网络可能还没就绪（DHCP 未完成），拿不到地址就隔几秒静默重试。
-     */
-    private fun autoStartRemote() {
-        if(remote != null) return
-        if(remoteStartTries >= 5) return
-        remoteStartTries++
-        val address=tvTools.lanAddress()
-        if(address==null) { main.postDelayed({ if(!isDestroyed) autoStartRemote() }, 3000); return }
-        runCatching {
-            PhoneRemoteSession(this,address,{ remoteTarget() },remoteController,{ remoteResumeList() },{ remoteResumeAll() },
-                cover={ artwork.bytes(it) },onClients={ syncRemoteEntry() }) {
-                remote=null; syncRemoteEntry()
-            }.also { session -> remote=session; remoteStartTries=0 }
-        }.onFailure { android.util.Log.w("HongguoTV","autoStartRemote failed: ${it.message}") }
-        syncRemoteEntry()
-    }
-
-    /**
-     * 顶栏与详情页标题行共用的遥控入口按钮。样式跟「手机快传」「设置」一致，
-     * 建立后立刻把当前会话状态刷上去，避免重建页面后文案回退成「手机遥控」。
-     */
-    private fun remoteEntryButton(): TextView {
-        val view=button("手机遥控",false) { }
-        view.setOnClickListener { openRemote(view) }
-        view.textSize=13f; view.minHeight=dp(if(navTight) 36 else 38)
-        val pad=dp(if(navTight) 10 else 12); view.setPadding(pad,dp(7),pad,dp(7))
-        remoteEntryView=view
-        syncRemoteEntry()
-        return view
-    }
-
-    /**
-     * 顶栏入口文案。三个状态要能一眼区分：
-     * 没开会话就是纯入口；开了没人连就是「待连接」；连上了写台数。
-     * 一律不显示 IP：服务是应用启动就静默挂着的，绝大多数时间没人连，
-     * 顶栏常驻一串局域网地址既没用又占地方，要看地址点开弹窗，二维码下方写着。
-     * 顶栏空间吃紧（navTight）时再压成两个字。
-     */
-    private fun syncRemoteEntry() {
-        val view=remoteEntryView ?: return
-        val session=remote
-        val clients=session?.hub?.clientCount ?: 0
-        val short=navTight
-        view.text=when {
-            session==null -> "手机遥控"
-            // 现在允许多台手机同时控制，写出台数比笼统的「已连接」更有用
-            clients>1 -> if(short) "遥控中 · ${clients} 台" else "遥控中 · ${clients} 台设备"
-            clients==1 -> if(short) "遥控中" else "遥控中 · 手机已连接"
-            else -> if(short) "遥控" else "遥控 · 待连接"
-        }
-    }
-
-    private fun closeRemote() {
-        val session=remote ?: return
-        remote=null
-        session.close()
-        remoteHolding=false; refreshScreenOn()
-        syncRemoteEntry()
-    }
-
-    /** 主线程调用。快照只在这里采集，socket 线程只读，绝不跨线程碰 ExoPlayer。 */
-    private fun remotePublish(force: Boolean=false) {
-        val session=remote ?: return
-        val now=android.os.SystemClock.elapsedRealtime()
-        if(!force && now-remotePublishedAt<500) return
-        remotePublishedAt=now
-        // 缓冲中拖进度条时 seekTo 会静默失败：先存下来，READY 之后再补一次
-        remotePendingSeek?.let { target ->
-            if(screen=="player" && playbackReady) { remotePendingSeek=null; seekTo(target) }
-        }
-        // 电视一直停在前台时 onResume 不会再来，缓存的意图不能只靠它消费：
-        // 每次发布顺带试一次，等到播放器真的出现（比如 TV 上手动开播）就补上。
-        val pending=session.hub.peekPending()
-        if(!remoteApplying && pending!=null && (!pending.isPlayback || remoteTarget()!=null)) {
-            session.hub.takePending()
-            remoteApplying=true
-            runCatching { if(pending.isPlayback) remoteTarget()?.apply(pending) else remoteController.navigate(pending) }
-            remoteApplying=false
-        }
-        session.hub.snapshot=remoteSnapshotNow()
-    }
-
-    /** 主线程采集播放快照，供手机遥控读取。 */
-    private fun remoteSnapshotNow(): PlaybackSnapshot {
-        val current=if(screen=="player") officialSnapshot() else null
-        return (current ?: PlaybackSnapshot()).copy(foreground=foreground,screen=screen)
-    }
-
-    private fun officialSnapshot(): PlaybackSnapshot? {
-        val data=detail ?: return null
-        val p=player
-        return PlaybackSnapshot(
-            source=PlaybackSource.OFFICIAL,
-            title=data.series.title,
-            groups=listOf(EpisodeGroup("正片",data.episodes.size)),
-            group=0, episode=episodeIndex,
-            positionMs=currentPosition(),
-            durationMs=p?.duration?.coerceAtLeast(0) ?: 0,
-            playing=p?.playWhenReady==true && !pausedForLifecycle,
-            buffering=p==null || !playbackReady || p.playbackState==Player.STATE_BUFFERING,
-            speed=effectiveSpeed(),
-            muted=(p?.volume ?: 1f)<=0f,
-            danmaku=library.danmaku && extras.danmakuEnabled(data.series.id,true)!=false,
-            danmakuAvailable=library.danmaku,
-            error=if(playError) "播放出错，可在电视上重试或换集" else null,
-            screen="player"
-        )
-    }
-
-    private fun remoteTarget(): RemoteTarget? {
-        if(screen=="player" && detail!=null) {
-            return LambdaTarget(PlaybackSource.OFFICIAL,::applyOfficialCommand,::officialEpisodes)
-        }
-        return null
-    }
-
-    private fun applyOfficialCommand(cmd: RemoteCommand): Boolean {
-        if(screen!="player") return false
-        return when(cmd) {
-            is RemoteCommand.Play -> { requestPlayback(cmd.on); true }
-            is RemoteCommand.Seek -> {
-                if(!playbackReady || player==null) { remotePendingSeek=cmd.toMs } else seekTo(cmd.toMs)
-                true
-            }
-            is RemoteCommand.Step -> {
-                // 缓冲中 seekTo 会被丢掉，和拖动一样先记下来，READY 后补一次
-                val to=(currentPosition()+cmd.byMs).coerceAtLeast(0)
-                if(!playbackReady || player==null) remotePendingSeek=to else seekTo(to)
-                true
-            }
-            is RemoteCommand.Episode -> {
-                val count=detail?.episodes?.size ?: return false
-                if(cmd.index !in 0 until count) return false
-                playEpisode(cmd.index,savedPosition(cmd.index)); true
-            }
-            is RemoteCommand.Speed -> {
-                // 手机上调倍速同样只对当前这部剧生效，不写回全局默认
-                sessionSpeed=cmd.value; player?.setPlaybackSpeed(cmd.value)
-                showHud(); updatePlaybackText(); true
-            }
-            is RemoteCommand.Muted -> { player?.volume=if(cmd.on) 0f else 1f; updatePlaybackText(); true }
-            is RemoteCommand.Danmaku -> {
-                // 电视上是「切换」语义，但手机发的是「设成 X」。先比再切，避免已经开着时反被关掉。
-                val id=detail?.series?.id ?: return false
-                val current=library.danmaku && extras.danmakuEnabled(id,true)!=false
-                if(current!=cmd.on) toggleSeriesDanmaku(id)
-                true
-            }
-            else -> false
-        }
-    }
-
-    /** 官方播放器是一维的，对遥控汇报成「只有一个正片组」，避免遥控代码里出现分支。 */
-    private fun officialEpisodes(): List<EpisodeGroupDetail> {
-        val data=detail ?: return emptyList()
-        return listOf(EpisodeGroupDetail("正片",data.episodes.mapIndexed { index,_ -> EpisodeEntry(index,"第 ${index+1} 集") }))
-    }
-
-    private fun remoteResumeList(): List<ResumeItem> {
-        // 首屏与电视「接着看」一栏对齐（8 个）：云端与更多记录收进手机端「更多」弹层
-        return library.history().filter { it.duration>0 && !it.completed }.take(8).map {
-            ResumeItem(it.series.id,it.series.title,"第 ${it.episodeIndex+1} 集 · ${formatTime(it.position)}",it.position,it.duration,it.series.cover)
-        }
-    }
-
-    /** 「更多」弹层的全量记录：本机全部在前、云端补后（同剧去重），下滑分批由手机端渲染。 */
-    private fun remoteResumeAll(): List<ResumeItem> {
-        val local=library.history().filter { it.duration>0 && !it.completed }
-        val localIds=local.map { it.series.id }.toSet()
-        val cloud=if(!accountManager.signedIn) emptyList() else {
-            // 云端历史没拉过就顺手踢一次（异步、只踢一次），下次打开「更多」就有
-            if(!accountManager.cloudHistoryLoaded && !remoteCloudKicked) {
-                remoteCloudKicked=true; accountManager.refreshHistory()
-            }
-            accountManager.cloudRows().filter { it.series.id !in localIds }
-        }
-        return local.map {
-            ResumeItem(it.series.id,it.series.title,"第 ${it.episodeIndex+1} 集 · ${formatTime(it.position)}",it.position,it.duration,it.series.cover)
-        }+cloud.map {
-            // id 加 cloud: 前缀：续播时据此走云端进度，不与本机记录的 seriesId 混淆；
-            // 手机页面也靠这个前缀在海报上挂「云端」角标
-            ResumeItem("cloud:"+it.series.id,it.series.title,
-                "第 ${it.episodeIndex+1} 集 · ${formatTime(it.position)}",it.position,it.duration,it.series.cover)
-        }
-    }
-
-    private fun remoteResumePlay(id: String): Boolean {
-        if(id.startsWith("cloud:")) {
-            // 云端续播：复用最近观看页云端卡片同一条 openDetail(cloud=) 路径，
-            // episodeId 对不上时自动退回集号，且不写本机记录
-            val row=accountManager.cloudRows().firstOrNull { "cloud:"+it.series.id==id } ?: return false
-            openDetail(row.series,resume=true,cloud=row)
-            return true
-        }
-        val progress=library.history().firstOrNull { it.series.id==id } ?: return false
-        openDetail(progress.series,resume=true)
-        return true
-    }
-
-    /** 一级模块键 → 页签下标。索引语义见顶部导航构建处的注释。 */
-    private fun remoteTabOf(module: String): Int? = when(module) {
-        "home" -> 0
-        "search" -> 1
-        "rank" -> 2
-        "favorite" -> 3
-        "history" -> 4
-        "settings" -> 5
-        else -> null
-    }
-
-    /**
-     * 语音与外部指令的动作分发（`act` 命令）。
-     *
-     * 每个分支都等价于「用户在界面上点了那一项」，区别只是触发源换成了嘴。
-     * 返回 false 表示**当前状态做不了**（没在播放却说「下一集」），上层据此提示，
-     * 不假装成功——静默失败比多问一句更让人困惑。
-     */
-    private fun remoteAct(cmd: RemoteCommand.Act): Boolean {
-        val anchor=voiceAnchor
-        return when(cmd.id) {
-            "theme.toggle" -> {
-                library.theme=TvStyle.toggle().name
-                voiceSay("主题 · ${TvStyle.theme.label}")
-                recreateKeepingPage("系统风格")
-                true
-            }
-            "theme.set" -> {
-                val target=if(cmd.arg=="light") TvStyle.Theme.PORCELAIN else TvStyle.Theme.NIGHT
-                if(TvStyle.theme==target) { voiceSay("已经是 ${target.label}"); return true }
-                library.theme=target.name
-                voiceSay("主题 · ${target.label}")
-                recreateKeepingPage("系统风格")
-                true
-            }
-            // 顶栏系统时间已下线，保留命令但不再改变界面，只回一句说明，避免旧脚本报错
-            "clock.toggle" -> {
-                voiceSay("系统时间显示已停用")
-                true
-            }
-            "backdrop.reset" -> {
-                resetBackdrop("plain")
-                refreshBackdropSetting?.invoke()
-                voiceSay("已恢复默认背景")
-                true
-            }
-            // 只关弹窗，不代替「返回」：没有弹窗时什么都不做，免得一句话把人从当前页退走。
-            "dialog.close" -> {
-                val dialog=TvDialog.topmostDialog() ?: return false
-                dialog.dismiss()
-                voiceSay("已关闭弹窗")
-                true
-            }
-            "autonext.toggle" -> {
-                library.autoNext=!library.autoNext
-                voiceSay(if(library.autoNext) "自动连播已开启" else "自动连播已关闭")
-                true
-            }
-            "autoseason.toggle" -> {
-                library.autoSeason=!library.autoSeason
-                voiceSay(if(library.autoSeason) "系列剧连播已开启" else "系列剧连播已关闭")
-                true
-            }
-            "autoskip.toggle" -> {
-                extras.autoSkipUnplayable=!extras.autoSkipUnplayable
-                voiceSay(if(extras.autoSkipUnplayable) "自动跳过已开启" else "自动跳过已关闭")
-                true
-            }
-            // 播放中说「关弹幕」多半是嫌当前这一部挡画面，而不是想改全局开关：
-            // 有播放器就只作用于这一部，没播放器才是设置页里的总开关。
-            "danmaku.toggle" -> {
-                if(screen=="player") {
-                    val id=detail?.series?.id ?: return false
-                    toggleSeriesDanmaku(id); true
-                } else {
-                    library.danmaku=!library.danmaku
-                    voiceSay(if(library.danmaku) "弹幕已开启" else "弹幕已关闭")
-                    true
-                }
-            }
-            "play.toggle" -> if(screen=="player") { togglePlayback(); true } else false
-            "play.next" -> skipEpisode(1)
-            "play.prev" -> skipEpisode(-1)
-            // 从头播放：只影响当前这一集，不改全局「续播」记忆
-            "play.replay" -> if(screen=="player") { seekTo(0); requestPlayback(true); true } else false
-            "player.close" -> when {
-                screen=="player" -> { returnToDetail(); true }
-                else -> false
-            }
-            "panel.episodes" -> when {
-                screen=="player" -> { showEpisodePanel(hud); true }
-                else -> false
-            }
-            "skip.intro" -> {
-                if(screen!="player") return false
-                val minutes=detail?.series?.id?.let { library.skipMark(it)?.introSeconds } ?: 0
-                if(minutes<=0) { voiceSay("这部剧还没设片头"); return true }
-                seekTo(minutes*1000L)
-                voiceSay("已跳过片头 ${minutes} 秒")
-                true
-            }
-            "speed.up" -> adjustSpeed(1)
-            "speed.down" -> adjustSpeed(-1)
-            "sleep.set" -> sleepTarget(cmd.arg)?.let { (kind,value) ->
-                // 界面上的定时只有 1..180 分钟 / 1..10 集，越界会被 SleepTimer 直接拒掉
-                if(kind=="min") sleepTimer.afterMinutes(value.coerceIn(1,180))
-                else sleepTimer.afterEpisodes(value.coerceIn(1,10))
-                voiceSay("定时 · ${sleepTimer.label()}")
-                updatePlaybackText()
-                true
-            } ?: false
-            "volume.up" -> adjustVolume(1)
-            "volume.down" -> adjustVolume(-1)
-            "volume.mute" -> adjustMute(cmd.arg)
-            "type.set" -> {
-                val type=ContentType.fromStored(cmd.arg)
-                switchContentType(type)
-                voiceSay("已切到${type.label}")
-                true
-            }
-            "random.pick" -> remoteRandomPick(cmd.arg)
-            "resume.latest" -> remoteResumeList().firstOrNull()?.let { remoteResumePlay(it.id) } ?: false
-            "list.play" -> listTarget(cmd.arg)?.let { (kind,index) -> remoteListPlay(kind,index) } ?: false
-            "favorite.toggle" -> {
-                val series=detail?.series ?: return false
-                val added=library.toggle(series)
-                voiceSay(if(added) "已收藏" else "已取消收藏")
-                refreshLibraryCards(series.id,!added && (tab==3 || collection=="updates"))
-                if(added) favoriteMonitor.check()
-                true
-            }
-            "update.check" -> { updater.checkNow(anchor); true }
-            "check.interface" -> { showInterfaceCheck(anchor); true }
-            "cache.clear" -> {
-                io.execute {
-                    listOfNotNull(cacheDir,externalCacheDir).forEach { dir -> dir.listFiles()?.forEach { it.deleteRecursively() } }
-                    main.post { if(!isDestroyed) voiceSay("缓存已清理") }
-                }
-                true
-            }
-            "stats.show" -> { showWatchStats(anchor); true }
-            "quick.send" -> {
-                tvTools.quickTransfer(anchor,::handleQuickTransfer)
-                true
-            }
-            // 「刷新二维码」在没开面板时就是打开面板：新码本来就要重新生成一次，
-            // 两条路合并成一条，行为对人是同一个结果（屏幕上出现一张能用的新码）。
-            "transfer.refresh" -> {
-                if(tvTools.lanAddress()==null) { voiceSay("电视还没连上局域网，先连 Wi-Fi 再试"); return true }
-                tvTools.quickTransfer(anchor,::handleQuickTransfer)
-                voiceSay("二维码已刷新")
-                true
-            }
-            "history.clear" -> {
-                library.clearSearches()
-                // 只有停在搜索页才重建：那是左栏历史真正可见的地方，别处重建会白跑一次请求
-                if(tab==1) showCatalog()
-                voiceSay("已清空搜索历史")
-                true
-            }
-            "account.show" -> { accountManager.showLoginDialog(this); true }
-            "hidden.restore" -> {
-                library.unhideAll()
-                voiceSay("已恢复隐藏推荐")
-                true
-            }
-            else -> false
-        }
-    }
-
-    /**
-     * 「列表第 N 个」的落点。序号从 1 起，与口头表达一致（说「第二个」就取下标 1）。
-     *
-     * `history` 走 [remoteResumeList]，所以它自动跟着当前模块走：停在片源页就是片源的历史。
-     * 越界一律返回 false，让人知道这句话没落实，而不是默默播了一个别的东西。
-     */
-    private fun remoteListPlay(kind: String,index: Int): Boolean {
-        val position=index-1
-        if(position<0) return false
-        return when(kind) {
-            "history" -> remoteResumeList().getOrNull(position)?.let { remoteResumePlay(it.id) } ?: false
-            "favorite" -> {
-                val series=library.favorites().getOrNull(position) ?: return false
-                openDetail(series,resume=true)
-                true
-            }
-            "episodes" -> {
-                val count=detail?.episodes?.size ?: return false
-                if(position>=count) return false
-                playEpisode(position,savedPosition(position))
-                true
-            }
-            else -> {
-                val series=catalog.getOrNull(position) ?: return false
-                openDetail(series,resume=true)
-                true
-            }
-        }
-    }
-
-    /** 语音动作的回执：短提示，不打断画面，也不抢焦点。 */
-    private fun voiceSay(message: String) {
-        Toast.makeText(this,message,Toast.LENGTH_SHORT).show()
-    }
-
-    /**
-     * 一条命令落到界面。
-     *
-     * 遥控页输入框与局域网脚本共用此处的命令分发。
-     * 播放类命令交给播放器适配器，其余交给界面。
-     */
-    private fun remoteDo(cmd: RemoteCommand): Boolean = when(cmd) {
-        is RemoteCommand.Act -> remoteAct(cmd)
-        is RemoteCommand.Open -> remoteOpenModule(cmd.module)
-        is RemoteCommand.Watch -> remoteWatch(cmd.query,cmd.episode)
-        is RemoteCommand.Say -> remoteSay(cmd.text)
-        else -> if(cmd.isPlayback) remoteTarget()?.apply(cmd)==true else remoteController.navigate(cmd)
-    }
-
-    /** 倍速加减一档。播放中说就只改当前这一部，别处改的是「默认倍速」。 */
-    private fun adjustSpeed(direction: Int): Boolean {
-        val options=PlaybackSpeed.options
-        fun shift(current: Float): Float {
-            val index=options.indexOfFirst { it>=current-0.001f }.let { if(it<0) options.lastIndex else it }
-            return options[(index+direction).coerceIn(0,options.lastIndex)]
-        }
-        if(screen=="player") {
-            val next=shift(effectiveSpeed())
-            sessionSpeed=next; player?.setPlaybackSpeed(next)
-            showHud(); updatePlaybackText()
-            voiceSay("倍速 ${PlaybackSpeed.label(next)}")
-            return true
-        }
-        val next=shift(library.playbackSpeed)
-        library.playbackSpeed=next
-        voiceSay("默认倍速 ${PlaybackSpeed.label(next)}")
-        return true
-    }
-
-    /**
-     * 音量走系统媒体音量，不走播放器内部音量：没在播放时也能调，
-     * 而且调完退出去看别的 App 也是这个音量，符合「电视音量」的直觉。
-     */
-    private fun audioManager(): AudioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-
-    private fun adjustVolume(direction: Int): Boolean {
-        val manager=audioManager()
-        manager.adjustStreamVolume(AudioManager.STREAM_MUSIC,
-            if(direction>0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER,
-            AudioManager.FLAG_SHOW_UI)
-        val max=manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-        val now=manager.getStreamVolume(AudioManager.STREAM_MUSIC)
-        voiceSay("音量 ${now*100/max}%")
-        return true
-    }
-
-    /**
-     * 「静音 / 取消静音」。
-     *
-     * 播放器在跑就走播放器内部静音：遥控快照里的 muted 字段会同步变化，
-     * 手机端能看见「静音」亮起来，跟摇控器上按静音键的行为一致。
-     * 没在播放才落到系统媒体音量——那时「静音」指的是整台电视。
-     */
-    private fun adjustMute(mode: String): Boolean {
-        val wanted=when(mode) {
-            "on" -> true
-            "off" -> false
-            else -> null
-        }
-        val snapshot=if(screen=="player") officialSnapshot() else null
-        if(snapshot!=null && snapshot.controllable) {
-            val target=wanted ?: !snapshot.muted
-            if(remoteTarget()?.apply(RemoteCommand.Muted(target))!=true) return false
-            voiceSay(if(target) "已静音" else "已取消静音")
-            return true
-        }
-        val manager=audioManager()
-        // isStreamMute 是 API 23 才有的；更低版本读不到静音状态，按「未静音」处理（mode 明确给了 on/off 时不影响结果）
-        val muted=if(Build.VERSION.SDK_INT>=23)
-            runCatching { manager.isStreamMute(AudioManager.STREAM_MUSIC) }.getOrDefault(false)
-        else false
-        val target=wanted ?: !muted
-        manager.adjustStreamVolume(AudioManager.STREAM_MUSIC,
-            if(target) AudioManager.ADJUST_MUTE else AudioManager.ADJUST_UNMUTE,0)
-        voiceSay(if(target) "已静音" else "已取消静音")
-        return true
-    }
-
-    /**
-     * 随机推荐一部：从该内容类型的首页推荐里随机取一部，**打开详情页**而不是直接播。
-     *
-     * 推荐的意义是「看看有什么」，直接起播反而把人架在那儿；详情页有简介和选集，
-     * 不合口味退回来再喊一次就行。也顺手对齐了「搜索只出结果」的原则。
-     */
-    private fun remoteRandomPick(arg: String): Boolean {
-        val type=if(arg.isBlank()) library.contentType else ContentType.fromStored(arg)
-        voiceSay("正在挑一部${type.label}…")
-        io.execute {
-            val items=runCatching { repository.home(1,type) }.getOrNull()?.items.orEmpty()
-                .filterNot { it.id in library.hidden() }
-            if(items.isEmpty()) {
-                main.post { if(!isDestroyed) voiceSay("没取到${type.label}推荐，稍后再试") }
-                return@execute
-            }
-            val pick=items.random()
-            main.post {
-                if(isDestroyed) return@post
-                if(library.contentType!=type) {
-                    library.contentType=type
-                    for(index in 0..1) { tabState.remove(index); tabFocus.remove(index) }
-                }
-                openDetail(pick,resume=false,autoplay=false)
-                voiceSay("随机推荐《${pick.title}》")
-            }
-        }
-        return true
-    }
-
-    private fun remoteOpenModule(module: String): Boolean {
-        val target=remoteTabOf(module) ?: return false
-        TvDialog.topmostDialog()?.dismiss()
-        if(screen=="player") {
-            resetPlaybackSession(); sleepTimer.cancel(); sleepStopped=false
-            saveProgress(); library.flush(); releasePlayer()
-        }
-        if(tab!=target) switchTab(target) else showCatalog()
-        nav.getOrNull(target)?.requestFocus()
-        return true
-    }
-
-    /**
-     * 遥控页输入框里那句话：先识别指令，无法识别时搜索剧名。
-     */
-    private fun remoteSay(text: String): Boolean {
-        val plan=VoiceIntent.parse(text) ?: return remoteWatch(text)
-        val ok=remoteDo(plan.command)
-        // 做不到就补一句：否则屏幕上什么都没变，人只会怀疑手机掉线了
-        if(!ok) Toast.makeText(this,"${plan.echo}：当前页面做不到",Toast.LENGTH_SHORT).show()
-        return ok
-    }
-
-    /**
-     * 「按名字找剧」。
-     *
-     * 默认**只把搜索结果摆出来，不替用户挑**：结果里混着预告、空壳和同名不同内容，
-     * 猜错一次的代价是「喊了 A 结果播了 B」，比让人多点一下烦得多。所以停在结果页，
-     * 由人自己选——搜索页面本来就把「搜的是什么、有哪些结果」放在屏幕上。
-     *
-     * 说清集号时直接播放指定集，否则展示搜索结果供选择。
-     */
-    private fun remoteWatch(query: String, episode: Int = 0): Boolean {
-        if(screen=="player") {
-            resetPlaybackSession(); sleepTimer.cancel(); sleepStopped=false
-            saveProgress(); library.flush(); releasePlayer()
-        }
-        // 先切到搜索结果页：结果本身就是要看的东西
-        runSearch(query,fromPhone=true)
-        if(episode<=0) {
-            // 当前内容库搜不到时换一个库再搜一次（漫剧/短剧分库），别把人晾在空列表上。
-            // 只换库，不替人挑剧——挑还是让人自己点。
-            searchOtherLibrary(query)
-            return true
-        }
-        // AI 剧没有独立搜索入口（searchTab=null），放进候选只会白等一次超时
-        val types=(listOf(library.contentType)+ContentType.entries).distinct().filter { it.searchTab!=null }
-        // 主站搜索按基名索引：喊「黄石第五季」常常一条都搜不到，去掉季号再试一次就够了。
-        // 原名优先，所以正常说法不会多花时间。
-        val words=listOf(query,TitleMatch.seriesBase(query)).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-        io.execute {
-            val hit=words.firstNotNullOfOrNull { word ->
-                types.firstNotNullOfOrNull { type ->
-                    val items=runCatching { repository.search(word,1,type) }.getOrNull()?.items.orEmpty()
-                    val index=TitleMatch.best(word,items)
-                    if(index<0) null else type to items[index]
-                }
-            }
-            // 标题对上只是第一步：搜索结果里混着预告、空壳和同名不同内容，
-            // 没有剧集就进播放器等于把人扔进一个黑屏。这里把详情先取回来验一次，
-            // 验不过就停在搜索页——结果已经摆在屏幕上了，点一下比猜可靠。
-            val ready=hit?.let { (type,series) ->
-                runCatching { repository.seriesDetail(series.id) }.getOrNull()
-                    ?.takeIf { it.episodes.isNotEmpty() }
-                    ?.let { Triple(type,series,it) }
-            }
-            main.post {
-                if(isDestroyed) return@post
-                if(ready==null) {
-                    val why=if(hit==null) "没搜到「$query」，可以换个说法再试"
-                        else "《${hit.second.title}》暂时没有可播放的剧集，请在结果里选一个"
-                    Toast.makeText(this,why,Toast.LENGTH_SHORT).show()
-                    return@post
-                }
-                val (type,series,loaded)=ready
-                if(library.contentType!=type) { library.contentType=type; for(index in 0..1) { tabState.remove(index); tabFocus.remove(index) } }
-                if(episode>0) {
-                    if(episode>loaded.episodes.size) {
-                        openDetail(series,resume=false,autoplay=false,preloaded=loaded)
-                        Toast.makeText(this,"《${series.title}》只有 ${loaded.episodes.size} 集",Toast.LENGTH_SHORT).show()
-                        return@post
-                    }
-                    // 说了集号就落到那一集：先摆详情页，再从那一集起播（不续播旧进度）
-                    openDetail(series,resume=false,autoplay=false,preloaded=loaded)
-                    playEpisode(episode-1,savedPosition(episode-1))
-                } else openDetail(series,resume=true,preloaded=loaded)
-            }
-        }
-        return true
-    }
-
-    /**
-     * 「这个库里没有，就换个库看一眼」。
-     *
-     * 漫剧与短剧是两个独立搜索池，人在漫剧模式下喊一部短剧的名字，结果页会是一片空白——
-     * 屏幕上看不出「是没这部」还是「搜错库了」。这里只负责换库并重搜，
-     * 命中的结果照样由人自己点。
-     */
-    private fun searchOtherLibrary(query: String) {
-        val current=library.contentType
-        val types=(listOf(current)+ContentType.entries).distinct().filter { it.searchTab!=null }
-        io.execute {
-            val found=types.firstNotNullOfOrNull { type ->
-                val items=runCatching { repository.search(query,1,type) }.getOrNull()?.items.orEmpty()
-                if(items.isEmpty()) null else type to items.size
-            } ?: return@execute
-            main.post {
-                if(isDestroyed || found.first==library.contentType) return@post
-                runSearch(query,found.first,fromPhone=true)
-                Toast.makeText(this,"${found.first.label}里找到 ${found.second} 条「$query」",Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    /** 方向键走焦点搜索，不做 KeyEvent 注入：注入会撞上播放屏的专用语义（↓选集、↑更多）。 */
-    private fun remoteDpad(key: String): Boolean {
-        // 弹窗是独立窗口，盖上来以后 Activity.currentFocus 恒为 null，下面的 focusSearch 全部落空。
-        // 有弹窗就先按真实按键交给它，焦点导航和确认点击都走弹窗自己的规则。
-        TvDialog.topmostDialog()?.let { return TvDialog.dispatchRemoteKey(it,key) }
-        // 播放屏没有可聚焦的 View（surface + HUD），焦点搜索必然落空，手机上表现成「按了没反应」。
-        // 控制条收起时直接对齐实体遥控器的播放屏语义：上呼出设置、下选集、左右快退快进、确认暂停。
-        if(screen=="player" && !panel) {
-            return when(key) {
-                "center" -> { togglePlayback(); true }
-                "up" -> { showPanel(); true }
-                "down" -> { showEpisodePanel(hud); true }
-                "left" -> { seek(-1,0); true }
-                "right" -> { seek(1,0); true }
-                else -> false
-            }
-        }
-        val focus=currentFocus
-        if(key=="center") {
-            if(screen=="player" && !panel) { togglePlayback(); return true }
-            return focus?.performClick()==true
-        }
-        val direction=when(key) {
-            "up"->View.FOCUS_UP; "down"->View.FOCUS_DOWN
-            "left"->View.FOCUS_LEFT; "right"->View.FOCUS_RIGHT
-            else->return false
-        }
-        val next=focus?.focusSearch(direction) ?: root.focusSearch(direction)
-        return next!=null && next.requestFocus()
     }
 
     // ================= 手机竖屏页面 =================
@@ -7056,7 +6246,7 @@ class MainActivity: Activity() {
     fun togglePlaybackPhone()=togglePlayback()
     fun seekToPhone(position: Long)=seekTo(position)
     fun skipEpisodePhone(direction: Int): Boolean = skipEpisode(direction).also { if(!it) PhoneUi.toast(this,"没有更多集数") }
-    fun showPhoneEpisodePicker() { if(detail!=null) showEpisodePanel(voiceAnchor) }
+    fun showPhoneEpisodePicker() { if(detail!=null) showEpisodePanel(pickerAnchor) }
 
     /** 手机竖屏选集：底部数字宫格弹层（对齐葫芦娃红果播放页），选中后直接切集。 */
     private fun showPhoneEpisodeSheet(data: com.hongguotv.core.Detail) {
@@ -7086,8 +6276,8 @@ class MainActivity: Activity() {
         phonePlayer?.updateVideoPosition(size)
         phoneEpisodeSheet?.updatePreviewAspectRatio(phonePlayer?.episodePreviewAspectRatio())
     }
-    fun showPhoneSpeedPicker() { showSpeedPicker(voiceAnchor,true) }
-    fun showPhoneQualityPicker() { showQualityPicker(voiceAnchor,true) }
+    fun showPhoneSpeedPicker() { showSpeedPicker(pickerAnchor,true) }
+    fun showPhoneQualityPicker() { showQualityPicker(pickerAnchor,true) }
 
     /** 手机播放页「重新加载」：从当前位置重取地址重播。 */
     fun retryPlaybackPhone() {
@@ -7109,7 +6299,7 @@ class MainActivity: Activity() {
             when(choice) {
                 0 -> showPhoneEpisodePicker()
                 1 -> showPhoneQualityPicker()
-                2 -> showFramePicker(voiceAnchor,true)
+                2 -> showFramePicker(pickerAnchor,true)
                 3 -> { detail?.series?.id?.let { toggleSeriesDanmaku(it) }; refreshPhonePlayerNow() }
                 4 -> retryPlaybackPhone()
                 5 -> showPhoneSettings()
@@ -7358,17 +6548,17 @@ class MainActivity: Activity() {
         refreshPhoneSettings()
     }
 
-    fun phoneOrientationPicker() = showOrientationPicker(voiceAnchor)
-    fun phoneQualityPicker() = showQualityPicker(voiceAnchor,false)
-    fun phoneSpeedPicker() = showSpeedPicker(voiceAnchor,false)
-    fun phoneFramePicker() = showFramePicker(voiceAnchor,false)
-    fun phoneDanmakuOpacity() = showDanmakuOpacityPicker(voiceAnchor) { phoneRefreshSettingsValues() }
-    fun phoneDanmakuFont() = showDanmakuFontPicker(voiceAnchor) { phoneRefreshSettingsValues() }
-    fun phoneDanmakuSpeed() = showDanmakuSpeedPicker(voiceAnchor) { phoneRefreshSettingsValues() }
-    fun phoneDanmakuRows() = showDanmakuRowsPicker(voiceAnchor) { phoneRefreshSettingsValues() }
-    fun phoneBlockedWords() = showBlockedWordDialog(voiceAnchor)
-    fun phoneWatchStats() = showWatchStats(voiceAnchor)
-    fun phoneInterfaceCheck() = showInterfaceCheck(voiceAnchor)
+    fun phoneOrientationPicker() = showOrientationPicker(pickerAnchor)
+    fun phoneQualityPicker() = showQualityPicker(pickerAnchor,false)
+    fun phoneSpeedPicker() = showSpeedPicker(pickerAnchor,false)
+    fun phoneFramePicker() = showFramePicker(pickerAnchor,false)
+    fun phoneDanmakuOpacity() = showDanmakuOpacityPicker(pickerAnchor) { phoneRefreshSettingsValues() }
+    fun phoneDanmakuFont() = showDanmakuFontPicker(pickerAnchor) { phoneRefreshSettingsValues() }
+    fun phoneDanmakuSpeed() = showDanmakuSpeedPicker(pickerAnchor) { phoneRefreshSettingsValues() }
+    fun phoneDanmakuRows() = showDanmakuRowsPicker(pickerAnchor) { phoneRefreshSettingsValues() }
+    fun phoneBlockedWords() = showBlockedWordDialog(pickerAnchor)
+    fun phoneWatchStats() = showWatchStats(pickerAnchor)
+    fun phoneInterfaceCheck() = showInterfaceCheck(pickerAnchor)
     fun phoneRuntimeLogs() = RuntimeLogDialog.show(this, ::runtimeLogSummary)
 
     /** 复制到日志里的现场状态：排查「三条进度条全灰」时不依赖日志有没有打到。 */
@@ -7404,8 +6594,6 @@ class MainActivity: Activity() {
             }
         }
     }
-    fun phoneQuickTransfer() { tvTools.quickTransfer(voiceAnchor,::handleQuickTransfer) }
-    fun phoneUpdater() = updater.show(voiceAnchor)
     fun phoneCrashLogs() {
         io.execute {
             val records=CrashReporter.reports(this)
@@ -7435,7 +6623,7 @@ class MainActivity: Activity() {
         val current = UiScale.index(this)
         tvTools.choose("界面缩放", UiScale.LEVELS.mapIndexed { index, level ->
             level.first + (if(index==current) "   ·   当前" else "")
-        }, voiceAnchor, { choice ->
+        }, pickerAnchor, { choice ->
             if(choice != current) {
                 UiScale.set(this, choice)
                 PageRestore.phoneSettings = true
@@ -7502,53 +6690,6 @@ class MainActivity: Activity() {
     /** 手机页签重渲染入口（收藏分组筛选变化时用）。只在目录页生效，
      *  详情/播放页有各自的渲染入口，不能被这里覆盖掉。 */
     fun renderPhoneTab() { if(phoneLayout() && screen=="catalog" && !phoneDetailCollection) renderPhone() }
-
-    /** 与电视菜单键的抬起分支完全一致：短按按用户配置分流，长按走快捷面板。 */
-    private fun remoteMenuShort(): Boolean {
-        if(screen!="player") return false
-        if(panel) { hidePlaybackOverlay(); return true }
-        if(playError) return true
-        when(extras.menuKeyAction) {
-            PlaybackExtras.MENU_EPISODES -> showEpisodePanel(hud)
-            PlaybackExtras.MENU_DANMAKU -> detail?.series?.id?.let { toggleSeriesDanmaku(it) }
-            else -> showPanel()
-        }
-        return true
-    }
-
-    private val remoteController=object: RemoteController {
-        override fun navigate(cmd: RemoteCommand): Boolean = when(cmd) {
-            is RemoteCommand.Dpad -> remoteDpad(cmd.key)
-            // 有弹窗时返回键先关弹窗：直接走 goBack() 会绕过它，人就被卡在弹窗里出不来。
-            RemoteCommand.Back -> {
-                val overlay=TvDialog.topmostDialog()
-                if(overlay!=null && TvDialog.dispatchRemoteKey(overlay,"back")) true else { goBack(); true }
-            }
-            // 与实体遥控长按菜单键一致：呼出四列快捷面板（menuLongRunnable 也走 showQuickPanel）；
-            is RemoteCommand.Menu -> if(cmd.long) {
-                if(screen=="player") { showQuickPanel(); true } else remoteMenuShort()
-            } else remoteMenuShort()
-            is RemoteCommand.Search -> {
-                // 手机搜索会切到搜索结果页，先保存进度并停止当前播放。
-                if(screen=="player") { resetPlaybackSession(); sleepTimer.cancel(); sleepStopped=false; saveProgress(); library.flush(); releasePlayer() }
-                runSearch(cmd.query,fromPhone=true); true
-            }
-            is RemoteCommand.Resume -> remoteResumePlay(cmd.id)
-            is RemoteCommand.Open -> remoteOpenModule(cmd.module)
-            is RemoteCommand.Watch -> remoteWatch(cmd.query,cmd.episode)
-            is RemoteCommand.Say -> remoteSay(cmd.text)
-            is RemoteCommand.Act -> remoteAct(cmd)
-            else -> false
-        }
-        override fun onClientsChanged(clients: Int) {
-            remoteHolding=clients>0
-            refreshScreenOn()
-            remote?.setClients(clients)
-        }
-        override fun onSessionEnded() {
-            remote=null; remoteHolding=false; remoteCloudKicked=false; refreshScreenOn(); syncRemoteEntry()
-        }
-    }
 
     private fun goBack() {
         if(!library.isLoaded) { finish(); return }
@@ -7713,10 +6854,6 @@ class MainActivity: Activity() {
         super.onResume(); foreground=true; main.removeCallbacks(tick); main.post(tick)
         if(PortraitStyle.refresh(this)) redrawPhoneTheme()
         phoneConfiguration=android.content.res.Configuration(resources.configuration)
-        updater.resume()
-        autoStartRemote()
-        // 从「安装未知应用」授权页返回：同一个包继续安装，不用重新扫码
-        pendingQuickApk?.let { apk -> if(Build.VERSION.SDK_INT<26 || packageManager.canRequestPackageInstalls()) { pendingQuickApk=null; installQuickApk(apk) } }
         if(library.isLoaded) {
             if(initialCatalogPending) { if(phoneLayout()) showInitialPhonePage() else showCatalog(load=true) }
             else if(restoreStoppedPage) {
@@ -7749,8 +6886,6 @@ class MainActivity: Activity() {
         // 弹框窗口不随主页面重建，回到前台时续载尚未显示的封面。
         phoneExitArtwork?.refreshVisible()
         maybePromptCrash()
-        // 回到前台：先把状态推给手机（页面从「电视已暂停」恢复），缓存意图由 remotePublish 内部补上
-        remotePublish(true)
     }
     /**
      * 从后台回来时原地续播：onStop 已经保留了播放器与媒体源，这里只把界面重新挂回去。
@@ -7793,13 +6928,10 @@ class MainActivity: Activity() {
         if(hasFocus && screen=="settings") phoneRefreshSettingsValues()
     }
     override fun onPause() {
-        updater.pause()
         foreground=false; main.removeCallbacks(tick); cancelRecovery(); cancelPrefetch(); mediaSession.deactivate()
         sleepTimer.cancel(); favoriteMonitor.stop(); detailAutoplay=false; requestedAutoplay=false; pausedForLifecycle=true
         player?.pause(); saveProgress(); library.flush()
         savePhoneSession()
-        // 会话保留，但要让手机知道「电视已暂停」，否则页面会一直显示成还能操作
-        remotePublish(true)
         super.onPause()
     }
     override fun onStop() {
@@ -7822,7 +6954,6 @@ class MainActivity: Activity() {
         retainedPhoneCatalogs.clear()
         // 取消页面请求，保留有上限的内存图片缓存；真正内存紧张时由 trimMemory 回收。
         artwork.cancelPage(); library.flush()
-        remotePublish(true)
         super.onStop()
     }
     override fun onTrimMemory(level: Int) {
@@ -7843,8 +6974,7 @@ class MainActivity: Activity() {
         if(phoneFullscreenPlayback) requestedOrientation=PhoneUi.requestedOrientation(this)
         phoneFullscreenPlayback=false; phonePlayerRenderedFullscreen=false
         if(networkRegistered) connectivity.unregisterNetworkCallback(networkCallback)
-        favoriteMonitor.destroy(); tvTools.destroy(); updater.destroy(); saveProgress(); releasePlayer(); accountManager.destroy(); library.close()
-        closeRemote()
+        favoriteMonitor.destroy(); tvTools.destroy(); saveProgress(); releasePlayer(); accountManager.destroy(); library.close()
         artwork.close(); releaseCatalogViews(); mediaSession.release(); main.removeCallbacksAndMessages(null)
         cancelSearchSuggestions(); suggestIo.shutdownNow(); pageIo.shutdownNow(); io.shutdownNow(); playbackCache.close(); episodeDiskCache?.close(); episodeDiskCache=null
         Thread({ repository.http.dispatcher.cancelAll(); repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() },"hongguotv-network-cleanup").start()

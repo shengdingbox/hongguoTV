@@ -325,7 +325,6 @@ class PhoneSettings(private val activity: MainActivity) {
 
     private fun deviceSection(parent: LinearLayout) {
         section(parent, "设备与数据") { group ->
-            addRow(group, row("手机快传", "APK 与视频") { activity.phoneQuickTransfer() })
             addRow(group, row("恢复隐藏推荐", "${library.hidden().size} 部", { "${library.hidden().size} 部" }) { activity.phoneUnhideAll() })
             addRow(group, row("观看统计", "本机累计") { activity.phoneWatchStats() })
             addRow(group, row("清理缓存") { activity.phoneClearCache() })
@@ -334,7 +333,6 @@ class PhoneSettings(private val activity: MainActivity) {
 
     private fun aboutSection(parent: LinearLayout) {
         section(parent, "关于红果") { group ->
-            addRow(group, row("版本与更新", BuildConfig.VERSION_NAME) { activity.phoneUpdater() })
             addRow(group, row("接口自检") { activity.phoneInterfaceCheck() })
             addRow(group, row("运行日志") { activity.phoneRuntimeLogs() })
             addRow(group, row("异常日志", "${CrashReporter.count(activity)} 份", { "${CrashReporter.count(activity)} 份" }) { activity.phoneCrashLogs() })

@@ -301,10 +301,11 @@ object PortraitUi {
                 card.rank.background = PortraitStyle.shape(activity, color, radius = 6)
             }
             // 文案、收藏状态或排名变化时沿用已显示的封面；签名更新仍交给图片缓存复用。
-            if (holder.cover != item.cover || card.image.drawable == null) {
-                holder.cover = item.cover
-                if (sameSeries) activity.updatePhoneCover(card.image, item.cover)
-                else loadCover(card.image, item.cover)
+            val cover = item.cover.ifBlank { if (sameSeries) holder.cover else "" }
+            if (holder.cover != cover || card.image.drawable == null) {
+                holder.cover = cover
+                if (sameSeries) activity.updatePhoneCover(card.image, cover)
+                else loadCover(card.image, cover)
             }
             // 未展示字段更新时不重绑卡片，交互始终读取当前列表中的最新剧集数据。
             card.setOnClickListener { items.getOrNull(holder.bindingAdapterPosition)?.let(open) }

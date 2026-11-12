@@ -105,6 +105,8 @@ class ArtworkLoader(context: Context) {
     fun load(view: ImageView, url: String, priority: Int = PRIORITY_VISIBLE, widthPx: Int = 0, heightPx: Int = 0,
              keepCurrentImage: Boolean = false) {
         if (closed) return
+        // 同一剧集的刷新结果暂缺封面时，保留旧图和仍在进行的请求。
+        if (keepCurrentImage && url.isBlank()) return
         val cacheUrl = ArtworkCache.identity(url)
         val previous = bindings[view]
         if (previous != null && previous.owner == owner && previous.cacheUrl == cacheUrl && previous.width == widthPx && previous.height == heightPx) {
@@ -162,14 +164,17 @@ class ArtworkLoader(context: Context) {
     private fun peekCached(view: ImageView, url: String, widthPx: Int, heightPx: Int): Pair<Key, Bitmap>? {
         val width = if (widthPx > 0) widthPx else view.width - view.paddingLeft - view.paddingRight
         val height = if (heightPx > 0) heightPx else view.height - view.paddingTop - view.paddingBottom
-        if (width <= 0 || height <= 0) {
-            val key = cache.snapshot().keys.filter { it.url == url }
-                .minByOrNull { it.width.toLong() * it.height } ?: return null
-            return cache.get(key)?.let { key to it }
+        if (width > 0 && height > 0) {
+            val scale = min(1.0, 1024.0 / max(width, height))
+            val key = Key(url, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
+            cachedBitmap(key)?.let { return key to it }
         }
-        val scale = min(1.0, 1024.0 / max(width, height))
-        val key = Key(url, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
-        return cachedBitmap(key)?.let { key to it }
+        // 同封面的较小位图也可先显示；按新尺寸补解码期间不回退到空白。
+        val fallback = cache.snapshot().keys.filter { it.url == url }.minByOrNull {
+            if (width > 0 && height > 0) abs(it.width - width).toLong() + abs(it.height - height)
+            else it.width.toLong() * it.height
+        } ?: return null
+        return cache.get(fallback)?.let { fallback to it }
     }
 
     /** 大海报可直接用于最近观看的小卡片；少量尺寸误差也不重复解码。 */

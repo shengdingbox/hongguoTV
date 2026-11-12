@@ -5752,7 +5752,7 @@ class MainActivity: Activity() {
             feedScroll.addView(body)
             update=when(phoneTab) {
                 "home" -> portraitPages.home(body,scrollRoot=feedScroll)
-                "fav" -> { portraitPages.favorites(body,scrollRoot=feedScroll); null }
+                "fav" -> portraitPages.favorites(body,scrollRoot=feedScroll)
                 "mine" -> portraitPages.mine(body,feedScroll)
                 "search" -> portraitPages.search(body,::runPhoneSearch,feedScroll)
                 else -> null
@@ -5880,6 +5880,8 @@ class MainActivity: Activity() {
         phoneRecommendationError=""; phoneRecommendationFailedMore=more
         fun applyPage(result: RecommendationPage, finished: Boolean) {
             if(!phoneLayout() || ticket!=generation || screen!="catalog" || phoneTab!="home" || phoneDetailCollection) return
+            // 已有内容时等刷新批次完整返回，再一次提交差异，避免多批数据反复移动封面。
+            if(!finished && !more && previous.isNotEmpty()) return
             phoneHomeLoading=!finished
             // 每个阶段都是本批累计结果，相对加载前的快照合并，追加分页不会重排已显示的海报。
             val combined=if(more) previous+result.items else result.items+previous
@@ -5986,6 +5988,8 @@ class MainActivity: Activity() {
         fun applyPage(result: MobileRankPage, finished: Boolean) {
             if(!phoneLayout() || ticket!=generation || screen!="catalog" || phoneTab!="rank" ||
                 phoneRankContent!=activeContent || phoneRankBoard!=activeBoard || phoneDetailCollection) return
+            // 缓存或旧榜单继续显示到刷新完成，避免首批较短的列表先移除、后补回已有卡片。
+            if(!finished && !more && !previous?.items.isNullOrEmpty()) return
             phoneRankLoading=!finished; phoneRankReady=true
             if(result.contents.isNotEmpty()) phoneRankContents=result.contents
             phoneRankContent=result.contentId; phoneRankBoard=result.boardId
@@ -6159,11 +6163,20 @@ class MainActivity: Activity() {
     private fun runPhoneSearch(value: String) {
         val clean=value.trim(); if(clean.isEmpty() || clean.length>80) return
         cancelSearchSuggestions()
-        if(clean!=phoneQuery) {
+        val sameQuery=clean==phoneQuery
+        val retained=retainedPhoneCatalogs["search"]
+        val previous=if(sameQuery) {
+            if(phoneCatalogSource=="search") catalog else retained?.state?.items.orEmpty()
+        } else emptyList()
+        val previousHasMore=sameQuery && (if(phoneCatalogSource=="search") hasMore else retained?.state?.hasMore==true)
+        if(!sameQuery) {
             pendingPhoneScrolls.remove("search"); phoneSessionPositions["search"]=0; phoneScrollY=0
+            retained?.frame?.let { root.removeView(it) }
+            retainedPhoneCatalogs.remove("search")
+            phoneSearchPage=1
         }
-        retainedPhoneCatalogs.remove("search")?.frame?.let { root.removeView(it) }
-        phoneQuery=clean; phoneSearchDraft=clean; phoneSearchError=""; phoneSearching=true; catalog=emptyList(); hasMore=false; phoneSearchPage=1
+        // 相同搜索词的刷新沿用视图与结果，加载和失败期间都保留已有封面。
+        phoneQuery=clean; phoneSearchDraft=clean; phoneSearchError=""; phoneSearching=true; catalog=previous; hasMore=previousHasMore
         // 从其它页签发起搜索时，先把界面切到搜索页签，否则结果回来也看不见
         if(phoneTab!="search") { phoneTab="search"; phoneScrollY=0 }
         screen="catalog"
@@ -6175,7 +6188,7 @@ class MainActivity: Activity() {
             if(phoneLayout() && ticket==generation) {
                 phoneSearching=false
                 if(phoneTab=="search" && phoneQuery==query) {
-                    catalog=result.items; hasMore=result.hasMore; phoneCatalogSource="search"
+                    catalog=result.items; hasMore=result.hasMore; phoneCatalogSource="search"; phoneSearchPage=1
                     renderPhone()
                     loadSearchArtwork()
                 }
@@ -6183,7 +6196,7 @@ class MainActivity: Activity() {
         }, { problem ->
             if(phoneLayout() && ticket==generation) {
                 phoneSearching=false
-                if(phoneTab=="search" && phoneQuery==query) { phoneSearchError="搜索失败："+problem.message.orEmpty().take(120); catalog=emptyList(); renderPhone() }
+                if(phoneTab=="search" && phoneQuery==query) { phoneSearchError="搜索失败："+problem.message.orEmpty().take(120); renderPhone() }
                 android.util.Log.w("HongguoTV","Phone search failed: ${problem.message}")
             }
         })

@@ -24,8 +24,9 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.core.widget.NestedScrollView
 import androidx.recyclerview.widget.RecyclerView
-import com.hongguotv.core.Series
+import com.hongguotv.core.HotSearchTopic
 import com.hongguotv.core.NewReleaseCalendar
+import com.hongguotv.core.Series
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
@@ -420,22 +421,19 @@ class PortraitPages(
         entry.progress.progress = if (watch.duration > 0) (watch.position * 1000 / watch.duration).toInt().coerceIn(0, 1000) else 0
     }
 
-    fun favorites(body: LinearLayout, scrollRoot: NestedScrollView? = null) {
+    fun favorites(body: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean)->Unit {
         body.addView(PortraitUi.pageTitle(activity, "收藏"), lp())
-        favoritesGrid(body, scrollRoot)
-    }
-
-    private fun favoritesGrid(body: LinearLayout, scrollRoot: NestedScrollView?) {
-        val items = activity.phoneLibrary.favorites()
-        if (items.isEmpty()) {
-            body.addView(PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。"), lp())
-            return
-        }
-        val grid = RecyclerView(activity)
-        body.addView(grid, lp())
-        PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) }, null, scrollRoot).apply {
-            this.items = items
-            attach(grid)
+        val empty=PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
+        body.addView(empty,lp())
+        val grid=RecyclerView(activity)
+        body.addView(grid,lp())
+        val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },null,scrollRoot)
+        adapter.attach(grid)
+        return { _ ->
+            val items=activity.phoneLibrary.favorites()
+            empty.visibility=if(items.isEmpty()) View.VISIBLE else View.GONE
+            grid.visibility=if(items.isEmpty()) View.GONE else View.VISIBLE
+            adapter.submitItems(items,false)
         }
     }
 
@@ -528,88 +526,148 @@ class PortraitPages(
         })
         val results=column()
         body.addView(results,lp())
-        var shown=""
+        // 数据、加载状态和错误各自更新，刷新或补封面时保留现有网格及 ImageView。
+        if(query.isNotBlank()) {
+            val errorBody=column()
+            results.addView(errorBody,lp())
+            val empty=PortraitUi.emptyHint(activity,"")
+            results.addView(empty,lp())
+            val grid=RecyclerView(activity)
+            results.addView(grid,lp())
+            val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },
+                { activity.loadMorePhone() },scrollRoot)
+            adapter.attach(grid)
+            var shownError=""
+            return { _ ->
+                val items=activity.catalog
+                val error=activity.phoneSearchErrorPhone
+                if(shownError!=error) {
+                    shownError=error
+                    errorBody.removeAllViews()
+                    if(error.isNotBlank()) errorBody.addView(PortraitUi.messageBlock(activity,error) { submit(query) },lp())
+                }
+                empty.text=if(activity.phoneSearchActive) "正在搜索…"
+                    else "没有找到“$query”相关的${activity.phoneLibrary.contentType.label}，换个词试试"
+                empty.visibility=if(items.isEmpty() && error.isBlank()) View.VISIBLE else View.GONE
+                grid.visibility=if(items.isEmpty()) View.GONE else View.VISIBLE
+                adapter.submitItems(items,activity.hasMore && !activity.phoneSearchActive && error.isBlank())
+            }
+        }
+        val updateHotSearch=renderHotSearch(results,scrollRoot,::search)
+        val historyBody=column()
+        results.addView(historyBody,lp())
+        var shownHistory: List<String>?=null
         return { _ ->
-            val signature=listOf(activity.catalog,activity.hasMore,activity.phoneSearchActive,activity.phoneSearchErrorPhone,
-                activity.hotSearchPhone,activity.hotSearchLoadingPhone,activity.hotSearchErrorPhone,activity.phoneHotBoardName).toString()
-            if(signature!=shown) {
-                shown=signature; results.removeAllViews()
-                if(query.isNotBlank()) {
-                    val error=activity.phoneSearchErrorPhone
-                    if(error.isNotBlank()) results.addView(PortraitUi.messageBlock(activity,error) { submit(query) },lp())
-                    if(activity.catalog.isEmpty() && error.isBlank()) results.addView(PortraitUi.emptyHint(activity,
-                        if(activity.phoneSearchActive) "正在搜索…" else "没有找到“$query”相关的${activity.phoneLibrary.contentType.label}，换个词试试"),lp())
-                    if(activity.catalog.isNotEmpty()) {
-                        val grid=RecyclerView(activity); results.addView(grid,lp())
-                        PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },{ activity.loadMorePhone() },scrollRoot).apply {
-                            items=activity.catalog; attach(grid); submitItems(activity.catalog,activity.hasMore && error.isBlank())
-                        }
-                    }
-                } else {
-                    renderHotSearch(results,scrollRoot,::search)
-                    val history=activity.phoneLibrary.searches().take(12)
-                    if(history.isNotEmpty()) {
-                        section(results,"搜索历史")
-                        history.forEach { recent ->
-                            results.addView(text(recent.query,14f).apply {
-                                setPadding(dp(16),dp(13),dp(16),dp(13))
-                                background=PortraitStyle.selectable(activity,Color.TRANSPARENT)
-                                setOnClickListener { search(recent.query) }
-                            },lp())
-                        }
+            updateHotSearch()
+            val history=activity.phoneLibrary.searches().take(12).map { it.query }
+            if(shownHistory!=history) {
+                shownHistory=history
+                historyBody.removeAllViews()
+                if(history.isNotEmpty()) {
+                    section(historyBody,"搜索历史")
+                    history.forEach { recent ->
+                        historyBody.addView(text(recent,14f).apply {
+                            setPadding(dp(16),dp(13),dp(16),dp(13))
+                            background=PortraitStyle.selectable(activity,Color.TRANSPARENT)
+                            setOnClickListener { search(recent) }
+                        },lp())
                     }
                 }
             }
         }
     }
 
-    private fun renderHotSearch(body: LinearLayout,scrollRoot: NestedScrollView?,search: (String)->Unit) {
-        val hot=activity.hotSearchPhone
-        if(activity.hotSearchLoadingPhone && hot==null) body.addView(PortraitUi.emptyHint(activity,"正在加载热搜…"),lp())
-        val error=activity.hotSearchErrorPhone
-        if(error.isNotBlank()) body.addView(PortraitUi.messageBlock(activity,error,activity::retryHotSearchPhone),lp())
-        if(hot==null) return
-        fun grid(items: List<com.hongguotv.core.HotSearchItem>,ranked: Boolean) {
-            if(items.isEmpty()) return
-            val view=RecyclerView(activity); body.addView(view,lp())
-            PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },null,scrollRoot,ranked=ranked).apply {
-                this.items=items.map { it.series }; attach(view)
-            }
+    /** 缓存首帧、联网刷新及切榜共用网格，只提交剧集差异。 */
+    private fun renderHotSearch(body: LinearLayout,scrollRoot: NestedScrollView?,search: (String)->Unit): ()->Unit {
+        val loading=PortraitUi.emptyHint(activity,"正在加载热搜…")
+        body.addView(loading,lp())
+        val errorBody=column()
+        body.addView(errorBody,lp())
+        fun grid(parent: LinearLayout,ranked: Boolean): Pair<RecyclerView,PortraitUi.PosterGrid> {
+            val view=RecyclerView(activity)
+            parent.addView(view,lp())
+            val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },null,scrollRoot,ranked=ranked)
+            adapter.attach(view)
+            return view to adapter
         }
-        if(hot.guesses.isNotEmpty()) {
-            section(body,"猜你想搜")
-            grid(hot.guesses,false)
-        }
-        if(hot.boards.isEmpty()) return
+        val guesses=column()
+        section(guesses,"猜你想搜")
+        val (_,guessesAdapter)=grid(guesses,false)
+        body.addView(guesses,lp())
+        val boards=column()
         val strip=HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false }
         val choices=row().apply { setPadding(dp(16),dp(12),dp(16),dp(8)) }
-        val selected=hot.boards.firstOrNull { it.name==activity.phoneHotBoardName } ?: hot.boards.first()
-        var selectedView: View?=null
-        hot.boards.forEach { board ->
-            val on=board==selected
-            val chip=text(board.name,13f,if(on) PortraitStyle.onChipSelected else PortraitStyle.text).apply {
-                gravity=Gravity.CENTER; setPadding(dp(14),dp(9),dp(14),dp(9))
-                background=PortraitStyle.selectable(activity,if(on) PortraitStyle.chipSelected else PortraitStyle.raised,radius=20)
-                isSelected=on
-                setOnClickListener { activity.chooseHotBoardPhone(board.name) }
+        strip.addView(choices)
+        boards.addView(strip,lp())
+        val (boardGrid,boardAdapter)=grid(boards,true)
+        val topics=column()
+        boards.addView(topics,lp())
+        body.addView(boards,lp())
+        val chips=linkedMapOf<String,TextView>()
+        var shownBoards=emptyList<String>()
+        var shownSelected=""
+        var shownTopics: List<HotSearchTopic>?=null
+        var shownError=""
+        return {
+            val hot=activity.hotSearchPhone
+            loading.visibility=if(activity.hotSearchLoadingPhone && hot==null) View.VISIBLE else View.GONE
+            val error=activity.hotSearchErrorPhone
+            if(shownError!=error) {
+                shownError=error
+                errorBody.removeAllViews()
+                if(error.isNotBlank()) errorBody.addView(PortraitUi.messageBlock(activity,error,activity::retryHotSearchPhone),lp())
             }
-            choices.addView(chip,lp(-2,-2).apply { rightMargin=dp(6) })
-            if(on) selectedView=chip
-        }
-        strip.addView(choices);body.addView(strip,lp())
-        strip.post { selectedView?.let { strip.scrollTo((it.left-strip.width/2+it.width/2).coerceAtLeast(0),0) } }
-        grid(selected.items,true)
-        selected.topics.forEachIndexed { index,topic ->
-            val line=row().apply {
-                setPadding(dp(16),dp(14),dp(16),dp(14))
-                background=PortraitStyle.selectable(activity,Color.TRANSPARENT)
-                setOnClickListener { search(topic.query) }
-                contentDescription="第 ${index+1} 名，${topic.title}，${topic.heat}"
+            val guessItems=hot?.guesses.orEmpty().map { it.series }
+            guesses.visibility=if(guessItems.isEmpty()) View.GONE else View.VISIBLE
+            guessesAdapter.submitItems(guessItems,false)
+            val availableBoards=hot?.boards.orEmpty()
+            boards.visibility=if(availableBoards.isEmpty()) View.GONE else View.VISIBLE
+            val selected=availableBoards.firstOrNull { it.name==activity.phoneHotBoardName } ?: availableBoards.firstOrNull()
+            val names=availableBoards.map { it.name }
+            val rebuilt=names!=shownBoards
+            if(rebuilt) {
+                shownBoards=names
+                choices.removeAllViews(); chips.clear()
+                names.forEach { name ->
+                    val chip=text(name,13f).apply {
+                        gravity=Gravity.CENTER; setPadding(dp(14),dp(9),dp(14),dp(9))
+                        setOnClickListener { activity.chooseHotBoardPhone(name) }
+                    }
+                    chips[name]=chip
+                    choices.addView(chip,lp(-2,-2).apply { rightMargin=dp(6) })
+                }
             }
-            line.addView(text("${index+1}",15f,PortraitStyle.accent),lp(dp(28),-2))
-            line.addView(text(topic.title,14f),lp(0,-2).apply { weight=1f })
-            if(topic.heat.isNotBlank()) line.addView(text(topic.heat,12f,PortraitStyle.muted),lp(-2,-2))
-            body.addView(line,lp())
+            val selectedName=selected?.name.orEmpty()
+            if(rebuilt || shownSelected!=selectedName) {
+                shownSelected=selectedName
+                chips.forEach { (name,chip) ->
+                    val on=name==selectedName
+                    chip.setTextColor(if(on) PortraitStyle.onChipSelected else PortraitStyle.text)
+                    chip.background=PortraitStyle.selectable(activity,if(on) PortraitStyle.chipSelected else PortraitStyle.raised,radius=20)
+                    chip.isSelected=on
+                }
+                strip.post { chips[shownSelected]?.let { strip.scrollTo((it.left-strip.width/2+it.width/2).coerceAtLeast(0),0) } }
+            }
+            val items=selected?.items.orEmpty().map { it.series }
+            boardGrid.visibility=if(items.isEmpty()) View.GONE else View.VISIBLE
+            boardAdapter.submitItems(items,false)
+            val nextTopics=selected?.topics.orEmpty()
+            if(shownTopics!=nextTopics) {
+                shownTopics=nextTopics
+                topics.removeAllViews()
+                nextTopics.forEachIndexed { index,topic ->
+                    val line=row().apply {
+                        setPadding(dp(16),dp(14),dp(16),dp(14))
+                        background=PortraitStyle.selectable(activity,Color.TRANSPARENT)
+                        setOnClickListener { search(topic.query) }
+                        contentDescription="第 ${index+1} 名，${topic.title}，${topic.heat}"
+                    }
+                    line.addView(text("${index+1}",15f,PortraitStyle.accent),lp(dp(28),-2))
+                    line.addView(text(topic.title,14f),lp(0,-2).apply { weight=1f })
+                    if(topic.heat.isNotBlank()) line.addView(text(topic.heat,12f,PortraitStyle.muted),lp(-2,-2))
+                    topics.addView(line,lp())
+                }
+            }
         }
     }
 }

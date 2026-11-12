@@ -4,9 +4,12 @@ package com.hongguotv.core
 import okhttp3.Call
 import okhttp3.Response
 import java.io.IOException
+import java.io.InterruptedIOException
+import java.util.concurrent.TimeUnit
 
 /** Cancels only the work owned by one navigation/playback intent, including body reads. */
-class RequestScope {
+class RequestScope(timeoutMillis: Long = 0) {
+    private var deadlineNanos = if(timeoutMillis>0) System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(timeoutMillis) else Long.MAX_VALUE
     private var cancelled = false
     private val calls = mutableSetOf<Call>()
 
@@ -14,9 +17,12 @@ class RequestScope {
     val isCancelled: Boolean @Synchronized get() = cancelled
 
     /** 返回一个独立取消、但随父页面一起取消的子作用域。 */
-    fun child(): RequestScope {
-        val next=RequestScope()
-        synchronized(this) { if(cancelled) next.cancel() else children+=next }
+    fun child(timeoutMillis: Long = 0): RequestScope {
+        val next=RequestScope(timeoutMillis)
+        synchronized(this) {
+            next.deadlineNanos=minOf(deadlineNanos,next.deadlineNanos)
+            if(cancelled) next.cancel() else children+=next
+        }
         return next
     }
 
@@ -29,10 +35,16 @@ class RequestScope {
         children.forEach { it.cancel() }
     }
 
+    @Synchronized fun ensureActive() {
+        if(cancelled || Thread.currentThread().isInterrupted) throw InterruptedIOException("请求已取消")
+        if(deadlineNanos!=Long.MAX_VALUE && System.nanoTime()>=deadlineNanos) throw InterruptedIOException("请求超时，请稍后重试")
+    }
+
     @Synchronized private fun attach(call: Call) {
-        if (cancelled || Thread.currentThread().isInterrupted) {
-            call.cancel()
-            throw IOException("请求已取消")
+        try { ensureActive() } catch(problem: IOException) { call.cancel(); throw problem }
+        if(deadlineNanos!=Long.MAX_VALUE) {
+            val timeout=call.timeout()
+            if(!timeout.hasDeadline() || deadlineNanos<timeout.deadlineNanoTime()) timeout.deadlineNanoTime(deadlineNanos)
         }
         calls += call
     }
@@ -43,7 +55,7 @@ class RequestScope {
         val previous = current.get()
         current.set(this)
         try {
-            synchronized(this) { if (cancelled) throw IOException("请求已取消") }
+            ensureActive()
             return action()
         } finally {
             if (previous == null) current.remove() else current.set(previous)

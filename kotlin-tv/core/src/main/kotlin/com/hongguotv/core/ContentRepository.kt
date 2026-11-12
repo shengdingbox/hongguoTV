@@ -99,12 +99,15 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             .callTimeout(if(http.callTimeoutMillis>0) minOf(http.callTimeoutMillis.toLong(), 8_000L) else 8_000L, TimeUnit.MILLISECONDS)
             .build()
     }
-    private data class SearchCursor(val searchId: String, val passback: String, val offset: Int?, val updatedAt: Long)
-    private val searchCursors=linkedMapOf<Triple<ContentType,String,Int>,SearchCursor>()
+    // 搜索独立短超时，所有回退和首次匿名注册另外受 RequestScope 的总预算约束。
+    private val searchHttp by lazy { http.newBuilder().connectTimeout(2,TimeUnit.SECONDS).readTimeout(3,TimeUnit.SECONDS).callTimeout(3_500,TimeUnit.MILLISECONDS).build() }
+    private val suggestHttp by lazy { searchHttp.newBuilder().callTimeout(1_500,TimeUnit.MILLISECONDS).build() }
+    private data class SearchCursor(val route: SearchRoute, val searchId: String = "", val passback: String = "", val offset: Int = 0, val seen: Set<String> = emptySet())
+    private data class SearchPage(val at: Long, val page: CatalogPage, val cursor: SearchCursor)
+    private val searchPages=linkedMapOf<Triple<ContentType,String,Int>,SearchPage>()
+    private val searchRetryAt=mutableMapOf<SearchRoute,Long>()
     private val genreCache=mutableMapOf<ContentType,Pair<Long,List<Genre>>>()
     private val suggestCache=linkedMapOf<String,Pair<Long,List<String>>>()
-    // 签名搜索接口被平台关停时会稳定返回空体，短期内不再重复尝试，避免每次搜索都白等两次往返
-    @Volatile private var appSearchRetryAt=0L
     // 最近一次取播放模型成功的路由，下次优先复用，减少平台按请求量限流时的无效请求
     @Volatile private var goodRoute: String?=null
     private fun categoryPath(type: ContentType)=when(type) {
@@ -320,19 +323,69 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         val lastPage=section.optJSONObject("pagination")?.optInt("totalPages",100) ?: 100
         return CatalogPage(items,items.isNotEmpty() && page<minOf(lastPage,100))
     }
-    fun search(keyword: String, page: Int = 1, type: ContentType = ContentType.SHORT): CatalogPage {
-        require(keyword.isNotBlank() && keyword.length<=80 && page in 1..100)
-        // AI 剧没有独立搜索口径，官网把它归在漫剧搜索结果里
-        if(type==ContentType.AI) return search(keyword,page,ContentType.COMIC)
-        if(type==ContentType.COMIC) {
-            try { return fillSeasonsFromDetail(appSearch(keyword,page,type),page) }
-            catch(e: Exception) { /* App search API rejected the request or the cursor expired; the website paginates independently. */ }
-            return fillSeasons(webSearch(keyword,page,COMIC_WEB_GENRE),page,type,keyword)
+    fun search(keyword: String, page: Int = 1, type: ContentType = ContentType.COMIC): CatalogPage {
+        val query=keyword.trim()
+        require(query.isNotBlank() && query.length<=80 && page in 1..100)
+        if(type==ContentType.AI) return search(query,page,ContentType.COMIC)
+        val key=Triple(type,query,page)
+        val previous=synchronized(searchPages) {
+            val now=clock()
+            searchPages.entries.removeAll { now-it.value.at !in 0..300_000L }
+            searchPages[key]?.takeIf { page>1 || now-it.at<60_000 }?.let { return it.page }
+            if(page==1) {
+                searchPages.keys.removeAll { it.first==type && it.second==query }
+                null
+            } else searchPages[Triple(type,query,page-1)] ?: throw SearchSessionExpiredException()
         }
-        var appError: Exception? = null
-        try { val result=appSearch(keyword,page,type); if(result.items.isNotEmpty() || !result.hasMore) return fillSeasonsFromDetail(result,page) } catch (e: Exception) { if(e is SearchSessionExpiredException) throw e; appError=e }
-        return try { fillSeasons(webSearch(keyword,page,SHORT_WEB_GENRE),page,type,keyword) }
-        catch(e: Exception) { throw IOException("搜索暂不可用（App接口：${appError?.message ?: "无结果"}；网站：${e.message}）",e) }
+        if(previous!=null && !previous.page.hasMore) return CatalogPage(emptyList(),false)
+        return searchBudget(10_000) {
+            val cursor=previous?.cursor
+            // 翻页只能续接原数据源和筛选；失败时保留当前结果供重试，不拿网站页码冒充 App 游标。
+            val routes=cursor?.let { listOf(it.route) } ?: if(type==ContentType.COMIC)
+                listOf(SearchRoute.COMIC,SearchRoute.COMIC_LEGACY,SearchRoute.WEBSITE)
+                else listOf(SearchRoute.SERIES,SearchRoute.SHORT,SearchRoute.WEBSITE)
+            var failure: Exception?=null
+            for(route in routes) {
+                ensureSearchActive()
+                if(cursor==null && route!=SearchRoute.WEBSITE && synchronized(searchRetryAt) { clock()<(searchRetryAt[route] ?: 0L) }) continue
+                try {
+                    val result=if(route==SearchRoute.WEBSITE) {
+                        val genre=if(type==ContentType.COMIC) COMIC_WEB_GENRE else SHORT_WEB_GENRE
+                        val result=webSearch(query,page,genre,retry=false,transport=searchHttp)
+                        SearchResponse(result.items,result.hasMore,null,"","")
+                    } else appSearch(query,type,route,cursor)
+                    val seen=cursor?.seen.orEmpty()
+                    val fresh=result.items.filter { it.id !in seen }
+                    val nextOffset=result.offset ?: ((cursor?.offset ?: 0)+20)
+                    val more=result.hasMore && fresh.isNotEmpty() && page<100 && seen.size+fresh.size<2000 &&
+                        (route==SearchRoute.WEBSITE || nextOffset>(cursor?.offset ?: 0))
+                    val output=CatalogPage(SearchResults.orderSeasons(fresh),more)
+                    val next=SearchCursor(route,result.searchId,result.passback,nextOffset,seen+fresh.map { it.id })
+                    ensureSearchActive()
+                    synchronized(searchPages) {
+                        searchPages[key]=SearchPage(clock(),output,next)
+                        while(searchPages.size>100) searchPages.remove(searchPages.keys.first())
+                    }
+                    return@searchBudget output
+                } catch(problem: Exception) {
+                    ensureSearchActive()
+                    failure=problem
+                    // 短期避开失败的具体页签，不让一次失败同时禁用漫剧和短剧五分钟。
+                    if(cursor==null && route!=SearchRoute.WEBSITE) synchronized(searchRetryAt) { searchRetryAt[route]=clock()+30_000 }
+                }
+            }
+            throw IOException("搜索暂不可用，请稍后重试",failure)
+        }
+    }
+
+    private fun ensureSearchActive() {
+        RequestScope.current()?.ensureActive()
+        if(Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("搜索请求已取消")
+    }
+
+    private fun <T> searchBudget(timeoutMillis: Long, action: () -> T): T {
+        val scope=RequestScope.current()?.child(timeoutMillis) ?: RequestScope(timeoutMillis)
+        try { return scope.run(action) } finally { scope.cancel() }
     }
     /** 高级搜索：按服务端下发的条件筛选剧集；条件变化后必须重取第 1 页才能拿到新的选项面板。 */
     fun filteredDiscovery(selection: DiscoverySelection, cursor: DiscoveryCursor? = null): FilteredDiscoveryPage {
@@ -347,12 +400,14 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return DiscoveryParser.parse(raw,cursor==null)
     }
     // 站点搜索页已改为 SPA，数据由 /api/search/result/ 下发（返回 searchList/totalPages/hasMore，10 条一页）。
-    private fun webSearch(keyword: String, page: Int, genre: String?): CatalogPage {
+    private fun webSearch(keyword: String, page: Int, genre: String?, retry: Boolean = true, transport: OkHttpClient = http): CatalogPage {
         val url="$site/api/search/result/?query=${encodePart(keyword)}&page=$page"
         // 该接口偶发 502，重试一次再判定失败，避免搜索页直接报错
-        val body=runCatching { text(url) }.getOrElse { first ->
+        val body=try { text(url,null,transport) } catch(first: IOException) {
+            ensureSearchActive()
+            if(!retry) throw first
             Thread.sleep(300)
-            runCatching { text(url) }.getOrElse { throw first }
+            try { text(url,null,transport) } catch(_: IOException) { throw first }
         }
         val data=runCatching { JSONObject(body) }.getOrElse { throw IOException("搜索数据暂不可用") }
         val rows=data.optJSONArray("searchList") ?: throw IOException("搜索数据结构已变化")
@@ -432,139 +487,71 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
         return final
     }
-    private fun fillSeasons(page: CatalogPage, pageNumber: Int, type: ContentType, keyword: String): CatalogPage {
-        if(pageNumber!=1 || page.items.size<2) return page
-        val groups=page.items.groupBy { baseName(it.title) }.filter { (base,rows) ->
-            base.isNotBlank() && (rows.size>1 || rows.any { seasonNumber(it.title)!=Int.MAX_VALUE })
-        }
-        if(groups.isEmpty()) return page
-        val additions=mutableMapOf<String,List<Series>>()
-        var budget=10
-        for((base,rows) in groups.entries.sortedByDescending { it.value.size }.take(2)) {
-            if(budget<=0) break
-            val genre=if(type==ContentType.COMIC) COMIC_WEB_GENRE else SHORT_WEB_GENRE
-            // 基底词、用户输入、基底前缀各取一次联想，多个 query 的结果互补
-            val extra=collectSeasons(base,page.items,genre,listOf(base,keyword,base.take(4)),"$type|$base",budget)
-            budget-=extra.size
-            additions[base]=extra
-        }
-        if(additions.values.all { it.isEmpty() }) return page
-        return mergeSeasonGroups(page,additions)
-    }
-    /** 原位合并：同一基底按季号排列，其余条目保持原有相关性顺序。 */
-    private fun mergeSeasonGroups(page: CatalogPage, additions: Map<String,List<Series>>): CatalogPage {
-        val output=mutableListOf<Series>()
-        val placed=mutableSetOf<String>()
-        for(item in page.items) {
-            val base=baseName(item.title)
-            if(base in additions) {
-                if(!placed.add(base)) continue
-                val group=(page.items.filter { baseName(it.title)==base }+additions.getValue(base)).distinctBy { it.id }
-                output+=group.sortedBy { seasonNumber(it.title).let { n -> if(n==Int.MAX_VALUE) 1 else n } }
-            } else output+=item
-        }
-        return page.copy(items=output)
-    }
-    /**
-     * App 搜索接口把同系列的各季分散在分页里并与无关剧混排，首页常缺季。
-     * 详情页 related 自带整季聚合（与详情页"系列 N 季"同源），用第一条命中的详情把首页同名季补齐；
-     * 只对已出现 2 条以上的基底补，避免泛词搜索为单条结果额外拉详情页。
-     */
-    private fun fillSeasonsFromDetail(page: CatalogPage, pageNumber: Int): CatalogPage {
-        if(pageNumber!=1 || page.items.size<2) return page
-        val groups=page.items.groupBy { baseName(it.title) }.filter { (base,rows) -> base.isNotBlank() && rows.size>1 }
-        if(groups.isEmpty()) return page
-        val additions=mutableMapOf<String,List<Series>>()
-        for((base,rows) in groups.entries.sortedByDescending { it.value.size }.take(2)) {
-            val extra=detailSeasons(base,rows.first().id).filter { s -> page.items.none { it.id==s.id } }
-            additions[base]=extra
-        }
-        if(additions.values.all { it.isEmpty() }) return page
-        return mergeSeasonGroups(page,additions)
-    }
-    private fun detailSeasons(base: String, id: String): List<Series> {
-        val key="detail|$base"
-        val cached=synchronized(seasonFills) { seasonFills[key]?.takeIf { clock()-it.at<86_400_000 }?.items }
-        if(cached!=null) return cached
-        val found=runCatching { val d=detail(id); (listOf(d.series)+d.sameName).filter { baseName(it.title)==base }.distinctBy { it.id } }.getOrElse { emptyList() }
-        synchronized(seasonFills) {
-            seasonFills[key]=SeasonFill(clock(),found)
-            while(seasonFills.size>50) seasonFills.remove(seasonFills.keys.first())
-        }
-        return found
-    }
-    /** App 搜索/联想接口和播放接口一样按注册设备放行，身份与版本号统一由本机设备档案决定。 */
-    private fun searchValues(): MutableMap<String,String> = linkedMapOf()
+    /** 搜索、联想复用书城的匿名游客票据和设备签名，与开心果 SDK 的请求头一致。 */
     private fun suggestRaw(query: String): List<String> {
-        synchronized(suggestCache) { suggestCache[query]?.takeIf { clock()-it.first<300_000 }?.let { return it.second } }
-        val result=runCatching {
-            if(query.isBlank() || query.length>40) return emptyList()
-            val values=searchValues()
-            values["query"]=query
-            val signed=signer.sign("https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/suggest/v",values)
-            val data=JSONObject(text(signed.url, signed))
-            if(data.optInt("code",-1)!=0) return emptyList()
-            val rows=data.optJSONObject("data")?.optJSONArray("query_result") ?: return emptyList()
-            (0 until rows.length()).map { rows.optString(it).trim() }.filter { it.isNotEmpty() }.distinct().take(20)
-        }.getOrElse { emptyList() }
-        if(result.isNotEmpty()) synchronized(suggestCache) {
+        if(query.isBlank() || query.length>40 || query.any { it.isISOControl() }) return emptyList()
+        synchronized(suggestCache) { suggestCache[query]?.takeIf { clock()-it.first in 0..(if(it.second.isEmpty()) 10_000L else 300_000L) }?.let { return it.second } }
+        val result=runCatching { searchBudget(2_000) {
+            val values=linkedMapOf("query" to query,"count" to "10","search_source" to "1","user_is_login" to "0")
+            val signed=signer.signCatalog("$API/reading/bookapi/search/suggest/v1/",values)
+            SearchResults.suggestions(JSONObject(text(signed.url,signed,suggestHttp)))
+        } }.getOrElse { emptyList() }
+        if(Thread.currentThread().isInterrupted || RequestScope.current()?.isCancelled==true) return emptyList()
+        // 空结果也短暂缓存，避免同一个没有联想的词反复触发请求。
+        synchronized(suggestCache) {
             suggestCache[query]=clock() to result
             while(suggestCache.size>200) suggestCache.remove(suggestCache.keys.first())
         }
         return result
     }
-    private fun appSearch(keyword: String, page: Int, type: ContentType): CatalogPage {
-        if(clock()<appSearchRetryAt) throw IOException("搜索接口暂不可用")
-        val tabType=type.searchTab ?: throw IOException("${type.label}暂不支持搜索")
-        val values=searchValues()
-        values.putAll(linkedMapOf("query" to keyword,"count" to "20","offset" to ((page-1)*20).toString(),"tab_type" to tabType.toString(),"bookshelf_search_plan" to "4","use_correct" to "true","user_is_login" to "0"))
-        val cursor=synchronized(searchCursors) {
-            val now=clock()
-            searchCursors.entries.removeAll { now-it.value.updatedAt>300000 || (page==1 && it.key.first==type && it.key.second==keyword) }
-            searchCursors[Triple(type,keyword,page-1)]
-        }
-        if(type==ContentType.COMIC && page>1 && cursor==null) throw SearchSessionExpiredException()
+
+    private fun appSearch(keyword: String, type: ContentType, route: SearchRoute, cursor: SearchCursor?): SearchResponse {
+        val values=linkedMapOf("query" to keyword,"tab_type" to route.tab.toString(),"count" to "20",
+            "offset" to (cursor?.offset ?: 0).toString(),"use_correct" to "true","bookshelf_search_plan" to "4",
+            "search_source" to "1","tab_name" to "feed","bookstore_tab" to "16","user_is_login" to "0")
+        if(route.filter.isNotBlank()) values["selected_items"]=route.filter
         cursor?.let {
             if(it.searchId.isNotBlank()) values["search_id"]=it.searchId
             if(it.passback.isNotBlank()) values["passback"]=it.passback
-            it.offset?.takeIf { offset -> offset>=0 }?.let { offset -> values["offset"]=offset.toString() }
         }
-        // 官方 APK 逆向确认主网关为 reading.snssdk.com；签名只覆盖参数与主机无关，被网关拦截时换主机兜底
-        var data: JSONObject? = null
-        for(host in listOf("https://api5-normal-sinfonlinea.fqnovel.com","https://reading.snssdk.com")) {
-            val signed=signer.sign("$host/reading/bookapi/search/tab/v",values)
-            val candidate=runCatching { JSONObject(text(signed.url, signed)) }.getOrNull() ?: continue
-            if(candidate.optInt("code",-1)==0) { data=candidate; break }
+        val signed=signer.signCatalog("$API/reading/bookapi/search/tab/v",values)
+        return SearchResults.parse(JSONObject(text(signed.url,signed,searchHttp)),route,type)
+    }
+
+    /** 支持中文、完整剧名和电视键盘首拼；失败时保持输入框可用。 */
+    fun suggest(query: String): List<String> = suggestRaw(query.trim().lowercase(Locale.ROOT))
+
+    /** 首屏显示后再批量补封面，保留搜索标题与顺序，不串行请求每部剧的详情。 */
+    fun searchArtwork(items: List<Series>): List<Series> = searchBudget(6_000) {
+        val found=items.associateBy { it.id }.toMutableMap()
+        for(item in items.filter { it.cover.isBlank() }) {
+            cachedDetail(item.id)?.series?.takeIf { it.cover.isNotBlank() }?.let { found[item.id]=item.copy(cover=it.cover,badge=item.badge.ifBlank { it.badge }) }
         }
-        if(data==null) {
-            appSearchRetryAt=clock()+300_000
-            throw IOException("搜索接口暂不可用")
-        }
-        val tabs=data.optJSONArray("search_tabs") ?: data.optJSONObject("data")?.optJSONArray("search_tabs") ?: throw IOException("搜索格式异常")
-        val tab=tabs.objects().firstOrNull { it.optInt("tab_type")==type.searchTab } ?: throw IOException("${type.label}搜索暂不可用")
-        val list=mutableListOf<Series>()
-        for(cell in (tab.optJSONArray("data") ?: JSONArray()).objects()) {
-            val rows=mutableListOf(cell)
-            runCatching { JSONObject(cell.str("lynx_data")).optJSONArray("cell_data")?.objects() }.getOrNull()?.let { rows.addAll(it) }
-            for(row in rows) {
-                val video=row.optJSONArray("video_data")?.objects()?.firstOrNull() ?: continue
-                val id=video.str("series_id").ifEmpty { row.str("book_id").ifEmpty { row.str("search_result_id") } }
-                val title=row.optJSONObject("search_high_light")?.optJSONObject("title")?.str("text").orEmpty().ifEmpty { video.str("title").ifEmpty { row.str("cell_name") } }
-                val count=video.optInt("episode_cnt")
-                list+=Series(id,seriesTitle(title),cleanUrl(video.str("cover").ifEmpty { video.str("cover_url") }),video.str("video_desc"),if(count>0) "全 $count 集" else video.str("rec_text"),video.str("sub_title"))
+        val missing=found.values.filter { it.cover.isBlank() }.map { it.id }.distinct().take(40)
+        for(ids in missing.chunked(10)) {
+            val data=try {
+                ensureSearchActive()
+                val body=JSONObject().put("series_id",ids.joinToString(",")).put("dr_scene","player")
+                    .put("biz_param",JSONObject().put("detail_page_version",0).put("need_all_video_definition",false)
+                        .put("need_mp4_align",false).put("source",7).put("use_os_player",false).put("use_server_dns",false))
+                    .toString().toByteArray(Charsets.UTF_8)
+                val signed=signer.signCatalog("$API/novel/player/multi_video_detail/player/v1",emptyMap(),body)
+                JSONObject(text(signed.url,signed,searchHttp)).optJSONObject("data")
+            } catch(_: IOException) { break } ?: continue
+            for(id in ids) {
+                val video=data.optJSONObject(id)?.optJSONObject("video_data") ?: continue
+                val card=planCardSeries(video)
+                if(card.cover.isNotBlank()) found[id]=found.getValue(id).let { it.copy(cover=card.cover,badge=it.badge.ifBlank { card.badge }) }
             }
         }
-        synchronized(searchCursors) {
-            searchCursors[Triple(type,keyword,page)]=SearchCursor(tab.str("search_id"),tab.str("passback"),tab.str("next_offset").toIntOrNull(),clock())
-            while(searchCursors.size>100) searchCursors.remove(searchCursors.keys.first())
+        val result=items.map { found.getValue(it.id) }
+        synchronized(searchPages) {
+            for((key,saved) in searchPages.toMap()) {
+                val updated=saved.page.items.map { item -> found[item.id]?.takeIf { it.cover.isNotBlank() }?.let { item.copy(cover=it.cover,badge=item.badge.ifBlank { it.badge }) } ?: item }
+                if(updated!=saved.page.items) searchPages[key]=saved.copy(page=saved.page.copy(items=updated))
+            }
         }
-        return CatalogPage(valid(list),tab.optBoolean("has_more",false) && page<100)
-    }
-    /** Pinyin-initial suggestions from the signed app API; every failure returns an empty list so the TV keyboard keeps working. */
-    fun suggest(query: String): List<String> {
-        val key=query.trim().lowercase()
-        if(key.isEmpty() || key.length>20 || !key.matches(Regex("[a-z0-9]+"))) return emptyList()
-        return suggestRaw(key)
+        result
     }
     /** 主详情与辅助信息分开缓存，首页点击只等待标题和完整分集。 */
     private data class DetailCache(val at: Long, val detail: Detail, val extrasLoaded: Boolean = false)

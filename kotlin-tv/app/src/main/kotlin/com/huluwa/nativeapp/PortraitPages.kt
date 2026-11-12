@@ -409,7 +409,7 @@ class PortraitPages(
         val handler = Handler(Looper.getMainLooper())
         var pending: Runnable? = null
         val input = EditText(activity).apply {
-            hint = "搜索短剧"
+            hint = "搜索${activity.phoneLibrary.contentType.label}"
             textSize = 15f
             setTextColor(PortraitStyle.text)
             setHintTextColor(PortraitStyle.muted)
@@ -428,6 +428,7 @@ class PortraitPages(
             }
             pending?.let { handler.removeCallbacks(it) }
             pending = null
+            activity.cancelSearchSuggestions()
             suggestions.removeAllViews()
             (activity.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                 .hideSoftInputFromWindow(input.windowToken, 0)
@@ -441,7 +442,7 @@ class PortraitPages(
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }, lp(dp(40), dp(44)))
         bar.addView(input, lp(0, dp(44)).apply { weight = 1f })
-        input.contentDescription = "搜索短剧"
+        input.contentDescription = input.hint
         input.setOnEditorActionListener { _, action, event ->
             if (action == EditorInfo.IME_ACTION_SEARCH ||
                 (event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) {
@@ -456,6 +457,7 @@ class PortraitPages(
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 pending?.let { handler.removeCallbacks(it) }
                 pending = null
+                activity.cancelSearchSuggestions()
                 suggestions.removeAllViews()
                 activity.phoneSearchDraft=s?.toString().orEmpty()
                 val prefix = s?.toString()?.trim().orEmpty()
@@ -485,7 +487,7 @@ class PortraitPages(
         })
         input.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) = Unit
-            override fun onViewDetachedFromWindow(v: View) { pending?.let { handler.removeCallbacks(it) } }
+            override fun onViewDetachedFromWindow(v: View) { pending?.let { handler.removeCallbacks(it) }; activity.cancelSearchSuggestions() }
         })
         val results=column()
         body.addView(results,lp())
@@ -499,7 +501,7 @@ class PortraitPages(
                     val error=activity.phoneSearchErrorPhone
                     if(error.isNotBlank()) results.addView(PortraitUi.messageBlock(activity,error) { submit(query) },lp())
                     if(activity.catalog.isEmpty() && error.isBlank()) results.addView(PortraitUi.emptyHint(activity,
-                        if(activity.phoneSearchActive) "正在搜索…" else "没有找到“$query”相关的短剧，换个词试试"),lp())
+                        if(activity.phoneSearchActive) "正在搜索…" else "没有找到“$query”相关的${activity.phoneLibrary.contentType.label}，换个词试试"),lp())
                     if(activity.catalog.isNotEmpty()) {
                         val grid=RecyclerView(activity); results.addView(grid,lp())
                         PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },{ activity.loadMorePhone() },scrollRoot).apply {

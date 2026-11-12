@@ -16,7 +16,7 @@ class FakeSigner(
     /** 记录被请求签名的完整地址，供断言检查参数拼装。 */
     val signedUrls = mutableListOf<String>()
 
-    override fun profile(): SignerProfile = SignerProfile(identity + ("version_name" to "7.3.9.32"), agent)
+    override fun profile(): SignerProfile = SignerProfile(identity + ("version_name" to "7.3.9.32"), agent, mapOf("ttreq" to "fixture-guest"))
 
     override fun recover() = Unit
 

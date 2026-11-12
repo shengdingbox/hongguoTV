@@ -79,6 +79,12 @@ class MainActivity: Activity() {
     private val io=Executors.newFixedThreadPool(3)
     // 页面请求独占线程，不排在随机推荐补池、云同步等后台任务之后。
     private val pageIo=Executors.newFixedThreadPool(1)
+    // 联想独立于云同步等后台任务；新输入会取消旧请求并清掉队列。
+    private val suggestIo=Executors.newFixedThreadPool(1)
+    private var suggestJob: java.util.concurrent.Future<*>?=null
+    private var suggestScope: RequestScope?=null
+    private var searchArtworkJob: java.util.concurrent.Future<*>?=null
+    private var searchArtworkScope: RequestScope?=null
     // 签名完全在本机完成：设备档案落在应用私有目录，冷启动直接复用，不再依赖签名服务。
     // 注意：这些必须用 by lazy。Activity 的字段初始化器在构造阶段执行，
     // 那时 attachBaseContext 还没跑，this 作为 Context 是空的，
@@ -723,6 +729,8 @@ class MainActivity: Activity() {
     fun refreshPhoneCovers() = artwork.refreshVisible()
 
     private fun cancelWork() {
+        cancelSearchSuggestions(); main.removeCallbacks(pendingSuggest)
+        cancelSearchArtwork()
         phoneRecommendationRetry?.let { main.removeCallbacks(it) }; phoneRecommendationRetry=null
         phoneHomeLoading=false
         phoneRankLoading=false
@@ -750,7 +758,7 @@ class MainActivity: Activity() {
         //（表现为切集后第三根一上来就是橙色、看不到下载过程）。条子改由 releasePlayer() 清理。
         catalogFocusPos=RecyclerView.NO_POSITION; pendingCatalogFocusPos=RecyclerView.NO_POSITION; gridFocusOwned=false
         nav.clear(); segmentFirst=null; typeButtons.clear(); searchInput=null; searchButton=null; searchActions.clear()
-        azFirst=null; azLastRow.clear(); suggestRow=null; suggestFirst=null; suggestTicket++; main.removeCallbacks(pendingSuggest)
+        azFirst=null; azLastRow.clear(); suggestRow=null; suggestFirst=null; cancelSearchSuggestions(); main.removeCallbacks(pendingSuggest)
         suggestVertical=false; searchBody=null; keyboardKeys=emptyMap(); keyboardRows=emptyList(); historyFirst=null; historyItems=emptyList(); suggestScrollRef=null; resultFirstCard=null
         historyManage=null; historySync=null; historyRefresh=null; rankSwitch=null; rankRefresh=null; rankSubtitle=null; genreButton=null; genreClear=null; collectionBack=null; favoriteBadges.clear()
         favoriteStatus=null; favoriteCheck=null; favoriteFilterFirst=null; favoriteFilterButtons=emptyList(); homeUpdates=null; resumeCards.clear()
@@ -1470,6 +1478,7 @@ class MainActivity: Activity() {
                     val keepNav=nav.any { it.hasFocus() }; val keepType=typeButtons.values.any { it.hasFocus() }
                     if(requestTab==2) rankSubtitle?.text=if(requestAi) "来源：红果AI剧分类" else ranking?.updatedText?.ifBlank { "来源：红果${rankBoard.label}热播榜" } ?: "来源：红果${rankBoard.label}热播榜"
                     body.removeAllViews(); catalogGrid(body,keepNav || focusNav,keepType || focusType)
+                    if(requestTab==1) loadSearchArtwork()
                     // 从「上新」退回榜单后，焦点要落回「上新」入口而不是首张卡片
                     if(requestTab==2 && pendingNewReleaseFocus!=null) catalogRecycler?.postDelayed({ consumePendingNewReleaseFocus() },80)
                     // 搜索完成后焦点落结果首卡；零结果回输入框，避免页面重建后焦点丢失
@@ -1846,6 +1855,7 @@ class MainActivity: Activity() {
                 current.updateFooter(if(hasMore && page<waterfallMaxPages && catalog.size<waterfallMaxPages*20) FOOTER_NONE else FOOTER_END)
                 restoreCatalogFocus()
             }
+            if(requestTab==1) loadSearchArtwork()
         }, { problem ->
             loadingMore=false
             if(problem is SearchSessionExpiredException) {
@@ -2453,6 +2463,7 @@ class MainActivity: Activity() {
     }
     private fun runSearch(value: String,type: ContentType=library.contentType,fromPhone: Boolean=false) {
         val clean=value.trim(); if(clean.isEmpty() || clean.length>80) return
+        cancelSearchSuggestions(); main.removeCallbacks(pendingSuggest)
         (searchInput as? EditText)?.let { (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(it.windowToken,0) }
         // 提交关键词即切回关键词搜索，高级筛选条件不继承（下次进入高级搜索仍保留）
         advancedSearch=false
@@ -2471,27 +2482,69 @@ class MainActivity: Activity() {
         input.setSelection(input.text.length)
         scheduleSuggest()
     }
+    fun cancelSearchSuggestions() {
+        suggestTicket++
+        suggestScope?.cancel(); suggestScope=null
+        suggestJob?.cancel(true); suggestJob=null
+        (suggestIo as? java.util.concurrent.ThreadPoolExecutor)?.purge()
+    }
     private fun scheduleSuggest() {
+        cancelSearchSuggestions()
         main.removeCallbacks(pendingSuggest)
         main.postDelayed(pendingSuggest,300)
     }
     private fun fetchSuggest() {
         if(isDestroyed || tab!=1 || screen!="catalog") return
         val key=(searchInput as? EditText)?.text?.toString()?.trim().orEmpty()
-        if(key.isEmpty() || !key.matches(Regex("[a-zA-Z0-9]+"))) {
-            suggestTicket++
-            // 已提交搜索后（输入框显示的就是搜索词）隐藏联想栏：否则联想卡片在结果未加载时渲染，
-            // nextFocusRight 指向自身，导致右键回不到搜索结果、左键又跳进联想列形成焦点陷阱。
-            // 用户重新编辑输入框时联想自然恢复
+        if(key.isEmpty() || key.length>40 || key==query && (phoneSearched || catalog.isNotEmpty() || searchFocusPending)) {
+            cancelSearchSuggestions()
             val keep=if(!phoneSearched && lastSuggestWords.isNotEmpty() && key==lastSuggestKey && key!=query) lastSuggestWords else emptyList()
             renderSuggest(keep); return
         }
-        // 手机输入的精确剧名直接出结果，不展示联想；纯首拼仍提供联想辅助
-        if(phoneSearched && !key.matches(Regex("[a-zA-Z]+"))) { suggestTicket++; renderSuggest(emptyList()); return }
-        val ticket=++suggestTicket
-        io.execute {
-            val words=repository.suggest(key)
-            main.post { if(!isDestroyed && ticket==suggestTicket && tab==1 && screen=="catalog") renderSuggest(words,key) }
+        loadSuggestions(key) { words ->
+            if(tab==1 && screen=="catalog" && (searchInput as? EditText)?.text?.toString()?.trim()==key) renderSuggest(words,key)
+        }
+    }
+    private fun loadSuggestions(prefix: String, done: (List<String>) -> Unit) {
+        cancelSearchSuggestions()
+        val ticket=suggestTicket
+        val scope=RequestScope(); suggestScope=scope
+        suggestJob=suggestIo.submit {
+            val words=runCatching { scope.run { repository.suggest(prefix) } }.getOrDefault(emptyList())
+            main.post { if(!isDestroyed && !scope.isCancelled && ticket==suggestTicket) done(words) }
+        }
+    }
+
+    private fun cancelSearchArtwork() {
+        searchArtworkScope?.cancel(); searchArtworkScope=null
+        searchArtworkJob?.cancel(true); searchArtworkJob=null
+    }
+    /** 结果已上屏后补封面；仅更新相同查询的卡片，不移动电视焦点或重新执行搜索。 */
+    private fun loadSearchArtwork() {
+        cancelSearchArtwork()
+        val items=catalog.toList()
+        if(items.none { it.cover.isBlank() }) return
+        val phone=phoneLayout(); val keyword=if(phone) phoneQuery else query
+        val type=library.contentType; val ticket=generation
+        val scope=RequestScope(); searchArtworkScope=scope
+        searchArtworkJob=io.submit {
+            val result=runCatching { scope.run { repository.searchArtwork(items) } }.getOrNull() ?: return@submit
+            main.post {
+                if(isDestroyed || scope.isCancelled || ticket!=generation || screen!="catalog" || library.contentType!=type) return@post
+                if(phone) { if(!phoneLayout() || phoneTab!="search" || phoneQuery!=keyword) return@post }
+                else if(phoneLayout() || tab!=1 || advancedSearch || query!=keyword) return@post
+                val covers=result.filter { it.cover.isNotBlank() }.associateBy { it.id }
+                val updated=catalog.map { item -> covers[item.id]?.let { item.copy(cover=it.cover,badge=item.badge.ifBlank { it.badge }) } ?: item }
+                if(updated==catalog) return@post
+                catalog=updated
+                if(phone) renderPhone() else catalogAdapter?.let { adapter ->
+                    for(index in adapter.displayed.indices) {
+                        val item=adapter.displayed[index]
+                        val next=updated.firstOrNull { it.id==item.id } ?: continue
+                        if(next!=item) { adapter.displayed[index]=next; adapter.notifyItemChanged(adapter.adapterPosition(index)) }
+                    }
+                }
+            }
         }
     }
     private fun renderSuggest(words: List<String>,key: String="") {
@@ -6599,6 +6652,7 @@ class MainActivity: Activity() {
     /** 手机搜索执行。 */
     private fun runPhoneSearch(value: String) {
         val clean=value.trim(); if(clean.isEmpty() || clean.length>80) return
+        cancelSearchSuggestions()
         if(clean!=phoneQuery) {
             pendingPhoneScrolls.remove("search"); phoneSessionPositions["search"]=0; phoneScrollY=0
         }
@@ -6611,12 +6665,13 @@ class MainActivity: Activity() {
         library.rememberSearch(clean,library.contentType)
         renderPhone()
         val ticket=generation; val type=library.contentType; val query=clean
-        work({ repository.search(query,phoneSearchPage,type) }, { result ->
+        work({ repository.search(query,1,type) }, { result ->
             if(phoneLayout() && ticket==generation) {
                 phoneSearching=false
                 if(phoneTab=="search" && phoneQuery==query) {
                     catalog=result.items; hasMore=result.hasMore; phoneCatalogSource="search"
                     renderPhone()
+                    loadSearchArtwork()
                 }
             }
         }, { problem ->
@@ -6654,11 +6709,8 @@ class MainActivity: Activity() {
 
     fun loadPortraitSuggestions(prefix: String, done: (List<String>) -> Unit) {
         if(!PortraitUi.shouldUse(this)) return
-        io.submit {
-            val words=repository.suggest(prefix)
-            main.post {
-                if(!isDestroyed && PortraitUi.shouldUse(this) && screen=="catalog" && phoneTab=="search") done(words)
-            }
+        loadSuggestions(prefix) { words ->
+            if(PortraitUi.shouldUse(this) && screen=="catalog" && phoneTab=="search") done(words)
         }
     }
 
@@ -6684,10 +6736,15 @@ class MainActivity: Activity() {
                 loadingMore=false; phoneSearchPage=nextPage
                 catalog=(catalog+result.items).distinctBy { it.id }; hasMore=result.hasMore && result.items.isNotEmpty()
                 renderPhone()
+                loadSearchArtwork()
             }
         }, { problem ->
             loadingMore=false
             if(phoneLayout() && ticket==generation && phoneTab=="search" && phoneQuery==keyword && !phoneDetailCollection) {
+                if(problem is SearchSessionExpiredException) {
+                    runPhoneSearch(keyword)
+                    return@work
+                }
                 phoneSearchError="更多搜索结果加载失败："+problem.message.orEmpty().take(120)
                 renderPhone()
             }
@@ -7625,7 +7682,7 @@ class MainActivity: Activity() {
         favoriteMonitor.destroy(); tvTools.destroy(); updater.destroy(); saveProgress(); releasePlayer(); accountManager.destroy(); library.close()
         closeRemote()
         artwork.close(); releaseCatalogViews(); mediaSession.release(); main.removeCallbacksAndMessages(null)
-        pageIo.shutdownNow(); io.shutdownNow(); playbackCache.close(); episodeDiskCache?.close(); episodeDiskCache=null
+        cancelSearchSuggestions(); suggestIo.shutdownNow(); pageIo.shutdownNow(); io.shutdownNow(); playbackCache.close(); episodeDiskCache?.close(); episodeDiskCache=null
         Thread({ repository.http.dispatcher.cancelAll(); repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() },"hongguotv-network-cleanup").start()
         super.onDestroy()
         if(killOnDestroy) android.os.Process.killProcess(android.os.Process.myPid())

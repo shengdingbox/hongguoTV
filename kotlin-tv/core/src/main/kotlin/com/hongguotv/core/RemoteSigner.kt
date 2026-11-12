@@ -148,14 +148,14 @@ open class RemoteSigner(
 
     /** 书城推荐复用本机签名，并按 iOS SDK 带上同一设备的游客票据。 */
     @Synchronized
-    open fun signCatalog(url: String, values: Map<String, String>): SignedRequest {
+    open fun signCatalog(url: String, values: Map<String, String>, body: ByteArray? = null): SignedRequest {
         val saved = profile()
         // 老版本只保存了设备 ID，没有保存 ttreq；首次进入推荐时重新注册补齐。
         val profile = if (saved.cookies["ttreq"].isNullOrBlank()) register() else saved
         if (profile.cookies["ttreq"].isNullOrBlank()) {
             throw SignatureException("匿名设备缺少游客票据，请稍后重试")
         }
-        val signed = sign(url, values)
+        val signed = sign(url, values, body)
         val headers = signed.headers.toMutableMap()
         headers["lc"] = "101"
         headers["x-ss-dp"] = profile.params["aid"].orEmpty().ifBlank { "8662" }

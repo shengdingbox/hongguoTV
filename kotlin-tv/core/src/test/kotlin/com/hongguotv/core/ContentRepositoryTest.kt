@@ -377,7 +377,7 @@ class ContentRepositoryTest {
         val requests=mutableListOf<Request>()
         val repo=repository { request ->
             requests+=request
-            if(request.url.host.endsWith("fqnovel.com")) JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(19,"999")
+            if(request.url.host.endsWith("fqnovel.com")) JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(11,"999")
                 .put("search_id","comic-session").put("passback","comic-cursor").put("next_offset",25))).toString()
             else """{"searchList":[{"video_data":{"series_id":"333","series_name":"漫画网站结果","genre":"205"}}]}"""
         }
@@ -386,9 +386,8 @@ class ContentRepositoryTest {
         assertEquals("comic-session",requests[1].url.queryParameter("search_id"))
         assertEquals("comic-cursor",requests[1].url.queryParameter("passback"))
         assertEquals("25",requests[1].url.queryParameter("offset"))
-        repo.search("重生",2,ContentType.COMIC)
-        assertEquals("2",requests[2].url.queryParameter("page"))
-        assertEquals(3,requests.size)
+        assertThrows(SearchSessionExpiredException::class.java) { repo.search("重生",2,ContentType.COMIC) }
+        assertEquals(2,requests.size)
     }
 
     @Test fun expiredCursorRequestsFreshSearchInsteadOfDuplicateOffsetPage() {
@@ -396,17 +395,17 @@ class ContentRepositoryTest {
         var requests=0
         val repo=repository(clock={ now }) { request ->
             requests++
-            if(request.url.host.endsWith("fqnovel.com")) JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(19,"999")
+            if(request.url.host.endsWith("fqnovel.com")) JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(11,"999")
                 .put("search_id","session").put("passback","cursor"))).toString()
             else """{"searchList":[{"video_data":{"series_id":"444","series_name":"漫画兜底","genre":"205"}}]}"""
         }
         repo.search("修仙",1,ContentType.COMIC)
         now=300001L
-        assertEquals("444",repo.search("修仙",2,ContentType.COMIC).items.single().id)
-        assertEquals(2,requests)
+        assertThrows(SearchSessionExpiredException::class.java) { repo.search("修仙",2,ContentType.COMIC) }
+        assertEquals(1,requests)
         repo.search("修仙",1,ContentType.COMIC)
         repo.search("修仙",2,ContentType.COMIC)
-        assertEquals(4,requests)
+        assertEquals(3,requests)
     }
 
     @Test fun comicSearchFallsBackToWebsiteAndKeepsOnlyComicGenreRows() {
@@ -420,9 +419,11 @@ class ContentRepositoryTest {
         assertFalse(result.hasMore)
     }
 
-    @Test fun multiSeasonSearchFillsMissingSeasonsFromSuggestions() {
+    @Test fun multiSeasonSearchReturnsImmediatelyWithoutSuggestionOrDetailRequests() {
+        val paths=mutableListOf<String>()
         val repo=repository { request ->
             val url=request.url
+            paths+=url.encodedPath
             val keyword=url.queryParameter("query").orEmpty()
             when {
                 url.host.endsWith("fqnovel.com") && url.encodedPath.contains("suggest") ->
@@ -435,7 +436,8 @@ class ContentRepositoryTest {
             }
         }
         val result=repo.search("测试剧",1,ContentType.COMIC)
-        assertEquals(listOf("111","222","113"),result.items.map { it.id })
+        assertEquals(listOf("111","113"),result.items.map { it.id })
+        assertEquals(listOf("/reading/bookapi/search/tab/v","/reading/bookapi/search/tab/v","/api/search/result/"),paths)
     }
 
     @Test fun shortSearchFallsBackToWebsiteAndKeepsOnlyShortGenreRows() {
@@ -486,11 +488,18 @@ class ContentRepositoryTest {
         var requests=0
         val repo=repository { request ->
             requests++
-            assertEquals("19",request.url.queryParameter("tab_type"))
+            assertEquals("11",request.url.queryParameter("tab_type"))
+            assertEquals("content_type_dynamic_comic",request.url.queryParameter("selected_items"))
+            assertEquals("1",request.url.queryParameter("search_source"))
+            assertEquals("feed",request.url.queryParameter("tab_name"))
+            assertEquals("16",request.url.queryParameter("bookstore_tab"))
+            assertEquals("101",request.header("lc"))
+            assertTrue(request.header("Cookie").orEmpty().contains("ttreq=fixture-guest"))
+            assertNotNull(request.header("x-reading-request"))
             assertEquals(if(requests==1) "0" else "20",request.url.queryParameter("offset"))
             assertEquals("修仙",request.url.queryParameter("query"))
             JSONObject().put("code",0).put("search_tabs",JSONArray()
-                .put(searchTab(11,"111")).put(searchTab(19,"999"))).toString()
+                .put(searchTab(29,"111")).put(searchTab(11,if(requests==1) "998" else "999"))).toString()
         }
         repo.search("修仙",1,ContentType.COMIC)
         assertEquals(listOf("999"),repo.search("修仙",2,ContentType.COMIC).items.map { it.id })
@@ -498,7 +507,7 @@ class ContentRepositoryTest {
 
     @Test fun emptyComicSearchDoesNotFallBackToShortResults() {
         var requests=0
-        val repo=repository { requests++; """{"code":0,"search_tabs":[{"tab_type":19,"data":[],"has_more":false}]}""" }
+        val repo=repository { requests++; """{"code":0,"search_tabs":[{"tab_type":11,"data":[],"has_more":false}]}""" }
         assertTrue(repo.search("无结果",1,ContentType.COMIC).items.isEmpty())
         assertEquals(1,requests)
     }
@@ -507,11 +516,11 @@ class ContentRepositoryTest {
         var requests=0
         val repo=repository { request ->
             requests++
-            if(request.url.host.endsWith("fqnovel.com")) """{"code":0,"search_tabs":[{"tab_type":11,"data":[]}]}"""
+            if(request.url.host.endsWith("fqnovel.com")) """{"code":0,"search_tabs":[{"tab_type":29,"data":[]}]}"""
             else """{"searchList":[{"video_data":{"series_id":"111","series_name":"短剧测试","genre":"203"}}]}"""
         }
         assertTrue(repo.search("修仙",1,ContentType.COMIC).items.isEmpty())
-        assertEquals(2,requests)
+        assertEquals(3,requests)
     }
 
     @Test fun shortSearchKeepsWebsiteFallback() {
@@ -523,6 +532,80 @@ class ContentRepositoryTest {
         }
         assertEquals("456",repo.search("短剧",1,ContentType.SHORT).items.single().id)
         assertEquals(3,paths.size)
+    }
+
+    @Test fun repeatedSearchUsesCachedPageAndNeverFetchesDetailsForTheFirstPaint() {
+        var requests=0
+        val repo=repository { request ->
+            requests++
+            assertEquals("/reading/bookapi/search/tab/v",request.url.encodedPath)
+            JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(11,"999"))).toString()
+        }
+        val first=repo.search("修仙")
+        assertEquals(first,repo.search(" 修仙 "))
+        assertEquals(1,requests)
+    }
+
+    @Test fun shortSearchReadsTheIosSeriesTabAndNestedObjectCards() {
+        val repo=repository { request ->
+            assertEquals("29",request.url.queryParameter("tab_type"))
+            """{"code":0,"search_tabs":[{"tab_type":29,"has_more":false,"data":[{"video_data":{"series_id":"999","content_type":1,"video_detail":{"series_title":"测试短剧","series_intro":"介绍","series_cover":"https://example.com/poster.jpg","episode_cnt":12}}}]}]}"""
+        }
+        val item=repo.search("测试",type=ContentType.SHORT).items.single()
+        assertEquals("999",item.id)
+        assertEquals("测试短剧",item.title)
+        assertEquals("https://example.com/poster.jpg",item.cover)
+        assertEquals("全 12 集",item.badge)
+    }
+
+    @Test fun comicFilterKeepsAllArrayCardsAndDropsExplicitShortDrama() {
+        val repo=repository {
+            """{"code":0,"search_tabs":[{"tab_type":11,"has_more":false,"data":[{"video_data":[{"series_id":"111","content_type":1004,"video_detail":{"series_title":"测试漫剧第三季"}},{"series_id":"222","content_type":1,"title":"真人剧"},{"series_id":"333","content_type":1004,"video_detail":{"series_title":"测试漫剧第一季"}}]}]}]}"""
+        }
+        assertEquals(listOf("333","111"),repo.search("测试").items.map { it.id })
+    }
+
+    @Test fun duplicateOnlyPageEndsSearchInsteadOfRequestingTheSameItemsForever() {
+        val repo=repository {
+            JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(11,"999"))).toString()
+        }
+        repo.search("修仙")
+        val second=repo.search("修仙",2)
+        assertTrue(second.items.isEmpty())
+        assertFalse(second.hasMore)
+    }
+
+    @Test fun failedAppContinuationDoesNotSwitchToWebsitePages() {
+        val paths=mutableListOf<String>()
+        val repo=repository { request ->
+            paths+=request.url.encodedPath
+            if(paths.size==1) JSONObject().put("code",0).put("search_tabs",JSONArray().put(searchTab(11,"999"))).toString()
+            else throw IOException("offline")
+        }
+        repo.search("修仙")
+        assertThrows(IOException::class.java) { repo.search("修仙",2) }
+        assertEquals(listOf("/reading/bookapi/search/tab/v","/reading/bookapi/search/tab/v"),paths)
+    }
+
+    @Test fun searchArtworkFetchesMissingCoversInOneBatchAfterResultsAreAvailable() {
+        val paths=mutableListOf<String>()
+        val repo=repository { request ->
+            paths+=request.url.encodedPath
+            if(paths.size==1) """{"code":0,"search_tabs":[{"tab_type":29,"has_more":false,"data":[{"video_data":[{"series_id":"111","title":"第一部"},{"series_id":"222","title":"第二部"}]}]}]}"""
+            else {
+                assertEquals("/novel/player/multi_video_detail/player/v1",request.url.encodedPath)
+                val body=JSONObject(okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8())
+                assertEquals("111,222",body.getString("series_id"))
+                """{"code":0,"data":{"111":{"video_data":{"series_id":"111","series_cover":"https://example.com/1.jpg"}},"222":{"video_data":{"series_id":"222","series_cover":"https://example.com/2.jpg"}}}}"""
+            }
+        }
+        val first=repo.search("测试",type=ContentType.SHORT)
+        assertEquals(1,paths.size)
+        assertTrue(first.items.all { it.cover.isEmpty() })
+        val enriched=repo.searchArtwork(first.items)
+        assertEquals(listOf("https://example.com/1.jpg","https://example.com/2.jpg"),enriched.map { it.cover })
+        assertEquals(enriched,repo.search("测试",type=ContentType.SHORT).items)
+        assertEquals(2,paths.size)
     }
 
     // 详情接口为红果官方 JSON（POST /novel/player/multi_video_detail/v1/），
@@ -755,7 +838,7 @@ class ContentRepositoryTest {
 
     @Test fun suggestParsesQueryResultWordsAndDeduplicates() {
         val repo=repository { request ->
-            assertEquals("/reading/bookapi/search/suggest/v",request.url.encodedPath)
+            assertEquals("/reading/bookapi/search/suggest/v1/",request.url.encodedPath)
             assertEquals("jywn",request.url.queryParameter("query"))
             """{"code":0,"data":{"query_key":"jywn","query_result":["家有五女"," 今夜为你无眠 ","家有五女",""]}}"""
         }
@@ -773,13 +856,21 @@ class ContentRepositoryTest {
         assertEquals(3,requests)
     }
 
-    @Test fun suggestSkipsNonAlphabetInputWithoutARequest() {
+    @Test fun suggestAcceptsChineseAndPrefersRichNamesOverNumericKeywords() {
         var requests=0
-        val repo=repository { requests++; """{"code":0,"data":{"query_result":["a"]}}""" }
+        val repo=repository { request ->
+            requests++
+            assertEquals("家有",request.url.queryParameter("query"))
+            assertEquals("10",request.url.queryParameter("count"))
+            assertEquals("1",request.url.queryParameter("search_source"))
+            """{"code":0,"data":{"query_result":["旧联想"],"query_result_v2":[{"name":"家有五女","keyword":"1234567890"},{"name":" 家有五女 "},{"name":"家有喜事"}]}}"""
+        }
+        assertEquals(listOf("家有五女","家有喜事"),repo.suggest(" 家有 "))
+        assertEquals(listOf("家有五女","家有喜事"),repo.suggest("家有"))
         assertTrue(repo.suggest("").isEmpty())
-        assertTrue(repo.suggest("家有").isEmpty())
-        assertTrue(repo.suggest("a".repeat(21)).isEmpty())
-        assertEquals(0,requests)
+        assertTrue(repo.suggest("a".repeat(41)).isEmpty())
+        assertTrue(repo.suggest("家\n有").isEmpty())
+        assertEquals(1,requests)
     }
 
     @Test fun seriesTitleKeepsOnlyTheName() {

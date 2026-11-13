@@ -16,6 +16,7 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.core.widget.NestedScrollView
+import androidx.recyclerview.widget.AsyncListDiffer
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -25,6 +26,7 @@ import kotlin.math.abs
 
 /** 手机统一竖屏界面组件，布局参照开心果 iOS；跟随系统竖屏与强制竖屏共用。 */
 object PortraitUi {
+    const val PHONE_LIST_LIMIT = 300
 
     /** 按设备、方向和用户偏好判断，电视及手机横屏由 TV 页面接管。 */
     fun shouldUse(activity: Activity): Boolean = PhoneUi.shouldUse(activity)
@@ -177,60 +179,56 @@ object PortraitUi {
         }
     }
 
-    /** 手机竖屏统一使用三列海报网格（含加载更多 footer）。点击卡片进详情。
-     *  [scrollParent] 是页面外层的竖向滚动容器：网格放进 NestedScrollView 时高度随内容展开、
-     *  自身不滚，拖动由外层接管，所以「加载更多」也要改看外层的滚动位置。 */
+    /** 海报列表只管理条目，页头及网格由 PortraitListPage 在同一个 RecyclerView 中复用。 */
     class PosterGrid(
         private val activity: MainActivity,
         private val loadCover: (ImageView, String) -> Unit,
         private val open: (Series) -> Unit,
         private val more: (() -> Unit)?,
-        private val scrollParent: NestedScrollView? = null,
         private val ranked: Boolean = false,
         private val loadAheadScreens: Int = 0,
     ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
-        var items: List<Series> = emptyList()
-        private var hasMore = more != null
-        private var favoriteIds: Set<String> = emptySet()
+        private data class Cell(val series: Series?, val favorite: Boolean = false, val rank: Int = 0, val finished: Boolean = false)
         private val stableIds = mutableMapOf<String, Long>()
         private var nextStableId = 0L
+        private var submitted = emptyList<Cell>()
+        private var recycler: RecyclerView? = null
+        internal var isUpdating = false
+            private set
+        internal var onListApplied: () -> Unit = {}
+        private val differ = AsyncListDiffer(this, object : DiffUtil.ItemCallback<Cell>() {
+            override fun areItemsTheSame(before: Cell, after: Cell) = before.series?.id == after.series?.id
+            override fun areContentsTheSame(before: Cell, after: Cell): Boolean {
+                val a = before.series; val b = after.series
+                return a?.title == b?.title && a?.badge == b?.badge && a?.cover == b?.cover &&
+                    before.favorite == after.favorite && before.rank == after.rank && before.finished == after.finished
+            }
+        })
 
         init { setHasStableIds(true) }
+        override fun getItemId(position: Int): Long = differ.currentList[position].series?.let { series ->
+            stableIds.getOrPut(series.id) { nextStableId++ }
+        } ?: -1L
 
-        override fun getItemId(position: Int): Long = if (position == items.size) -1L
-            else stableIds.getOrPut(items[position].id) { nextStableId++ }
-
-        /** 保留未变化的卡片与 ImageView；刷新、追加分页都不再重建整张网格。 */
+        /** 收藏与排名随不可变条目一起交给后台计算，旧结果由 AsyncListDiffer 自动丢弃。 */
         fun submitItems(next: List<Series>, nextHasMore: Boolean) {
-            val previous = items
-            val nextItems = next
-            val nextFavoriteIds = nextItems.filter { activity.phoneLibrary.favorite(it.id) }.map { it.id }.toSet()
-            val previousFooter = hasMore
-            val nextFooter = nextHasMore && more != null
-            if (previous == nextItems && favoriteIds == nextFavoriteIds && previousFooter == nextFooter) return
-            val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
-                override fun getOldListSize() = previous.size + if (previousFooter) 1 else 0
-                override fun getNewListSize() = nextItems.size + if (nextFooter) 1 else 0
-                override fun areItemsTheSame(oldPosition: Int, newPosition: Int): Boolean {
-                    if (oldPosition == previous.size || newPosition == nextItems.size) {
-                        return oldPosition == previous.size && newPosition == nextItems.size
-                    }
-                    return previous[oldPosition].id == nextItems[newPosition].id
-                }
-                override fun areContentsTheSame(oldPosition: Int, newPosition: Int): Boolean =
-                    if (oldPosition == previous.size) true else {
-                        val before = previous[oldPosition]
-                        val after = nextItems[newPosition]
-                        // 简介和分类不在卡片上展示，快照裁剪或后台补全不应触发封面重绑。
-                        before.title == after.title && before.badge == after.badge && before.cover == after.cover &&
-                            (before.id in favoriteIds) == (before.id in nextFavoriteIds) &&
-                            (!ranked || oldPosition == newPosition)
-                    }
-            })
-            items = nextItems
-            favoriteIds = nextFavoriteIds
-            hasMore = nextFooter
-            diff.dispatchUpdatesTo(this)
+            val retained = next.toList()
+            val cells = retained.mapIndexed { index, series ->
+                Cell(series, activity.phoneLibrary.favorite(series.id), if (ranked) index + 1 else 0)
+            } + when {
+                more != null && retained.size >= PHONE_LIST_LIMIT -> listOf(Cell(null, finished = true))
+                nextHasMore && more != null -> listOf(Cell(null))
+                else -> emptyList()
+            }
+            if (submitted == cells) return
+            submitted = cells
+            isUpdating = true
+            differ.submitList(cells) {
+                isUpdating = false
+                onListApplied()
+                stableIds.keys.retainAll(differ.currentList.mapNotNull { it.series?.id }.toSet())
+                recycler?.post { checkLoadMore() }
+            }
         }
 
         private class Holder(val card: PosterCard) : RecyclerView.ViewHolder(card) {
@@ -252,8 +250,8 @@ object PortraitUi {
             super.onViewRecycled(holder)
         }
 
-        override fun getItemCount() = items.size + if (hasMore) 1 else 0
-        override fun getItemViewType(position: Int) = if (position == items.size) 1 else 0
+        override fun getItemCount() = differ.currentList.size
+        override fun getItemViewType(position: Int) = if (differ.currentList[position].series == null) 1 else 0
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
             if (viewType == 1) {
@@ -276,22 +274,23 @@ object PortraitUi {
         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
             if (getItemViewType(position) == 1) {
                 val label = (holder.itemView as FrameLayout).getChildAt(0) as TextView
-                label.text = "加载更多…"
-                // 每次绑定都要重设：复用的 footer 会把上一页的点击监听带过来
-                holder.itemView.setOnClickListener { if (hasMore && more != null) more() }
+                val finished = differ.currentList[position].finished
+                label.text = if (finished) "本轮内容已加载完，下拉刷新换一批" else "加载更多…"
+                holder.itemView.setOnClickListener(if (finished) null else View.OnClickListener { more?.invoke() })
                 return
             }
             val card = (holder as Holder).card
-            val item = items[position]
+            val cell = differ.currentList[position]
+            val item = checkNotNull(cell.series)
             val sameSeries = holder.seriesId == item.id
             holder.seriesId = item.id
             card.title.text = item.title
             card.badge.text = item.badge
             card.contentDescription = item.title
-            card.saved.visibility = if (activity.phoneLibrary.favorite(item.id)) View.VISIBLE else View.GONE
+            card.saved.visibility = if (cell.favorite) View.VISIBLE else View.GONE
             card.rank.visibility = if (ranked) View.VISIBLE else View.GONE
             if (ranked) {
-                card.rank.text = "${position + 1}"
+                card.rank.text = "${cell.rank}"
                 val color = when (position) {
                     0 -> Color.rgb(242, 173, 33)
                     1 -> Color.rgb(158, 158, 158)
@@ -308,9 +307,9 @@ object PortraitUi {
                 else loadCover(card.image, cover)
             }
             // 未展示字段更新时不重绑卡片，交互始终读取当前列表中的最新剧集数据。
-            card.setOnClickListener { items.getOrNull(holder.bindingAdapterPosition)?.let(open) }
+            card.setOnClickListener { differ.currentList.getOrNull(holder.bindingAdapterPosition)?.series?.let(open) }
             card.setOnLongClickListener {
-                val current = items.getOrNull(holder.bindingAdapterPosition) ?: return@setOnLongClickListener false
+                val current = differ.currentList.getOrNull(holder.bindingAdapterPosition)?.series ?: return@setOnLongClickListener false
                 favoriteMenu(activity, card, current) {
                     card.saved.visibility = if (activity.phoneLibrary.favorite(current.id)) View.VISIBLE else View.GONE
                 }
@@ -318,50 +317,22 @@ object PortraitUi {
             }
         }
 
-        fun attach(recycler: RecyclerView) {
-            val layoutManager = GridLayoutManager(activity, 3)
-            layoutManager.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
-                override fun getSpanSize(position: Int) = if (getItemViewType(position) == 1) layoutManager.spanCount else 1
-            }
-            recycler.layoutManager = layoutManager
-            recycler.adapter = this
-            recycler.setPadding(dp(activity, 10), dp(activity, 4), dp(activity, 10), dp(activity, 8))
-            recycler.clipToPadding = false
-            recycler.isVerticalScrollBarEnabled = false
-            recycler.itemAnimator = null
-            recycler.setItemViewCacheSize(9)
-            // 外层是 NestedScrollView 时网格随内容展开，整页滚动由外层接管。
-            recycler.isNestedScrollingEnabled = false
-            val checkLoadMore = {
-                if (more != null && hasMore && recycler.isShown) {
-                    val nearEnd = if (scrollParent != null) {
-                        val content = scrollParent.getChildAt(0)
-                        content != null && content.bottom + scrollParent.paddingBottom -
-                            (scrollParent.scrollY + scrollParent.height) <= maxOf(dp(activity, 240), scrollParent.height * loadAheadScreens)
-                    } else {
-                        val last = layoutManager.findLastVisibleItemPosition()
-                        last != RecyclerView.NO_POSITION && last >= itemCount - 4
-                    }
-                    if (nearEnd) more()
+        internal fun observe(view: RecyclerView) {
+            recycler = view
+            view.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                    if (dy > 0) checkLoadMore()
                 }
-            }
-            recycler.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                // 布局结束后再判断，内容不足一屏时也能继续分页。
-                recycler.post { activity.refreshPhoneCovers(); checkLoadMore() }
-            }
-            if (scrollParent != null) {
-                scrollParent.setOnScrollChangeListener(NestedScrollView.OnScrollChangeListener { _, _, y, _, oldY ->
-                    if (y != oldY) activity.refreshPhoneCovers()
-                    if (y > oldY) checkLoadMore()
-                })
-            } else {
-                recycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
-                    override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
-                        if (dy != 0) activity.refreshPhoneCovers()
-                        if (dy > 0) checkLoadMore()
-                    }
-                })
-            }
+            })
+            view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> view.post { checkLoadMore() } }
+        }
+
+        private fun checkLoadMore() {
+            val view = recycler ?: return
+            val last = differ.currentList.lastOrNull() ?: return
+            if (!view.isShown || more == null || last.series != null || last.finished) return
+            val remaining = view.computeVerticalScrollRange() - view.computeVerticalScrollOffset() - view.computeVerticalScrollExtent()
+            if (remaining <= maxOf(dp(activity, 240), view.height * loadAheadScreens)) more()
         }
     }
 
@@ -381,7 +352,7 @@ object PortraitUi {
     /** 推荐、排行和新剧共用原生拖拽进度、松手转圈及收起动画。 */
     class RefreshLayout(
         activity: Activity,
-        scroll: NestedScrollView,
+        scroll: View,
         refresh: () -> Unit,
         private val maxDurationMillis: Long = 0L,
     ) : SwipeRefreshLayout(activity) {

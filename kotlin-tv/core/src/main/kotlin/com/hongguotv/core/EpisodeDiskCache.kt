@@ -9,7 +9,12 @@ import java.io.Closeable
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /** 整集落盘缓存池：播放页后台静默下载相邻集，命中后改由本地文件喂数据。
@@ -65,6 +70,8 @@ class EpisodeDiskCache(
     private class Row(val key: Key, val entry: Entry, val file: File, val metaFile: File)
 
     companion object {
+        // Activity 重建时，新缓存池在后台等待旧池收尾，避免旧快照覆盖新条目。
+        private val retiredFiles = ConcurrentHashMap<String, Pair<ExecutorService, ExecutorService>>()
         const val SERIES_LIMIT_EPISODES = 5
         const val POOL_LIMIT_BYTES = 500L * 1024 * 1024
         const val FREE_FLOOR_BYTES = 1024L * 1024 * 1024
@@ -117,6 +124,14 @@ class EpisodeDiskCache(
 
     private val lock = Object()
     private val entries = LinkedHashMap<Key, Entry>()
+    // 文件操作只使用独立的文件锁；界面查询和调度永远不等待磁盘。
+    private val fileLocks = ConcurrentHashMap<Key, Any>()
+    private val fileIo = Executors.newSingleThreadExecutor { action ->
+        Thread(action, "episode-disk-files").apply { isDaemon = true }
+    }
+    private data class Resources(val free: Long, val lowMemory: Boolean)
+    @Volatile private var resources = Resources(Long.MAX_VALUE, false)
+    private var nextResourceCheckAt = 0L
     private val threadCount = AtomicInteger()
     /** 三集并发下载：下 1/2/3 集同时开工，不再排成一队等前一集下完。 */
     private val executor = Executors.newFixedThreadPool(MAX_PARALLEL) { action ->
@@ -141,11 +156,21 @@ class EpisodeDiskCache(
     private val discardAfterDownload = mutableSetOf<Key>()
 
     init {
+        retiredFiles.remove(directory.absolutePath)?.let { (downloads, files) ->
+            if (!downloads.awaitTermination(30, TimeUnit.SECONDS) || !files.awaitTermination(30, TimeUnit.SECONDS)) {
+                retiredFiles[directory.absolutePath] = downloads to files
+                throw IOException("上一缓存池仍在收尾，请稍后重试")
+            }
+        }
+        resources = Resources(freeBytes(), lowMemory())
         directory.mkdirs()
         sweep()
         // 元数据损坏的条目只废弃该条，不影响其余缓存
         directory.listFiles { f -> f.isFile && f.name.endsWith(".meta") }?.forEach { metaFile ->
-            runCatching { loadRow(metaFile) }.onSuccess { row -> row?.let { entries[it.key] = it.entry } }
+            runCatching { loadRow(metaFile) }.onSuccess { row ->
+                if (row != null) entries[row.key] = row.entry
+                else { metaFile.delete(); File(directory, metaFile.name.removeSuffix(".meta") + ".mp4").delete() }
+            }
                 .onFailure { metaFile.delete(); File(directory, metaFile.name.removeSuffix(".meta") + ".mp4").delete() }
         }
         evictLocked()
@@ -181,23 +206,53 @@ class EpisodeDiskCache(
         val data = dataFile(key)
         val entry = Entry(meta, rangesFromJson(o.optJSONArray("ranges")))
         entry.doneBytes = entry.ranges.sumOf { it[1] - it[0] }
-        return if (data.isFile && data.length() > 0 && entry.doneBytes > 0) Row(key, entry, data, file)
+        val fileLength = data.length()
+        if (entry.ranges.any { it[1] > fileLength }) return null
+        return if (data.isFile && fileLength > 0 && entry.doneBytes > 0) Row(key, entry, data, file)
         else { data.delete(); null }
     }
 
-    /** tmp+rename 原子落盘，崩溃最多丢未落的那一段进度。 */
-    private fun saveMeta(key: Key, entry: Entry) {
-        val m = entry.meta
+    /** 持锁时只捕获不可变快照；序列化、写入和删除由同一个后台队列保持顺序。 */
+    private fun saveMeta(key: Key, entry: Entry): Future<*>? = synchronized(lock) {
+        if (entries[key] !== entry) return@synchronized null
+        val meta = entry.meta
+        val ranges = entry.ranges.map { it.copyOf() }
+        // 快照与入队在同一短锁内，旧快照不会排到删除或新条目的快照之后。
+        fileTask(key, lockFile = false) { writeMeta(key, meta, ranges) }
+    }
+
+    private fun fileTask(key: Key, lockFile: Boolean = true, action: () -> Unit): Future<*>? = try {
+        fileIo.submit {
+            if (lockFile) synchronized(fileLocks.getOrPut(key) { Any() }) { action() } else action()
+        }
+    } catch (_: RejectedExecutionException) { null }
+
+    private fun writeMeta(key: Key, m: Meta, ranges: List<LongArray>) {
         val samples = JSONArray()
         m.samples.forEach { s -> samples.put(JSONObject().put("s", s.start).put("e", s.end).put("iv", base64(s.iv)).also { if (s.encryptedOffset != 0L) it.put("o", s.encryptedOffset) }) }
         val o = JSONObject().put("id", m.id).put("quality", m.quality).put("url", m.url)
             .put("key", if (m.key != null) base64(m.key) else "").put("qualityLabel", m.qualityLabel)
             .put("expiresAt", m.expiresAt).put("total", m.total).put("header", base64(m.header))
             .put("samples", samples).put("updatedAt", m.updatedAt).put("done", m.done).put("seriesId", m.seriesId)
-            .put("ranges", rangesToJson(entry.ranges))
+            .put("ranges", rangesToJson(ranges))
         val tmp = File(directory, key.fileName + ".tmp")
         tmp.writeText(o.toString())
         if (!tmp.renameTo(metaFile(key))) { metaFile(key).delete(); tmp.renameTo(metaFile(key)) }
+    }
+
+    /** 资源查询可能访问文件系统及系统服务，周期性在后台更新。 */
+    private fun refreshResourcesLocked() {
+        if (clock() < nextResourceCheckAt || closed) return
+        nextResourceCheckAt = clock() + 5_000L
+        fileIo.execute { runCatching { resources = Resources(freeBytes(), lowMemory()) } }
+    }
+
+    private fun cancelLocked(scopes: Collection<RequestScope>) {
+        if (scopes.isEmpty()) return
+        val pending = scopes.toList()
+        // TLS 连接取消也可能等待底层 I/O，不让生命周期线程承担它。
+        try { fileIo.execute { pending.forEach { it.cancel() } } }
+        catch (_: RejectedExecutionException) { /* 关闭前已取消所有在途作用域。 */ }
     }
 
     // ---------- 播放端查询 ----------
@@ -206,7 +261,7 @@ class EpisodeDiskCache(
     fun meta(id: String, quality: Int): Meta? = synchronized(lock) {
         val key = Key(id, quality)
         val entry = entries[key] ?: return@synchronized null
-        if (!entry.meta.done || !covered(entry.ranges, 0, entry.meta.total) || dataFile(key).length() < entry.meta.total)
+        if (!entry.meta.done || !covered(entry.ranges, 0, entry.meta.total))
             return@synchronized null
         entry.meta
     }
@@ -238,19 +293,26 @@ class EpisodeDiskCache(
     }
 
     /** 提取器会越过文件末尾多读一点：按总长截断，只答应真正落盘的部分。 */
-    fun read(id: String, quality: Int, offset: Long, target: ByteArray, targetOffset: Int, length: Int, expected: Meta? = null): Int = synchronized(lock) {
-        val entry = entries[Key(id, quality)] ?: return 0
-        // 条目被刷新或重建后不混用旧密钥/索引；Meta.copy 保留同一份 header 引用。
-        if (expected != null && expected.header !== entry.meta.header) return 0
-        val safeOffset = offset.coerceIn(0, entry.meta.total)
-        val end = (safeOffset + length).coerceAtMost(entry.meta.total)
-        if (!covered(entry.ranges, safeOffset, end - safeOffset)) return 0
-        runCatching {
-            RandomAccessFile(dataFile(Key(id, quality)), "r").use { file ->
-                file.seek(safeOffset)
-                file.read(target, targetOffset, (end - safeOffset).toInt())
-            }
-        }.getOrDefault(-1)
+    fun read(id: String, quality: Int, offset: Long, target: ByteArray, targetOffset: Int, length: Int, expected: Meta? = null): Int {
+        val key = Key(id, quality)
+        val snapshot = synchronized(lock) {
+            val entry = entries[key] ?: return 0
+            if (expected != null && expected.header !== entry.meta.header) return 0
+            val start = offset.coerceIn(0, entry.meta.total)
+            val end = (start + length).coerceAtMost(entry.meta.total)
+            if (!covered(entry.ranges, start, end - start)) return 0
+            Triple(entry, start, (end - start).toInt())
+        }
+        // 淘汰和重建条目时复用同一文件锁；拿锁后再次核对身份，避免读到另一份密文。
+        return synchronized(fileLocks.getOrPut(key) { Any() }) {
+            if (synchronized(lock) { entries[key] !== snapshot.first }) return 0
+            runCatching {
+                RandomAccessFile(dataFile(key), "r").use { file ->
+                    file.seek(snapshot.second)
+                    file.read(target, targetOffset, snapshot.third)
+                }
+            }.getOrDefault(-1)
+        }
     }
 
     // ---------- 调度 ----------
@@ -273,7 +335,7 @@ class EpisodeDiskCache(
             entries.keys.filter { it.id in obsolete }.toList().forEach { key ->
                 if (key in active) {
                     discardAfterDownload += key
-                    activeScopes[key]?.cancel()
+                    activeScopes[key]?.let { cancelLocked(listOf(it)) }
                 } else dropLocked(key)
             }
             evictLocked()
@@ -285,9 +347,12 @@ class EpisodeDiskCache(
         if (closed) { markSkip("缓存池已关闭"); return false }
         val keys = orderedIds.filter { ID_PATTERN.matches(it) }.distinct().map { Key(it, quality) }
         synchronized(lock) {
-            if (freeBytes() < FREE_FLOOR_BYTES || lowMemory()) {
-                markSkip("磁盘空间或内存不足（可用 ${freeBytes() / 1048576}MB）")
-                onLog("Episode disk cache paused: storage or memory constrained, free=${freeBytes() / 1048576}MB lowMemory=${lowMemory()}")
+            if (closed) return false
+            refreshResourcesLocked()
+            val budget = resources
+            if (budget.free < FREE_FLOOR_BYTES || budget.lowMemory) {
+                markSkip("磁盘空间或内存不足（可用 ${budget.free / 1048576}MB）")
+                onLog("Episode disk cache paused: storage or memory constrained, free=${budget.free / 1048576}MB lowMemory=${budget.lowMemory}")
                 return false
             }
             if (keys.isNotEmpty()) markSkip("")
@@ -333,14 +398,16 @@ class EpisodeDiskCache(
         discardAfterDownload.remove(key)
         retryAt.remove(key)
         entries.remove(key)
-        dataFile(key).delete()
-        metaFile(key).delete()
+        fileTask(key) {
+            dataFile(key).delete()
+            metaFile(key).delete()
+        }
     }
 
     fun clear() {
         synchronized(lock) {
             want = emptyList(); scheduled = false; retryAt.clear(); capacityEvicted.clear()
-            activeScopes.values.forEach { it.cancel() }
+            cancelLocked(activeScopes.values)
             setQueued(0); markSkip("缓存已清空")
             entries.keys.toList().forEach { dropLocked(it) }
         }
@@ -354,7 +421,7 @@ class EpisodeDiskCache(
     fun pause() {
         synchronized(lock) {
             want = emptyList(); scheduled = false; capacityEvicted.clear()
-            activeScopes.values.forEach { it.cancel() }
+            cancelLocked(activeScopes.values)
             setQueued(0); markSkip("")
         }
         // 保留已落盘区间；取消在途请求，让当前集立即拿回带宽，之后从缺口续传。
@@ -373,7 +440,7 @@ class EpisodeDiskCache(
 
     private fun cancelExcessDownloadsLocked() {
         val allowed = want.filter { it in active }.take(downloadParallelism).toSet()
-        activeScopes.filterKeys { it !in allowed }.values.forEach { it.cancel() }
+        cancelLocked(activeScopes.filterKeys { it !in allowed }.values)
     }
 
     /** 本地索引损坏时废弃该集缓存；在线地址失效不会调用此方法。 */
@@ -386,9 +453,15 @@ class EpisodeDiskCache(
     }
 
     override fun close() {
-        closed = true
-        synchronized(lock) { activeScopes.values.forEach { it.cancel() } }
-        executor.shutdownNow()
+        synchronized(lock) {
+            if (closed) return
+            closed = true
+            cancelLocked(activeScopes.values)
+            entries.forEach { (key, entry) -> saveMeta(key, entry) }
+            executor.shutdownNow()
+            fileIo.shutdown() // 已排队的最后快照和删除正常收尾，不等待磁盘。
+            retiredFiles[directory.absolutePath] = executor to fileIo
+        }
     }
 
     /**
@@ -525,15 +598,17 @@ class EpisodeDiskCache(
             val meta = Meta(key.id, key.quality, info.url, info.key, info.quality, info.expiresAt,
                 remote.total, snapshot.header, snapshot.samples, clock(), false, seriesId)
             val entry = Entry(meta, emptyList())
-            synchronized(lock) {
+            val initialWrite = synchronized(lock) {
                 if (closed || RequestScope.current()?.isCancelled == true || entries.containsKey(key) || key !in want) return null
                 if (!evictLocked(additionalBytes = meta.total, seriesId = seriesId, episodeId = key.id)) {
                     markSkip("缓存池容量不足，等待播放推进后继续缓存")
                     return null
                 }
                 entries[key] = entry
+                // 新条目必须等先前同名文件的删除及本次初始快照完成，再写视频数据。
                 saveMeta(key, entry)
             }
+            initialWrite?.get() // 仅下载工作线程等待，绝不在状态锁或界面线程等待。
             return Row(key, entry, dataFile(key), metaFile(key))
         } catch (problem: Throwable) {
             if (RequestScope.current()?.isCancelled == true || Thread.currentThread().isInterrupted)
@@ -552,49 +627,56 @@ class EpisodeDiskCache(
         val total = row.entry.meta.total
         // 单路下载用 1MiB，尽早提供可播放区间、减少让路时丢弃的在途数据；宽裕时用 4MiB。
         var pendingMeta = 0
-        RandomAccessFile(row.file, "rw").use { file ->
-            var at = 0L
-            while (at < total) {
-                if (Thread.currentThread().isInterrupted || closed || RequestScope.current()?.isCancelled == true)
-                    throw InterruptedException("下载已取消")
+        val fileLock = fileLocks.getOrPut(row.key) { Any() }
+        var at = 0L
+        while (at < total) {
+            if (Thread.currentThread().isInterrupted || closed || RequestScope.current()?.isCancelled == true)
+                throw InterruptedException("下载已取消")
+            synchronized(lock) {
+                if (entries[row.key] !== row.entry) throw InterruptedException("下载已取消")
+                // 这一集已经滑出下载窗口（用户切到别的集了）：立刻让出线程槽位给新的下 1/2/3 集。
+                // 否则连切几集后三个线程还在下旧集，新窗口只能在后面等——就是「老是卡在排队」。
+                // 已落盘的部分保留在磁盘上（meta 里有区间），以后排到时从缺口续传。
+                if (row.key !in want) throw InterruptedException("已移出下载窗口")
+            }
+            val segment = synchronized(lock) { (if (downloadParallelism == 1) 1L else 4L) * 1024 * 1024 }
+            val end = minOf(total, at + segment)
+            synchronized(lock) {
+                if (covered(row.entry.ranges, at, end - at)) { at = end; return@synchronized }
+                row.entry.ranges = mergeRanges(row.entry.ranges, longArrayOf(at, at))
+            }
+            val rangeStart: Long
+            val rangeEnd: Long
+            synchronized(lock) {
+                // 段内已落盘的部分跳过：从第一个缺口下起，到段末或下一缺口前为止
+                var s = at
+                for (r in row.entry.ranges) { if (r[1] > s && r[0] <= s) s = r[1] }
+                var e = end
+                for (r in row.entry.ranges) { if (r[0] in (s + 1) until e) { e = r[0]; break } }
+                rangeStart = s; rangeEnd = e
+            }
+            if (rangeStart >= rangeEnd) { at = end; continue }
+            val bytes = fetch(row.entry.meta, rangeStart, rangeEnd - 1)
+            val ratio = synchronized(fileLock) {
                 synchronized(lock) {
-                    if (entries[row.key] !== row.entry) throw InterruptedException("下载已取消")
-                    // 这一集已经滑出下载窗口（用户切到别的集了）：立刻让出线程槽位给新的下 1/2/3 集。
-                    // 否则连切几集后三个线程还在下旧集，新窗口只能在后面等——就是「老是卡在排队」。
-                    // 已落盘的部分保留在磁盘上（meta 里有区间），以后排到时从缺口续传。
-                    if (row.key !in want) throw InterruptedException("已移出下载窗口")
+                    if (closed || entries[row.key] !== row.entry) throw InterruptedException("下载已取消")
                 }
-                val segment = synchronized(lock) { (if (downloadParallelism == 1) 1L else 4L) * 1024 * 1024 }
-                val end = minOf(total, at + segment)
+                RandomAccessFile(row.file, "rw").use { file ->
+                    file.seek(rangeStart)
+                    file.write(bytes)
+                    file.fd.sync()
+                }
                 synchronized(lock) {
-                    if (covered(row.entry.ranges, at, end - at)) { at = end; return@synchronized }
-                    row.entry.ranges = mergeRanges(row.entry.ranges, longArrayOf(at, at))
-                }
-                val rangeStart: Long
-                val rangeEnd: Long
-                synchronized(lock) {
-                    // 段内已落盘的部分跳过：从第一个缺口下起，到段末或下一缺口前为止
-                    var s = at
-                    for (r in row.entry.ranges) { if (r[1] > s && r[0] <= s) s = r[1] }
-                    var e = end
-                    for (r in row.entry.ranges) { if (r[0] in (s + 1) until e) { e = r[0]; break } }
-                    rangeStart = s; rangeEnd = e
-                }
-                if (rangeStart >= rangeEnd) { at = end; continue }
-                val bytes = fetch(row.entry.meta, rangeStart, rangeEnd - 1)
-                file.seek(rangeStart)
-                file.write(bytes)
-                file.fd.sync()
-                val ratio = synchronized(lock) {
+                    if (closed || entries[row.key] !== row.entry) throw InterruptedException("下载已取消")
                     row.entry.ranges = mergeRanges(row.entry.ranges, longArrayOf(rangeStart, rangeEnd))
                     row.entry.doneBytes = row.entry.ranges.sumOf { it[1] - it[0] }
-                    // 比例在锁内算好，避免再去 progress() 抢一次锁（三条线程并发下会明显增加争用）
+                    // 比例在短锁内计算，读写文件时不占用状态锁。
                     if (total <= 0) 0f else (row.entry.doneBytes.toFloat() / total).coerceIn(0f, 1f)
                 }
-                runCatching { onProgress(row.key.id, row.key.quality, ratio) }
-                if (++pendingMeta >= COMPACT_EVERY) { pendingMeta = 0; runCatching { saveMeta(row.key, row.entry) } }
-                at = end
             }
+            runCatching { onProgress(row.key.id, row.key.quality, ratio) }
+            if (++pendingMeta >= COMPACT_EVERY) { pendingMeta = 0; runCatching { saveMeta(row.key, row.entry) } }
+            at = end
         }
         if (pendingMeta > 0) runCatching { saveMeta(row.key, row.entry) }
     }

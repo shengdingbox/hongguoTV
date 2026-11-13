@@ -9,7 +9,6 @@ import android.widget.LinearLayout
 import androidx.core.view.NestedScrollingParent3
 import androidx.core.view.NestedScrollingParentHelper
 import androidx.core.view.ViewCompat
-import androidx.core.widget.NestedScrollView
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
@@ -25,7 +24,7 @@ class PortraitFeedPager(
     private val updateTabs: (String) -> Unit,
     private val loading: () -> Boolean,
     private val refresh: () -> Unit,
-    private val buildPage: (String, LinearLayout, NestedScrollView) -> (() -> Unit),
+    private val buildPage: (String, PortraitListPage) -> (() -> Unit),
 ) : FrameLayout(activity), NestedScrollingParent3 {
     private val titleView = PortraitUi.pageTitle(activity, title)
     private val header = PortraitUi.column(activity).apply {
@@ -48,10 +47,10 @@ class PortraitFeedPager(
     private var nextId = 0L
     var onPositionChanged: ((Int) -> Unit)? = null
     private val currentPage get() = pageKeys.getOrNull(pager.currentItem)?.let { pages[it] }
-    val position get() = collapsed + (currentPage?.scroll?.scrollY ?: 0)
+    val position get() = collapsed + (currentPage?.scroll?.position ?: 0)
     private val scrollListener = ViewTreeObserver.OnScrollChangedListener { onPositionChanged?.invoke(position) }
 
-    private class Page(val scroll: NestedScrollView, val refresh: PortraitUi.RefreshLayout, val update: () -> Unit)
+    private class Page(val scroll: PortraitListPage, val refresh: PortraitUi.RefreshLayout, val update: () -> Unit)
     private class Holder(val container: FrameLayout) : RecyclerView.ViewHolder(container) {
         var key: String? = null
         var page: Page? = null
@@ -60,7 +59,7 @@ class PortraitFeedPager(
     private fun release(holder: Holder) {
         holder.key?.let { key ->
             holder.page?.let { page ->
-                positions[key] = page.scroll.scrollY
+                positions[key] = page.scroll.position
                 if (pages[key] === page) pages.remove(key)
             }
         }
@@ -83,17 +82,10 @@ class PortraitFeedPager(
                 return
             }
             release(holder)
-            val scroll = NestedScrollView(activity).apply {
-                isVerticalScrollBarEnabled = false
-                isFillViewport = true
-                clipToPadding = false
+            val scroll = PortraitListPage(activity).apply {
+                onPositionChanged = { this@PortraitFeedPager.onPositionChanged?.invoke(this@PortraitFeedPager.position) }
             }
-            PhoneInsets.listen(scroll) { _, bottomInset, _ ->
-                scroll.setPadding(0, 0, 0, PortraitUi.dp(activity, 92) + bottomInset)
-            }
-            val body = PortraitUi.column(activity)
-            scroll.addView(body)
-            val update = buildPage(key, body, scroll)
+            val update = buildPage(key, scroll)
             val refreshLayout = PortraitUi.RefreshLayout(activity, scroll, {
                 if (isCurrent(key)) refresh()
             }).apply {
@@ -105,7 +97,7 @@ class PortraitFeedPager(
             pages[key] = page
             holder.container.addView(refreshLayout, LayoutParams(-1, -1))
             updatePage(key, page)
-            positions[key]?.let { y -> scroll.post { if (pages[key] === page) scroll.scrollTo(0, y) } }
+            positions[key]?.let { y -> scroll.post { if (pages[key] === page) scroll.restorePosition(y) } }
         }
         override fun onViewRecycled(holder: Holder) { release(holder) }
     }
@@ -194,7 +186,7 @@ class PortraitFeedPager(
 
     fun restorePosition(y: Int) {
         moveHeader(y.coerceAtLeast(0) - collapsed)
-        currentPage?.scroll?.scrollTo(0, (y - collapsed).coerceAtLeast(0))
+        currentPage?.scroll?.restorePosition((y - collapsed).coerceAtLeast(0))
     }
 
     override fun onAttachedToWindow() {

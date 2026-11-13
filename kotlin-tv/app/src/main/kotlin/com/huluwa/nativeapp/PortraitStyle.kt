@@ -19,7 +19,6 @@ object PortraitStyle {
         }
     }
 
-    private const val PREFS = "native-library-v1"
     private const val APPEARANCE_KEY = "phoneAppearance"
     var appearance = Appearance.SYSTEM
         private set
@@ -31,14 +30,14 @@ object PortraitStyle {
 
     /** 在启动、系统外观变化和恢复前台时调用；返回是否需要重建内容页。 */
     fun refresh(context: Context): Boolean {
-        val stored = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(APPEARANCE_KEY, null)
+        val stored = StartupSettings.string(APPEARANCE_KEY)
         appearance = Appearance.fromStored(stored)
         return refresh(context.resources.configuration)
     }
 
     /** 手机外观只保存在本机，旧版本未设置时继续跟随系统。 */
     fun setAppearance(context: Context, value: Appearance): Boolean {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(APPEARANCE_KEY, value.name).apply()
+        StartupSettings.set(APPEARANCE_KEY, value.name)
         appearance = value
         return refresh(context.resources.configuration)
     }

@@ -42,7 +42,7 @@ object PhoneUi {
 
     /** 用户设置里的启动方向偏好（每次实时读，设置改完立即生效）。 */
     fun orientationMode(activity: Activity): OrientationMode =
-        OrientationMode.of(activity.getSharedPreferences("native-library-v1", android.content.Context.MODE_PRIVATE).getString("orientationMode", null))
+        OrientationMode.of(StartupSettings.string("orientationMode"))
 
     /** Activity 请求的屏幕方向：电视锁横屏；手机按偏好，强制档位锁死朝向，跟随系统则交给传感器。 */
     fun requestedOrientation(activity: Activity): Int {

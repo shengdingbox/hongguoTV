@@ -74,6 +74,7 @@ class MainActivity: Activity() {
     private val bg by lazy { TvStyle.background }; private val surface by lazy { TvStyle.surface }
     private val accent by lazy { TvStyle.accent }; private val white by lazy { TvStyle.text }; private val muted by lazy { TvStyle.muted }
     private val gold by lazy { TvStyle.gold }
+    private var activityInitialized=false
     private val main=Handler(Looper.getMainLooper())
     private val io=Executors.newFixedThreadPool(3)
     // 页面请求独占线程，不排在随机推荐补池、云同步等后台任务之后。
@@ -570,8 +571,27 @@ class MainActivity: Activity() {
         val view=button(label,selected,onClick); parent.addView(view,lp().apply { width=LinearLayout.LayoutParams.WRAP_CONTENT; rightMargin=dp(8) }); return view
     }
     override fun onCreate(state: Bundle?) {
-        TvStyle.apply(getSharedPreferences("native-library-v1", Context.MODE_PRIVATE).getString("theme", null))
+        TvStyle.apply(StartupSettings.string("theme", "NIGHT"))
         super.onCreate(state)
+        if(!StartupSettings.isLoaded) {
+            val status=TextView(this).apply {
+                text="正在读取本机设置…"; textSize=18f; gravity=Gravity.CENTER
+                setTextColor(Color.WHITE); setBackgroundColor(Color.rgb(18,18,18))
+            }
+            setContentView(status)
+            fun loadSettings() {
+                status.text="正在读取本机设置…"; status.setOnClickListener(null)
+                StartupSettings.loadAsync(this) { result ->
+                    if(!isDestroyed && !isFinishing) result.onSuccess { recreate() }.onFailure {
+                        status.text="本机设置读取失败，点击重试"
+                        status.isFocusable=true; status.isFocusableInTouchMode=true; status.requestFocus()
+                        status.setOnClickListener { loadSettings() }
+                    }
+                }
+            }
+            loadSettings()
+            return
+        }
         PortraitStyle.refresh(this)
         phoneConfiguration=android.content.res.Configuration(resources.configuration)
         // 系统风格 / 界面缩放切换触发的重建：把原页面和焦点带回来
@@ -623,6 +643,7 @@ class MainActivity: Activity() {
         }
         favoriteMonitor=FavoriteMonitor(library,repository) { refreshFavoriteLabels() }
         mediaSession=TvMediaSession(this,{ if(foreground && screen=="player") requestPlayback(true) },{ if(foreground && screen=="player") requestPlayback(false) },{ position -> if(foreground && screen=="player") seekTo(position) },{ direction -> skipEpisode(direction) },{ if(foreground && screen=="player") returnToDetail() })
+        activityInitialized=true
         message(base(),"正在读取本机记录…")
         loadLibrary()
     }
@@ -4183,6 +4204,7 @@ class MainActivity: Activity() {
         if(screen=="player" && allow && !ffActive && player?.isPlaying==true) main.postDelayed(hideHud,4500)
     }
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if(!activityInitialized) return super.dispatchTouchEvent(event)
         if(!touchPlayback) return super.dispatchTouchEvent(event)
         if(screen=="player" && event.actionMasked==MotionEvent.ACTION_DOWN) main.removeCallbacks(hideHud)
         val handled=super.dispatchTouchEvent(event)
@@ -5166,7 +5188,7 @@ class MainActivity: Activity() {
     /** TV defaults to the drawn backdrop; existing explicit picture choices and phone defaults remain. */
     private fun backdropStyle(): String {
         val default=if(phoneLayout()) "forced" else "plain"
-        return getSharedPreferences("native-library-v1", Context.MODE_PRIVATE).getString("backdropStyle",default) ?: default
+        return StartupSettings.string("backdropStyle",default)
     }
     private fun loadBackdrop() {
         io.execute {
@@ -5185,7 +5207,7 @@ class MainActivity: Activity() {
     /** Drop any uploaded picture and switch back to one of the built-in styles. */
     private fun resetBackdrop(style: String) {
         io.execute { filesDir.listFiles()?.filter { it.name.startsWith("backdrop.") }?.forEach { it.delete() } }
-        getSharedPreferences("native-library-v1", Context.MODE_PRIVATE).edit().putString("backdropStyle",style).apply()
+        StartupSettings.set("backdropStyle",style)
         loadBackdrop()
         Toast.makeText(this,if(style=="forced") "已恢复为强制欣赏" else "已恢复默认背景",Toast.LENGTH_SHORT).show()
     }
@@ -5417,7 +5439,7 @@ class MainActivity: Activity() {
     }
 
     /** 数据回来并完成布局后恢复滚动，避免空列表首帧把保存的位置夹回零。 */
-    private fun restorePhoneCatalogScroll(tab: String,scroll: androidx.core.widget.NestedScrollView?,pager: PortraitFeedPager?) {
+    private fun restorePhoneCatalogScroll(tab: String,scroll: PortraitListPage?,pager: PortraitFeedPager?) {
         val y=pendingPhoneScrolls[tab] ?: return
         val ready=when(tab) {
             "home" -> phoneRecommendationItems.isNotEmpty()
@@ -5433,8 +5455,8 @@ class MainActivity: Activity() {
             override fun onPreDraw(): Boolean {
                 if(observer.isAlive) observer.removeOnPreDrawListener(this)
                 if(phoneTab==tab && screen=="catalog" && view.isShown) {
-                    if(pager!=null) pager.restorePosition(y) else scroll?.scrollTo(0,y)
-                    phoneScrollY=pager?.position ?: scroll?.scrollY ?: y
+                    if(pager!=null) pager.restorePosition(y) else scroll?.restorePosition(y)
+                    phoneScrollY=pager?.position ?: scroll?.position ?: y
                     phoneSessionPositions[tab]=phoneScrollY
                     pendingPhoneScrolls.remove(tab)
                 }
@@ -5578,8 +5600,8 @@ class MainActivity: Activity() {
             if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="new" &&
                 phoneNewReleaseDay==date && !phoneDetailCollection) {
                 phoneNewReleaseLoading=false
-                val items=if(more && previous?.date==result.date) (previous.items+result.items).distinctBy { it.series.id } else result.items
-                val loadedPage=result.copy(items=items)
+                val items=(if(more && previous?.date==result.date) (previous.items+result.items).distinctBy { it.series.id } else result.items).take(PortraitUi.PHONE_LIST_LIMIT)
+                val loadedPage=result.copy(items=items,cursor=result.cursor.takeIf { items.size<PortraitUi.PHONE_LIST_LIMIT })
                 phoneNewReleasePages[result.date]=loadedPage
                 phoneNewReleaseLoadedDates+=result.date
                 phoneNewReleaseDay=result.date; library.newReleaseDay=result.date
@@ -5666,13 +5688,13 @@ class MainActivity: Activity() {
     private data class RetainedPhoneCatalog(
         val frame: FrameLayout,
         val nav: LinearLayout,
-        val scroll: androidx.core.widget.NestedScrollView?,
+        val scroll: PortraitListPage?,
         val refreshLayout: PortraitUi.RefreshLayout?,
         val update: (Boolean) -> Unit,
         var state: CatalogState,
         val pager: PortraitFeedPager?=null,
     ) {
-        val position get() = pager?.position ?: scroll?.scrollY ?: 0
+        val position get() = pager?.position ?: scroll?.position ?: 0
         fun finishRefresh() { refreshLayout?.finishRefresh(); pager?.finishRefresh() }
     }
     private val retainedPhoneCatalogs=mutableMapOf<String,RetainedPhoneCatalog>()
@@ -5766,8 +5788,7 @@ class MainActivity: Activity() {
             "new" -> portraitPages.newReleasesPager(::refreshPortraitFeed)
             else -> null
         }
-        val scroll=if(feedPager!=null) null else if(phoneTab=="home") androidx.core.widget.NestedScrollView(this)
-            else PortraitUi.RefreshScrollView(this,::refreshPortraitFeed)
+        val scroll=if(feedPager!=null) null else PortraitListPage(this)
         var refreshLayout: PortraitUi.RefreshLayout?=null
         val update: ((Boolean) -> Unit)?
         if(feedPager!=null) {
@@ -5778,19 +5799,15 @@ class MainActivity: Activity() {
             update={ feedPager.update() }
         } else {
             val feedScroll=checkNotNull(scroll)
-            feedScroll.isVerticalScrollBarEnabled=false; feedScroll.isFillViewport=true
-            feedScroll.clipToPadding=false
-            PhoneInsets.listen(feedScroll) { _,bottomInset,_ -> feedScroll.setPadding(0,0,0,dp(92)+bottomInset) }
-            val body=column()
-            feedScroll.addView(body)
             update=when(phoneTab) {
-                "home" -> portraitPages.home(body,scrollRoot=feedScroll)
-                "fav" -> portraitPages.favorites(body,scrollRoot=feedScroll)
-                "mine" -> portraitPages.mine(body,feedScroll)
-                "search" -> portraitPages.search(body,::runPhoneSearch,feedScroll)
+                "home" -> portraitPages.home(feedScroll)
+                "fav" -> portraitPages.favorites(feedScroll)
+                "mine" -> portraitPages.mine(feedScroll)
+                "search" -> portraitPages.search(feedScroll,::runPhoneSearch)
                 else -> null
             }
-            if(phoneTab=="home") refreshLayout=PortraitUi.RefreshLayout(this,feedScroll,::refreshPortraitFeed,maxDurationMillis=3_000L)
+            refreshLayout=PortraitUi.RefreshLayout(this,feedScroll,::refreshPortraitFeed,
+                maxDurationMillis=if(phoneTab=="home") 3_000L else 0L)
             content.addView(refreshLayout ?: feedScroll,lp(-1,0).apply { weight=1f })
         }
         update?.invoke(phoneHomeLoading)
@@ -5818,9 +5835,9 @@ class MainActivity: Activity() {
             if(feedPager.isShown && phoneTab==renderedTab) feedPager.restorePosition(restoreY)
         }
         scroll?.let { feedScroll ->
-            feedScroll.post { if(feedScroll.isShown && phoneTab==renderedTab && feedScroll.scrollY!=restoreY) feedScroll.scrollTo(0,restoreY) }
-            feedScroll.viewTreeObserver.addOnScrollChangedListener {
-                if(feedScroll.isShown && phoneTab==renderedTab && screen=="catalog") phoneScrollY=feedScroll.scrollY
+            feedScroll.post { if(feedScroll.isShown && phoneTab==renderedTab && feedScroll.position!=restoreY) feedScroll.restorePosition(restoreY) }
+            feedScroll.onPositionChanged={ y ->
+                if(feedScroll.isShown && phoneTab==renderedTab && screen=="catalog") phoneScrollY=y
             }
         }
     }
@@ -5918,8 +5935,9 @@ class MainActivity: Activity() {
             phoneHomeLoading=!finished
             // 每个阶段都是本批累计结果，相对加载前的快照合并，追加分页不会重排已显示的海报。
             val combined=if(more) previous+result.items else result.items+previous
-            phoneRecommendationItems=combined.distinctBy { it.id }
+            phoneRecommendationItems=combined.distinctBy { it.id }.take(PortraitUi.PHONE_LIST_LIMIT)
             phoneRecommendationCursor=when {
+                phoneRecommendationItems.size>=PortraitUi.PHONE_LIST_LIMIT -> null
                 finished && more && phoneRecommendationItems.size==previous.size -> null
                 keepCursor -> previousCursor
                 else -> result.cursor
@@ -6028,8 +6046,9 @@ class MainActivity: Activity() {
             phoneRankContent=result.contentId; phoneRankBoard=result.boardId
             activeContent=result.contentId; activeBoard=result.boardId
             // 分阶段回调是本批累计结果，始终相对加载前的快照追加，避免重复插入。
-            val items=if(more) (previous!!.items+result.items).distinctBy { it.id } else result.items
-            val loaded=result.copy(items=items,contents=phoneRankContents)
+            val items=(if(more) (previous!!.items+result.items).distinctBy { it.id } else result.items).take(PortraitUi.PHONE_LIST_LIMIT)
+            val loaded=result.copy(items=items,contents=phoneRankContents,
+                cursor=result.cursor.takeIf { items.size<PortraitUi.PHONE_LIST_LIMIT })
             phoneMobileRankLoadedKeys+=key
             phoneMobileRankLoadedKeys+=mobileRankCacheKey()
             phoneMobileRankPages[key]=loaded
@@ -6148,12 +6167,9 @@ class MainActivity: Activity() {
         val active=phoneCollectionTab
         phoneStatusBarFollowTheme()
         val (frame,content,_)=PortraitUi.scaffold(this,active,::switchPhoneTab)
-        val scroll=androidx.core.widget.NestedScrollView(this).apply {
-            isVerticalScrollBarEnabled=false; isFillViewport=true; clipToPadding=false
-        }
-        PhoneInsets.listen(scroll) { _,bottomInset,_ -> scroll.setPadding(0,0,0,dp(92)+bottomInset) }
+        val scroll=PortraitListPage(this)
         val body=column()
-        scroll.addView(body)
+        scroll.addBlock(body)
         val title=when(kind) { "later" -> "稍后看"; "updates" -> "收藏有更新"; "resume" -> "接着看"; else -> "接着看" }
         val head=PortraitUi.row(this).apply { setPadding(dp(14),dp(8),dp(14),dp(8)) }
         head.addView(ImageView(this).apply {
@@ -6169,11 +6185,9 @@ class MainActivity: Activity() {
         val items=localItems()
         if(items.isEmpty()) body.addView(PortraitUi.emptyHint(this,"这里暂时没有内容"))
         else {
-            val grid=androidx.recyclerview.widget.RecyclerView(this)
-            body.addView(grid,lp(-1,-2))
-            val adapter=PortraitUi.PosterGrid(this,::loadCover,{ openDetailPhone(it) },null,scroll)
-            adapter.items=items
-            adapter.attach(grid)
+            val adapter=PortraitUi.PosterGrid(this,::loadCover,{ openDetailPhone(it) },null)
+            scroll.addGrid(adapter)
+            adapter.submitItems(items,false)
         }
         content.addView(scroll,lp(-1,0).apply { weight=1f })
         root.removeAllViews(); root.addView(frame,android.widget.FrameLayout.LayoutParams(-1,-1))
@@ -6286,7 +6300,7 @@ class MainActivity: Activity() {
             if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="search" &&
                 library.contentType==type && phoneQuery==keyword && !phoneDetailCollection) {
                 loadingMore=false; phoneSearchPage=nextPage
-                catalog=(catalog+result.items).distinctBy { it.id }; hasMore=result.hasMore && result.items.isNotEmpty()
+                catalog=(catalog+result.items).distinctBy { it.id }.take(PortraitUi.PHONE_LIST_LIMIT); hasMore=result.hasMore && result.items.isNotEmpty() && catalog.size<PortraitUi.PHONE_LIST_LIMIT
                 renderPhone()
                 loadSearchArtwork()
             }
@@ -6931,8 +6945,9 @@ class MainActivity: Activity() {
         }
     }
     @Deprecated("TV remote back is handled through the activity")
-    override fun onBackPressed()=goBack()
+    override fun onBackPressed() { if(activityInitialized) goBack() else finish() }
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if(!activityInitialized) return super.dispatchKeyEvent(event)
         // 遥控一按就把鼠标专属的东西收起来：最近一次操作已经换人了
         if(mouseSeen && screen=="player") { mouseSeen=false; refreshPointerUi() }
         if(handleCatalogDown(event)) return true
@@ -7003,6 +7018,7 @@ class MainActivity: Activity() {
         return super.dispatchKeyEvent(event)
     }
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        if(!activityInitialized) { super.onConfigurationChanged(newConfig); return }
         val previous=phoneConfiguration
         super.onConfigurationChanged(newConfig)
         phoneConfiguration=android.content.res.Configuration(newConfig)
@@ -7055,6 +7071,7 @@ class MainActivity: Activity() {
         }
     }
     override fun onResume() {
+        if(!activityInitialized) { super.onResume(); return }
         super.onResume(); foreground=true; main.removeCallbacks(tick); main.post(tick)
         if(PortraitStyle.refresh(this)) redrawPhoneTheme()
         phoneConfiguration=android.content.res.Configuration(resources.configuration)
@@ -7126,6 +7143,7 @@ class MainActivity: Activity() {
         return true
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
+        if(!activityInitialized) { super.onWindowFocusChanged(hasFocus); return }
         super.onWindowFocusChanged(hasFocus)
         homePlayback?.setActive(foreground && hasFocus && screen=="catalog" && tab==0 && !phoneLayout())
         // 手机设置页的取值都改在独立弹窗里：弹窗关闭、窗口重新拿到焦点时刷新一遍右侧文案，
@@ -7133,6 +7151,7 @@ class MainActivity: Activity() {
         if(hasFocus && screen=="settings") phoneRefreshSettingsValues()
     }
     override fun onPause() {
+        if(!activityInitialized) { super.onPause(); return }
         tvVideoFrameWaitStartedAt=0L
         homePlayback?.setActive(false)
         foreground=false; main.removeCallbacks(tick); cancelRecovery(); cancelPrefetch(); mediaSession.deactivate()
@@ -7142,6 +7161,7 @@ class MainActivity: Activity() {
         super.onPause()
     }
     override fun onStop() {
+        if(!activityInitialized) { super.onStop(); return }
         restoreStoppedPage=true; generation++; cancelWork(); cancelDetailExtras(); tvTools.close()
         // 播放页留在屏幕上但被切到后台（切 App / 锁屏 / 下拉通知栏）：只暂停，不拆播放器。
         // 以前这里无条件 releasePlayer()，回来要重新取址、重新 prepare、重新缓冲。
@@ -7164,6 +7184,7 @@ class MainActivity: Activity() {
         super.onStop()
     }
     override fun onTrimMemory(level: Int) {
+        if(!activityInitialized) { super.onTrimMemory(level); return }
         super.onTrimMemory(level)
         if(::artwork.isInitialized) artwork.trimMemory(level)
         val memoryPressure=level in android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW..android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
@@ -7174,6 +7195,11 @@ class MainActivity: Activity() {
         }
     }
     override fun onDestroy() {
+        if(!activityInitialized) {
+            main.removeCallbacksAndMessages(null)
+            suggestIo.shutdownNow(); pageIo.shutdownNow(); io.shutdownNow()
+            super.onDestroy(); return
+        }
         stopTvHomePlayback()
         generation++; cancelWork(); cancelDetailExtras()
         exitDialog?.dismiss(); exitDialog=null

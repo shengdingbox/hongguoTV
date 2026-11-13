@@ -22,8 +22,6 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.TextView
-import androidx.core.widget.NestedScrollView
-import androidx.recyclerview.widget.RecyclerView
 import com.hongguotv.core.HotSearchTopic
 import com.hongguotv.core.NewReleaseCalendar
 import com.hongguotv.core.Series
@@ -43,22 +41,21 @@ class PortraitPages(
     private fun row() = PortraitUi.row(activity)
     private fun lp(w: Int = -1, h: Int = -2) = PortraitUi.lp(w, h)
 
-    fun home(body: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
+    fun home(page: PortraitListPage): (Boolean) -> Unit {
+        val body=column(); page.addBlock(body)
         body.addView(PortraitUi.pageTitle(activity, "推荐"), lp())
         val empty = PortraitUi.emptyHint(activity, "正在加载推荐…")
         body.addView(empty, lp())
-        val grid = RecyclerView(activity)
-        body.addView(grid, lp())
         val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
-            { activity.loadMorePhone() }, scrollRoot, loadAheadScreens = 2)
-        adapter.attach(grid)
+            { activity.loadMorePhone() }, loadAheadScreens = 2)
+        page.addGrid(adapter)
         val error = text("", 14f, PortraitStyle.muted).apply {
             gravity = Gravity.CENTER
             setPadding(dp(16), dp(24), dp(16), dp(24))
             background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 10)
             setOnClickListener { activity.retryRecommendationsPhone() }
         }
-        body.addView(error, lp())
+        page.addBlock(error)
         return { loading ->
             val allItems = activity.recommendationItemsPhone
             val items = allItems.filterNot { it.id in activity.phoneLibrary.hidden() }
@@ -78,7 +75,6 @@ class PortraitPages(
                 }
             }
             empty.visibility = if (items.isEmpty() && problem.isBlank()) View.VISIBLE else View.GONE
-            grid.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
             error.text = problem
             error.visibility = if (problem.isNotBlank()) View.VISIBLE else View.GONE
             adapter.submitItems(items, !loading && problem.isBlank() && activity.recommendationHasMorePhone)
@@ -191,18 +187,18 @@ class PortraitPages(
             select=activity::switchRankBoardPhone,
             updateTabs=::updateTabs,
             loading={ activity.rankLoadingPhone },refresh=refresh,
-        ) { key,body,scroll ->
+        ) { key,page ->
+            val body=column(); page.addBlock(body)
             val empty=PortraitUi.emptyHint(activity,"正在读取榜单…")
             body.addView(empty,lp())
-            val grid=RecyclerView(activity); body.addView(grid,lp())
             val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },
-                { if(feed.isCurrent(key)) activity.loadMorePhone() },scroll,ranked=true,loadAheadScreens=1)
-            adapter.attach(grid)
+                { if(feed.isCurrent(key)) activity.loadMorePhone() },ranked=true,loadAheadScreens=1)
+            page.addGrid(adapter)
             val error=text("",14f,PortraitStyle.muted).apply {
                 gravity=Gravity.CENTER; setPadding(dp(16),dp(24),dp(16),dp(24))
                 setOnClickListener { if(feed.isCurrent(key)) activity.retryRankPhone() }
             }
-            body.addView(error,lp())
+            page.addBlock(error)
             val update: ()->Unit={
                 val page=activity.rankPagePhone(key)
                 val items=page?.items.orEmpty()
@@ -211,7 +207,6 @@ class PortraitPages(
                 val problem=activity.rankErrorPhone(key)
                 empty.text=if(busy) "正在读取榜单…" else "这个榜单暂时是空的，下拉可重新加载"
                 empty.visibility=if(items.isEmpty() && problem.isBlank()) View.VISIBLE else View.GONE
-                grid.visibility=if(items.isEmpty()) View.GONE else View.VISIBLE
                 error.text=problem; error.visibility=if(problem.isBlank()) View.GONE else View.VISIBLE
                 adapter.submitItems(items,page?.cursor!=null && !busy && problem.isBlank())
             }
@@ -270,23 +265,22 @@ class PortraitPages(
             updateTabs = ::updateDates,
             loading = { activity.newReleaseLoadingPhone },
             refresh = refresh,
-        ) { key, body, scroll ->
+        ) { key, page ->
+            val body=column(); page.addBlock(body)
             val loading = PortraitUi.emptyHint(activity, "正在加载新剧…")
             body.addView(loading, lp())
             val empty = PortraitUi.emptyState(activity, R.drawable.ic_phone_grid, "这一天没有新剧", "换个日期看看，或下拉刷新")
             body.addView(empty, lp())
-            val grid = RecyclerView(activity)
-            body.addView(grid, lp())
             val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
-                { if (feed.isCurrent(key)) activity.loadMoreNewReleasesPhone() }, scroll)
-            adapter.attach(grid)
+                { if (feed.isCurrent(key)) activity.loadMoreNewReleasesPhone() })
+            page.addGrid(adapter)
             val error = text("", 14f, PortraitStyle.muted).apply {
                 gravity = Gravity.CENTER
                 setPadding(dp(16), dp(24), dp(16), dp(24))
                 background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 10)
                 setOnClickListener { if (feed.isCurrent(key)) activity.retryNewReleasesPhone() }
             }
-            body.addView(error, lp())
+            page.addBlock(error)
             val update: () -> Unit = {
                 val page = activity.newReleasePagePhone(key)
                 val items = page?.items.orEmpty().map { it.series }
@@ -295,7 +289,6 @@ class PortraitPages(
                 val problem = if (selected) activity.newReleaseErrorPhone else ""
                 loading.visibility = if (busy && items.isEmpty()) View.VISIBLE else View.GONE
                 empty.visibility = if (!busy && problem.isBlank() && items.isEmpty()) View.VISIBLE else View.GONE
-                grid.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
                 error.text = problem
                 error.visibility = if (problem.isNotBlank()) View.VISIBLE else View.GONE
                 adapter.submitItems(items, page?.cursor != null && problem.isBlank())
@@ -313,7 +306,8 @@ class PortraitPages(
     }
 
     /** 最近观看按剧集复用卡片，进度和收藏变化只更新各自的内容。 */
-    fun mine(body: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
+    fun mine(page: PortraitListPage): (Boolean) -> Unit {
+        val body=column(); page.addBlock(body)
         val head = row()
         head.addView(PortraitUi.pageTitle(activity, "我的"), lp(0, -2).apply { weight = 1f })
         head.addView(ImageView(activity).apply {
@@ -338,10 +332,8 @@ class PortraitPages(
         section(body, "收藏")
         val emptyFavorites = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
         body.addView(emptyFavorites, lp())
-        val grid = RecyclerView(activity)
-        body.addView(grid, lp())
-        val favoritesAdapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) }, null, scrollRoot)
-        favoritesAdapter.attach(grid)
+        val favoritesAdapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) }, null)
+        page.addGrid(favoritesAdapter)
         var shownHistory: List<WatchProgress>? = null
         var shownFavorites: List<Series>? = null
         return { _ ->
@@ -368,7 +360,6 @@ class PortraitPages(
             val favorites = activity.phoneLibrary.favorites()
             if (shownFavorites != favorites) {
                 emptyFavorites.visibility = if (favorites.isEmpty()) View.VISIBLE else View.GONE
-                grid.visibility = if (favorites.isEmpty()) View.GONE else View.VISIBLE
                 favoritesAdapter.submitItems(favorites, false)
                 shownFavorites = favorites
             }
@@ -421,23 +412,22 @@ class PortraitPages(
         entry.progress.progress = if (watch.duration > 0) (watch.position * 1000 / watch.duration).toInt().coerceIn(0, 1000) else 0
     }
 
-    fun favorites(body: LinearLayout, scrollRoot: NestedScrollView? = null): (Boolean)->Unit {
+    fun favorites(page: PortraitListPage): (Boolean)->Unit {
+        val body=column(); page.addBlock(body)
         body.addView(PortraitUi.pageTitle(activity, "收藏"), lp())
         val empty=PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
         body.addView(empty,lp())
-        val grid=RecyclerView(activity)
-        body.addView(grid,lp())
-        val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },null,scrollRoot)
-        adapter.attach(grid)
+        val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },null)
+        page.addGrid(adapter)
         return { _ ->
             val items=activity.phoneLibrary.favorites()
             empty.visibility=if(items.isEmpty()) View.VISIBLE else View.GONE
-            grid.visibility=if(items.isEmpty()) View.GONE else View.VISIBLE
             adapter.submitItems(items,false)
         }
     }
 
-    fun search(body: LinearLayout, submit: (String) -> Unit, scrollRoot: NestedScrollView? = null): (Boolean) -> Unit {
+    fun search(page: PortraitListPage, submit: (String) -> Unit): (Boolean) -> Unit {
+        val body=column(); page.addBlock(body)
         val query = activity.phoneQueryText
         body.addView(PortraitUi.pageTitle(activity, if (query.isBlank()) "热搜" else "“$query”"), lp())
         val suggestions = column()
@@ -532,11 +522,9 @@ class PortraitPages(
             results.addView(errorBody,lp())
             val empty=PortraitUi.emptyHint(activity,"")
             results.addView(empty,lp())
-            val grid=RecyclerView(activity)
-            results.addView(grid,lp())
             val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },
-                { activity.loadMorePhone() },scrollRoot)
-            adapter.attach(grid)
+                { activity.loadMorePhone() })
+            page.addGrid(adapter)
             var shownError=""
             return { _ ->
                 val items=activity.catalog
@@ -549,13 +537,12 @@ class PortraitPages(
                 empty.text=if(activity.phoneSearchActive) "正在搜索…"
                     else "没有找到“$query”相关的${activity.phoneLibrary.contentType.label}，换个词试试"
                 empty.visibility=if(items.isEmpty() && error.isBlank()) View.VISIBLE else View.GONE
-                grid.visibility=if(items.isEmpty()) View.GONE else View.VISIBLE
                 adapter.submitItems(items,activity.hasMore && !activity.phoneSearchActive && error.isBlank())
             }
         }
-        val updateHotSearch=renderHotSearch(results,scrollRoot,::search)
+        val updateHotSearch=renderHotSearch(page,results,::search)
         val historyBody=column()
-        results.addView(historyBody,lp())
+        page.addBlock(historyBody)
         var shownHistory: List<String>?=null
         return { _ ->
             updateHotSearch()
@@ -578,31 +565,29 @@ class PortraitPages(
     }
 
     /** 缓存首帧、联网刷新及切榜共用网格，只提交剧集差异。 */
-    private fun renderHotSearch(body: LinearLayout,scrollRoot: NestedScrollView?,search: (String)->Unit): ()->Unit {
+    private fun renderHotSearch(page: PortraitListPage,body: LinearLayout,search: (String)->Unit): ()->Unit {
         val loading=PortraitUi.emptyHint(activity,"正在加载热搜…")
         body.addView(loading,lp())
         val errorBody=column()
         body.addView(errorBody,lp())
-        fun grid(parent: LinearLayout,ranked: Boolean): Pair<RecyclerView,PortraitUi.PosterGrid> {
-            val view=RecyclerView(activity)
-            parent.addView(view,lp())
-            val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },null,scrollRoot,ranked=ranked)
-            adapter.attach(view)
-            return view to adapter
+        fun grid(ranked: Boolean): PortraitUi.PosterGrid {
+            val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },null,ranked=ranked)
+            page.addGrid(adapter)
+            return adapter
         }
         val guesses=column()
         section(guesses,"猜你想搜")
-        val (_,guessesAdapter)=grid(guesses,false)
-        body.addView(guesses,lp())
+        page.addBlock(guesses)
+        val guessesAdapter=grid(false)
         val boards=column()
         val strip=HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false }
         val choices=row().apply { setPadding(dp(16),dp(12),dp(16),dp(8)) }
         strip.addView(choices)
         boards.addView(strip,lp())
-        val (boardGrid,boardAdapter)=grid(boards,true)
+        page.addBlock(boards)
+        val boardAdapter=grid(true)
         val topics=column()
-        boards.addView(topics,lp())
-        body.addView(boards,lp())
+        page.addBlock(topics)
         val chips=linkedMapOf<String,TextView>()
         var shownBoards=emptyList<String>()
         var shownSelected=""
@@ -649,7 +634,6 @@ class PortraitPages(
                 strip.post { chips[shownSelected]?.let { strip.scrollTo((it.left-strip.width/2+it.width/2).coerceAtLeast(0),0) } }
             }
             val items=selected?.items.orEmpty().map { it.series }
-            boardGrid.visibility=if(items.isEmpty()) View.GONE else View.VISIBLE
             boardAdapter.submitItems(items,false)
             val nextTopics=selected?.topics.orEmpty()
             if(shownTopics!=nextTopics) {

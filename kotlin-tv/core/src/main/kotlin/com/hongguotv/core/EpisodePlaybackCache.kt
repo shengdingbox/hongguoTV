@@ -55,26 +55,9 @@ class EpisodePlaybackCache(
         return expires <= 0 || expires > now + 60_000L
     }
 
-    /** 每次起播先查落盘文件，即使先前的在线预取仍在排队，也直接交接本地索引。 */
-    @Synchronized fun peek(id: String, quality: Int): PreparedEpisode? {
-        val key = Key(id, quality)
-        val previous = entries[key]
-        val local = cachedEpisode(id, quality)?.takeIf { Key(it.id, it.quality) !in rejectedDiskEntries }
-        if (local != null && previous?.prepared?.diskMeta?.header !== local.header) {
-            val restored = restoreLocal(local)
-            if (restored != null) {
-                val entry = Entry()
-                entry.prepared = restored
-                entry.task = FutureTask { restored }
-                entry.task.run()
-                entries[key] = entry
-                previous?.let(::cancel)
-                attempts.remove(key)
-                return restored
-            }
-        }
-        return previous?.prepared?.takeIf(::fresh)
-    }
+    /** 界面只获取已准备的内存结果；落盘索引的完整校验交给 load 的后台任务。 */
+    @Synchronized fun peek(id: String, quality: Int): PreparedEpisode? =
+        entries[Key(id, quality)]?.prepared?.takeIf(::fresh)
 
     private fun restoreLocal(meta: EpisodeDiskCache.Meta): PreparedEpisode? {
         val info = StreamInfo(meta.url, meta.key, meta.qualityLabel, meta.expiresAt, meta.id, meta.quality)

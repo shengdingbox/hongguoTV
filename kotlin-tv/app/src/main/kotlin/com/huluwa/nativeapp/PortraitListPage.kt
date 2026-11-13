@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: GPL-3.0-only
+package com.huluwa.nativeapp
+
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import androidx.recyclerview.widget.ConcatAdapter
+import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+
+/** 页头、提示及海报共用一个有限高度的 RecyclerView，只创建可见行。 */
+class PortraitListPage(private val activity: MainActivity) : FrameLayout(activity) {
+    private val sections = ConcatAdapter(ConcatAdapter.Config.Builder()
+        .setStableIdMode(ConcatAdapter.Config.StableIdMode.ISOLATED_STABLE_IDS).build())
+    private val grid = GridLayoutManager(activity, 3)
+    val recycler = RecyclerView(activity).apply {
+        layoutManager = grid
+        adapter = sections
+        itemAnimator = null
+        isVerticalScrollBarEnabled = false
+        clipToPadding = false
+        setItemViewCacheSize(9)
+    }
+    private var pendingPosition: Int? = null
+    var onPositionChanged: ((Int) -> Unit)? = null
+    val position get() = recycler.computeVerticalScrollOffset()
+
+    init {
+        grid.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
+            override fun getSpanSize(position: Int): Int {
+                var offset = position
+                sections.adapters.forEach { section ->
+                    if (offset < section.itemCount) {
+                        return if (section is PortraitUi.PosterGrid && section.getItemViewType(offset) == 0) 1 else 3
+                    }
+                    offset -= section.itemCount
+                }
+                return 3
+            }
+        }
+        addView(recycler, LayoutParams(-1, -1))
+        PhoneInsets.listen(this) { _, bottomInset, _ ->
+            recycler.setPadding(PortraitUi.dp(activity, 10), 0, PortraitUi.dp(activity, 10),
+                PortraitUi.dp(activity, 92) + bottomInset)
+        }
+        recycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(view: RecyclerView, dx: Int, dy: Int) {
+                onPositionChanged?.invoke(position)
+                if (dy != 0) activity.refreshPhoneCovers()
+            }
+        })
+    }
+
+    fun addBlock(view: View) {
+        sections.addAdapter(object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+            init { setHasStableIds(true) }
+            override fun getItemId(position: Int) = 0L
+            override fun getItemCount() = 1
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder =
+                object : RecyclerView.ViewHolder(FrameLayout(activity).apply {
+                    layoutParams = RecyclerView.LayoutParams(-1, -2)
+                }) {}
+            override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+                val container = holder.itemView as FrameLayout
+                if (view.parent === container) return
+                (view.parent as? ViewGroup)?.removeView(view)
+                container.removeAllViews()
+                container.addView(view, LayoutParams(-1, -2))
+            }
+        })
+    }
+
+    fun addGrid(adapter: PortraitUi.PosterGrid) {
+        sections.addAdapter(adapter)
+        adapter.onListApplied = { recycler.post { applyPendingPosition() } }
+        adapter.observe(recycler)
+    }
+
+    fun restorePosition(y: Int) {
+        pendingPosition = y.coerceAtLeast(0)
+        recycler.post { applyPendingPosition() }
+    }
+
+    private fun applyPendingPosition() {
+        val y = pendingPosition ?: return
+        if (sections.adapters.any { it is PortraitUi.PosterGrid && it.isUpdating }) return
+        if (recycler.isComputingLayout || !recycler.isLaidOut) {
+            recycler.postOnAnimation { applyPendingPosition() }
+            return
+        }
+        pendingPosition = null
+        recycler.stopScroll()
+        recycler.scrollBy(0, y - position)
+        onPositionChanged?.invoke(position)
+    }
+
+    override fun canScrollVertically(direction: Int) = recycler.canScrollVertically(direction)
+}

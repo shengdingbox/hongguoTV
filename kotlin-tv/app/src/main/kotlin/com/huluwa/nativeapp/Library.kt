@@ -402,26 +402,26 @@ class Library(context: Context) {
         get() = state().settings.showClock
         set(value) { if (value != showClock) { state().settings = state().settings.copy(showClock = value); put("showClock", value) } }
     var theme: String
-        get() = prefs.getString("theme", null) ?: "NIGHT"
-        set(value) { prefs.edit().putString("theme", value).apply() }
+        get() = StartupSettings.string("theme", "NIGHT")
+        set(value) { StartupSettings.set("theme", value) }
     /** 启动方向偏好：默认 auto 跟随系统，可选 landscape 强制横屏 / portrait 强制竖屏。
      *  落盘用大写枚举名（AUTO / LANDSCAPE / PORTRAIT），与 [OrientationMode.name] 一致。
      *  本机方向偏好。 */
     var orientationMode: String
-        get() = OrientationMode.of(prefs.getString("orientationMode", null)).name
-        set(value) { prefs.edit().putString("orientationMode", OrientationMode.of(value).name).apply() }
+        get() = OrientationMode.of(StartupSettings.string("orientationMode", "")).name
+        set(value) { StartupSettings.set("orientationMode", OrientationMode.of(value).name) }
     /** 收藏页排序：update 最近更新 / watch 最近观看 / name 名称。本机视图偏好。 */
     var favoriteSort: String
-        get() = prefs.getString("favoriteSort", null)?.takeIf { it in listOf("update", "watch", "name") } ?: "update"
-        set(value) { prefs.edit().putString("favoriteSort", value).apply() }
+        get() = StartupSettings.string("favoriteSort", "").takeIf { it in listOf("update", "watch", "name") } ?: "update"
+        set(value) { StartupSettings.set("favoriteSort", value) }
     /** 排行榜「上新」视图上次用的时间窗：记住偏好，下次进区不用重新选。本机偏好。 */
     var newReleaseWindow: String
-        get() = prefs.getString("newReleaseWindow", null).orEmpty()
-        set(value) { prefs.edit().putString("newReleaseWindow", value).apply() }
+        get() = StartupSettings.string("newReleaseWindow", "")
+        set(value) { StartupSettings.set("newReleaseWindow", value) }
     /** 手机新剧日历上次选中的日期；过期日期由页面回退到今天。本机偏好。 */
     var newReleaseDay: String
-        get() = prefs.getString("newReleaseDay", null).orEmpty()
-        set(value) { prefs.edit().putString("newReleaseDay", value).apply() }
+        get() = StartupSettings.string("newReleaseDay", "")
+        set(value) { StartupSettings.set("newReleaseDay", value) }
     // Per-series intro/outro skips stay on this device, like the theme.
     private var marksCache: LinkedHashMap<String, SkipMark>? = null
     private fun marks(): LinkedHashMap<String, SkipMark> =

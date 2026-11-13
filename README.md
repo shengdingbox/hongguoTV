@@ -52,4 +52,4 @@
 
 ## 许可证
 
-本项目代码按 [GPL-3.0](LICENSE) 提供，第三方部分保留各自许可（见 `kotlin-tv/NOTICE.md`）。
+本项目自主原创代码采用 [MIT 开源协议](https://opensource.org/license/mit/) 提供。`kotlin-tv/` 原生应用及其中的 GPL 派生实现按 [GPL-3.0-only](kotlin-tv/LICENSE) 发布，第三方代码保留各自许可，详见 [第三方声明](kotlin-tv/NOTICE.md)。

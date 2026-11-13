@@ -602,18 +602,21 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         val main=seriesDetail(id)
         if(!needsDetailExtras(id)) return cachedDetail(id) ?: main
         val scope=RequestScope.current()?.child() ?: RequestScope()
-        // 两个辅助请求共用取消作用域与等待预算，页面离开后一起取消。
+        // 辅助请求共用取消作用域与等待预算，页面离开后一起取消。
         val relatedTask=FutureTask(Callable { scope.run { runCatching { planRelated(id,main.series) }.getOrDefault(emptyList()) } })
         val seasonsTask=FutureTask(Callable { scope.run { runCatching { planSeasons(id) }.getOrDefault(emptyList()).filter { it.id!=id } } })
-        val threads=listOf(relatedTask,seasonsTask).map { task -> Thread(task,"hongguotv-detail-extra").apply { isDaemon=true; start() } }
+        val ratingTask=FutureTask(Callable { scope.run { runCatching { websiteRating(id) }.getOrNull() } })
+        val threads=listOf(relatedTask,seasonsTask,ratingTask).map { task -> Thread(task,"hongguotv-detail-extra").apply { isDaemon=true; start() } }
         try {
             val deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(DETAIL_AUX_TIMEOUT)
             fun <T> getAux(task: Future<T>): T? = try { task.get((deadline-System.nanoTime()).coerceAtLeast(0),TimeUnit.NANOSECONDS) }
             catch(_: TimeoutException) { null } catch(_: ExecutionException) { null } catch(_: InterruptedException) { Thread.currentThread().interrupt(); null }
             val related=getAux(relatedTask).orEmpty()
             val sameName=getAux(seasonsTask).orEmpty().distinctBy { it.id }.sortedBy { seasonNumber(it.title).let { n -> if(n==Int.MAX_VALUE) 1 else n } }
+            val rating=getAux(ratingTask)
             if(scope.isCancelled || Thread.currentThread().isInterrupted) throw IOException("请求已取消")
-            val result=main.copy(related=related,sameName=sameName)
+            val social=rating?.let { main.social.copy(rating=it.rating,ratingCount=it.ratingCount) } ?: main.social
+            val result=main.copy(related=related,sameName=sameName,social=social)
             synchronized(detailCache) {
                 val cached=detailCache[id]
                 if(cached!=null && cached.detail==main) detailCache[id]=cached.copy(detail=result,extrasLoaded=true)
@@ -750,7 +753,19 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return Series(id, seriesTitle(title), cleanUrl(cover), intro, badge, tags)
     }
 
-    /** 详情接口自带的热度/收藏，替换原 SSR 里的评分区；没有评分字段就隐藏。 */
+    /** 网页详情提供十分制评分；只接收与当前剧集匹配的有效分数。 */
+    private fun websiteRating(id: String): SeriesSocial? {
+        val page=extractRouter(text("$site/detail?series_id=$id",null,detailHttp))
+            .optJSONObject("loaderData")?.optJSONObject("detail_page") ?: return null
+        if(!page.optBoolean("isSuccess") || page.optJSONObject("seriesDetail")?.str("series_id")!=id) return null
+        val social=page.optJSONObject("seriesSocialInfo") ?: return null
+        val rating=social.optDouble("rating",0.0)
+        if(!rating.isFinite() || rating<=0.0 || rating>10.0) return null
+        val count=social.str("rating_count").toLongOrNull()?.takeIf { it>0 }?.toString().orEmpty()
+        return SeriesSocial(rating=rating,ratingCount=count)
+    }
+
+    /** App 详情自带热度与收藏，评分由主内容展示后的网页辅助请求补齐。 */
     private fun detailSocial(v: JSONObject): SeriesSocial {
         val favorite = compactCount(v.str("followed_cnt"))
         val heat = v.optLong("hot_score", 0)
@@ -1110,7 +1125,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     }
     companion object {
         private const val PLAYER_PATH="/novel/player/video_model/v1/"
-        // 推荐与系列剧在主详情显示后并行补齐，共享两秒预算。
+        // 推荐、系列剧与评分在主详情显示后并行补齐，共享两秒预算。
         private const val DETAIL_AUX_TIMEOUT=2_000L
         private const val DETAIL_CACHE_TTL=600_000L
         // 网站搜索混合两类内容：video_data.genre 205 是漫剧，203 是短剧

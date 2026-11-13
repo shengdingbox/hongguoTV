@@ -3127,19 +3127,25 @@ class MainActivity: Activity() {
         val metadata=listOf(episodeLabel,data.series.tags,library.progress(data.series.id)?.let { "看到第 ${it.episodeIndex+1} 集" }.orEmpty())
             .filter { it.isNotBlank() }.joinToString("  ·  ")
         info.addView(text(metadata,13f,muted).apply { maxLines=1; setPadding(0,dp(8),0,dp(8)) })
-        // 评分与收藏数来自详情页同一份数据，卡片列表没有这些字段；缺失时整行不显示
-        if(!data.social.isEmpty) {
+        // 主详情先展示热度与收藏，网页评分异步补齐后原位更新。
+        val metricsView=TextView(this).apply {
+            textSize=13f; setTextColor(muted); includeFontPadding=false
+            maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(0,0,0,dp(6))
+        }
+        info.addView(metricsView)
+        fun renderMetrics(current: Detail) {
+            metricsView.visibility=if(current.social.isEmpty) View.GONE else View.VISIBLE
             val metrics=mutableListOf<String>()
-            val score=if(data.social.rating>0) String.format(Locale.CHINA,"%.1f 分",data.social.rating) else ""
-            if(score.isNotEmpty()) metrics+=score+data.social.ratingCount.takeIf { it.isNotBlank() }?.let { "（$it 人评分）" }.orEmpty()
-            if(data.social.favoriteText.isNotBlank()) metrics+=data.social.favoriteText
-            if(data.social.heatText.isNotBlank()) metrics+=data.social.heatText
+            val score=if(current.social.rating>0) String.format(Locale.CHINA,"%.1f 分",current.social.rating) else ""
+            if(score.isNotEmpty()) metrics+=score+current.social.ratingCount.takeIf { it.isNotBlank() }?.let { "（$it 人评分）" }.orEmpty()
+            if(current.social.favoriteText.isNotBlank()) metrics+=current.social.favoriteText
+            if(current.social.heatText.isNotBlank()) metrics+=current.social.heatText
             val line=SpannableString(metrics.joinToString("  ·  "))
             if(score.isNotEmpty()) {
                 line.setSpan(ForegroundColorSpan(accent),0,score.length,Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 line.setSpan(StyleSpan(Typeface.BOLD),0,score.length,Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
-            info.addView(TextView(this).apply { text=line; textSize=13f; setTextColor(muted); includeFontPadding=false; maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(0,0,0,dp(6)) })
+            metricsView.text=line
         }
         val description=data.series.description.ifBlank { if(hasEpisodes) "选择剧集开始观看" else "暂无简介" }
         val synopsis=text(description,14f,muted).apply { maxLines=if(synopsisExpanded) 20 else 2; ellipsize=TextUtils.TruncateAt.END; setLineSpacing(dp(3).toFloat(),1f) }
@@ -3255,6 +3261,7 @@ class MainActivity: Activity() {
         val recommendationHost=column()
         content.addView(recommendationHost,lp(-1,-2))
         fun renderExtras(current: Detail) {
+            renderMetrics(current)
             renderSeasons(current)
             recommendationHost.removeAllViews()
             val extraRows=mutableListOf<MutableList<View>>()

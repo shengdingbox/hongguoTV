@@ -8,7 +8,11 @@ import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
+import android.text.SpannableString
+import android.text.Spanned
 import android.text.TextUtils
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.View
 import android.view.ViewTreeObserver
@@ -22,6 +26,7 @@ import android.widget.TextView
 import com.hongguotv.core.Detail
 import com.hongguotv.core.Series
 import com.hongguotv.core.seasonNumber
+import java.util.Locale
 
 /** 竖屏详情：渐变海报区、续播与收藏、季导航和六列选集。 */
 class PortraitDetail(
@@ -215,6 +220,24 @@ class PortraitDetail(
             setLineSpacing(dp(3).toFloat(), 1f)
         }
         info.addView(heroTitle, lp())
+        val ratingView = text("", 13f, PortraitStyle.muted).apply {
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        info.addView(ratingView, lp().apply { topMargin = dp(7) })
+        fun renderRating(current: Detail) {
+            val rating = current.social.rating
+            val available = rating.isFinite() && rating > 0.0 && rating <= 10.0
+            ratingView.visibility = if (available) View.VISIBLE else View.GONE
+            if (!available) { ratingView.text = ""; return }
+            val score = String.format(Locale.CHINA, "★ %.1f 分", rating)
+            val count = current.social.ratingCount.takeIf { it.isNotBlank() }?.let { " · $it 人评分" }.orEmpty()
+            ratingView.text = SpannableString(score + count).apply {
+                setSpan(ForegroundColorSpan(PortraitStyle.accent), 0, score.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(StyleSpan(Typeface.BOLD), 0, score.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+        renderRating(data)
         val metadataView = text(metadata(data), 12f, PortraitStyle.muted).apply {
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
@@ -340,6 +363,13 @@ class PortraitDetail(
             updateSeasonSelection()
         }
 
+        fun renderExtras(current: Detail) {
+            if (current.series.id != data.series.id) return
+            data = current
+            renderRating(current)
+            renderSeasons(current)
+        }
+
         val pageSize = 100
         fun totalPages() = ((data.episodes.size + pageSize - 1) / pageSize).coerceAtLeast(1)
         var episodePage = (playback.currentIndex / pageSize).coerceIn(0, totalPages() - 1)
@@ -449,6 +479,7 @@ class PortraitDetail(
             loadingSeasonId = null
             titleInBar.text = next.series.title
             heroTitle.text = next.series.title
+            renderRating(next)
             metadataView.text = metadata(next)
             synopsis.text = next.series.description.ifBlank { "暂无简介" }
             playText.text = playback.label
@@ -477,7 +508,7 @@ class PortraitDetail(
                     return true
                 }
             })
-            activity.loadDetailExtras(next, ::renderSeasons)
+            activity.loadDetailExtras(next, ::renderExtras)
         }, ::setLoading)
         frame.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) = Unit
@@ -486,6 +517,6 @@ class PortraitDetail(
             }
         })
         renderSeasons(data)
-        activity.loadDetailExtras(data, ::renderSeasons)
+        activity.loadDetailExtras(data, ::renderExtras)
     }
 }

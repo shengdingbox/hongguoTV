@@ -1975,6 +1975,7 @@ class MainActivity: Activity() {
             body.post { android.util.Log.i("HongguoTV","Home displayed cached=$homeFromCache elapsedMs=${android.os.SystemClock.elapsedRealtime()-started}") }
         }
     }
+    /** 首页使用独立的单路播放器；离开首页时先记录进度再释放，全集可接着播放。 */
     private fun startTvHomePlayback(home: HomeScreen) {
         stopTvHomePlayback()
         val playback=TvHomePlayback(this,repository,
@@ -4795,6 +4796,7 @@ class MainActivity: Activity() {
         ffActive=false; player?.setPlaybackSpeed(ffSpeedBefore)
         updatePlaybackText(); showHud()
     }
+    /** TV transport controls share the browsing focus treatment, with readable text over video. */
     private fun tvPlaybackButton(parent: LinearLayout,label: String,selected: Boolean=false,action: ()->Unit): TextView {
         val view=button(label,selected,action).apply {
             textSize=if(widthDp()<700) 12f else 14f; minHeight=dp(40); maxLines=1
@@ -5327,7 +5329,7 @@ class MainActivity: Activity() {
         else { directPlayback=false; showDetail(true); prefetchDetailWindow(episodeIndex) }
     }
     private fun refreshScreenOn() {
-        if(playerScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if(playerScreenOn || homePreviewScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
@@ -7107,6 +7109,7 @@ class MainActivity: Activity() {
         // 弹框窗口不随主页面重建，回到前台时续载尚未显示的封面。
         phoneExitArtwork?.refreshVisible()
         maybePromptCrash()
+        homePlayback?.setActive(foreground && hasWindowFocus() && screen=="catalog" && tab==0 && !phoneLayout())
     }
     /**
      * 从后台回来时原地续播：onStop 已经保留了播放器与媒体源，这里只把界面重新挂回去。

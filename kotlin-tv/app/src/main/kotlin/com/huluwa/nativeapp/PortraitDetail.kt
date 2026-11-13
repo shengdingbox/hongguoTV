@@ -195,7 +195,7 @@ class PortraitDetail(
         }
 
         val hero = PortraitUi.row(activity).apply {
-            gravity = Gravity.BOTTOM
+            gravity = Gravity.TOP
             setPadding(dp(16), 0, dp(16), 0)
         }
         val poster = ImageView(activity).apply {

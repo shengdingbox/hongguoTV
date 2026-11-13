@@ -138,7 +138,7 @@ class MainActivity: Activity() {
     /** 上一次按 onProgress 重画条带的时间（elapsedRealtime）：三集并发时用来节流。 */
     @Volatile private var cacheStripPaintedAt=0L
     /** 屏幕最底部的缓存状态条：三段依次对应下 1/2/3 集，null 表示当前页面未挂。 */
-    private var cacheStripSegments: List<View>?=null
+    private var cacheStripSegments: List<CacheProgressSegment>?=null
     private var cacheStripView: View?=null
     // 与页面取址状态分开：等待新集就绪时，旧媒体源仍可能在播放器线程中读取。
     private var playerVideo: RemoteVideo?=null
@@ -3824,46 +3824,28 @@ class MainActivity: Activity() {
         if(!visible || data==null) return
         val quality=effectiveQuality()
         val cache=episodeDiskCache
+        // 切集后三段会左移，先保存各集的显示进度，避免已缓存的相邻集重新从零播放动画。
+        val displayed=segments.mapNotNull { segment ->
+            segment.cacheKey?.let { it to segment.displayedProgress }
+        }.toMap()
         segments.forEachIndexed { offset,segment ->
             val id=data.episodes.getOrNull(episodeIndex+offset+1)
-            val ratio=if(cache!=null && id!=null) cache.progress(id,quality) else 0f
             if(id==null) {
                 segment.visibility=View.GONE
             } else {
+                val key=id to quality
+                val ratio=cache?.progress(id,quality) ?: 0f
+                segment.updateProgress(key,ratio,displayed[key] ?: 0f)
                 segment.visibility=View.VISIBLE
-                val fill=segment.tag as? View ?: return@forEachIndexed
-                val width=segment.width
-                if(width<=0) return@forEachIndexed
-                val fillWidth=(width*ratio).toInt()
-                if(fill.layoutParams.width!=fillWidth) {
-                    fill.layoutParams=fill.layoutParams.apply { this.width=fillWidth }
-                }
             }
         }
     }
-    /** 构建缓存状态条（尚未挂载）：返回三段轨道（每段 tag 里存蓝色填充 View）。 */
-    private fun buildCacheStrip(): List<View> {
+    /** 构建缓存状态条（尚未挂载）：三段各自平滑追赶真实下载进度。 */
+    private fun buildCacheStrip(): List<CacheProgressSegment> {
         val strip=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
         }
-        val segments=(0 until 3).map {
-            val fill=View(this).apply {
-                setBackgroundColor(TvStyle.accent)
-                alpha=.45f
-                layoutParams=FrameLayout.LayoutParams(0,-1,Gravity.START)
-            }
-            FrameLayout(this).apply {
-                setBackgroundColor(Color.argb(32,255,255,255))
-                addView(fill)
-                tag=fill
-                // 首次测量或分段宽度变化后更新；旧页面的尺寸回调不能刷新新页面。
-                addOnLayoutChangeListener { view,left,_,right,_,oldLeft,_,oldRight,_ ->
-                    if(right-left>0 && right-left!=oldRight-oldLeft && cacheStripSegments?.contains(view)==true) {
-                        refreshCacheStrip()
-                    }
-                }
-            }
-        }
+        val segments=(0 until 3).map { CacheProgressSegment(this) }
         segments.forEachIndexed { index,segment ->
             strip.addView(segment,LinearLayout.LayoutParams(0,dp(cacheStripHeightDp).coerceAtLeast(1),1f).apply {
                 if(index>0) leftMargin=dp(1)

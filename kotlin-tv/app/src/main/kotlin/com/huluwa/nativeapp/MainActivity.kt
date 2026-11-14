@@ -462,7 +462,6 @@ class MainActivity: Activity() {
     private lateinit var hud: LinearLayout
     private lateinit var playbackText: TextView
     private lateinit var playbackStatus: TextView
-    private var playbackKeys: TextView?=null
     private lateinit var progressBar: PlaybackSeekBar
     /** 自动重试时的转圈，单独可见；手动面板态切回 controls。 */
     private var recoverySpinner: ProgressBar?=null
@@ -3457,7 +3456,6 @@ class MainActivity: Activity() {
                 hud=column().apply { visibility=View.GONE }
                 playbackTitle=text("",15f).apply { visibility=View.GONE }
                 playbackStatus=text("",13f).apply { visibility=View.GONE }
-                playbackKeys=null
                 playbackText=text("",13f).apply { visibility=View.GONE }
                 controls=column().apply { visibility=View.GONE }
                 progressBar=PlaybackSeekBar(this).apply { max=1000; visibility=View.GONE }
@@ -3524,9 +3522,6 @@ class MainActivity: Activity() {
                     intArrayOf(Color.argb(205,24,34,50),Color.argb(225,15,23,36))).apply { cornerRadius=dp(12).toFloat() }
             }
             hud.addView(controls,lp(-1,-2).apply { topMargin=dp(6) })
-            playbackKeys=text("",11f,Color.rgb(155,169,190)).apply {
-                maxLines=1; ellipsize=TextUtils.TruncateAt.END; setPadding(0,dp(10),0,0)
-            }.also { hud.addView(it) }
             // 转圈单独挂在根布局正中央，不占底部 HUD 空间；播放失败自动重试时才可见。
             recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { indeterminateTintList=android.content.res.ColorStateList.valueOf(accent); visibility=View.GONE }
             root.addView(recoverySpinner,FrameLayout.LayoutParams(dp(56),dp(56),Gravity.CENTER))
@@ -4235,10 +4230,6 @@ class MainActivity: Activity() {
         transportPlay?.text=playButtonLabel()
         sleepButton?.text="定时 ${sleepTimer.label()}"
         if(screen!="player" || playError) return
-        if(!phonePlayerLayout()) {
-            val vertical=if(extras.dpadUpDownAction==PlaybackExtras.UPDOWN_SWITCH) "↑↓ 换集" else "↓ 选集 · ↑ 操作"
-            playbackKeys?.text="确定 暂停/播放   ←→ 快退/快进   $vertical   返回 纯画面 / 退出"
-        }
         // 拖动进度条时别用播放位置盖掉「定位到 12:34」：手指还按着，文字每秒跳回去像坏了
         if(progressBar.scrubbing) return
         val danmakuOn=library.danmaku && detail?.series?.id?.let { extras.danmakuEnabled(it,true) }!=false

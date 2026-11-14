@@ -474,6 +474,7 @@ class MainActivity: Activity() {
     private var panel=false
     private var transportPlay: TextView?=null
     private var tvPlaybackMenu: TvPlaybackMenu?=null
+    private var tvPlaybackHeader: LinearLayout?=null
     private var sleepButton: TextView?=null
     /** 手机始终显示退出按钮；电视在使用鼠标时显示，见 [TvPointer]。 */
     private var playerExit: TextView?=null
@@ -3565,7 +3566,7 @@ class MainActivity: Activity() {
             // 参考 TV 播放器的底部渐变信息区，颜色独立于浏览页主题，保证画面上的文字清晰。
             val chromeInset=dp(if(widthDp()<700) 20 else 36)
             hud=column().apply {
-                setPadding(chromeInset,dp(28),chromeInset,dp(if(heightDp()<450) 14 else 22))
+                setPadding(chromeInset,dp(14),chromeInset,dp(if(heightDp()<450) 10 else 14))
                 background=GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
                     intArrayOf(Color.TRANSPARENT,Color.argb(220,11,15,24),Color.argb(250,11,15,24)))
             }
@@ -3583,8 +3584,15 @@ class MainActivity: Activity() {
             }
             playerExit=exitPlay
             titleRow.addView(exitPlay,lp(-2,-2))
-            hud.addView(titleRow)
-            val stateRow=row().apply { setPadding(0,dp(8),0,dp(3)) }
+            // 剧名和当前集数独立放在顶部，底部仅保留播放进度与操作菜单。
+            tvPlaybackHeader=column().apply {
+                setPadding(chromeInset,dp(if(heightDp()<450) 12 else 16),chromeInset,dp(20))
+                background=GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                    intArrayOf(Color.argb(215,11,15,24),Color.argb(150,11,15,24),Color.TRANSPARENT))
+                addView(titleRow)
+                visibility=View.GONE
+            }.also { root.addView(it,FrameLayout.LayoutParams(-1,-2,Gravity.TOP)) }
+            val stateRow=row().apply { setPadding(0,dp(4),0,dp(3)) }
             playbackText=text("",13f,Color.rgb(188,198,214)).apply { maxLines=2 }
             stateRow.addView(playbackText,lp(0,-2).apply { weight=1f; rightMargin=dp(14) })
             playbackStatus=text("",12f,Color.rgb(255,183,133)).apply { maxLines=1; ellipsize=TextUtils.TruncateAt.END }
@@ -3611,7 +3619,7 @@ class MainActivity: Activity() {
             // 鼠标一动就显示退出按钮；遥控一按（见 dispatchKeyEvent）再收回去
             TvPointer.onHover(root) { if(!mouseSeen) { mouseSeen=true; refreshPointerUi() } }
             controls=column().apply { visibility=View.GONE }
-            hud.addView(controls,lp(-1,-2).apply { topMargin=dp(6) })
+            hud.addView(controls,lp(-1,-2).apply { topMargin=dp(4) })
             // 转圈单独挂在根布局正中央，不占底部 HUD 空间；播放失败自动重试时才可见。
             recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { indeterminateTintList=android.content.res.ColorStateList.valueOf(accent); visibility=View.GONE }
             root.addView(recoverySpinner,FrameLayout.LayoutParams(dp(56),dp(56),Gravity.CENTER))
@@ -4153,6 +4161,7 @@ class MainActivity: Activity() {
         saveProgress(); cancelRecovery(); cancelPrefetch()
         // 失败时默认先把按钮都藏起来，只留转圈；只有「自动重试彻底走不通」才把手动面板摆出来。
         playError=true; player?.pause(); refreshTvPauseButton(); progressBar.visibility=View.GONE; hud.visibility=View.VISIBLE
+        tvPlaybackHeader?.visibility=View.VISIBLE
         controls.removeAllViews(); controls.visibility=View.GONE; recoverySpinner?.visibility=View.GONE; panel=true
         val incompatible=problem is UnplayableVideoException
         val decoding=problem is PlaybackException && problem.errorCode in 3000..4999
@@ -4234,6 +4243,7 @@ class MainActivity: Activity() {
     private fun hidePlaybackOverlay() {
         main.removeCallbacks(hideHud)
         panel=false; controls.visibility=View.GONE; controls.clearFocus(); hud.visibility=View.GONE
+        tvPlaybackHeader?.visibility=View.GONE
     }
     /** 播放屏鼠标手势：垂直滑动换集（仿红果原版，不弹选集面板），单击呼出/收起控制条。挂在根布局上，非播放屏直接放行。 */
     private fun setupMouseGestures() {
@@ -4321,6 +4331,7 @@ class MainActivity: Activity() {
         if(screen!="player") return
         refreshPointerUi()
         hud.visibility=View.VISIBLE
+        tvPlaybackHeader?.visibility=View.VISIBLE
         // 显示播放控件时同步最新缓存进度。
         refreshCacheStrip()
         updatePlaybackText(); scheduleHideHud()
@@ -5355,6 +5366,7 @@ class MainActivity: Activity() {
     }
     private fun releasePlayer(preservePlaybackCache: Boolean=false) {
         tvPauseButton?.visibility=View.GONE; tvPauseButton=null
+        tvPlaybackHeader?.visibility=View.GONE; tvPlaybackHeader=null
         cancelRecovery()
         dropQueuedNext()
         if(!preservePlaybackCache) cancelPrefetch()

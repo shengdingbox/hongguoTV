@@ -75,11 +75,11 @@ class TvPlaybackMenu(
         }
         addView(TextView(context).apply {
             text = "选集   ·   第 ${currentEpisode + 1} 集 / 共 $episodeCount 集"
-            textSize = if (compact) 14f else 16f
+            textSize = if (compact) 12f else 14f
             setTextColor(Color.WHITE)
             setTypeface(null, Typeface.BOLD)
             includeFontPadding = false
-            setPadding(0, dp(16), 0, dp(10))
+            setPadding(0, dp(10), 0, dp(6))
         }, LayoutParams(-1, -2))
         episodeList.apply {
             layoutManager = episodeLayout
@@ -96,12 +96,12 @@ class TvPlaybackMenu(
                     id = View.generateViewId()
                     gravity = Gravity.CENTER
                     includeFontPadding = false
-                    textSize = if (compact) 19f else 22f
+                    textSize = if (compact) 16f else 18f
                     isFocusable = true
                     isFocusableInTouchMode = true
                     isClickable = true
                     TouchControls.focusOnTouch(this)
-                    layoutParams = RecyclerView.LayoutParams(dp(if (compact) 64 else 76), -1).apply { rightMargin = dp(8) }
+                    layoutParams = RecyclerView.LayoutParams(dp(if (compact) 54 else 62), -1).apply { rightMargin = dp(6) }
                 })
                 override fun onBindViewHolder(holder: EpisodeHolder, position: Int) = holder.bind(position)
             }
@@ -115,7 +115,7 @@ class TvPlaybackMenu(
                 override fun onChildViewDetachedFromWindow(view: View) = Unit
             })
         }
-        addView(episodeList, LayoutParams(-1, dp(if (compact) 54 else 62)))
+        addView(episodeList, LayoutParams(-1, dp(if (compact) 44 else 48)))
         episodeLayout.scrollToPositionWithOffset((currentEpisode - 2).coerceAtLeast(0), 0)
     }
 
@@ -154,7 +154,7 @@ class TvPlaybackMenu(
             }
         }
         cards += view
-        cardRow.addView(view, LayoutParams(dp(if (wide) { if (compact) 150 else 168 } else { if (compact) 108 else 124 }), dp(if (compact) 66 else 76)).apply {
+        cardRow.addView(view, LayoutParams(dp(if (wide) { if (compact) 150 else 168 } else { if (compact) 108 else 124 }), dp(if (compact) 54 else 60)).apply {
             if (index > 0) leftMargin = dp(8)
         })
         return view
@@ -188,11 +188,11 @@ class TvPlaybackMenu(
             isClickable = true
             TouchControls.focusOnTouch(this)
             gravity = Gravity.CENTER_VERTICAL
-            textSize = if (compact) 16f else 18f
+            textSize = if (compact) 15f else 16f
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
             includeFontPadding = false
-            setPadding(dp(14), dp(8), dp(12), dp(8))
+            setPadding(dp(12), dp(6), dp(10), dp(6))
             paint()
         }
         fun update(nextTitle: String, nextSubtitle: String) {

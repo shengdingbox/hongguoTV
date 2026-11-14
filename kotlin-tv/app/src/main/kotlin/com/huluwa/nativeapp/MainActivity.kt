@@ -468,6 +468,7 @@ class MainActivity: Activity() {
     private lateinit var controls: LinearLayout
     private var panel=false
     private var transportPlay: TextView?=null
+    private var tvPlaybackMenu: TvPlaybackMenu?=null
     private var sleepButton: TextView?=null
     /** 手机始终显示退出按钮；电视在使用鼠标时显示，见 [TvPointer]。 */
     private var playerExit: TextView?=null
@@ -3516,11 +3517,7 @@ class MainActivity: Activity() {
             hud.addView(progressBar,lp(-1,dp(26)))
             // 鼠标一动就显示退出按钮；遥控一按（见 dispatchKeyEvent）再收回去
             TvPointer.onHover(root) { if(!mouseSeen) { mouseSeen=true; refreshPointerUi() } }
-            controls=column().apply {
-                setPadding(dp(12),dp(10),dp(12),dp(10)); visibility=View.GONE
-                background=GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                    intArrayOf(Color.argb(205,24,34,50),Color.argb(225,15,23,36))).apply { cornerRadius=dp(12).toFloat() }
-            }
+            controls=column().apply { visibility=View.GONE }
             hud.addView(controls,lp(-1,-2).apply { topMargin=dp(6) })
             // 转圈单独挂在根布局正中央，不占底部 HUD 空间；播放失败自动重试时才可见。
             recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { indeterminateTintList=android.content.res.ColorStateList.valueOf(accent); visibility=View.GONE }
@@ -3537,7 +3534,7 @@ class MainActivity: Activity() {
         playbackText.text="正在获取播放地址…"; progressBar.progress=0; progressBar.visibility=View.VISIBLE; hidePlaybackOverlay()
         // hud 默认隐藏，取址期间屏幕是全黑的：单独挂一个转圈，用户至少知道没死机。
         recoverySpinner?.visibility=View.VISIBLE
-        controls.removeAllViews(); controls.visibility=View.GONE; transportPlay=null; sleepButton=null
+        controls.removeAllViews(); controls.visibility=View.GONE; transportPlay=null; sleepButton=null; tvPlaybackMenu=null
         syncMediaSession()
         val requestedId=data.episodes[episodeIndex]; val maxQuality=effectiveQuality()
         // 每集最多自动降两档，换集后重新计数，避免一集失败就把整部剧拖到最低画质。
@@ -4227,7 +4224,11 @@ class MainActivity: Activity() {
         return if(playing) "暂停" else "播放"
     }
     private fun updatePlaybackText() {
-        transportPlay?.text=playButtonLabel()
+        val tvMenu=tvPlaybackMenu?.takeIf { it.parent===controls }
+        if(tvMenu!=null) {
+            val danmakuOn=detail?.series?.id?.let { extras.danmakuEnabled(it,library.danmaku) }==true
+            tvMenu.update(PlaybackSpeed.label(effectiveSpeed()),quality.ifBlank { "${effectiveQuality()}P" },danmakuOn,player?.playWhenReady ?: requestedAutoplay)
+        } else transportPlay?.text=playButtonLabel()
         sleepButton?.text="定时 ${sleepTimer.label()}"
         if(screen!="player" || playError) return
         // 拖动进度条时别用播放位置盖掉「定位到 12:34」：手指还按着，文字每秒跳回去像坏了
@@ -4265,7 +4266,7 @@ class MainActivity: Activity() {
         else if(episodePanel==null) { if(player?.playbackState==Player.STATE_ENDED) player?.seekTo(0); player?.play() }
         refreshPhonePlayerNow()
         playerScreenOn=play; refreshScreenOn()
-        showHud(); updatePlaybackText(); syncMediaSession(); if(panel && episodePanel==null) showPanel()
+        showHud(); updatePlaybackText(); syncMediaSession(); if(panel && episodePanel==null && tvPlaybackMenu?.isAttachedToWindow!=true) showPanel()
     }
     private fun togglePlayback()=requestPlayback(!(if(playbackReady) player?.playWhenReady ?: requestedAutoplay else requestedAutoplay))
     private fun seekTo(position: Long) {
@@ -4759,17 +4760,23 @@ class MainActivity: Activity() {
             }
             menu.text="菜单键  ·  ${menuLabel()}"
         }
-        fun upDownLabel()=if(extras.dpadUpDownAction==PlaybackExtras.UPDOWN_SWITCH) "切换集数" else "选集面板"
+        val fixedTvMenu=!phonePlayerLayout()
+        fun upDownLabel()=if(extras.dpadUpDownAction==PlaybackExtras.UPDOWN_SWITCH) {
+            if(fixedTvMenu) "上一集" else "切换集数"
+        } else if(fixedTvMenu) "操作菜单" else "选集面板"
+        val upDownTitle=if(fixedTvMenu) "遥控上键" else "遥控上下键"
         lateinit var upDown: TextView
-        upDown=button("遥控上下键  ·  ${upDownLabel()}") {
+        upDown=button("$upDownTitle  ·  ${upDownLabel()}") {
             extras.dpadUpDownAction=if(extras.dpadUpDownAction==PlaybackExtras.UPDOWN_SWITCH) PlaybackExtras.UPDOWN_PANEL else PlaybackExtras.UPDOWN_SWITCH
-            upDown.text="遥控上下键  ·  ${upDownLabel()}"
+            upDown.text="$upDownTitle  ·  ${upDownLabel()}"
         }
-        listOf(step,speed,menu,upDown).forEachIndexed { index,view ->
+        if(fixedTvMenu) content.addView(text("菜单键 / 下键  ·  打开播放操作菜单",13f,muted).apply { setPadding(dp(8),0,dp(8),dp(12)) })
+        val items=if(fixedTvMenu) listOf(step,speed,upDown) else listOf(step,speed,menu,upDown)
+        items.forEachIndexed { index,view ->
             view.gravity=Gravity.START or Gravity.CENTER_VERTICAL // 弹窗选项一律左对齐，Button 默认居中
             content.addView(view,lp(-1,dp(48)).apply { bottomMargin=dp(8) })
-            view.nextFocusDownId=listOf(step,speed,menu,upDown).getOrNull(index+1)?.id ?: View.NO_ID
-            view.nextFocusUpId=listOf(step,speed,menu,upDown).getOrNull(index-1)?.id ?: View.NO_ID
+            view.nextFocusDownId=items.getOrNull(index+1)?.id ?: view.id
+            view.nextFocusUpId=items.getOrNull(index-1)?.id ?: view.id
         }
         val dialog=AlertDialog.Builder(this).setView(TvDialog.card(this,content)).create()
         TvDialog.styleWindow(this,dialog)
@@ -4794,84 +4801,64 @@ class MainActivity: Activity() {
         ffActive=false; player?.setPlaybackSpeed(ffSpeedBefore)
         updatePlaybackText(); showHud()
     }
-    /** TV transport controls share the browsing focus treatment, with readable text over video. */
-    private fun tvPlaybackButton(parent: LinearLayout,label: String,selected: Boolean=false,action: ()->Unit): TextView {
-        val view=button(label,selected,action).apply {
-            textSize=if(widthDp()<700) 12f else 14f; minHeight=dp(40); maxLines=1
-            ellipsize=TextUtils.TruncateAt.END; setPadding(dp(10),dp(8),dp(10),dp(8))
-            if(Build.VERSION.SDK_INT>=26) setAutoSizeTextTypeUniformWithConfiguration(10,if(widthDp()<700) 12 else 14,1,android.util.TypedValue.COMPLEX_UNIT_SP)
-            fun paint(focused: Boolean) {
-                background=TvVisual.row(this@MainActivity,focused,selected)
-                setTextColor(if(focused || selected) TvStyle.accent else Color.rgb(227,233,243))
-                setTypeface(null,if(focused || selected) Typeface.BOLD else Typeface.NORMAL)
-            }
-            setOnFocusChangeListener { _,focused -> paint(focused) }; paint(false)
-        }
-        parent.addView(view,lp(0,-2).apply { weight=1f; if(parent.childCount>0) leftMargin=dp(6) })
-        return view
-    }
+    /** TV 底部操作菜单与横向选集栏，菜单键和下键共用同一入口。 */
     private fun showPanel() {
-        if(playError) return
-        // 手机播放页（含横屏全屏皮肤）的控制条常驻在 PhonePlayer 里，不需要（也看不到）电视版 HUD
-        if(phonePlayerLayout()) return
+        if(screen!="player" || playError || phonePlayerLayout()) return
+        val data=detail ?: return
+        stopFastForward()
         panel=true; showHud(); controls.visibility=View.VISIBLE; controls.removeAllViews()
-        val transport=row(); controls.addView(transport)
-        val play=tvPlaybackButton(transport,playButtonLabel(),selected=true) { togglePlayback() }.also { transportPlay=it }
-        tvPlaybackButton(transport,"上一集") { if(episodeIndex>0) playEpisode(episodeIndex-1,savedPosition(episodeIndex-1)) }.apply { isEnabled=episodeIndex>0; isFocusable=episodeIndex>0; alpha=if(episodeIndex>0) 1f else .4f }
-        tvPlaybackButton(transport,"下一集") { if(episodeIndex<(detail?.episodes?.lastIndex ?: 0)) playEpisode(episodeIndex+1,savedPosition(episodeIndex+1)) }.apply { val enabled=episodeIndex<(detail?.episodes?.lastIndex ?: 0); isEnabled=enabled; isFocusable=enabled; alpha=if(enabled) 1f else .4f }
-        val options=row().apply { setPadding(0,dp(6),0,0) }; controls.addView(options)
-        lateinit var episodes: TextView
-        episodes=tvPlaybackButton(options,"选集") { showEpisodePanel(episodes) }
-        lateinit var speed: TextView
-        speed=tvPlaybackButton(options,"倍速 ${PlaybackSpeed.label(effectiveSpeed())}") { showSpeedPicker(speed) }
-        lateinit var clarity: TextView
-        clarity=tvPlaybackButton(options,"${effectiveQuality()}P") { showQualityPicker(clarity,true) }
-        lateinit var frame: TextView
-        frame=tvPlaybackButton(options,effectiveFrame().label) { showFramePicker(frame,true) }
-        lateinit var more: TextView
-        more=tvPlaybackButton(options,"播放设置") {
-            val seriesId=detail?.series?.id.orEmpty()
-            val mark=library.skipMark(seriesId)
-            val danmakuOn=extras.danmakuEnabled(seriesId,library.danmaku)
-            fun skipLabel(seconds: Int)=if(seconds>0) "$seconds 秒" else "关闭"
-            val options=buildList {
-                add("倍速 ${PlaybackSpeed.label(effectiveSpeed())}（仅本剧）"); add("清晰度 ${effectiveQuality()}P（仅本剧）"); add("画面 ${effectiveFrame().label}（仅本剧）"); add("定时 ${sleepTimer.label()}")
-                add("跳过片头 ${skipLabel(mark?.introSeconds ?: 0)}"); add("跳过片尾 ${skipLabel(mark?.outroSeconds ?: 0)}"); add("从头播放"); add("弹幕 ${if(danmakuOn) "开启" else "关闭"}（仅本剧）")
-                if(danmakuOn) add("弹幕设置")
-            }
-            tvTools.choose("播放设置",options,more,{ choice ->
-                main.post {
-                    if(screen=="player" && more.isAttachedToWindow) {
-                        when(choice) {
-                            0 -> showSpeedPicker(more)
-                            1 -> showQualityPicker(more,true)
-                            2 -> showFramePicker(more,true)
-                            3 -> showSleepPicker(more)
-                            4 -> showSkipPicker(more,true)
-                            5 -> showSkipPicker(more,false)
-                            6 -> { seekTo(0); hidePanel() }
-                            7 -> toggleSeriesDanmaku(seriesId)
-                            8 -> showDanmakuPrefsDialog(more)
-                        }
-                    }
-                }
+        val menu=TvPlaybackMenu(this,episodeIndex,data.episodes.size,
+            onNext={ skipEpisode(1) },
+            onPlay={ togglePlayback() },
+            onSpeed={ showSpeedPicker(it) },
+            onQuality={ showQualityPicker(it,true) },
+            onDanmaku={ showTvDanmakuMenu(it) },
+            onMore={ showTvPlaybackSettings(it) },
+            onEpisode={ selected ->
+                if(selected==episodeIndex) hidePlaybackOverlay()
+                else { playEpisode(selected,savedPosition(selected)); showHud() }
             })
-        }.apply { tag="playback-settings" }
-        val rows=listOf(transport,options).map { line ->
-            (0 until line.childCount).mapNotNull { line.getChildAt(it) as? TextView }.filter { it.isEnabled }
-        }
-        rows.forEachIndexed { r,items -> items.forEachIndexed { c,item ->
-            item.nextFocusLeftId=items.getOrNull(c-1)?.id ?: item.id
-            item.nextFocusRightId=items.getOrNull(c+1)?.id ?: item.id
-            item.nextFocusUpId=rows.getOrNull(r-1)?.let { it.getOrNull(c.coerceAtMost(it.lastIndex)) }?.id ?: item.id
-            item.nextFocusDownId=rows.getOrNull(r+1)?.let { it.getOrNull(c.coerceAtMost(it.lastIndex)) }?.id ?: item.id
-        } }
-        play.requestFocus()
+        tvPlaybackMenu=menu; transportPlay=menu.playButton
+        controls.addView(menu,lp(-1,-2))
+        updatePlaybackText()
+        menu.focusPrimary()
         if(touchPlayback) scheduleHideHud()
+    }
+    private fun showTvDanmakuMenu(anchor: TextView) {
+        val seriesId=detail?.series?.id ?: return
+        val on=extras.danmakuEnabled(seriesId,library.danmaku)
+        tvTools.choose("弹幕",listOf(if(on) "关闭弹幕" else "开启弹幕","弹幕设置"),anchor,{ choice ->
+            main.post {
+                if(screen!="player" || !anchor.isAttachedToWindow) return@post
+                if(choice==0) toggleSeriesDanmaku(seriesId,enableGlobal=true) else showDanmakuPrefsDialog(anchor)
+            }
+        })
+    }
+    private fun showTvPlaybackSettings(anchor: TextView) {
+        val seriesId=detail?.series?.id.orEmpty()
+        val mark=library.skipMark(seriesId)
+        fun skipLabel(seconds: Int)=if(seconds>0) "$seconds 秒" else "关闭"
+        val options=listOf("全部选集 / 跳转集数","画面 ${effectiveFrame().label}（仅本剧）","定时 ${sleepTimer.label()}",
+            "跳过片头 ${skipLabel(mark?.introSeconds ?: 0)}","跳过片尾 ${skipLabel(mark?.outroSeconds ?: 0)}","从头播放","上一集")
+        tvTools.choose("播放设置",options,anchor,{ choice ->
+            main.post {
+                if(screen!="player" || !anchor.isAttachedToWindow) return@post
+                when(choice) {
+                    0 -> showEpisodePanel(anchor)
+                    1 -> showFramePicker(anchor,true)
+                    2 -> showSleepPicker(anchor)
+                    3 -> showSkipPicker(anchor,true)
+                    4 -> showSkipPicker(anchor,false)
+                    5 -> { seekTo(0); hidePanel() }
+                    6 -> if(!skipEpisode(-1)) Toast.makeText(this,"已是第一集",Toast.LENGTH_SHORT).show()
+                }
+            }
+        })
     }
     /** 播放快捷面板：长按菜单键呼出。清晰度/倍速/弹幕/更多四列，列内上下循环，改动立即生效，播放不中断。 */
     private fun showQuickPanel() {
         if(screen!="player" || playError) return
+        if(!phonePlayerLayout()) { showPanel(); return }
         panel=true; showHud(); controls.visibility=View.VISIBLE; controls.removeAllViews()
         val data=detail
         val seriesId=data?.series?.id.orEmpty()
@@ -5243,14 +5230,16 @@ class MainActivity: Activity() {
         val startPosition=currentPosition()
         io.execute { runCatching { loader.loadUpTo(startPosition) } }
     }
-    /** 播放中切换当前剧的弹幕并记住：全局弹幕关闭时先提示打开总开关，避免出现「开了却看不到」。 */
-    private fun toggleSeriesDanmaku(seriesId: String) {
-        if(!library.danmaku) {
+    /** TV 菜单可直接开启弹幕总开关，单剧开关仍按原有规则记忆。 */
+    private fun toggleSeriesDanmaku(seriesId: String,enableGlobal: Boolean=false) {
+        if(!library.danmaku && !enableGlobal) {
             Toast.makeText(this,"弹幕总开关已关闭，请先在设置或播放设置中开启",Toast.LENGTH_SHORT).show(); return
         }
-        val on=!extras.danmakuEnabled(seriesId,true)
+        val on=!extras.danmakuEnabled(seriesId,library.danmaku)
+        if(on && enableGlobal) library.danmaku=true
         extras.setDanmakuEnabled(seriesId,on)
         if(on) startDanmaku() else stopDanmaku()
+        updatePlaybackText()
         Toast.makeText(this,"已为《${detail?.series?.title.orEmpty()}》${if(on) "开启" else "关闭"}弹幕",Toast.LENGTH_SHORT).show()
     }
     private fun stopDanmaku() {
@@ -5275,7 +5264,7 @@ class MainActivity: Activity() {
         video?.pauseReadAhead(cancelReads=true)
         tvVideoFrameWaitStartedAt=0L
         playerView?.player=null; playerView=null
-        playbackSession?.release(); playbackSession=null; player=null; playbackReady=false; playbackFirstFrameRendered=false; transportPlay=null; sleepButton=null
+        playbackSession?.release(); playbackSession=null; player=null; playbackReady=false; playbackFirstFrameRendered=false; transportPlay=null; sleepButton=null; tvPlaybackMenu=null
         playerVideo=null; switchingVideos.clear(); protectPlaybackVideos()
         // 手机播放面板的控件引用随页面一起作废，避免 tick 写到已移除的视图上
         // （旋转重建时由调用方先 takeFullscreenState，release 不会再抢方向）
@@ -6965,7 +6954,14 @@ class MainActivity: Activity() {
         if(screen=="player") {
             val key=event.keyCode
             if(key==KeyEvent.KEYCODE_BACK) { if(event.action==KeyEvent.ACTION_UP) goBack(); return true }
-            // 菜单键：短按执行「菜单键行为」设置的动作（抬起时触发），长按 500ms 呼出播放快捷面板
+            // TV 菜单键固定打开/收起底部操作菜单，不受旧版自定义菜单键设置影响。
+            if(key==KeyEvent.KEYCODE_MENU && !phonePlayerLayout()) {
+                if(event.action==KeyEvent.ACTION_DOWN && event.repeatCount==0 && !playError) {
+                    if(panel) hidePlaybackOverlay() else showPanel()
+                }
+                return true
+            }
+            // 手机沿用原有短按自定义行为与长按快捷面板。
             if(key==KeyEvent.KEYCODE_MENU) {
                 if(event.action==KeyEvent.ACTION_DOWN) {
                     if(event.repeatCount==0 && !playError) { menuLongFired=false; main.postDelayed(menuLongRunnable,500) }
@@ -7007,7 +7003,10 @@ class MainActivity: Activity() {
                         KeyEvent.KEYCODE_DPAD_LEFT -> seek(-1,event.repeatCount)
                         KeyEvent.KEYCODE_DPAD_RIGHT -> if(event.repeatCount==0) seek(1,0) else startFastForward()
                         KeyEvent.KEYCODE_DPAD_CENTER,KeyEvent.KEYCODE_ENTER -> if(event.repeatCount==0) togglePlayback()
-                        KeyEvent.KEYCODE_DPAD_DOWN -> if(event.repeatCount==0) { if(extras.dpadUpDownAction==PlaybackExtras.UPDOWN_SWITCH) skipEpisode(1) else showEpisodePanel(hud) }
+                        KeyEvent.KEYCODE_DPAD_DOWN -> if(event.repeatCount==0) {
+                            if(!phonePlayerLayout()) showPanel()
+                            else if(extras.dpadUpDownAction==PlaybackExtras.UPDOWN_SWITCH) skipEpisode(1) else showEpisodePanel(hud)
+                        }
                         KeyEvent.KEYCODE_DPAD_UP -> if(event.repeatCount==0) { if(extras.dpadUpDownAction==PlaybackExtras.UPDOWN_SWITCH) skipEpisode(-1) else showPanel() }
                         else -> showHud()
                     }

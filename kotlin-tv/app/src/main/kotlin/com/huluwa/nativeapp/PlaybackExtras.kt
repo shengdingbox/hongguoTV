@@ -39,12 +39,12 @@ class PlaybackExtras(context: Context) {
         get() = prefs.getFloat(KEY_FAST_SPEED, 3f).takeIf { it in FAST_SPEEDS } ?: 3f
         set(value) { prefs.edit().putFloat(KEY_FAST_SPEED, value).apply() }
 
-    /** 播放中按菜单键的行为：panel 播放设置 / episodes 选集 / danmaku 弹幕开关。 */
+    /** 手机遥控模式沿用的菜单键行为；TV 播放页菜单键固定打开操作菜单。 */
     var menuKeyAction: String
         get() = prefs.getString(KEY_MENU, MENU_PANEL)?.takeIf { it in listOf(MENU_PANEL, MENU_EPISODES, MENU_DANMAKU) } ?: MENU_PANEL
         set(value) { prefs.edit().putString(KEY_MENU, value).apply() }
 
-    /** 播放中遥控 ↑↓ 的行为：panel 默认(↓选集/↑更多) / switch 直接切换集数(↓下一集/↑上一集)。 */
+    /** 遥控上下键偏好；TV 仅影响上键（操作菜单 / 上一集），下键固定打开操作菜单。 */
     var dpadUpDownAction: String
         get() = prefs.getString(KEY_UPDOWN, UPDOWN_PANEL)?.takeIf { it in listOf(UPDOWN_PANEL, UPDOWN_SWITCH) } ?: UPDOWN_PANEL
         set(value) { prefs.edit().putString(KEY_UPDOWN, value).apply() }

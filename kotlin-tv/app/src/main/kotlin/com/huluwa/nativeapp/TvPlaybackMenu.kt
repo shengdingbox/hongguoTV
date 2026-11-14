@@ -220,9 +220,7 @@ class TvPlaybackMenu(
                 cell.setTextColor(if (cell.isFocused) Color.rgb(17, 36, 51) else if (current) Color.rgb(81, 224, 243) else Color.WHITE)
                 cell.setTypeface(null, if (current || cell.isFocused) Typeface.BOLD else Typeface.NORMAL)
             }
-            cell.text = if (current) SpannableString("${index + 1}\n播放中").apply {
-                setSpan(RelativeSizeSpan(.48f), (index + 1).toString().length + 1, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            } else "${index + 1}"
+            cell.text = "${index + 1}"
             cell.contentDescription = "第 ${index + 1} 集" + if (current) "，当前播放" else ""
             cell.setOnFocusChangeListener { _, focused ->
                 paint()

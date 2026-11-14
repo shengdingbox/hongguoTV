@@ -333,6 +333,17 @@ class HomeScreen(
     fun refreshSelection() { current()?.let { selected(it.series,it.label) } }
     fun reloadArtwork() { loadArtwork() }
 
+    /** 冷启动直接呈现主页，后台记录尚未就绪时不显示加载或空记录提示。 */
+    fun showStartup(retry: Boolean=false) {
+        render(emptyList(),"",false,null)
+        empty.text=""
+        positionLabel.text=""
+        help.visibility=INVISIBLE
+        stage.isFocusable=false; stage.isClickable=false
+        refresh.text=if(retry) "重试" else "换一批"
+        refresh.nextFocusDownId=refresh.id
+    }
+
     fun render(shelves: List<Shelf>,focus: String,requestFocus: Boolean,more: (() -> Unit)?,position: Position?=null) {
         val previous=position ?: if(this.shelves.isNotEmpty()) capturePosition() else null
         this.shelves=shelves; footerMore=more; revision++

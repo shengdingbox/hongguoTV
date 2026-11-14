@@ -63,6 +63,10 @@ private object PageRestore {
     var focusKey: String?=null
     /** 手机设置页里切了界面缩放：重建后要回到手机设置页，而不是首页。 */
     var phoneSettings=false
+    // 冷启动主页上的操作延后到记录就绪后执行，设置加载引起 recreate 时继续保留。
+    var startupTab: Int?=null
+    var startupType: ContentType?=null
+    var startupHomeAction: String?=null
 }
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -574,18 +578,30 @@ class MainActivity: Activity() {
         TvStyle.apply(StartupSettings.string("theme", "NIGHT"))
         super.onCreate(state)
         if(!StartupSettings.isLoaded) {
-            val status=TextView(this).apply {
+            val tvStartup=!touchPlayback
+            val status=if(tvStartup) null else TextView(this).apply {
                 text="正在读取本机设置…"; textSize=18f; gravity=Gravity.CENTER
                 setTextColor(Color.WHITE); setBackgroundColor(Color.rgb(18,18,18))
             }
-            setContentView(status)
+            if(tvStartup) {
+                requestedOrientation=android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                window.decorView.systemUiVisibility=View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                root=FrameLayout(this)
+                setContentView(root)
+            } else setContentView(status!!)
             fun loadSettings() {
-                status.text="正在读取本机设置…"; status.setOnClickListener(null)
+                if(tvStartup) showTvStartupHome()
+                else { status?.text="正在读取本机设置…"; status?.setOnClickListener(null) }
                 StartupSettings.loadAsync(this) { result ->
-                    if(!isDestroyed && !isFinishing) result.onSuccess { recreate() }.onFailure {
-                        status.text="本机设置读取失败，点击重试"
-                        status.isFocusable=true; status.isFocusableInTouchMode=true; status.requestFocus()
-                        status.setOnClickListener { loadSettings() }
+                    if(!isDestroyed && !isFinishing) result.onSuccess { recreate() }.onFailure { problem ->
+                        if(tvStartup) {
+                            android.util.Log.e("HongguoTV","Startup settings failed to load",problem)
+                            showTvStartupHome(retry={ loadSettings() })
+                        } else status?.apply {
+                            text="本机设置读取失败，点击重试"
+                            isFocusable=true; isFocusableInTouchMode=true; requestFocus()
+                            setOnClickListener { loadSettings() }
+                        }
                     }
                 }
             }
@@ -644,10 +660,71 @@ class MainActivity: Activity() {
         favoriteMonitor=FavoriteMonitor(library,repository) { refreshFavoriteLabels() }
         mediaSession=TvMediaSession(this,{ if(foreground && screen=="player") requestPlayback(true) },{ if(foreground && screen=="player") requestPlayback(false) },{ position -> if(foreground && screen=="player") seekTo(position) },{ direction -> skipEpisode(direction) },{ if(foreground && screen=="player") returnToDetail() })
         activityInitialized=true
-        message(base(),"正在读取本机记录…")
+        if(phoneLayout()) message(base(),"正在读取本机记录…") else showTvStartupHome()
         loadLibrary()
     }
+    /** 读取记录期间先展示首页布局，不接触未加载的 Library，也不写入空记录。 */
+    private fun showTvStartupHome(retry: (() -> Unit)?=null) {
+        val container=base()
+        val compact=widthDp()<800
+        val horizontal=dp(if(compact) 16 else 24)
+        container.setPadding(horizontal,dp(if(heightDp()<450) 10 else 16),horizontal,dp(if(heightDp()<450) 10 else 16))
+        root.background=TvVisual.backdrop(this)
+        nav.clear(); typeButtons.clear()
+        val selectedTab=PageRestore.startupTab ?: tab
+        val header=TvCatalogHeader(this,selectedTab) { next ->
+            PageRestore.startupTab=next; PageRestore.startupHomeAction=null
+            showTvStartupHome(retry)
+        }
+        nav.addAll(header.navigation)
+        container.addView(header)
+        container.addView(View(this).apply { setBackgroundColor(TvStyle.outline) },lp(-1,dp(1)).apply { topMargin=dp(8); bottomMargin=dp(6) })
+        val types=row().apply { setPadding(0,dp(8),0,dp(6)) }
+        val selectedType=PageRestore.startupType ?: ContentType.COMIC
+        listOf(ContentType.COMIC,ContentType.SHORT).forEach { type ->
+            val control=chip(type.label,selectedType==type) {
+                PageRestore.startupType=type; PageRestore.startupTab=0; PageRestore.startupHomeAction=null
+                showTvStartupHome(retry)
+                typeButtons[type]?.requestFocus()
+            }.apply { textSize=13f; minHeight=dp(36); setPadding(dp(14),dp(7),dp(14),dp(7)); nextFocusUpId=nav[selectedTab].id }
+            typeButtons[type]=control
+            types.addView(control,lp(0,-2).apply { weight=1f; rightMargin=dp(8) })
+        }
+        listOf("题材筛选" to "genre","随机荐剧" to "random").forEach { (label,action) ->
+            types.addView(chip(label,false) {
+                PageRestore.startupTab=0; PageRestore.startupHomeAction=action
+            }.apply { textSize=13f; minHeight=dp(36); nextFocusUpId=nav[selectedTab].id },lp(0,-2).apply { weight=1f; if(action=="genre") rightMargin=dp(8) })
+        }
+        container.addView(types)
+        val home=HomeScreen(this,typeButtons.getValue(selectedType),{ _, _ -> },{ _, _ -> },{ _, _ -> },{ _, _ -> },{})
+        container.addView(home,lp(-1,0).apply { weight=1f })
+        home.showStartup(retry!=null)
+        home.refresh.setOnClickListener { if(retry!=null) retry() else { PageRestore.startupTab=0; PageRestore.startupHomeAction=null } }
+        val controls=(0 until types.childCount).mapNotNull { types.getChildAt(it) as? TextView }
+        controls.forEachIndexed { index,view ->
+            view.nextFocusLeftId=controls.getOrNull(index-1)?.id ?: view.id
+            view.nextFocusRightId=controls.getOrNull(index+1)?.id ?: view.id
+            view.nextFocusDownId=home.refresh.id
+        }
+        nav.forEach { it.nextFocusDownId=typeButtons.getValue(selectedType).id }
+        nav[selectedTab].requestFocus()
+    }
+    private fun showInitialTvPage() {
+        PageRestore.startupType?.let { library.contentType=it }; PageRestore.startupType=null
+        PageRestore.startupTab?.let { tab=it }; PageRestore.startupTab=null
+        val action=PageRestore.startupHomeAction; PageRestore.startupHomeAction=null
+        showCatalog(load=tab==0 || tab==2 || (tab==1 && query.isNotBlank()))
+        if(tab==0) when(action) {
+            "genre" -> showGenrePicker()
+            "random" -> showRandomPicks()
+        }
+    }
     private fun showLibraryError(problem: Throwable) {
+        if(!phoneLayout()) {
+            android.util.Log.e("HongguoTV","Local records failed to load",problem)
+            showTvStartupHome(retry={ showTvStartupHome(); loadLibrary() })
+            return
+        }
         val body=base(); error(body,problem) { message(base(),"正在读取本机记录…"); loadLibrary() }
     }
     private fun loadLibrary() {
@@ -656,13 +733,13 @@ class MainActivity: Activity() {
             if(!isDestroyed) { libraryLoadError=problem; if(foreground) showLibraryError(problem) }
         }) {
             if(isDestroyed || isFinishing) return@loadAsync
-            // 按本机偏好异步创建缓存池，记录加载完成即可显示首页。
+            // 本机记录就绪后补齐首页数据，并按偏好异步创建缓存池。
             applyEpisodeCacheSetting()
             if(!isDestroyed && foreground) {
                 // 手机竖屏使用手机首页，电视与横屏使用电视目录。
                 if(pendingPhoneSettings && phoneLayout()) { pendingPhoneSettings=false; showPhoneSettings(); favoriteMonitor.check() }
                 else if(phoneLayout()) { showInitialPhonePage(); favoriteMonitor.check() }
-                else { showCatalog(load=true); favoriteMonitor.check() }
+                else { showInitialTvPage(); favoriteMonitor.check() }
                 maybePromptCrash()
             }
         }
@@ -6936,7 +7013,7 @@ class MainActivity: Activity() {
     @Deprecated("TV remote back is handled through the activity")
     override fun onBackPressed() { if(activityInitialized) goBack() else finish() }
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if(!activityInitialized) return super.dispatchKeyEvent(event)
+        if(!activityInitialized || !library.isLoaded) return super.dispatchKeyEvent(event)
         // 遥控一按就把鼠标专属的东西收起来：最近一次操作已经换人了
         if(mouseSeen && screen=="player") { mouseSeen=false; refreshPointerUi() }
         if(handleCatalogDown(event)) return true
@@ -7075,7 +7152,7 @@ class MainActivity: Activity() {
         if(PortraitStyle.refresh(this)) redrawPhoneTheme()
         phoneConfiguration=android.content.res.Configuration(resources.configuration)
         if(library.isLoaded) {
-            if(initialCatalogPending) { if(phoneLayout()) showInitialPhonePage() else showCatalog(load=true) }
+            if(initialCatalogPending) { if(phoneLayout()) showInitialPhonePage() else showInitialTvPage() }
             else if(restoreStoppedPage) {
                 restoreStoppedPage=false
                 // 后台期间只暂停、没拆播放器：原地续播，不重建页面也不重新取址。

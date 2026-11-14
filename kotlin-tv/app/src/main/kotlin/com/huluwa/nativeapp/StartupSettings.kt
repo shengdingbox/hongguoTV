@@ -42,7 +42,7 @@ object StartupSettings {
         writes.submit(mapOf(key to value))
     }
 
-    /** 由 Activity 主线程调用；失败时保持加载页并允许重试，不丢失原有偏好。 */
+    /** 由 Activity 主线程调用；界面可先展示首页，失败交由调用方重试，不丢失原有偏好。 */
     fun loadAsync(context: Context, done: (Result<Unit>) -> Unit) {
         if (isLoaded) { done(Result.success(Unit)); return }
         callbacks += done

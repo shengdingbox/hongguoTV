@@ -13,8 +13,6 @@ import android.view.ViewConfiguration
 import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import kotlin.math.abs
-import kotlin.math.ceil
-import kotlin.math.floor
 import kotlin.math.roundToInt
 
 /** 手机短剧整屏纵向分页：只保留相邻封面页，当前页始终复用同一个播放器。 */
@@ -30,7 +28,7 @@ internal class PhoneEpisodePager(
     private val next = FrameLayout(context)
     private val configuration = ViewConfiguration.get(context)
     private val touchSlop = configuration.scaledTouchSlop
-    private val flingVelocity = maxOf(configuration.scaledMinimumFlingVelocity.toFloat(), 400f * resources.displayMetrics.density)
+    private val flingVelocity = maxOf(configuration.scaledMinimumFlingVelocity.toFloat(), 300f * resources.displayMetrics.density)
     private var selected = -1
     private var count = 0
     private var position = 0f
@@ -94,15 +92,15 @@ internal class PhoneEpisodePager(
         next.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
     }
 
-    private fun moveTo(value: Float, selectWhileMoving: Boolean) {
+    private fun moveTo(value: Float, selectionTarget: Int? = null) {
         position = value
         applyPosition()
-        if (!selectWhileMoving || selectionRejected || count == 0) return
-        val visibleIndex = position.roundToInt().coerceIn(0, count - 1)
-        if (visibleIndex == selected) return
+        // 拖动只展示相邻页；松手后只接管已确定的目标集，避免来回跨过中线时反复切集。
+        if (selectionTarget == null || selectionRejected || selectionTarget !in 0 until count ||
+            selectionTarget == selected || position.roundToInt() != selectionTarget) return
         selecting = true
         try {
-            selectionRejected = !onSelect(visibleIndex)
+            selectionRejected = !onSelect(selectionTarget)
         } finally {
             selecting = false
         }
@@ -145,7 +143,7 @@ internal class PhoneEpisodePager(
             if (pointer < 0) return false
             val dx = event.getX(pointer) - downX
             val dy = event.getY(pointer) - downY
-            if (abs(dy) > touchSlop && abs(dy) > abs(dx) * 1.25f) {
+            if (abs(dy) > touchSlop && abs(dy) > abs(dx) * 1.15f) {
                 dragging = true
                 parent?.requestDisallowInterceptTouchEvent(true)
                 return true
@@ -158,44 +156,62 @@ internal class PhoneEpisodePager(
         if (!dragging) return true
         if (blockedGesture) return true
         when (event.actionMasked) {
-            MotionEvent.ACTION_MOVE -> {
-                val pointer = event.findPointerIndex(pointerId)
-                if (pointer < 0 || height <= 0) return true
-                val raw = (startPosition - (event.getY(pointer) - downY) / height)
-                    .coerceIn((startIndex - 1).toFloat(), (startIndex + 1).toFloat())
-                val resisted = when {
-                    raw < 0f -> raw * .18f
-                    raw > count - 1 -> count - 1 + (raw - (count - 1)) * .18f
-                    else -> raw
-                }
-                moveTo(resisted, selectWhileMoving = true)
-            }
+            MotionEvent.ACTION_MOVE -> dragTo(event)
             MotionEvent.ACTION_UP -> {
+                // 松手坐标也计入位移，避免最后一段滑动没有 MOVE 事件时被漏算。
+                dragTo(event)
                 velocity?.computeCurrentVelocity(1000, configuration.scaledMaximumFlingVelocity.toFloat())
                 val vx = velocity?.getXVelocity(pointerId) ?: 0f
                 val vy = velocity?.getYVelocity(pointerId) ?: 0f
-                val target = if (abs(vy) > flingVelocity && abs(vy) > abs(vx) * 1.4f) {
-                    if (vy < 0) floor(position).toInt() + 1 else ceil(position).toInt() - 1
-                } else position.roundToInt()
-                animateTo(target.coerceIn(maxOf(0, startIndex - 1), minOf(count - 1, startIndex + 1)), selectWhileMoving = true)
+                val pointer = event.findPointerIndex(pointerId)
+                if (pointer < 0) {
+                    animateTo(selected, selectWhileMoving = false)
+                    return true
+                }
+                // 使用本次手指的实际位移，接管未结束的动画或边缘回弹时也保持滑动方向。
+                val distance = downY - event.getY(pointer)
+                val threshold = maxOf(touchSlop * 3f, minOf(height * .18f, 96f * resources.displayMetrics.density))
+                val farEnough = abs(distance) >= threshold
+                val fling = abs(distance) >= touchSlop * 2f && abs(vy) > flingVelocity &&
+                    abs(vy) > abs(vx) * 1.2f && vy * distance < 0f
+                // 足够的位移优先于松手瞬间的速度，轻微回勾不会把上滑判成下滑。
+                val target = startIndex + when {
+                    farEnough || fling -> if (distance > 0f) 1 else -1
+                    else -> 0
+                }
+                animateTo(target.coerceIn(0, count - 1), selectWhileMoving = true)
             }
             MotionEvent.ACTION_CANCEL -> animateTo(selected, selectWhileMoving = false)
         }
         return true
     }
 
+    private fun dragTo(event: MotionEvent) {
+        val pointer = event.findPointerIndex(pointerId)
+        if (pointer < 0 || height <= 0) return
+        val raw = (startPosition - (event.getY(pointer) - downY) / height)
+            .coerceIn((startIndex - 1).toFloat(), (startIndex + 1).toFloat())
+        val resisted = when {
+            raw < 0f -> raw * .18f
+            raw > count - 1 -> count - 1 + (raw - (count - 1)) * .18f
+            else -> raw
+        }
+        moveTo(resisted)
+    }
+
     private fun animateTo(index: Int, selectWhileMoving: Boolean) {
         cancelMotion()
         val target = index.toFloat()
+        val selectionTarget = if (selectWhileMoving) index else null
         if (position == target) {
-            moveTo(target, selectWhileMoving)
+            moveTo(target, selectionTarget)
             return
         }
         val animator = ValueAnimator.ofFloat(position, target)
         motion = animator
         animator.duration = (300 * abs(target - position)).toLong().coerceIn(100L, 350L)
         animator.interpolator = PathInterpolator(.22f, 0f, .2f, 1f)
-        animator.addUpdateListener { moveTo(it.animatedValue as Float, selectWhileMoving) }
+        animator.addUpdateListener { moveTo(it.animatedValue as Float, selectionTarget) }
         animator.addListener(object : AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: Animator) {
                 if (motion !== animation) return

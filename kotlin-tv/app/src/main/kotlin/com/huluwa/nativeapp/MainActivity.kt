@@ -469,6 +469,7 @@ class MainActivity: Activity() {
     private lateinit var progressBar: PlaybackSeekBar
     /** 自动重试时的转圈，单独可见；手动面板态切回 controls。 */
     private var recoverySpinner: ProgressBar?=null
+    private var tvPauseButton: ImageButton?=null
     private lateinit var controls: LinearLayout
     private var panel=false
     private var transportPlay: TextView?=null
@@ -3501,6 +3502,7 @@ class MainActivity: Activity() {
         // 否则第 2 集起顶部一直停在第 1 集的编号。
         if(phonePlayerLayout()) phonePlayer?.updateEpisode(data)
         panel=false; playError=false; playbackReady=false; quality=""; pausedForLifecycle=!autoplay
+        tvPauseButton?.visibility=View.GONE
         retainPlaybackWindow()
         playerScreenOn=true; refreshScreenOn()
         if(!reuse) {
@@ -3546,6 +3548,20 @@ class MainActivity: Activity() {
             danmakuLayer.setBlockedFilter { text -> extras.blocks(text) }
             danmakuLayer.applyPrefs(library.danmakuOpacity,library.danmakuFont,library.danmakuSpeed,library.danmakuRows)
             root.addView(danmakuLayer,FrameLayout.LayoutParams(-1,(resources.displayMetrics.heightPixels*.38f).toInt(),Gravity.TOP).apply { topMargin=dp(12) })
+            tvPauseButton=ImageButton(this).apply {
+                setImageResource(R.drawable.ic_pause)
+                scaleType=ImageView.ScaleType.FIT_CENTER
+                setPadding(dp(18),dp(18),dp(18),dp(18))
+                background=GradientDrawable().apply {
+                    shape=GradientDrawable.OVAL
+                    setColor(Color.argb(150,11,15,24))
+                    setStroke(dp(1),Color.argb(110,255,255,255))
+                }
+                contentDescription="已暂停，点击继续播放"
+                isFocusable=false; isFocusableInTouchMode=false
+                setOnClickListener { requestPlayback(true) }
+                visibility=View.GONE
+            }.also { root.addView(it,FrameLayout.LayoutParams(dp(80),dp(80),Gravity.CENTER)) }
             // 参考 TV 播放器的底部渐变信息区，颜色独立于浏览页主题，保证画面上的文字清晰。
             val chromeInset=dp(if(widthDp()<700) 20 else 36)
             hud=column().apply {
@@ -3742,7 +3758,10 @@ class MainActivity: Activity() {
                         Player.EVENT_PLAY_WHEN_READY_CHANGED,
                         Player.EVENT_PLAYBACK_STATE_CHANGED,
                         Player.EVENT_PLAYER_ERROR,
-                    )) refreshPhonePlayerNow()
+                    )) {
+                        refreshPhonePlayerNow()
+                        refreshTvPauseButton()
+                    }
                 }
                 override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(playing) maybePrefetch(); if(hud.visibility==View.VISIBLE) showHud(); syncMediaSession() } }
                 override fun onPlaybackParametersChanged(parameters: PlaybackParameters) { if(active()) syncMediaSession() }
@@ -3769,8 +3788,18 @@ class MainActivity: Activity() {
             main.post { if(!isDestroyed && foreground && screen=="player" && generation==ticket) preparePlaybackSession() }
         }
     }
+    /** 暂停标记独立于底部 HUD，遥控焦点继续留给原有按键与操作菜单。 */
+    private fun refreshTvPauseButton() {
+        val button=tvPauseButton ?: return
+        val p=player
+        val paused=screen=="player" && !phonePlayerLayout() && foreground && !playError &&
+            playbackReady && playbackFirstFrameRendered && !requestedAutoplay &&
+            p!=null && p.playbackState==Player.STATE_READY && !p.playWhenReady && episodePanel==null
+        button.visibility=if(paused) View.VISIBLE else View.GONE
+    }
     /** 横屏与竖屏一样用首帧、缓冲状态驱动加载提示，取到地址后仍等待视频画面。 */
     private fun refreshTvPlaybackLoading() {
+        refreshTvPauseButton()
         if(screen!="player" || phonePlayerLayout() || playError) return
         val p=player
         val loading=video==null || !playbackFirstFrameRendered || p==null ||
@@ -4123,7 +4152,7 @@ class MainActivity: Activity() {
         retryPosition=currentPosition().coerceAtLeast(0); retryAutoplay=requestedAutoplay && !sleepStopped
         saveProgress(); cancelRecovery(); cancelPrefetch()
         // 失败时默认先把按钮都藏起来，只留转圈；只有「自动重试彻底走不通」才把手动面板摆出来。
-        playError=true; player?.pause(); progressBar.visibility=View.GONE; hud.visibility=View.VISIBLE
+        playError=true; player?.pause(); refreshTvPauseButton(); progressBar.visibility=View.GONE; hud.visibility=View.VISIBLE
         controls.removeAllViews(); controls.visibility=View.GONE; recoverySpinner?.visibility=View.GONE; panel=true
         val incompatible=problem is UnplayableVideoException
         val decoding=problem is PlaybackException && problem.errorCode in 3000..4999
@@ -4301,6 +4330,7 @@ class MainActivity: Activity() {
         return if(playing) "暂停" else "播放"
     }
     private fun updatePlaybackText() {
+        refreshTvPauseButton()
         val tvMenu=tvPlaybackMenu?.takeIf { it.parent===controls }
         if(tvMenu!=null) {
             val danmakuOn=detail?.series?.id?.let { extras.danmakuEnabled(it,library.danmaku) }==true
@@ -5324,6 +5354,7 @@ class MainActivity: Activity() {
         danmakuView?.unbind()
     }
     private fun releasePlayer(preservePlaybackCache: Boolean=false) {
+        tvPauseButton?.visibility=View.GONE; tvPauseButton=null
         cancelRecovery()
         dropQueuedNext()
         if(!preservePlaybackCache) cancelPrefetch()

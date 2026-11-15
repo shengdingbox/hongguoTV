@@ -97,7 +97,7 @@ class PortraitDetail(
 
     private fun metadata(data: Detail) = listOf(
         data.series.tags,
-        if (data.episodes.isEmpty()) data.series.badge else "全 ${data.episodes.size} 集",
+        if (data.episodes.isEmpty()) (if (data.series.release != null) "待上线" else data.series.badge) else "全 ${data.episodes.size} 集",
         data.social.heatText.takeIf { it.isNotBlank() }?.let { "热度 $it" }.orEmpty(),
     ).filter { it.isNotBlank() }.joinToString(" · ")
 
@@ -244,6 +244,14 @@ class PortraitDetail(
             setLineSpacing(dp(3).toFloat(), 1f)
         }
         info.addView(metadataView, lp().apply { topMargin = dp(7) })
+        val releaseView = text("", 13f, PortraitStyle.accent).apply { setLineSpacing(dp(3).toFloat(), 1f) }
+        info.addView(releaseView, lp().apply { topMargin = dp(8) })
+        fun renderRelease(current: Detail) {
+            val schedule = current.series.release.takeIf { current.episodes.isEmpty() }
+            releaseView.text = schedule?.label.orEmpty()
+            releaseView.visibility = if (schedule != null) View.VISIBLE else View.GONE
+        }
+        renderRelease(data)
         hero.addView(info, lp(0, -2).apply { weight = 1f })
         content.addView(hero, lp())
 
@@ -382,7 +390,7 @@ class PortraitDetail(
             val totalPages = totalPages()
             val pager = PortraitUi.row(activity).apply { minimumHeight = dp(48) }
             pager.addView(text("选集", 17f).apply { setTypeface(null, Typeface.BOLD) }, lp(-2, -2))
-            val status = text(if (loadingSeasonId == null) "共 ${data.episodes.size} 集" else "正在切换…", 12f, PortraitStyle.muted)
+            val status = text(if (loadingSeasonId != null) "正在切换…" else if (data.episodes.isEmpty() && data.series.release != null) "待上线" else "共 ${data.episodes.size} 集", 12f, PortraitStyle.muted)
             episodeStatus = status
             pager.addView(status, lp(0, -2).apply {
                 weight = 1f
@@ -411,7 +419,8 @@ class PortraitDetail(
             }
             episodeHost.addView(pager, lp())
             if (data.episodes.isEmpty()) {
-                episodeHost.addView(PortraitUi.emptyHint(activity, "暂时没有可看的剧集"), lp())
+                episodeHost.addView(PortraitUi.emptyHint(activity,
+                    if (data.series.release != null) "上线后即可观看，可先收藏" else "暂时没有可看的剧集"), lp())
                 return
             }
             val pageStart = episodePage * pageSize
@@ -467,7 +476,7 @@ class PortraitDetail(
             }
             play.isEnabled = seasonId == null && data.episodes.isNotEmpty()
             play.alpha = if (play.isEnabled) 1f else .45f
-            episodeStatus?.text = if (seasonId == null) "共 ${data.episodes.size} 集" else "正在切换…"
+            episodeStatus?.text = if (seasonId != null) "正在切换…" else if (data.episodes.isEmpty() && data.series.release != null) "待上线" else "共 ${data.episodes.size} 集"
             updateSeasonSelection()
         }
         pageBinding = PageBinding(frame, scroll, { next ->
@@ -481,6 +490,7 @@ class PortraitDetail(
             heroTitle.text = next.series.title
             renderRating(next)
             metadataView.text = metadata(next)
+            renderRelease(next)
             synopsis.text = next.series.description.ifBlank { "暂无简介" }
             playText.text = playback.label
             play.contentDescription = playback.label

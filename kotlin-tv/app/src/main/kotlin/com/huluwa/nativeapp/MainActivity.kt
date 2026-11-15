@@ -3069,6 +3069,16 @@ class MainActivity: Activity() {
             }
         })
     }
+    /** 日历排期随 Series 存入收藏与导航现场，重开详情时也能展示。 */
+    private fun scheduledSeries(series: Series): Series? = phoneNewReleasePages.values.asSequence()
+        .flatMap { it.items.asSequence() }.firstOrNull { it.series.id==series.id && !it.online }?.series
+        ?: series.takeIf { it.release!=null }
+
+    private fun withReleaseSchedule(data: Detail, scheduled: Series?): Detail =
+        if(data.episodes.isEmpty() && data.series.release==null && scheduled?.release!=null)
+            data.copy(series=data.series.copy(badge=scheduled.badge,release=scheduled.release))
+        else data
+
     /**
      * @param preloaded 已经取到的详情，在进入详情页时复用，避免重复请求。
      */
@@ -3077,7 +3087,9 @@ class MainActivity: Activity() {
         pendingDetail=series; detailAutoplay=autoplay; pendingCloudResume=cloud
         invalidatePage(); releaseCatalogViews(); screen="detail"; directPlayback=resume; detail=null; synopsisExpanded=false; detailEpisodePage=-1
         val body=base(series.title); message(body,"正在加载剧集…")
-        val apply:(Detail)->Unit=loaded@{ result ->
+        val scheduled=scheduledSeries(series)
+        val apply:(Detail)->Unit=loaded@{ loaded ->
+            val result=withReleaseSchedule(loaded,scheduled)
             detail=result
             if(result.episodes.isEmpty()) {
                 pendingCloudResume=null; episodeIndex=0; group=0; directPlayback=false
@@ -3105,8 +3117,13 @@ class MainActivity: Activity() {
         }
         val cached=if(cloud==null) repository.cachedDetail(series.id) else null
         if(preloaded!=null) apply(preloaded)
+        else if(cached?.episodes?.isNotEmpty()==true) apply(cached)
+        else if(scheduled?.release?.isPending()==true) apply(Detail(scheduled,emptyList()))
         else if(cached!=null) apply(cached)
-        else work({ repository.seriesDetail(series.id) }, apply, { problem -> error(body,problem) { openDetail(series,resume,detailAutoplay,cloud) } })
+        else work({ repository.seriesDetail(series.id) }, apply, { problem ->
+            if(scheduled!=null) apply(Detail(scheduled,emptyList()))
+            else error(body,problem) { openDetail(series,resume,detailAutoplay,cloud) }
+        })
     }
     private fun cancelDetailExtras() {
         detailExtrasScope?.cancel(); detailExtrasScope=null
@@ -3116,7 +3133,7 @@ class MainActivity: Activity() {
     /** 主内容显示后再补辅助区域；独立于 work，不会取消主详情或播放预热。 */
     fun loadDetailExtras(data: Detail, render: (Detail)->Unit = {}) {
         cancelDetailExtras()
-        if(!repository.needsDetailExtras(data.series.id)) return
+        if((data.episodes.isEmpty() && data.series.release!=null) || !repository.needsDetailExtras(data.series.id)) return
         val ticket=generation
         val scope=RequestScope(); detailExtrasScope=scope
         detailExtrasJob=io.submit {
@@ -3202,10 +3219,13 @@ class MainActivity: Activity() {
         loadCover(image,data.series.cover)
         val info=column(); hero.addView(info,lp(0,-2).apply { weight=1f })
         info.addView(text(data.series.title,if(compact) 22f else 26f).apply { setTypeface(null,Typeface.BOLD); maxLines=2; ellipsize=TextUtils.TruncateAt.END })
-        val episodeLabel=if(hasEpisodes) "${data.episodes.size} 集" else data.series.badge
+        val episodeLabel=if(hasEpisodes) "${data.episodes.size} 集" else if(data.series.release!=null) "待上线" else data.series.badge
         val metadata=listOf(episodeLabel,data.series.tags,library.progress(data.series.id)?.let { "看到第 ${it.episodeIndex+1} 集" }.orEmpty())
             .filter { it.isNotBlank() }.joinToString("  ·  ")
         info.addView(text(metadata,13f,muted).apply { maxLines=1; setPadding(0,dp(8),0,dp(8)) })
+        data.series.release?.takeIf { !hasEpisodes }?.let { schedule ->
+            info.addView(text(schedule.label,15f,accent).apply { setPadding(0,0,0,dp(8)) })
+        }
         // 主详情先展示热度与收藏，网页评分异步补齐后原位更新。
         val metricsView=TextView(this).apply {
             textSize=13f; setTextColor(muted); includeFontPadding=false
@@ -3268,7 +3288,7 @@ class MainActivity: Activity() {
         // 与参考 TV 详情页一致，季条和选集独立占满内容宽度。
         val seasonHost=column()
         content.addView(seasonHost)
-        if(!hasEpisodes) info.addView(text("暂时没有可看的剧集",15f,muted).apply { setPadding(0,dp(12),0,0) })
+        if(!hasEpisodes) info.addView(text(if(data.series.release!=null) "上线后即可观看，可先收藏" else "暂时没有可看的剧集",15f,muted).apply { setPadding(0,dp(12),0,0) })
         val seasonButtons=mutableListOf<TextView>()
         fun renderSeasons(current: Detail) {
             seasonHost.removeAllViews(); seasonButtons.clear()
@@ -6458,7 +6478,9 @@ class MainActivity: Activity() {
         markPageShown()
         root.removeAllViews()
         portraitDetail.renderState(root,"正在加载剧集…")
-        val apply: (Detail) -> Unit = { result ->
+        val scheduled=scheduledSeries(series)
+        val apply: (Detail) -> Unit = { loaded ->
+            val result=withReleaseSchedule(loaded,scheduled)
             // done lambda 同样是非内联的，不能 return：用 if/else 表达「已转回横屏就交给 TV 版」
             if(!phoneLayout()) {
                 openDetail(series,resume,preloaded=result)
@@ -6495,14 +6517,13 @@ class MainActivity: Activity() {
                 }
             }
         }
-        val upcoming=phoneNewReleasePages.values.asSequence().flatMap { it.items.asSequence() }
-            .firstOrNull { it.series.id==series.id && !it.online &&
-                (it.publishAt<=0 || it.publishAt>System.currentTimeMillis()/1000) }
-        // 预告作品尚无播放详情，用日历返回的海报、简介和上线文案展示，可照常收藏。
-        if(upcoming!=null) { apply(Detail(upcoming.series,emptyList())); return }
-        repository.cachedDetail(series.id)?.let(apply) ?: work({ repository.seriesDetail(series.id) }, apply, { problem ->
-            // 失败回调是普通的非内联 lambda，里面不能写裸 return
-            if(phoneLayout()) {
+        val cached=repository.cachedDetail(series.id)
+        if(cached?.episodes?.isNotEmpty()==true) { apply(cached); return }
+        // 预计时间到达后重新取分集；只有日期、尚未定档或取详情失败时仍保留排期。
+        if(scheduled?.release?.isPending()==true) { apply(Detail(scheduled,emptyList())); return }
+        cached?.let(apply) ?: work({ repository.seriesDetail(series.id) }, apply, { problem ->
+            if(scheduled!=null) apply(Detail(scheduled,emptyList()))
+            else if(phoneLayout()) {
                 portraitDetail.renderState(root,problem.message ?: "加载失败") { openDetailPhone(series,resume) }
             }
         })
@@ -6521,7 +6542,9 @@ class MainActivity: Activity() {
         generation++; cancelWork(); cancelDetailExtras()
         pendingDetail = series
         portraitDetail.setSeasonLoading(root, series.id)
-        val apply: (Detail) -> Unit = { result ->
+        val scheduled = scheduledSeries(series)
+        val apply: (Detail) -> Unit = { loaded ->
+            val result = withReleaseSchedule(loaded, scheduled)
             if (!phoneLayout()) {
                 openDetail(series, preloaded = result)
             } else if (screen == "detail" && phoneTab == "detail") {
@@ -6537,8 +6560,12 @@ class MainActivity: Activity() {
                 if (result.episodes.isNotEmpty()) prefetchDetailWindow(episodeIndex)
             }
         }
-        repository.cachedDetail(series.id)?.let(apply) ?: work({ repository.seriesDetail(series.id) }, apply, {
-            if (phoneLayout() && screen == "detail" && phoneTab == "detail") {
+        val cached = repository.cachedDetail(series.id)
+        if (cached?.episodes?.isNotEmpty() == true) { apply(cached); return }
+        if (scheduled?.release?.isPending() == true) { apply(Detail(scheduled, emptyList())); return }
+        cached?.let(apply) ?: work({ repository.seriesDetail(series.id) }, apply, {
+            if (scheduled != null) apply(Detail(scheduled, emptyList()))
+            else if (phoneLayout() && screen == "detail" && phoneTab == "detail") {
                 pendingDetail = previous.series
                 portraitDetail.setSeasonLoading(root, null)
                 PhoneUi.toast(this, "切换失败，请重试")

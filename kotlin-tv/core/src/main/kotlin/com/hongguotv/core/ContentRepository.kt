@@ -22,9 +22,9 @@ import java.util.concurrent.TimeUnit
 internal fun JSONArray.objects() = (0 until length()).mapNotNull { optJSONObject(it) }
 internal fun JSONObject.str(key: String) = if (isNull(key)) "" else optString(key, "").trim()
 internal fun cleanUrl(s: String) = s.replace("\\/","/").replace("\\u002F","/",ignoreCase=true).replace("\\u0026","&").replace("&amp;","&")
-data class Series(val id: String, val title: String, val cover: String = "", val description: String = "", val badge: String = "", val tags: String = "") {
-    fun toJson() = JSONObject().put("id",id).put("title",title).put("cover",cover).put("description",description).put("badge",badge).put("tags",tags)
-    companion object { fun fromJson(o: JSONObject) = Series(o.str("id"),seriesTitle(o.str("title")),o.str("cover"),o.str("description"),o.str("badge"),o.str("tags")) }
+data class Series(val id: String, val title: String, val cover: String = "", val description: String = "", val badge: String = "", val tags: String = "", val release: ReleaseSchedule? = null) {
+    fun toJson() = JSONObject().put("id",id).put("title",title).put("cover",cover).put("description",description).put("badge",badge).put("tags",tags).put("release",release?.toJson())
+    companion object { fun fromJson(o: JSONObject) = Series(o.str("id"),seriesTitle(o.str("title")),o.str("cover"),o.str("description"),o.str("badge"),o.str("tags"),o.optJSONObject("release")?.let { ReleaseSchedule.fromJson(it) }) }
 }
 /** 详情页附带的社交数据，缺失时各字段保持默认空值，调用方按需隐藏。 */
 data class SeriesSocial(val rating: Double = 0.0, val ratingCount: String = "", val favoriteText: String = "", val heatText: String = "") {
@@ -669,7 +669,11 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             row.optInt("vid_index", Int.MAX_VALUE) to vid
         }.sortedBy { it.first }.map { it.second }
         if (episodes.distinct().size != episodes.size) throw IOException("分集数据异常")
-        return SeriesPayload(series, episodes, detailSocial(v))
+        val schedule = if (episodes.isEmpty() && (v.optLong("schedule_publish_time") > 0 ||
+            v.optLong("expected_publish_time") > 0 || (v.has("is_online") && !v.optBoolean("is_online", true))))
+            ReleaseSchedule.fromItem(v) else null
+        return SeriesPayload(if (schedule != null) series.copy(badge = schedule.label, release = schedule) else series,
+            episodes, detailSocial(v))
     }
 
     /**

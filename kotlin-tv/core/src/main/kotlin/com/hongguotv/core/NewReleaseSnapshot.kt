@@ -36,7 +36,7 @@ object NewReleaseSnapshot {
             val row = rows.getJSONObject(index)
             val series = Series.fromJson(row.getJSONObject("series"))
             require(series.id.matches(Regex("[0-9]{1,30}")) && series.title.isNotBlank())
-            NewRelease(series, row.getBoolean("online"), row.getString("note"), row.getLong("publishAt"))
+            NewRelease(series, row.getBoolean("online"), row.getString("note"), row.getLong("publishAt")).withSchedule(date)
         }.distinctBy { it.series.id }
         CachedNewReleases(NewReleasePage(date, dates.distinct(), items, null), savedAt)
     }.getOrNull()

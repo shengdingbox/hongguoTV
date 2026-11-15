@@ -10,7 +10,13 @@ import java.util.TimeZone
 
 /** 上新日历的游标只能用于其所属日期，偏移量和会话均由服务端下发。 */
 data class NewReleaseCursor(val date: String, val offset: Int, val sessionId: String)
-data class NewRelease(val series: Series, val online: Boolean, val note: String, val publishAt: Long)
+data class NewRelease(val series: Series, val online: Boolean, val note: String, val publishAt: Long) {
+    /** 旧日历缓存也在读取时补齐排期，收藏后继续保留。 */
+    fun withSchedule(date: String): NewRelease {
+        val schedule = if (online) null else ReleaseSchedule(ReleaseSchedule.millis(publishAt), date, note)
+        return copy(series = series.copy(badge = schedule?.label ?: series.badge, release = schedule))
+    }
+}
 data class NewReleasePage(
     val date: String,
     val dates: List<String>,
@@ -64,7 +70,7 @@ internal object NewReleaseParser {
             val series = Series(id, title, cleanUrl(row?.str("cover") ?: item.str("cover")),
                 row?.str("video_desc") ?: item.str("item_desc"), badge, tags)
             NewRelease(series, online, note, item.optLong("schedule_publish_time", 0).takeIf { it > 0 }
-                ?: item.optLong("expected_publish_time", 0))
+                ?: item.optLong("expected_publish_time", 0)).withSchedule(date)
         }.distinctBy { it.series.id }
         val offset = data.optInt("next_offset", 0)
         val cursor = if (data.optBoolean("has_more", false) && items.isNotEmpty() &&

@@ -429,10 +429,8 @@ class CloudAccountClient(private val http: OkHttpClient, private val signer: Rem
                                 .ifBlank { video.str("cover") }
                                 .ifBlank { video.str("cover_url") }
                                 .ifBlank { video.str("thumb_url") }
-                        val stamp =
-                            row.optLong("schedule_publish_time").coerceAtLeast(0).let {
-                                if (it in 1..9999999999L) it * 1000 else it
-                            }
+                        val schedule = ReleaseSchedule.fromItem(row)
+                        val stamp = schedule.publishAt
                         val series =
                             Series(
                                 id,
@@ -446,8 +444,9 @@ class CloudAccountClient(private val http: OkHttpClient, private val signer: Rem
                                     episodeBadge(video)
                                         .ifBlank { episodeBadge(row) }
                                         .ifBlank { "已上线" }
-                                else "待上线",
+                                else schedule.label,
                                 video.str("category"),
+                                if (online) null else schedule,
                             )
                         CloudReservation(series, online, stamp, row.str("expected_rec_text"))
                     }

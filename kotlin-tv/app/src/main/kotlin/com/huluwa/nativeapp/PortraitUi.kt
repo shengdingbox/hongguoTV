@@ -200,7 +200,7 @@ object PortraitUi {
             override fun areItemsTheSame(before: Cell, after: Cell) = before.series?.id == after.series?.id
             override fun areContentsTheSame(before: Cell, after: Cell): Boolean {
                 val a = before.series; val b = after.series
-                return a?.title == b?.title && a?.badge == b?.badge && a?.cover == b?.cover &&
+                return a?.title == b?.title && a?.badge == b?.badge && a?.cover == b?.cover && a?.release == b?.release &&
                     before.favorite == after.favorite && before.rank == after.rank && before.finished == after.finished
             }
         })
@@ -286,7 +286,8 @@ object PortraitUi {
             holder.seriesId = item.id
             card.title.text = item.title
             card.badge.text = item.badge
-            card.contentDescription = item.title
+            card.badge.maxLines = if (item.release != null) 2 else 1
+            card.contentDescription = listOf(item.title, item.release?.label.orEmpty()).filter { it.isNotBlank() }.joinToString("，")
             card.saved.visibility = if (cell.favorite) View.VISIBLE else View.GONE
             card.rank.visibility = if (ranked) View.VISIBLE else View.GONE
             if (ranked) {

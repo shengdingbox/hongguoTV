@@ -12,15 +12,22 @@ import com.hongguotv.core.DanmakuLoader
 import com.hongguotv.core.DanmakuPrefs
 
 /**
- * Lightweight rolling-comment overlay. The playback position is the clock: a comment enters
- * from the right edge when playback crosses its anchor and drifts left at a fixed speed, so
- * pausing, seeking and playback-speed changes need no extra handling. Comments are assigned
+ * Lightweight rolling-comment overlay. Playback advances a continuous animation clock: a
+ * comment enters when playback crosses its anchor and drifts left at a fixed speed. Episode
+ * transitions retain visible comments until they leave the screen; pauses and speed changes
+ * still follow playback. Comments are assigned
  * to the first track whose previous comment has fully entered; when every track is busy the
  * comment is dropped, matching common danmaku behavior. Identical rendered text appears
  * only once on screen, even when the source supplies distinct comment IDs or emoji codes.
  */
 class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_000L) : View(context) {
-    private data class Active(val danmaku: Danmaku, val text: String, val width: Float, val track: Int)
+    private data class Active(
+        val startMs: Long,
+        val text: String,
+        val width: Float,
+        val track: Int,
+        val carriedOver: Boolean = false,
+    )
 
     private val active = ArrayList<Active>()
     var loader: DanmakuLoader? = null
@@ -29,6 +36,9 @@ class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_0
     private var needMore: (Long) -> Unit = {}
     private var lastPumpAt = 0L
     private var lastEmit = -1L
+    // 连续动画坐标独立于逐集播放坐标，下一集从零开始时屏上弹幕不会倒退。
+    private var animationPositionMs = 0L
+    private var episodeTransitionPending = false
     private var running = false
     private var dirty = false
     private var pxPerMs = 0f
@@ -84,13 +94,15 @@ class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_0
      * a second while playback advances — the host should schedule [DanmakuLoader.loadUpTo] off-thread.
      */
     fun bind(loader: DanmakuLoader, position: () -> Long, needMore: (Long) -> Unit = {}) {
-        unbind()
+        unbind(preserveActive = episodeTransitionPending)
+        episodeTransitionPending = false
         this.loader = loader
         positionProvider = position
         this.needMore = needMore
         lastEmit = position().coerceAtLeast(0)
         lastPumpAt = 0L
         running = true
+        dirty = true
         visibility = VISIBLE
         postOnAnimation(frame)
     }
@@ -102,19 +114,28 @@ class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_0
         invalidate()
     }
 
-    fun unbind() {
+    /** 切集时只停止旧集弹幕供给，冻结屏上位置，等新集绑定后继续滚完。 */
+    fun unbind(preserveActive: Boolean = false) {
         running = false
         removeCallbacks(frame)
         loader = null
         needMore = {}
-        active.clear()
+        episodeTransitionPending = preserveActive
+        if (preserveActive) {
+            active.removeAll { x(it) + it.width < 0 }
+            for (index in active.indices) active[index] = active[index].copy(carriedOver = true)
+        } else {
+            active.clear()
+            animationPositionMs = 0L
+            visibility = GONE
+        }
         lastEmit = -1L
-        visibility = GONE
     }
 
-    /** Playback jumped; comments on screen belong to the old position. */
+    /** Playback jumped; only this episode's comments belong to the old position. */
     fun seekTo(positionMs: Long) {
-        active.clear()
+        // 下一集跳片头或定位进度时，上集已经显示的弹幕仍应完整播完。
+        active.removeAll { !it.carriedOver }
         lastEmit = positionMs.coerceAtLeast(0)
         dirty = true
         invalidate()
@@ -135,7 +156,7 @@ class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_0
         }
     }
 
-    private fun x(item: Active, position: Long) = width - (position - item.danmaku.offsetMs) * pxPerMs
+    private fun x(item: Active) = width - (animationPositionMs - item.startMs) * pxPerMs
 
     private fun step() {
         val loader = loader ?: return
@@ -143,12 +164,11 @@ class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_0
         val position = positionProvider().coerceAtLeast(0)
         if (lastEmit < 0) lastEmit = position
         if (position < lastEmit - SEEK_TOLERANCE_MS || position - lastEmit > SEEK_FORWARD_MS) {
-            active.clear()
-            lastEmit = position
-            dirty = true
+            seekTo(position)
         }
+        if (position > lastEmit) animationPositionMs += position - lastEmit
         // Release expired comments before checking duplicate text and available tracks.
-        if (active.removeAll { x(it, position) + it.width < 0 }) dirty = true
+        if (active.removeAll { x(it) + it.width < 0 }) dirty = true
         if (position > lastEmit) {
             for (comment in loader.between(lastEmit, position)) emit(comment, position)
             lastEmit = position
@@ -176,8 +196,9 @@ class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_0
         val widthF = width.toFloat()
         for (track in 0 until tracks) {
             val last = active.lastOrNull { it.track == track }
-            if (last == null || x(last, position) + last.width < widthF - gapPx) {
-                active.add(Active(comment, text, textWidth, track))
+            if (last == null || x(last) + last.width < widthF - gapPx) {
+                val startMs = animationPositionMs - (position - comment.offsetMs)
+                active.add(Active(startMs, text, textWidth, track))
                 return
             }
         }
@@ -187,10 +208,9 @@ class DanmakuView(context: Context, textSizeSp: Float = 20f, crossMs: Long = 9_0
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (active.isEmpty()) return
-        val position = positionProvider().coerceAtLeast(0)
         val widthF = width.toFloat()
         for (item in active) {
-            val x = x(item, position)
+            val x = x(item)
             if (x > widthF || x + item.width < 0) continue
             canvas.drawText(item.text, x, item.track * trackHeight + paint.textSize, paint)
         }

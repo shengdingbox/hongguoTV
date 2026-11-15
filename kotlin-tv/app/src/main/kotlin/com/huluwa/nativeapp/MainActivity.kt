@@ -3470,7 +3470,8 @@ class MainActivity: Activity() {
         val restarting=screen=="player" && selectedIndex==episodeIndex
         val retrying=recovering || playError
         val prefetched=if(!retrying) playbackCache.peek(data.episodes[selectedIndex],effectiveQuality()) else null
-        saveProgress(); library.flush(); invalidatePage(); favoriteMonitor.stop(); releaseCatalogViews(); stopDanmaku()
+        saveProgress(); library.flush(); invalidatePage(); favoriteMonitor.stop(); releaseCatalogViews()
+        stopDanmaku(preserveActive=reuse && selectedIndex==episodeIndex+1)
         if(reuse) {
             playerListener?.let { player?.removeListener(it) }; playerListener=null
             cancelRecovery(); dropQueuedNext(); tvTools.close()
@@ -3715,8 +3716,8 @@ class MainActivity: Activity() {
                     episodeIndex=queuedIndex.coerceIn(0,data.episodes.lastIndex); group=episodeIndex/20
                     video=nextVideo; playerVideo=nextVideo; quality=nextVideo?.info?.quality.orEmpty()
                     queuedNextId=""; queuedIndex=-1; queuedVideo=null; queuedFromIndex=-1; queuedFromDuration=0
+                    stopDanmaku(preserveActive=true)
                     if(p.currentMediaItemIndex>0) runCatching { p.removeMediaItem(0) }
-                    stopDanmaku()
                     // 为新一集重置所有逐集状态；解码器与播放器实例保持不变。
                     firstReady=true; firstFrame=true; rebufferStart=0; episodeStartedAt=android.os.SystemClock.elapsedRealtime(); videoPrepareStartedAt=episodeStartedAt; readySince=0
                     playbackReady=false; playError=false; incompatibleSkips=0
@@ -3773,7 +3774,14 @@ class MainActivity: Activity() {
                 }
                 override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(playing) maybePrefetch(); if(hud.visibility==View.VISIBLE) showHud(); syncMediaSession() } }
                 override fun onPlaybackParametersChanged(parameters: PlaybackParameters) { if(active()) syncMediaSession() }
-                override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,newPosition: Player.PositionInfo,reason: Int) { if(active()) { syncMediaSession(); danmakuView?.seekTo(newPosition.positionMs) } }
+                override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,newPosition: Player.PositionInfo,reason: Int) {
+                    if(!active()) return
+                    syncMediaSession()
+                    // 自动切集的进度回调先于媒体交接，必须先保留屏上弹幕，不能按普通跳转清空。
+                    if(reason==Player.DISCONTINUITY_REASON_AUTO_TRANSITION && oldPosition.mediaItem?.mediaId!=newPosition.mediaItem?.mediaId) {
+                        stopDanmaku(preserveActive=true)
+                    } else danmakuView?.seekTo(newPosition.positionMs)
+                }
                 override fun onPlayerError(error: PlaybackException) { if(active()) playerFailure(error) }
             }
             playerListener=listener; p.addListener(listener)
@@ -5360,9 +5368,9 @@ class MainActivity: Activity() {
         updatePlaybackText()
         Toast.makeText(this,"已为《${detail?.series?.title.orEmpty()}》${if(on) "开启" else "关闭"}弹幕",Toast.LENGTH_SHORT).show()
     }
-    private fun stopDanmaku() {
+    private fun stopDanmaku(preserveActive: Boolean=false) {
         danmakuLoader=null
-        danmakuView?.unbind()
+        danmakuView?.unbind(preserveActive)
     }
     private fun releasePlayer(preservePlaybackCache: Boolean=false) {
         tvPauseButton?.visibility=View.GONE; tvPauseButton=null

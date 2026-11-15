@@ -6327,8 +6327,7 @@ class MainActivity: Activity() {
         val previousHasMore=sameQuery && (if(phoneCatalogSource=="search") hasMore else retained?.state?.hasMore==true)
         if(!sameQuery) {
             pendingPhoneScrolls.remove("search"); phoneSessionPositions["search"]=0; phoneScrollY=0
-            retained?.frame?.let { root.removeView(it) }
-            retainedPhoneCatalogs.remove("search")
+            retained?.scroll?.restorePosition(0)
             phoneSearchPage=1
         }
         // 相同搜索词的刷新沿用视图与结果，加载和失败期间都保留已有封面。
@@ -6375,7 +6374,7 @@ class MainActivity: Activity() {
     fun clearPortraitSearch() {
         if(!PortraitUi.shouldUse(this) || phoneTab!="search") return
         cancelWork(); loadingMore=false
-        retainedPhoneCatalogs.remove("search")?.frame?.let { root.removeView(it) }
+        retainedPhoneCatalogs["search"]?.scroll?.restorePosition(0)
         pendingPhoneScrolls.remove("search"); phoneSessionPositions["search"]=0
         phoneQuery=""; phoneSearchDraft=""; phoneSearchError=""; phoneSearching=false; phoneScrollY=0
         catalog=emptyList(); hasMore=false

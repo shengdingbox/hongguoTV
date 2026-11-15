@@ -428,11 +428,13 @@ class PortraitPages(
 
     fun search(page: PortraitListPage, submit: (String) -> Unit): (Boolean) -> Unit {
         val body=column(); page.addBlock(body)
-        val query = activity.phoneQueryText
-        body.addView(PortraitUi.pageTitle(activity, if (query.isBlank()) "热搜" else "“$query”"), lp())
+        var query = activity.phoneQueryText
+        val title = PortraitUi.pageTitle(activity, if (query.isBlank()) "热搜" else "“$query”")
+        body.addView(title, lp())
         val suggestions = column()
         val handler = Handler(Looper.getMainLooper())
         var pending: Runnable? = null
+        var updatingInput = false
         val input = EditText(activity).apply {
             hint = "搜索${activity.phoneLibrary.contentType.label}"
             textSize = 15f
@@ -467,6 +469,22 @@ class PortraitPages(
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }, lp(dp(40), dp(44)))
         bar.addView(input, lp(0, dp(44)).apply { weight = 1f })
+        val clear = ImageView(activity).apply {
+            setImageResource(R.drawable.ic_search_clear)
+            setColorFilter(PortraitStyle.muted)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 22)
+            contentDescription = "清空搜索内容"
+            isFocusable = true
+            visibility = if (input.text.isEmpty()) View.INVISIBLE else View.VISIBLE
+            setOnClickListener {
+                input.text.clear()
+                input.requestFocus()
+                (activity.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                    .showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
+        bar.addView(clear, lp(dp(44), dp(44)))
         input.contentDescription = input.hint
         input.setOnEditorActionListener { _, action, event ->
             if (action == EditorInfo.IME_ACTION_SEARCH ||
@@ -480,6 +498,8 @@ class PortraitPages(
         input.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                clear.visibility = if (s.isNullOrEmpty()) View.INVISIBLE else View.VISIBLE
+                if (updatingInput) return
                 pending?.let { handler.removeCallbacks(it) }
                 pending = null
                 activity.cancelSearchSuggestions()
@@ -516,37 +536,50 @@ class PortraitPages(
         })
         val results=column()
         body.addView(results,lp())
-        // 数据、加载状态和错误各自更新，刷新或补封面时保留现有网格及 ImageView。
-        if(query.isNotBlank()) {
-            val errorBody=column()
-            results.addView(errorBody,lp())
-            val empty=PortraitUi.emptyHint(activity,"")
-            results.addView(empty,lp())
-            val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },
-                { activity.loadMorePhone() })
-            page.addGrid(adapter)
-            var shownError=""
-            return { _ ->
-                val items=activity.catalog
-                val error=activity.phoneSearchErrorPhone
-                if(shownError!=error) {
-                    shownError=error
-                    errorBody.removeAllViews()
-                    if(error.isNotBlank()) errorBody.addView(PortraitUi.messageBlock(activity,error) { submit(query) },lp())
-                }
-                empty.text=if(activity.phoneSearchActive) "正在搜索…"
-                    else "没有找到“$query”相关的${activity.phoneLibrary.contentType.label}，换个词试试"
-                empty.visibility=if(items.isEmpty() && error.isBlank()) View.VISIBLE else View.GONE
-                adapter.submitItems(items,activity.hasMore && !activity.phoneSearchActive && error.isBlank())
-            }
-        }
-        val updateHotSearch=renderHotSearch(page,results,::search)
+        val errorBody=column()
+        results.addView(errorBody,lp())
+        val empty=PortraitUi.emptyHint(activity,"")
+        results.addView(empty,lp())
+        val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },
+            { activity.loadMorePhone() })
+        page.addGrid(adapter)
+        val hotBody=column()
+        page.addBlock(hotBody)
+        val updateHotSearch=renderHotSearch(page,hotBody,::search)
         val historyBody=column()
         page.addBlock(historyBody)
+        var shownError=""
         var shownHistory: List<String>?=null
+        // 搜索与热搜共用原输入框，清空时只切换下方内容，避免焦点与输入法连接丢失。
         return { _ ->
-            updateHotSearch()
-            val history=activity.phoneLibrary.searches().take(12).map { it.query }
+            query=activity.phoneQueryText
+            title.text=if(query.isBlank()) "热搜" else "“$query”"
+            val draft=activity.phoneSearchDraft
+            if(input.text.toString()!=draft) {
+                updatingInput=true
+                try {
+                    input.setText(draft)
+                    input.setSelection(input.text.length)
+                } finally {
+                    updatingInput=false
+                }
+            }
+            val searching=query.isNotBlank()
+            results.visibility=if(searching) View.VISIBLE else View.GONE
+            val items=if(searching) activity.catalog else emptyList()
+            val error=if(searching) activity.phoneSearchErrorPhone else ""
+            if(shownError!=error) {
+                shownError=error
+                errorBody.removeAllViews()
+                if(error.isNotBlank()) errorBody.addView(PortraitUi.messageBlock(activity,error) { submit(query) },lp())
+            }
+            empty.text=if(activity.phoneSearchActive) "正在搜索…"
+                else "没有找到“$query”相关的${activity.phoneLibrary.contentType.label}，换个词试试"
+            empty.visibility=if(items.isEmpty() && error.isBlank()) View.VISIBLE else View.GONE
+            adapter.submitItems(items,searching && activity.hasMore && !activity.phoneSearchActive && error.isBlank())
+            updateHotSearch(!searching)
+            historyBody.visibility=if(searching) View.GONE else View.VISIBLE
+            val history=if(searching) emptyList() else activity.phoneLibrary.searches().take(12).map { it.query }
             if(shownHistory!=history) {
                 shownHistory=history
                 historyBody.removeAllViews()
@@ -565,7 +598,7 @@ class PortraitPages(
     }
 
     /** 缓存首帧、联网刷新及切榜共用网格，只提交剧集差异。 */
-    private fun renderHotSearch(page: PortraitListPage,body: LinearLayout,search: (String)->Unit): ()->Unit {
+    private fun renderHotSearch(page: PortraitListPage,body: LinearLayout,search: (String)->Unit): (Boolean)->Unit {
         val loading=PortraitUi.emptyHint(activity,"正在加载热搜…")
         body.addView(loading,lp())
         val errorBody=column()
@@ -593,10 +626,12 @@ class PortraitPages(
         var shownSelected=""
         var shownTopics: List<HotSearchTopic>?=null
         var shownError=""
-        return {
-            val hot=activity.hotSearchPhone
-            loading.visibility=if(activity.hotSearchLoadingPhone && hot==null) View.VISIBLE else View.GONE
-            val error=activity.hotSearchErrorPhone
+        return { visible ->
+            body.visibility=if(visible) View.VISIBLE else View.GONE
+            topics.visibility=if(visible) View.VISIBLE else View.GONE
+            val hot=activity.hotSearchPhone.takeIf { visible }
+            loading.visibility=if(visible && activity.hotSearchLoadingPhone && hot==null) View.VISIBLE else View.GONE
+            val error=if(visible) activity.hotSearchErrorPhone else ""
             if(shownError!=error) {
                 shownError=error
                 errorBody.removeAllViews()

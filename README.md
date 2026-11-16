@@ -56,11 +56,11 @@ adb install -r APK文件路径
 
 ## 签名模式
 
-默认通过飞牛 frpc 映射使用 Android 红果签名服务 `http://123.57.172.104:8901`，搜索、详情、播放、弹幕与账号请求共享该 App 的设备身份。电视和手机均可在设置中一键切换「原生算法模式」：开启后使用本机算法和原有匿名设备，关闭后恢复 Android 签名服务。开关会保存，切换后立即生效；收藏和观看记录保留。Android 服务暂不可达时，可手动开启原生算法模式。
+默认使用**本地算法**，在设备上完成请求签名并复用本机匿名设备身份。电视和手机均可在「设置 → 算法模式」中打开选择弹框，选择「本地算法」或「远程算法」。选择会保存并立即生效，收藏和观看记录保留。设置页仅展示算法名称。
 
-Android 模式使用服务的 `/info.deviceProfile` 获取设备参数，并通过 `/sign` 获取签名；POST 请求体以 `body_base64` 原样提交，签名服务需声明 `supportsBodySigning=true`。播放优先使用 `video_tab` GET 接口，沿用现有 CENC 媒体处理。
+远程算法模式使用服务的 `/info.deviceProfile` 获取设备参数，并通过 `/sign` 获取签名；POST 请求体以 `body_base64` 原样提交，签名服务需声明 `supportsBodySigning=true`。播放优先使用 `video_tab` GET 接口，沿用现有 CENC 媒体处理。
 
-原生算法模式的播放已接入 V5 协议：优先调用 `/novel/player/multi_video_model/player/v1`，本机对 gzip 请求体生成 Helios / Medusa 签名，直接解析当前集的多档视频地址与内容密钥。正式播放、预取和离线缓存共用新取址链路，继续使用现有 Media3 播放器和 CENC 媒体解密。
+本地算法模式的播放已接入 V5 协议：优先调用 `/novel/player/multi_video_model/player/v1`，本机对 gzip 请求体生成 Helios / Medusa 签名，直接解析当前集的多档视频地址与内容密钥。正式播放、预取和离线缓存共用新取址链路，继续使用现有 Media3 播放器和 CENC 媒体解密。
 
 ## 常用操作
 

@@ -26,7 +26,7 @@ class FridaSigner(
     private val clock: () -> Long = System::currentTimeMillis,
 ) : RemoteSigner(http = transport) {
     companion object {
-        const val DEFAULT_ENDPOINT = "http://123.57.172.104:8901"
+        private const val DEFAULT_ENDPOINT = "http://123.57.172.104:8901"
         private val SIGNATURE_HEADERS = setOf(
             "x-gorgon", "x-khronos", "x-argus", "x-ladon", "x-medusa", "x-helios",
         )
@@ -144,11 +144,11 @@ class FridaSigner(
             }
         } catch (problem: InterruptedIOException) {
             if (Thread.currentThread().isInterrupted || RequestScope.current()?.isCancelled == true) throw problem
-            throw SignatureException("Android 签名服务连接超时，可在设置中开启原生算法模式", problem)
+            throw SignatureException("远程算法连接超时，可在设置中选择本地算法", problem)
         } catch (problem: SignatureException) {
             throw problem
         } catch (problem: IOException) {
-            throw SignatureException("无法连接 Android 签名服务，可在设置中开启原生算法模式", problem)
+            throw SignatureException("无法连接远程算法服务，可在设置中选择本地算法", problem)
         }
     }
 }

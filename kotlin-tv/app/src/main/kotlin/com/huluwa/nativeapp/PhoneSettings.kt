@@ -267,11 +267,10 @@ class PhoneSettings(private val activity: MainActivity) {
     }
 
     private fun signingSection(parent: LinearLayout) {
-        section(parent, "签名模式", "开启后在本机计算签名；关闭时使用 Android 红果签名服务，切换后立即生效。") { group ->
-            addRow(group, toggleRow("原生算法模式", { activity.phoneNativeSigning }) {
-                activity.setNativeSigningMode(!activity.phoneNativeSigning)
+        section(parent, "算法模式", "默认使用本地算法，选择后立即生效。") { group ->
+            addRow(group, row("算法模式", activity.phoneSigningModeLabel, { activity.phoneSigningModeLabel }) {
+                activity.phoneSigningModePicker()
             })
-            addRow(group, row("Android 签名服务", com.hongguotv.core.FridaSigner.DEFAULT_ENDPOINT))
         }
     }
 

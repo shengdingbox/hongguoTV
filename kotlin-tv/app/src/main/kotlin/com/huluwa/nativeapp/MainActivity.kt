@@ -89,7 +89,7 @@ class MainActivity: Activity() {
     private var suggestScope: RequestScope?=null
     private var searchArtworkJob: java.util.concurrent.Future<*>?=null
     private var searchArtworkScope: RequestScope?=null
-    // 默认使用 Android 红果签名；开启原生算法模式后复用本机持久化的匿名设备档案。
+    // 默认使用本地算法，复用本机持久化的匿名设备档案；也可在设置中选择远程算法。
     // 注意：这些必须用 by lazy。Activity 的字段初始化器在构造阶段执行，
     // 那时 attachBaseContext 还没跑，this 作为 Context 是空的，
     // 直接 getSharedPreferences 会 NPE 导致启动即闪退。
@@ -2306,12 +2306,10 @@ class MainActivity: Activity() {
         }
 
         heading(playback,"播放与观看",categories[0].second)
-        setting(playback,"原生算法模式  ·  ${if(SigningSettings.nativeAlgorithms) "开启" else "关闭"}") {
-            setNativeSigningMode(!SigningSettings.nativeAlgorithms)
+        lateinit var signingModeButton: TextView
+        signingModeButton=setting(playback,"算法模式  ·  ${SigningSettings.algorithmLabel}") {
+            showSigningModePicker(signingModeButton)
         }
-        playback.addView(text("关闭时使用 Android 签名服务：${FridaSigner.DEFAULT_ENDPOINT}",12f,muted).apply {
-            setPadding(dp(20),0,dp(18),dp(12))
-        })
         lateinit var qualityButton: TextView
         qualityButton=setting(playback,"默认清晰度  ·  ${library.maxQuality}P") { showQualityPicker(qualityButton,false) }
         lateinit var defaultSpeed: TextView
@@ -7024,13 +7022,25 @@ class MainActivity: Activity() {
         refreshPhoneSettings()
     }
 
-    val phoneNativeSigning get() = SigningSettings.nativeAlgorithms
-    fun setNativeSigningMode(enabled: Boolean) {
+    val phoneSigningModeLabel get() = SigningSettings.algorithmLabel
+    fun phoneSigningModePicker() = showSigningModePicker(pickerAnchor)
+
+    private fun showSigningModePicker(anchor: View?) {
+        val selected=if(SigningSettings.nativeAlgorithms) 0 else 1
+        val labels=listOf("本地算法","远程算法").mapIndexed { index,label ->
+            label+if(index==selected) "   ·   当前" else ""
+        }
+        tvTools.choose("算法模式",labels,anchor,{ choice ->
+            setNativeSigningMode(choice==0)
+        },focusIndex=selected)
+    }
+
+    private fun setNativeSigningMode(enabled: Boolean) {
         if(enabled==SigningSettings.nativeAlgorithms) return
         SigningSettings.nativeAlgorithms=enabled
         // Activity 重建使内容、弹幕、云账号共用新签名器，并淘汰旧身份的内存取址缓存。
         if(screen=="settings") PageRestore.phoneSettings=true
-        recreateKeepingPage("原生算法模式")
+        recreateKeepingPage("算法模式")
     }
 
     fun phoneOrientationPicker() = showOrientationPicker(pickerAnchor)

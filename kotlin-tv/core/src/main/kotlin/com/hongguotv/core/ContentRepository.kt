@@ -59,7 +59,7 @@ data class CatalogPage(val items: List<Series>, val hasMore: Boolean, val rankin
 data class Genre(val slug: String, val name: String, val ids: List<String>)
 /** [idHint]/[qualityNumber] 由播放缓存回填，供整集落盘缓存按键查找元数据。 */
 data class StreamInfo(val url: String, val key: ByteArray?, val quality: String, val expiresAt: Long = 0L,
-    val idHint: String = "", val qualityNumber: Int = 0)
+    val idHint: String = "", val qualityNumber: Int = 0, val backupUrls: List<String> = emptyList())
 /** 一次窗口取址的结果：[requested] 请求集数、[cached] 取址后可播放的集数、[batch] 本次批量新增、[route] 命中的路由。 */
 data class WarmReport(val requested: Int, val cached: Int, val batch: Int, val route: String?)
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
@@ -907,7 +907,15 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         val expires=(listOf(model.optLong("expire_time"),model.optLong("url_expire"),info.optLong("expire_time"),info.optLong("url_expire"))+
             listOf("x-expires","expires","expire","expire_time").mapNotNull { parsed?.queryParameter(it)?.toLongOrNull() })
             .filter { it>0 }.map { if(it<1_000_000_000_000L) it*1000 else it }.minOrNull() ?: 0L
-        return StreamInfo(url,key,quality,expires)
+        val backups = listOf("backup_url", "backup_url_1", "backup_url_2").mapNotNull { field ->
+            runCatching {
+                val rawUrl = cleanUrl(item.str(field))
+                val candidate = if (rawUrl.isNotEmpty() && !rawUrl.startsWith("http") && seed.isNotEmpty())
+                    MediaCrypto.decryptUrl(rawUrl, decode64(seed)) else rawUrl
+                candidate.takeIf { it.startsWith("https://") || it.startsWith("http://") }
+            }.getOrNull()
+        }.distinct().filterNot { it == url }
+        return StreamInfo(url,key,quality,expires,backupUrls=backups)
     }
     /** 新播放模型的 video_list 可为数组或对象，元数据和 CENC 密钥材料分开存放。 */
     private fun directStreamFromModel(model: JSONObject, maxQuality: Int): StreamInfo? {
@@ -923,17 +931,19 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             if(meta.str("codec_type").lowercase() in setOf("bytevc2","bvc2")) return@mapNotNull null
             val encrypted=encryption.optBoolean("encrypt")
             if(encrypted && (encryption.str("encryption_method")!="cenc-aes-ctr" || encryption.str("spade_a").isEmpty())) return@mapNotNull null
-            val url=listOf(item.str("main_url"),item.str("backup_url")).map(::cleanUrl)
-                .firstOrNull { it.startsWith("https://") || it.startsWith("http://") } ?: return@mapNotNull null
+            val urls=listOf("main_url", "backup_url", "backup_url_1", "backup_url_2").map { cleanUrl(item.str(it)) }
+                .filter { it.startsWith("https://") || it.startsWith("http://") }.distinct()
+            if (urls.isEmpty()) return@mapNotNull null
             val height=qualityNumber(meta.str("definition").ifEmpty { meta.str("vheight").ifEmpty { meta.str("height") } })
-            Triple(height,url,if(encrypted) encryption.str("spade_a") else "")
+            Triple(height,urls,if(encrypted) encryption.str("spade_a") else "")
         }.sortedByDescending { it.first }
         if(rows.isEmpty() && model.has("fallback_api")) return null
         val selected=rows.firstOrNull { it.first<=maxQuality } ?: rows.lastOrNull()
             ?: throw UnplayableVideoException("本集片源暂不兼容，请播放下一集", "route="+model.optString(ROUTE_KEY)+" direct video_list has no supported streams")
         val key=selected.third.takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
         val quality=if(selected.first>0) "${selected.first}P"+(if(selected.first>maxQuality) "（兼容资源）" else "") else "自动"
-        return StreamInfo(selected.second,key,quality,playbackExpiry(model,selected.second))
+        val url=selected.second.first()
+        return StreamInfo(url,key,quality,playbackExpiry(model,url),backupUrls=selected.second.drop(1))
     }
     private fun playbackExpiry(model: JSONObject, url: String): Long {
         val parsed=url.toHttpUrlOrNull()

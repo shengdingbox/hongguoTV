@@ -42,7 +42,7 @@ class OfflineDownloads private constructor(context: Context) {
     }
     private class Job(val key: Key, val run: Run, val number: Int) {
         val scope = RequestScope()
-        @Volatile var video: RemoteVideo? = null
+        @Volatile var video: OfflineVideo? = null
         fun cancel() { scope.cancel(); video?.close() }
     }
     private val app = context.applicationContext
@@ -228,7 +228,7 @@ class OfflineDownloads private constructor(context: Context) {
         reservations[job] = remaining
     }
 
-    /** 复用播放器的 Range 读取和 CENC 解密，逐块写入明文 MP4，密钥只留内存。 */
+    /** 离线专用大分块传输；与播放器共用 CENC 索引，密钥只留内存。 */
     private fun download(seriesId: String, id: String, number: Int, job: Job): Episode {
         val target = file(seriesId, id)
         val parent = target.parentFile!!
@@ -240,11 +240,12 @@ class OfflineDownloads private constructor(context: Context) {
             job.scope.ensureActive()
             try {
                 return job.scope.run {
+                    val resolveStarted = System.nanoTime()
                     val info = repository.stream(id, 1080, refreshModel = attempt > 0)
-                    RemoteVideo(repository.http, info, chunkBytes = 256 * 1024, aheadBytes = 0).use { video ->
+                    RuntimeLog.add("Offline episode=$id sourceMs=${(System.nanoTime() - resolveStarted) / 1_000_000} attempt=${attempt + 1}")
+                    OfflineVideo(repository.http, info, onLog = { RuntimeLog.add("Offline episode=$id $it") }).use { video ->
                         job.video = video
                         job.scope.ensureActive()
-                        video.setPlaybackActive(false)
                         video.prepare()
                         val digest = MessageDigest.getInstance("SHA-256")
                         digest.update(video.preparedSnapshot().header)
@@ -255,33 +256,28 @@ class OfflineDownloads private constructor(context: Context) {
                             fingerprint.writeText(signature)
                         }
                         reserve(job, video.total - part.length())
+                        val transferStarted = System.nanoTime()
+                        val resumedBytes = part.length()
                         RandomAccessFile(part, "rw").use { out ->
-                            var at = out.length(); out.seek(at)
-                            var lastUpdate = 0L
-                            while (at < video.total) {
-                                job.scope.ensureActive()
-                                val bytes = video.read(at, minOf(256 * 1024L, video.total - at).toInt())
-                                if (bytes.isEmpty()) throw IOException("视频分块提前结束")
-                                out.write(bytes); at += bytes.size
-                                synchronized(spaceLock) { reservations[job] = (reservations[job] ?: 0L).minus(bytes.size).coerceAtLeast(0L) }
-                                val now = System.currentTimeMillis()
-                                if (now - lastUpdate >= 250 || at == video.total) {
-                                    lastUpdate = now
-                                    val downloaded = at
-                                    control.execute {
-                                        if (jobs[job.key] === job && runs[seriesId] === job.run && !job.scope.isCancelled) {
-                                            records[seriesId]?.let { item ->
-                                                records[seriesId] = item.copy(transfers = item.transfers.map {
-                                                    if (it.id == id) it.copy(bytes = downloaded, totalBytes = video.total) else it
-                                                })
-                                            }
-                                            publish()
+                            video.writeTo(out, onWritten = { count ->
+                                synchronized(spaceLock) { reservations[job] = (reservations[job] ?: 0L).minus(count).coerceAtLeast(0L) }
+                            }, onProgress = { downloaded, total ->
+                                control.execute {
+                                    if (jobs[job.key] === job && runs[seriesId] === job.run && !job.scope.isCancelled) {
+                                        records[seriesId]?.let { item ->
+                                            records[seriesId] = item.copy(transfers = item.transfers.map {
+                                                if (it.id == id) it.copy(bytes = downloaded, totalBytes = total) else it
+                                            })
                                         }
+                                        publish()
                                     }
                                 }
-                            }
+                            })
                             out.fd.sync()
                         }
+                        val elapsedMs = ((System.nanoTime() - transferStarted) / 1_000_000).coerceAtLeast(1)
+                        val transferred = video.total - resumedBytes
+                        RuntimeLog.add("Offline episode=$id bytes=$transferred transferMs=$elapsedMs speedKiBps=${transferred * 1000 / elapsedMs / 1024}")
                         job.scope.ensureActive()
                         check(part.renameTo(target)) { "离线文件保存失败" }
                         fingerprint.delete()

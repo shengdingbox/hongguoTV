@@ -27,26 +27,8 @@ class PhoneOfflineLibrary(
     private fun dp(value: Int) = PortraitUi.dp(activity, value)
     private fun text(value: String, size: Float = 14f, color: Int = PortraitStyle.text) = PortraitUi.text(activity, value, size, color)
     private fun lp(w: Int = -1, h: Int = -2) = LinearLayout.LayoutParams(w, h)
-    val header = PortraitUi.column(activity).apply { setPadding(dp(16), 0, dp(16), dp(8)) }
+    val header = PortraitUi.column(activity).apply { setPadding(dp(16), 0, dp(16), 0) }
     private val expandedSeries = mutableSetOf<String>()
-    private val concurrencyValue = text("", 14f, PortraitStyle.accent)
-    private val downloadSettings = PortraitUi.row(activity).apply {
-        minimumHeight = dp(44)
-        setPadding(dp(12), dp(6), dp(10), dp(6))
-        background = PortraitStyle.selectable(activity, PortraitStyle.surface, radius = 14)
-        isFocusable = true
-        addView(text("同时下载", 14f), lp(0, -2).apply { weight = 1f })
-        addView(concurrencyValue, lp(-2, -2).apply { leftMargin = dp(10) })
-        addView(ImageView(activity).apply {
-            setImageResource(R.drawable.ic_chevron_right)
-            setColorFilter(PortraitStyle.muted)
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }, lp(dp(16), dp(18)).apply { leftMargin = dp(6) })
-        setOnClickListener { configureConcurrency(activity) }
-    }
-    private val concurrencyHint = text("已降低并发数，正在下载的分集完成后生效", 12f, PortraitStyle.muted).apply {
-        setLineSpacing(dp(3).toFloat(), 1f)
-    }
     private val warning = text("", 13f, PortraitStyle.secondaryText).apply {
         setPadding(dp(14), dp(12), dp(14), dp(12))
         setLineSpacing(dp(3).toFloat(), 1f)
@@ -76,8 +58,6 @@ class PhoneOfflineLibrary(
     }
 
     init {
-        header.addView(downloadSettings, lp())
-        header.addView(concurrencyHint, lp().apply { topMargin = dp(6) })
         header.addView(warning, lp())
         header.addView(loading, lp()); header.addView(empty, lp())
         val changed: () -> Unit = { if (page.isShown) activity.renderPhoneTab() }
@@ -88,12 +68,9 @@ class PhoneOfflineLibrary(
     }
 
     fun update(visible: Boolean) {
-        header.visibility = if (visible) View.VISIBLE else View.GONE
         val items = if (visible) downloads.items else emptyList()
-        val running = items.sumOf { it.transfers.size }
-        concurrencyValue.text = "${downloads.concurrency} 集"
-        downloadSettings.contentDescription = "同时下载 ${downloads.concurrency} 集，调整下载并发数"
-        concurrencyHint.visibility = if (running > downloads.concurrency) View.VISIBLE else View.GONE
+        header.visibility = if (visible && (downloads.error.isNotBlank() || !downloads.loaded || items.isEmpty()))
+            View.VISIBLE else View.GONE
         warning.text = downloads.error
         warning.visibility = if (downloads.error.isNotBlank()) View.VISIBLE else View.GONE
         loading.visibility = if (!downloads.loaded && downloads.error.isBlank()) View.VISIBLE else View.GONE
@@ -199,12 +176,12 @@ class PhoneOfflineLibrary(
                 addView(line, lp().apply { topMargin = dp(2) })
                 addView(total, lp(-1, dp(3)).apply { topMargin = dp(1) })
             }, lp(0, -2).apply { weight = 1f })
+            heading.addView(more, lp(dp(44), dp(44)).apply { leftMargin = dp(4) })
             card.addView(heading, lp())
             card.addView(transferHost, lp())
             card.addView(problem, lp().apply { topMargin = dp(6) })
             actions.addView(primary, lp(0, -2).apply { weight = 1f })
             actions.addView(secondary, lp(0, -2).apply { weight = 1f; leftMargin = dp(8) })
-            actions.addView(more, lp(dp(44), dp(44)).apply { leftMargin = dp(4) })
             card.addView(actions, lp().apply { topMargin = dp(8) })
             cover.setOnClickListener { chooseEpisode(activity, item) }
             title.setOnClickListener { chooseEpisode(activity, item) }

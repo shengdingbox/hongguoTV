@@ -94,6 +94,7 @@ class PhoneSettings(private val activity: MainActivity) {
         accountCard(content)
         signingSection(content)
         playbackSection(content)
+        offlineSection(content)
         danmakuSection(content)
         lookSection(content)
         deviceSection(content)
@@ -271,6 +272,15 @@ class PhoneSettings(private val activity: MainActivity) {
                 activity.setNativeSigningMode(!activity.phoneNativeSigning)
             })
             addRow(group, row("Android 签名服务", com.hongguotv.core.FridaSigner.DEFAULT_ENDPOINT))
+        }
+    }
+
+    private fun offlineSection(parent: LinearLayout) {
+        section(parent, "离线缓存", "并发数适用于所有离线任务。降低并发后，正在下载的分集会先完成。") { group ->
+            val value = { "${activity.offlineDownloads.concurrency} 集" }
+            addRow(group, row("同时下载", value(), value) {
+                PhoneOfflineLibrary.configureConcurrency(activity, ::refreshValues)
+            })
         }
     }
 

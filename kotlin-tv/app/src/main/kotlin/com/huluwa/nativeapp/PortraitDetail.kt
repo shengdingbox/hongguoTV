@@ -340,7 +340,8 @@ class PortraitDetail(
         }
         fun renderSeasons(current: Detail) {
             if (current.series.id != data.series.id) return
-            // 新季主详情尚未补齐系列数据时，继续沿用已知季列表和原来的横向滚动位置。
+            // 缓存和联网结果都是完整列表；尚未取到分季时才沿用切季前的条目。
+            if (current.seasonsLoaded) knownSeasons.clear()
             (listOf(current.series) + current.sameName).forEach { knownSeasons[it.id] = it }
             val seasons = knownSeasons.values.sortedBy { seasonNumber(it.title).takeIf { number -> number != Int.MAX_VALUE } ?: 0 }
             seasonHost.visibility = if (seasons.size > 1) View.VISIBLE else View.GONE
@@ -357,7 +358,9 @@ class PortraitDetail(
                         setPadding(dp(13), dp(7), dp(13), dp(7))
                         background = PortraitStyle.selectable(activity, PortraitStyle.raised, radius = 20)
                         setOnClickListener {
-                            if (season.id != data.series.id || loadingSeasonId != null) activity.switchDetailSeasonPhone(season)
+                            knownSeasons[season.id]?.let { latest ->
+                                if (latest.id != data.series.id || loadingSeasonId != null) activity.switchDetailSeasonPhone(latest)
+                            }
                         }
                     }
                     seasonButtons[season.id] = button
@@ -368,6 +371,13 @@ class PortraitDetail(
                     else seasonButtons[data.series.id]?.let { seasonStrip.scrollTo(it.left, 0) }
                 }
             }
+            seasons.forEach { season ->
+                val number = seasonNumber(season.title)
+                seasonButtons[season.id]?.apply {
+                    text = if (number == Int.MAX_VALUE) season.title else "第 $number 季"
+                    contentDescription = listOf(season.title, season.release?.label.orEmpty()).filter { it.isNotBlank() }.joinToString("，")
+                }
+            }
             updateSeasonSelection()
         }
 
@@ -375,6 +385,8 @@ class PortraitDetail(
             if (current.series.id != data.series.id) return
             data = current
             renderRating(current)
+            metadataView.text = metadata(current)
+            renderRelease(current)
             renderSeasons(current)
         }
 

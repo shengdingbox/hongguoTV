@@ -43,7 +43,7 @@ fun seriesTitle(raw: String): String = raw.lineSequence()
     .orEmpty()
     .replace(Regex("[\\s\\u3000]+"), " ")
     .take(48)
-data class Detail(val series: Series, val episodes: List<String>, val related: List<Series> = emptyList(), val sameName: List<Series> = emptyList(), val social: SeriesSocial = SeriesSocial()) {
+data class Detail(val series: Series, val episodes: List<String>, val related: List<Series> = emptyList(), val sameName: List<Series> = emptyList(), val social: SeriesSocial = SeriesSocial(), val seasonsLoaded: Boolean = false) {
     /** Same-name entries with a finite season number beyond the current one (untitled season counts as 1). */
     val newerSeasons: List<Series> get() {
         val current=seasonNumber(series.title).let { if(it==Int.MAX_VALUE) 1 else it }
@@ -598,25 +598,39 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     }
 
     /** 完整详情保留给补季、收藏更新等需要系列信息的调用方。 */
-    fun detail(id: String): Detail {
+    fun detail(id: String, refreshSeasons: Boolean = false, onSeasons: ((List<Series>) -> Unit)? = null): Detail {
         val main=seriesDetail(id)
-        if(!needsDetailExtras(id)) return cachedDetail(id) ?: main
+        val needsExtras=needsDetailExtras(id)
+        if(!needsExtras && !refreshSeasons) return cachedDetail(id) ?: main
+        val fetchExtras=needsExtras && main.episodes.isNotEmpty()
         val scope=RequestScope.current()?.child() ?: RequestScope()
         // 辅助请求共用取消作用域与等待预算，页面离开后一起取消。
-        val relatedTask=FutureTask(Callable { scope.run { runCatching { planRelated(id,main.series) }.getOrDefault(emptyList()) } })
-        val seasonsTask=FutureTask(Callable { scope.run { runCatching { planSeasons(id) }.getOrDefault(emptyList()).filter { it.id!=id } } })
-        val ratingTask=FutureTask(Callable { scope.run { runCatching { websiteRating(id) }.getOrNull() } })
+        val relatedTask=FutureTask(Callable { scope.run {
+            if(fetchExtras) runCatching { planRelated(id,main.series) }.getOrDefault(main.related) else main.related
+        } })
+        val seasonsTask=FutureTask(Callable { scope.run {
+            runCatching { planSeasons(id) }.getOrNull()?.also { rows ->
+                scope.ensureActive()
+                onSeasons?.invoke(rows)
+            }
+        } })
+        val ratingTask=FutureTask(Callable { scope.run {
+            if(fetchExtras) runCatching { websiteRating(id) }.getOrNull() else null
+        } })
         val threads=listOf(relatedTask,seasonsTask,ratingTask).map { task -> Thread(task,"hongguotv-detail-extra").apply { isDaemon=true; start() } }
         try {
             val deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(DETAIL_AUX_TIMEOUT)
             fun <T> getAux(task: Future<T>): T? = try { task.get((deadline-System.nanoTime()).coerceAtLeast(0),TimeUnit.NANOSECONDS) }
             catch(_: TimeoutException) { null } catch(_: ExecutionException) { null } catch(_: InterruptedException) { Thread.currentThread().interrupt(); null }
-            val related=getAux(relatedTask).orEmpty()
-            val sameName=getAux(seasonsTask).orEmpty().distinctBy { it.id }.sortedBy { seasonNumber(it.title).let { n -> if(n==Int.MAX_VALUE) 1 else n } }
+            val related=getAux(relatedTask) ?: main.related
+            val latestSeasons=getAux(seasonsTask)
+            val sameName=(latestSeasons?.filter { it.id!=id } ?: main.sameName).distinctBy { it.id }
+                .sortedBy { seasonNumber(it.title).let { n -> if(n==Int.MAX_VALUE) 1 else n } }
             val rating=getAux(ratingTask)
             if(scope.isCancelled || Thread.currentThread().isInterrupted) throw IOException("请求已取消")
             val social=rating?.let { main.social.copy(rating=it.rating,ratingCount=it.ratingCount) } ?: main.social
-            val result=main.copy(related=related,sameName=sameName,social=social)
+            val result=main.copy(related=related,sameName=sameName,social=social,
+                seasonsLoaded=latestSeasons!=null || main.seasonsLoaded)
             synchronized(detailCache) {
                 val cached=detailCache[id]
                 if(cached!=null && cached.detail==main) detailCache[id]=cached.copy(detail=result,extrasLoaded=true)
@@ -718,8 +732,15 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     /** `GET /reading/bookapi/plan/v1/` 的「系列剧」cell（show_type 547）：整季列表。 */
     private fun planSeasons(id: String): List<Series> {
         val cells = planCells(id, "single_col_same_ip_series", id)
-        val cell = cells.firstOrNull { it.optInt("show_type") == 547 } ?: return emptyList()
-        return valid(cell.optJSONArray("video_data")?.objects()?.map(::planCardSeries).orEmpty())
+        val cell = cells.firstOrNull { it.optInt("show_type") == 547 }
+            ?: if(cells.isEmpty()) return emptyList() else throw IOException("分季列表暂不可用")
+        if(!cell.has("video_data")) throw IOException("分季数据格式异常")
+        val rows=if(cell.isNull("video_data")) JSONArray() else cell.optJSONArray("video_data")
+            ?: throw IOException("分季数据格式异常")
+        val items=rows.objects().map(::planCardSeries)
+        if(items.size!=rows.length() || items.any { !SeasonSnapshot.validId(it.id) || it.title.isBlank() })
+            throw IOException("分季条目格式异常")
+        return valid(items)
     }
 
     /** 统一打 plan feed；按 `from` 场景取回 data 下的 cell 数组。 */
@@ -733,7 +754,10 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         )
         if (filterId != null) values["filter_ids"] = filterId
         val data = signedJson("$API/reading/bookapi/plan/v1/", values, null, transport)
-        return data.optJSONArray("data")?.objects().orEmpty()
+        val rows=data.optJSONArray("data") ?: throw IOException("详情辅助信息格式异常")
+        val items=rows.objects()
+        if(items.size!=rows.length()) throw IOException("详情辅助条目格式异常")
+        return items
     }
 
     /** 签名 JSON 请求，统一处理 code != 0 与空响应。 */

@@ -3070,9 +3070,22 @@ class MainActivity: Activity() {
         })
     }
     /** 日历排期随 Series 存入收藏与导航现场，重开详情时也能展示。 */
-    private fun scheduledSeries(series: Series): Series? = phoneNewReleasePages.values.asSequence()
-        .flatMap { it.items.asSequence() }.firstOrNull { it.series.id==series.id && !it.online }?.series
-        ?: series.takeIf { it.release!=null }
+    private fun scheduledSeries(series: Series): Series? {
+        val cached=library.cachedSeasons(series.id)?.items?.firstOrNull { it.id==series.id }
+        if(cached!=null) return cached.takeIf { it.release!=null }
+        return phoneNewReleasePages.values.asSequence().flatMap { it.items.asSequence() }
+            .firstOrNull { it.series.id==series.id && !it.online }?.series ?: series.takeIf { it.release!=null }
+    }
+
+    private fun withSeasonRows(data: Detail, rows: List<Series>): Detail {
+        val current=rows.firstOrNull { it.id==data.series.id }
+        val series=if(data.episodes.isEmpty() && current?.release!=null)
+            data.series.copy(badge=current.badge,release=current.release) else data.series
+        return data.copy(series=series,sameName=rows.filter { it.id!=data.series.id },seasonsLoaded=true)
+    }
+
+    private fun withCachedSeasons(data: Detail): Detail = library.cachedSeasons(data.series.id)
+        ?.let { withSeasonRows(data,it.items) } ?: data
 
     private fun withReleaseSchedule(data: Detail, scheduled: Series?): Detail =
         if(data.episodes.isEmpty() && data.series.release?.isSpecified!=true && scheduled?.release!=null)
@@ -3089,7 +3102,7 @@ class MainActivity: Activity() {
         val body=base(series.title); message(body,"正在加载剧集…")
         val scheduled=scheduledSeries(series)
         val apply:(Detail)->Unit=loaded@{ loaded ->
-            val result=withReleaseSchedule(loaded,scheduled)
+            val result=withCachedSeasons(withReleaseSchedule(loaded,scheduled))
             detail=result
             if(result.episodes.isEmpty()) {
                 pendingCloudResume=null; episodeIndex=0; group=0; directPlayback=false
@@ -3130,19 +3143,38 @@ class MainActivity: Activity() {
         detailExtrasJob?.cancel(true); detailExtrasJob=null
         (io as? java.util.concurrent.ThreadPoolExecutor)?.purge()
     }
-    /** 主内容显示后再补辅助区域；独立于 work，不会取消主详情或播放预热。 */
+    /** 先显示本地分季，再后台刷新；分季返回后立即更新界面和缓存，不等待相关推荐或评分。 */
     fun loadDetailExtras(data: Detail, render: (Detail)->Unit = {}) {
         cancelDetailExtras()
-        if((data.episodes.isEmpty() && data.series.release!=null) || !repository.needsDetailExtras(data.series.id)) return
+        val initial=withCachedSeasons(data)
+        if(detail?.series?.id==data.series.id) detail=initial
+        if(initial!=data && screen=="detail") render(initial)
         val ticket=generation
         val scope=RequestScope(); detailExtrasScope=scope
+        fun active()=!isDestroyed && generation==ticket && !scope.isCancelled && detailExtrasScope===scope &&
+            (screen=="detail" || screen=="player") && detail?.series?.id==data.series.id
         detailExtrasJob=io.submit {
-            val result=runCatching { scope.run { repository.detail(data.series.id) } }.getOrNull() ?: return@submit
+            val result=runCatching { scope.run {
+                repository.detail(data.series.id,refreshSeasons=true,onSeasons={ rows ->
+                    main.post {
+                        if(!active()) return@post
+                        library.cacheSeasons(data.series.id,rows)
+                        val current=detail ?: return@post
+                        val updated=withSeasonRows(current,rows)
+                        detail=updated
+                        if(screen=="detail" && updated!=current) render(updated)
+                    }
+                })
+            } }.getOrNull()
             main.post {
-                if(isDestroyed || generation!=ticket || scope.isCancelled || detailExtrasScope!==scope || (screen!="detail" && screen!="player") || detail?.series?.id!=data.series.id) return@post
+                if(!active()) return@post
                 detailExtrasScope=null; detailExtrasJob=null
-                detail=result
-                if(screen=="detail") render(result)
+                if(result!=null) {
+                    val current=detail ?: return@post
+                    val updated=withCachedSeasons(current.copy(related=result.related,social=result.social))
+                    detail=updated
+                    if(screen=="detail" && updated!=current) render(updated)
+                }
             }
         }
     }
@@ -3223,9 +3255,10 @@ class MainActivity: Activity() {
         val metadata=listOf(episodeLabel,data.series.tags,library.progress(data.series.id)?.let { "看到第 ${it.episodeIndex+1} 集" }.orEmpty())
             .filter { it.isNotBlank() }.joinToString("  ·  ")
         info.addView(text(metadata,13f,muted).apply { maxLines=1; setPadding(0,dp(8),0,dp(8)) })
-        data.series.release?.takeIf { !hasEpisodes }?.let { schedule ->
-            info.addView(text(schedule.label,15f,accent).apply { setPadding(0,0,0,dp(8)) })
+        val releaseView=text(data.series.release?.label.orEmpty(),15f,accent).apply {
+            setPadding(0,0,0,dp(8)); visibility=if(!hasEpisodes && data.series.release!=null) View.VISIBLE else View.GONE
         }
+        info.addView(releaseView)
         // 主详情先展示热度与收藏，网页评分异步补齐后原位更新。
         val metricsView=TextView(this).apply {
             textSize=13f; setTextColor(muted); includeFontPadding=false
@@ -3290,11 +3323,20 @@ class MainActivity: Activity() {
         content.addView(seasonHost)
         if(!hasEpisodes) info.addView(text(if(data.series.release!=null) "上线后即可观看，可先收藏" else "暂时没有可看的剧集",15f,muted).apply { setPadding(0,dp(12),0,0) })
         val seasonButtons=mutableListOf<TextView>()
+        var renderedSeasons: List<Series>?=null
+        var renderedSeasonStrip: HorizontalScrollView?=null
         fun renderSeasons(current: Detail) {
-            seasonHost.removeAllViews(); seasonButtons.clear()
             val seasons=(listOf(current.series)+current.sameName).distinctBy { it.id }
                 .sortedBy { val number=seasonNumber(it.title); if(number==Int.MAX_VALUE) 0 else number }
-            if(seasons.size<=1) return
+            if(renderedSeasons==seasons) return
+            val focusedId=seasonButtons.firstOrNull { it.hasFocus() }?.tag as? String
+            val oldScrollX=renderedSeasonStrip?.scrollX ?: 0
+            renderedSeasons=seasons
+            seasonHost.removeAllViews(); seasonButtons.clear(); renderedSeasonStrip=null
+            if(seasons.size<=1) {
+                if(focusedId!=null) lastAction.requestFocus()
+                return
+            }
             val seasonRow=row(); seasonRow.setPadding(0,dp(10),0,dp(2))
             seasonRow.addView(text("系列 ${seasons.size} 季",13f,accent).apply { gravity=Gravity.CENTER },lp(dp(78),dp(42)))
             val strip=HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled=false; clipToPadding=false }
@@ -3304,9 +3346,17 @@ class MainActivity: Activity() {
                 val seen=library.progress(season.id)?.let { " · 看到${it.episodeIndex+1}集" }.orEmpty()
                 val title=if(number==Int.MAX_VALUE) season.title.take(12) else "第 ${number} 季"
                 seasonButtons+=addButton(line,title+seen,season.id==current.series.id) { if(season.id!=current.series.id) openDetail(season) }
+                    .apply { tag=season.id; contentDescription=listOf(season.title,season.release?.label.orEmpty()).filter { it.isNotBlank() }.joinToString("，") }
             }
             seasonRow.addView(strip,lp(0,dp(42)).apply { weight=1f })
             seasonHost.addView(seasonRow)
+            renderedSeasonStrip=strip
+            strip.post {
+                if(renderedSeasonStrip!==strip || !strip.isAttachedToWindow) return@post
+                if(focusedId!=null) (seasonButtons.firstOrNull { it.tag==focusedId }
+                    ?: seasonButtons.firstOrNull { it.tag==current.series.id })?.requestFocus()
+                strip.scrollTo(oldScrollX,0)
+            }
         }
         // 每组 20 集，列数随可用宽度调整；只渲染当前组，长剧也保持轻量。
         val episodeCols=when { widthDp()<600 -> 5; widthDp()<850 -> 8; else -> 10 }
@@ -3360,6 +3410,8 @@ class MainActivity: Activity() {
         val recommendationHost=column()
         content.addView(recommendationHost,lp(-1,-2))
         fun renderExtras(current: Detail) {
+            releaseView.text=current.series.release?.label.orEmpty()
+            releaseView.visibility=if(!hasEpisodes && current.series.release!=null) View.VISIBLE else View.GONE
             renderMetrics(current)
             renderSeasons(current)
             recommendationHost.removeAllViews()
@@ -6480,7 +6532,7 @@ class MainActivity: Activity() {
         portraitDetail.renderState(root,"正在加载剧集…")
         val scheduled=scheduledSeries(series)
         val apply: (Detail) -> Unit = { loaded ->
-            val result=withReleaseSchedule(loaded,scheduled)
+            val result=withCachedSeasons(withReleaseSchedule(loaded,scheduled))
             // done lambda 同样是非内联的，不能 return：用 if/else 表达「已转回横屏就交给 TV 版」
             if(!phoneLayout()) {
                 openDetail(series,resume,preloaded=result)
@@ -6544,7 +6596,7 @@ class MainActivity: Activity() {
         portraitDetail.setSeasonLoading(root, series.id)
         val scheduled = scheduledSeries(series)
         val apply: (Detail) -> Unit = { loaded ->
-            val result = withReleaseSchedule(loaded, scheduled)
+            val result = withCachedSeasons(withReleaseSchedule(loaded, scheduled))
             if (!phoneLayout()) {
                 openDetail(series, preloaded = result)
             } else if (screen == "detail" && phoneTab == "detail") {

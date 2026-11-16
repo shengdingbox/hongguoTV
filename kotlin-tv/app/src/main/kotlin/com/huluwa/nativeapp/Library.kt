@@ -26,6 +26,7 @@ class Library(context: Context) {
         const val HOT_SEARCH_CACHE_KEY = "phone-hot-search-v1"
         const val NEW_RELEASE_CACHE_PREFIX = "phone-new-releases-v1-"
         const val NEW_RELEASE_CACHE_DAYS = 15
+        const val SEASON_CACHE_PREFIX = "series-seasons-v1-"
     }
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
@@ -46,6 +47,7 @@ class Library(context: Context) {
     private val newReleaseCaches = mutableMapOf<String, CachedNewReleases>()
     private val mobileRankCaches = mutableMapOf<String, CachedMobileRank>()
     private var hotSearchCache: CachedHotSearch? = null
+    private val seasonCaches = mutableMapOf<String, CachedSeasons>()
     // 榜单缓存：漫剧/短剧/AI 三个榜各自独立一条，与首页缓存同存同有效期
     private val ranks = mutableMapOf<RankBoard, CatalogPage>()
     private val rankSavedAt = mutableMapOf<RankBoard, Long>()
@@ -59,6 +61,7 @@ class Library(context: Context) {
         val newReleases: Map<String, CachedNewReleases>,
         val mobileRanks: Map<String, CachedMobileRank>,
         val hotSearch: CachedHotSearch?,
+        val seasons: Map<String, CachedSeasons>,
     )
     private var loading = false
     private var closed = false
@@ -146,8 +149,17 @@ class Library(context: Context) {
                 val hotValue = homePrefs.all[HOT_SEARCH_CACHE_KEY]
                 val hotSearch = (hotValue as? String)?.let { HotSearchSnapshot.decode(it, now) }
                 if (hotValue != null && hotSearch == null) homePrefs.edit().remove(HOT_SEARCH_CACHE_KEY).commit()
+                val seasonValues = homePrefs.all.filterKeys { it.startsWith(SEASON_CACHE_PREFIX) }
+                val seasons = seasonValues.mapNotNull { (key, value) ->
+                    SeasonSnapshot.decode(value as? String ?: return@mapNotNull null, now)
+                        ?.takeIf { key == SEASON_CACHE_PREFIX + it.sourceId }
+                }.sortedByDescending { it.savedAt }.take(SeasonSnapshot.MAX_GROUPS).associateBy { it.sourceId }
+                val staleSeasonKeys = seasonValues.keys - seasons.keys.map { SEASON_CACHE_PREFIX + it }.toSet()
+                if (staleSeasonKeys.isNotEmpty()) {
+                    homePrefs.edit().also { edit -> staleSeasonKeys.forEach(edit::remove) }.commit()
+                }
                 Pair(loaded, DiskCaches(cached, stamps, rankCached, rankStamps, recommendations, recommendationStamp,
-                    phoneRankCached, phoneRankStamps, newReleases, mobileRanks, hotSearch))
+                    phoneRankCached, phoneRankStamps, newReleases, mobileRanks, hotSearch, seasons))
             }
             main.post {
                 loading = false
@@ -163,6 +175,7 @@ class Library(context: Context) {
                     newReleaseCaches.putAll(boot.newReleases)
                     mobileRankCaches.putAll(boot.mobileRanks)
                     hotSearchCache = boot.hotSearch
+                    seasonCaches.putAll(boot.seasons)
                     ready.forEach { it() }
                 }.onFailure { failure -> errors.forEach { it(failure) } }
             }
@@ -340,6 +353,40 @@ class Library(context: Context) {
         stale.forEach { date ->
             newReleaseCaches.remove(date)
             batch[NEW_RELEASE_CACHE_PREFIX + date] = { null }
+        }
+        homeWrites.submit(batch)
+    }
+
+    /** 同系列各季共享快照；只读内存，进入详情后仍联网刷新。 */
+    fun cachedSeasons(id: String): CachedSeasons? {
+        state()
+        val now = System.currentTimeMillis()
+        return seasonCaches.values.asSequence().filter { now - it.savedAt in 0..SeasonSnapshot.MAX_AGE }
+            .filter { it.sourceId == id || it.items.any { item -> item.id == id } }.maxByOrNull { it.savedAt }
+    }
+
+    /** 只在接口成功时替换整个系列，空列表也可覆盖；磁盘序列化由后台写队列处理。 */
+    fun cacheSeasons(sourceId: String, items: List<Series>) {
+        state()
+        if (!SeasonSnapshot.validId(sourceId)) return
+        val now = System.currentTimeMillis()
+        val retained = SeasonSnapshot.retain(items)
+        val ids = retained.map { it.id }.toSet() + sourceId
+        val superseded = seasonCaches.filter { (key, cached) ->
+            key in ids || cached.items.any { it.id in ids } || now - cached.savedAt !in 0..SeasonSnapshot.MAX_AGE
+        }.keys.toList()
+        val batch = linkedMapOf<String, () -> Any?>()
+        superseded.forEach { key ->
+            seasonCaches.remove(key)
+            batch[SEASON_CACHE_PREFIX + key] = { null }
+        }
+        val next = CachedSeasons(sourceId, retained, now)
+        seasonCaches[sourceId] = next
+        batch[SEASON_CACHE_PREFIX + sourceId] = { SeasonSnapshot.encode(next) }
+        val oldest = seasonCaches.values.sortedByDescending { it.savedAt }.drop(SeasonSnapshot.MAX_GROUPS)
+        oldest.forEach { cached ->
+            seasonCaches.remove(cached.sourceId)
+            batch[SEASON_CACHE_PREFIX + cached.sourceId] = { null }
         }
         homeWrites.submit(batch)
     }

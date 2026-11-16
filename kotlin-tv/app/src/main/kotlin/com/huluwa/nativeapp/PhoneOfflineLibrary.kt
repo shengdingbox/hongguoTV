@@ -27,33 +27,12 @@ class PhoneOfflineLibrary(
     private fun dp(value: Int) = PortraitUi.dp(activity, value)
     private fun text(value: String, size: Float = 14f, color: Int = PortraitStyle.text) = PortraitUi.text(activity, value, size, color)
     private fun lp(w: Int = -1, h: Int = -2) = LinearLayout.LayoutParams(w, h)
-    val header = PortraitUi.column(activity).apply { setPadding(dp(16), dp(4), dp(16), dp(12)) }
-    private val summaryTitle = text("", 17f).apply { setTypeface(null, Typeface.BOLD) }
-    private val summarySubtitle = text("", 12f, PortraitStyle.muted)
-    private val activeCount = text("", 12f, PortraitStyle.accent).apply {
-        gravity = Gravity.CENTER
-        setPadding(dp(10), dp(7), dp(10), dp(7))
-        background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 12)
-    }
-    private val summary = PortraitUi.row(activity).apply {
-        setPadding(0, dp(8), 0, dp(14))
-        addView(ImageView(activity).apply {
-            setImageResource(R.drawable.ic_download)
-            setColorFilter(PortraitStyle.accent)
-            setPadding(dp(11), dp(11), dp(11), dp(11))
-            background = PortraitStyle.shape(activity, PortraitStyle.surface, radius = 14)
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }, lp(dp(44), dp(44)).apply { rightMargin = dp(12) })
-        addView(PortraitUi.column(activity).apply {
-            addView(summaryTitle, lp())
-            addView(summarySubtitle, lp().apply { topMargin = dp(5) })
-        }, lp(0, -2).apply { weight = 1f })
-        addView(activeCount, lp(-2, -2).apply { leftMargin = dp(8) })
-    }
+    val header = PortraitUi.column(activity).apply { setPadding(dp(16), 0, dp(16), dp(8)) }
+    private val expandedSeries = mutableSetOf<String>()
     private val concurrencyValue = text("", 14f, PortraitStyle.accent)
     private val downloadSettings = PortraitUi.row(activity).apply {
-        minimumHeight = dp(52)
-        setPadding(dp(14), dp(8), dp(12), dp(8))
+        minimumHeight = dp(44)
+        setPadding(dp(12), dp(6), dp(10), dp(6))
         background = PortraitStyle.selectable(activity, PortraitStyle.surface, radius = 14)
         isFocusable = true
         addView(text("同时下载", 14f), lp(0, -2).apply { weight = 1f })
@@ -97,9 +76,8 @@ class PhoneOfflineLibrary(
     }
 
     init {
-        header.addView(summary, lp())
-        header.addView(downloadSettings, lp().apply { bottomMargin = dp(10) })
-        header.addView(concurrencyHint, lp().apply { bottomMargin = dp(10) })
+        header.addView(downloadSettings, lp())
+        header.addView(concurrencyHint, lp().apply { topMargin = dp(6) })
         header.addView(warning, lp())
         header.addView(loading, lp()); header.addView(empty, lp())
         val changed: () -> Unit = { if (page.isShown) activity.renderPhoneTab() }
@@ -112,14 +90,9 @@ class PhoneOfflineLibrary(
     fun update(visible: Boolean) {
         header.visibility = if (visible) View.VISIBLE else View.GONE
         val items = if (visible) downloads.items else emptyList()
-        summary.visibility = if (items.isNotEmpty()) View.VISIBLE else View.GONE
-        summaryTitle.text = "已缓存 ${items.sumOf { it.downloaded.size }} 集"
-        summarySubtitle.text = "${items.size} 部剧集 · 占用 ${bytes(items.sumOf { it.size })}"
         val running = items.sumOf { it.transfers.size }
-        activeCount.text = "$running 集下载中"
         concurrencyValue.text = "${downloads.concurrency} 集"
         downloadSettings.contentDescription = "同时下载 ${downloads.concurrency} 集，调整下载并发数"
-        activeCount.visibility = if (running > 0) View.VISIBLE else View.GONE
         concurrencyHint.visibility = if (running > downloads.concurrency) View.VISIBLE else View.GONE
         warning.text = downloads.error
         warning.visibility = if (downloads.error.isNotBlank()) View.VISIBLE else View.GONE
@@ -132,78 +105,107 @@ class PhoneOfflineLibrary(
         private val card = PortraitUi.column(activity)
         private val cover = ImageView(activity).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 10)
+            background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 8)
             clipToOutline = true
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        private val title = text("", 17f).apply {
+        private val title = text("", 16f).apply {
             setTypeface(null, Typeface.BOLD)
             maxLines = 2; ellipsize = TextUtils.TruncateAt.END
         }
         private val metadata = text("", 12f, PortraitStyle.muted)
-        private val status = text("", 11f, PortraitStyle.accent).apply {
-            setPadding(dp(8), dp(5), dp(8), dp(5))
-            background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 7)
+        private val status = text("", 12f, PortraitStyle.accent).apply {
+            setPadding(0, dp(4), dp(6), dp(4))
+            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 6)
+            setOnClickListener { toggleTransfers() }
         }
-        private val totalLabel = text("", 12f, PortraitStyle.muted)
-        private val percent = text("", 12f, PortraitStyle.accent)
+        private val percent = text("", 11f, PortraitStyle.muted)
         private val total = progress()
         private val transferHost = PortraitUi.column(activity)
         private val transferViews = linkedMapOf<String, Triple<LinearLayout, TextView, ProgressBar>>()
-        private val problem = text("", 12f, PortraitStyle.secondaryText).apply { setLineSpacing(dp(3).toFloat(), 1f) }
+        private val problem = text("", 12f, PortraitStyle.secondaryText).apply {
+            maxLines = 2; ellipsize = TextUtils.TruncateAt.END
+            setLineSpacing(dp(2).toFloat(), 1f)
+            setOnClickListener { PhoneDialog.info(activity, "下载遇到问题", item.message).show() }
+        }
         private val actions = PortraitUi.row(activity)
         private lateinit var item: OfflineDownloads.Item
         private var boundSeries = ""
         private var boundCover = ""
-        private fun button(label: String, primary: Boolean = false, action: () -> Unit) = text(label, 13f,
-            if (primary) PortraitStyle.onAccent else PortraitStyle.accent).apply {
+        private val primaryLabel = text("", 13f, PortraitStyle.onAccent).apply {
+            gravity = Gravity.CENTER
+            setTypeface(null, Typeface.BOLD)
+        }
+        private val primaryIcon = ImageView(activity).apply {
+            setColorFilter(PortraitStyle.onAccent)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        private val primary = PortraitUi.row(activity).apply {
+            gravity = Gravity.CENTER
+            minimumHeight = dp(44)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            background = PortraitStyle.selectable(activity, PortraitStyle.accent, radius = 22)
+            isFocusable = true
+            addView(primaryIcon, lp(dp(16), dp(16)).apply { rightMargin = dp(4) })
+            addView(primaryLabel, lp(-2, -2))
+            setOnClickListener {
+                when {
+                    item.downloaded.isNotEmpty() -> chooseEpisode(activity, item)
+                    item.running -> downloads.pause(item.series.id)
+                    item.pending.isNotEmpty() -> downloads.resume(item.series.id)
+                    else -> pick(activity, item.series)
+                }
+            }
+        }
+        private val secondary = text("", 13f, PortraitStyle.accent).apply {
             gravity = Gravity.CENTER
             minHeight = dp(44)
-            setPadding(dp(6), dp(10), dp(6), dp(10))
-            background = PortraitStyle.selectable(activity, if (primary) PortraitStyle.accent else PortraitStyle.raised, radius = 12)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            background = PortraitStyle.selectable(activity, PortraitStyle.raised, radius = 22)
             isFocusable = true
-            setOnClickListener { action() }
-            actions.addView(this, lp(0, -2).apply { weight = 1f; if (actions.childCount > 0) leftMargin = dp(8) })
+            setOnClickListener {
+                if (item.downloaded.isNotEmpty() && (item.running || item.pending.isNotEmpty())) {
+                    if (item.running) downloads.pause(item.series.id) else downloads.resume(item.series.id)
+                } else pick(activity, item.series)
+            }
         }
-        private val play = button("播放缓存", primary = true) { chooseEpisode(activity, item) }
-        private val toggle = button("继续下载") { if (item.running) downloads.pause(item.series.id) else downloads.resume(item.series.id) }
-        private val select = button("选集缓存") { pick(activity, item.series) }
+        private val more = ImageView(activity).apply {
+            setImageResource(R.drawable.ic_more)
+            setColorFilter(PortraitStyle.muted)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 22)
+            isFocusable = true
+            setOnClickListener { manage() }
+        }
 
         init {
             itemView.layoutParams = RecyclerView.LayoutParams(-1, -2)
             (itemView as FrameLayout).apply {
-                setPadding(dp(16), 0, dp(16), dp(12))
+                setPadding(dp(16), 0, dp(16), dp(8))
                 addView(card, FrameLayout.LayoutParams(-1, -2))
             }
             card.apply {
-                setPadding(dp(14), dp(14), dp(14), dp(14))
-                background = PortraitStyle.shape(activity, PortraitStyle.surface, radius = 20)
+                setPadding(dp(12), dp(12), dp(12), dp(10))
+                background = PortraitStyle.shape(activity, PortraitStyle.surface, radius = 16)
             }
             val heading = PortraitUi.row(activity).apply { gravity = Gravity.TOP }
-            heading.addView(cover, lp(dp(66), dp(88)).apply { rightMargin = dp(12) })
+            heading.addView(cover, lp(dp(54), dp(72)).apply { rightMargin = dp(10) })
             heading.addView(PortraitUi.column(activity).apply {
                 addView(title, lp())
-                addView(metadata, lp().apply { topMargin = dp(6) })
-                addView(status, lp(-2, -2).apply { topMargin = dp(8) })
+                addView(metadata, lp().apply { topMargin = dp(4) })
+                val line = PortraitUi.row(activity)
+                line.addView(status, lp(0, -2).apply { weight = 1f })
+                line.addView(percent, lp(-2, -2).apply { leftMargin = dp(6) })
+                addView(line, lp().apply { topMargin = dp(2) })
+                addView(total, lp(-1, dp(3)).apply { topMargin = dp(1) })
             }, lp(0, -2).apply { weight = 1f })
-            heading.addView(ImageView(activity).apply {
-                setImageResource(R.drawable.ic_more)
-                setColorFilter(PortraitStyle.muted)
-                setPadding(dp(11), dp(11), dp(11), dp(11))
-                background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 22)
-                contentDescription = "管理离线缓存"
-                isFocusable = true
-                setOnClickListener { manage() }
-            }, lp(dp(44), dp(44)).apply { leftMargin = dp(2) })
             card.addView(heading, lp())
-            val totalHeading = PortraitUi.row(activity)
-            totalHeading.addView(totalLabel, lp(0, -2).apply { weight = 1f })
-            totalHeading.addView(percent, lp(-2, -2).apply { leftMargin = dp(8) })
-            card.addView(totalHeading, lp().apply { topMargin = dp(14) })
-            card.addView(total, lp(-1, dp(4)).apply { topMargin = dp(7) })
             card.addView(transferHost, lp())
-            card.addView(problem, lp().apply { topMargin = dp(8) })
-            card.addView(actions, lp().apply { topMargin = dp(14) })
+            card.addView(problem, lp().apply { topMargin = dp(6) })
+            actions.addView(primary, lp(0, -2).apply { weight = 1f })
+            actions.addView(secondary, lp(0, -2).apply { weight = 1f; leftMargin = dp(8) })
+            actions.addView(more, lp(dp(44), dp(44)).apply { leftMargin = dp(4) })
+            card.addView(actions, lp().apply { topMargin = dp(8) })
             cover.setOnClickListener { chooseEpisode(activity, item) }
             title.setOnClickListener { chooseEpisode(activity, item) }
         }
@@ -217,21 +219,40 @@ class PhoneOfflineLibrary(
         fun loadImage() { if (boundSeries.isNotBlank()) loadCover(cover, boundCover) }
         fun recycleImage() { activity.recyclePhoneCover(cover); boundSeries = ""; boundCover = "" }
 
+        private fun toggleTransfers() {
+            if (item.transfers.isEmpty()) return
+            if (!expandedSeries.add(item.series.id)) expandedSeries.remove(item.series.id)
+            bind(item)
+        }
+
         private fun manage() {
             val current = item
-            PhoneDialog.choose(activity, "管理离线缓存", listOf("选择缓存分集", "删除离线缓存"), { choice ->
-                if (choice == 0) pick(activity, current.series)
-                else {
-                    lateinit var confirmation: AlertDialog
-                    val buttons = PortraitUi.column(activity)
-                    buttons.addView(PhoneDialog.button(activity, "删除缓存", destructive = true) {
-                        confirmation.dismiss()
-                        downloads.remove(current.series.id)
-                    }, lp())
-                    buttons.addView(PhoneDialog.button(activity, "取消") { confirmation.dismiss() }, lp().apply { topMargin = dp(10) })
-                    confirmation = PhoneDialog.sheet(activity, "删除离线缓存",
-                        "将删除《${current.series.title}》的全部缓存和未完成文件，已缓存内容占用 ${bytes(current.size)}。", buttons)
-                    confirmation.show()
+            val choices = mutableListOf("选择缓存分集")
+            val progressChoice = if (current.transfers.isNotEmpty()) {
+                choices += if (current.series.id in expandedSeries) "收起各集进度" else "展开各集进度"
+                choices.lastIndex
+            } else -1
+            choices += "删除离线缓存"
+            PhoneDialog.choose(activity, "管理离线缓存", choices, { choice ->
+                when (choice) {
+                    0 -> pick(activity, current.series)
+                    progressChoice -> {
+                        if (!expandedSeries.add(current.series.id)) expandedSeries.remove(current.series.id)
+                        if (item.series.id == current.series.id) bind(item)
+                    }
+                    else -> {
+                        lateinit var confirmation: AlertDialog
+                        val buttons = PortraitUi.column(activity)
+                        buttons.addView(PhoneDialog.button(activity, "删除缓存", destructive = true) {
+                            confirmation.dismiss()
+                            expandedSeries.remove(current.series.id)
+                            downloads.remove(current.series.id)
+                        }, lp())
+                        buttons.addView(PhoneDialog.button(activity, "取消") { confirmation.dismiss() }, lp().apply { topMargin = dp(10) })
+                        confirmation = PhoneDialog.sheet(activity, "删除离线缓存",
+                            "将删除《${current.series.title}》的全部缓存和未完成文件，已缓存内容占用 ${bytes(current.size)}。", buttons)
+                        confirmation.show()
+                    }
                 }
             }).show()
         }
@@ -244,31 +265,43 @@ class PhoneOfflineLibrary(
                 loadImage()
             }
             title.text = value.series.title
-            metadata.text = "已缓存 ${value.downloaded.size} 集 · ${bytes(value.size)}"
-            val failed = !value.running && value.pending.isNotEmpty() && value.message.isNotBlank() && !value.message.startsWith("已暂停")
-            status.text = when {
+            metadata.text = "${value.downloaded.size} / ${value.selected.size} 集 · ${bytes(value.size)}"
+            val pending = value.pending.isNotEmpty()
+            val failed = !value.running && pending && value.message.isNotBlank() && !value.message.startsWith("已暂停")
+            if (value.transfers.isEmpty()) expandedSeries.remove(value.series.id)
+            val expanded = value.series.id in expandedSeries
+            val state = when {
                 value.running && value.transfers.isEmpty() -> "排队中"
-                value.running && value.transfers.size == 1 -> "正在缓存"
-                value.running -> "${value.transfers.size} 集同时缓存"
+                value.running && value.transfers.size == 1 -> "第 ${value.transfers.first().number} 集下载中"
+                value.running -> "${value.transfers.size} 集同时下载"
                 failed -> "下载遇到问题"
-                value.pending.isNotEmpty() -> "已暂停"
+                pending -> "已暂停"
                 else -> "缓存完成"
             }
+            status.text = state + if (value.transfers.isNotEmpty()) if (expanded) " ▴" else " ▾" else ""
+            status.isEnabled = value.transfers.isNotEmpty()
+            status.isFocusable = status.isEnabled
+            status.contentDescription = state + if (value.transfers.isNotEmpty())
+                if (expanded) "，点击收起各集进度" else "，点击展开各集进度" else ""
             status.setTextColor(if (failed) PortraitStyle.secondaryText else PortraitStyle.accent)
-            totalLabel.text = "总进度 ${value.downloaded.size} / ${value.selected.size} 集"
+            val showProgress = value.running || pending
+            percent.visibility = if (showProgress) View.VISIBLE else View.GONE
+            total.visibility = percent.visibility
             percent.text = "${value.progress / 10}%"
             total.progress = value.progress
-            val active = value.transfers.map { it.id }.toSet()
+            total.contentDescription = "总进度 ${value.progress / 10}%"
+            val transfers = if (expanded) value.transfers else emptyList()
+            val active = transfers.map { it.id }.toSet()
             transferViews.keys.filter { it !in active }.forEach { id ->
                 transferViews.remove(id)?.let { transferHost.removeView(it.first) }
             }
-            value.transfers.forEachIndexed { index, transfer ->
+            transfers.forEachIndexed { index, transfer ->
                 val (row, label, bar) = transferViews.getOrPut(transfer.id) {
                     val row = PortraitUi.column(activity)
-                    val label = text("", 12f, PortraitStyle.muted)
+                    val label = text("", 11f, PortraitStyle.muted)
                     val bar = progress()
-                    row.addView(label, lp().apply { topMargin = dp(9) })
-                    row.addView(bar, lp(-1, dp(3)).apply { topMargin = dp(6) })
+                    row.addView(label, lp().apply { topMargin = dp(7) })
+                    row.addView(bar, lp(-1, dp(2)).apply { topMargin = dp(4) })
                     Triple(row, label, bar)
                 }
                 if (transferHost.indexOfChild(row) != index) {
@@ -284,9 +317,25 @@ class PhoneOfflineLibrary(
             transferHost.visibility = if (active.isEmpty()) View.GONE else View.VISIBLE
             problem.text = value.message
             problem.visibility = if (failed) View.VISIBLE else View.GONE
-            play.isEnabled = value.downloaded.isNotEmpty(); play.alpha = if (play.isEnabled) 1f else .4f
-            toggle.text = when { value.running -> "暂停下载"; failed -> "重试下载"; else -> "继续下载" }
-            toggle.visibility = if (value.running || value.pending.isNotEmpty()) View.VISIBLE else View.GONE
+            val retryLabel = if (failed) "重试下载" else "继续下载"
+            val hasVideo = value.downloaded.isNotEmpty()
+            primaryLabel.text = when {
+                hasVideo -> "播放缓存"
+                value.running -> "暂停下载"
+                pending -> retryLabel
+                else -> "选集缓存"
+            }
+            primaryIcon.setImageResource(when {
+                hasVideo -> R.drawable.ic_play_arrow
+                value.running -> R.drawable.ic_pause
+                else -> R.drawable.ic_download
+            })
+            primary.contentDescription = "${value.series.title}，${primaryLabel.text}"
+            secondary.text = if (hasVideo && (value.running || pending))
+                if (value.running) "暂停下载" else retryLabel else "选集缓存"
+            secondary.contentDescription = "${value.series.title}，${secondary.text}"
+            secondary.visibility = if (!hasVideo && !value.running && !pending) View.GONE else View.VISIBLE
+            more.contentDescription = "管理《${value.series.title}》的离线缓存"
             cover.contentDescription = "${value.series.title}，选择离线分集播放"
         }
     }

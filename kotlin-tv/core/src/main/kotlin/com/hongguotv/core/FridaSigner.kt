@@ -26,7 +26,7 @@ class FridaSigner(
     private val clock: () -> Long = System::currentTimeMillis,
 ) : RemoteSigner(http = transport) {
     companion object {
-        private const val DEFAULT_ENDPOINT = "http://123.57.172.104:8901"
+        private const val DEFAULT_ENDPOINT = "http://taihe.678120.cn:8056"
         private val SIGNATURE_HEADERS = setOf(
             "x-gorgon", "x-khronos", "x-argus", "x-ladon", "x-medusa", "x-helios",
         )

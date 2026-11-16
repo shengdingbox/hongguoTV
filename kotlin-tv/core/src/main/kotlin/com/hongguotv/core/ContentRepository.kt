@@ -369,7 +369,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             // 翻页只能续接原数据源和筛选；失败时保留当前结果供重试，不拿网站页码冒充 App 游标。
             val routes=cursor?.let { listOf(it.route) } ?: if(type==ContentType.COMIC)
                 listOf(SearchRoute.COMIC,SearchRoute.COMIC_LEGACY,SearchRoute.WEBSITE)
-                else listOf(SearchRoute.SERIES,SearchRoute.SHORT,SearchRoute.WEBSITE)
+                else listOf(SearchRoute.SHORT,SearchRoute.SERIES,SearchRoute.WEBSITE)
             var failure: Exception?=null
             for(route in routes) {
                 ensureSearchActive()

@@ -5,12 +5,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 
-/** 与开心果使用的 SDK 对齐：漫剧用综合页的服务端筛选；短剧直接读无筛选的综合页，类型由客户端过滤。 */
+/** 与开心果使用的 SDK 对齐：漫剧用综合页的服务端筛选，短剧优先读取逐季列出的剧集页。 */
 internal enum class SearchRoute(val tab: Int, val filter: String = "") {
     COMIC(11, "content_type_dynamic_comic"),
     COMIC_LEGACY(19),
     SERIES(29),
-    SHORT(11),
+    SHORT(11, "content_type_short_play"),
     WEBSITE(0),
 }
 
@@ -61,9 +61,7 @@ internal object SearchResults {
                     candidates++
                     val content = card.optInt("content_type", video.optInt("content_type"))
                     // 类型未知时沿用所请求页签的口径；明确标注的其它内容不能混进当前片库。
-                    // 1003 是合集卡（备案同为微短剧，常为预告/混剪，正片多为 0 集），随短剧片库收录。
-                    val matchesType = if(type == ContentType.COMIC) content == 1004
-                        else content == 1 || content == 7 || content == 1002 || content == 1003
+                    val matchesType = if(type == ContentType.COMIC) content == 1004 else content == 1 || content == 7 || content == 1002
                     if(content != 0 && !matchesType) return@mapNotNull null
                     val count = card.optInt("episode_cnt", video.optInt("episode_cnt"))
                     Series(id, seriesTitle(title),

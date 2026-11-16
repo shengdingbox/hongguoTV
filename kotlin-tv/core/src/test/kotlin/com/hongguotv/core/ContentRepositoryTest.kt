@@ -548,10 +548,8 @@ class ContentRepositoryTest {
 
     @Test fun shortSearchReadsTheIosSeriesTabAndNestedObjectCards() {
         val repo=repository { request ->
-            // 短剧库优先读无筛选综合页；综合页没有该剧集页签时降级到剧集页签。
-            if(request.url.queryParameter("tab_type")=="11")
-                """{"code":0,"search_tabs":[{"tab_type":29,"has_more":false,"data":[]}]}"""
-            else """{"code":0,"search_tabs":[{"tab_type":29,"has_more":false,"data":[{"video_data":{"series_id":"999","content_type":1,"video_detail":{"series_title":"测试短剧","series_intro":"介绍","series_cover":"https://example.com/poster.jpg","episode_cnt":12}}}]}]}"""
+            assertEquals("29",request.url.queryParameter("tab_type"))
+            """{"code":0,"search_tabs":[{"tab_type":29,"has_more":false,"data":[{"video_data":{"series_id":"999","content_type":1,"video_detail":{"series_title":"测试短剧","series_intro":"介绍","series_cover":"https://example.com/poster.jpg","episode_cnt":12}}}]}]}"""
         }
         val item=repo.search("测试",type=ContentType.SHORT).items.single()
         assertEquals("999",item.id)
@@ -593,7 +591,7 @@ class ContentRepositoryTest {
         val paths=mutableListOf<String>()
         val repo=repository { request ->
             paths+=request.url.encodedPath
-            if(paths.size==1) """{"code":0,"search_tabs":[{"tab_type":11,"has_more":false,"data":[{"video_data":[{"series_id":"111","title":"第一部"},{"series_id":"222","title":"第二部"}]}]}]}"""
+            if(paths.size==1) """{"code":0,"search_tabs":[{"tab_type":29,"has_more":false,"data":[{"video_data":[{"series_id":"111","title":"第一部"},{"series_id":"222","title":"第二部"}]}]}]}"""
             else {
                 assertEquals("/novel/player/multi_video_detail/player/v1",request.url.encodedPath)
                 val body=JSONObject(okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8())

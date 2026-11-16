@@ -160,7 +160,7 @@ class PortraitDetail(
         val page = FrameLayout(activity)
         page.addView(scroll, FrameLayout.LayoutParams(-1, -1))
         body.addView(page, lp(-1, -1))
-        content.setPadding(0, dp(78), 0, 0)
+        content.setPadding(0, dp(80), 0, 0)
         PhoneInsets.listen(scroll) { _, bottomInset, _ -> scroll.setPadding(0, 0, 0, dp(92) + bottomInset) }
 
         val topBackground = ColorDrawable(PortraitStyle.background).apply { alpha = 0 }
@@ -176,7 +176,7 @@ class PortraitDetail(
             contentDescription = "返回"
             isFocusable = true
             setOnClickListener { activity.goBackPhone() }
-        }, lp(dp(42), dp(42)))
+        }, lp(dp(44), dp(44)))
         val titleInBar = text(data.series.title, 16f).apply {
             setTypeface(null, Typeface.BOLD)
             maxLines = 1
@@ -185,6 +185,18 @@ class PortraitDetail(
             visibility = View.INVISIBLE
         }
         top.addView(titleInBar, lp(0, -2).apply { weight = 1f; leftMargin = dp(14) })
+        val offline = ImageView(activity).apply {
+            setImageResource(R.drawable.ic_download)
+            setColorFilter(PortraitStyle.text)
+            setPadding(dp(11), dp(11), dp(11), dp(11))
+            background = PortraitStyle.selectable(activity, PortraitStyle.translucentSurface, radius = 24)
+            contentDescription = "离线缓存，选择分集"
+            isFocusable = true
+            isEnabled = data.episodes.isNotEmpty()
+            alpha = if (isEnabled) 1f else .4f
+            setOnClickListener { if (loadingSeasonId == null) PhoneOfflineLibrary.pick(activity, data.series, data) }
+        }
+        top.addView(offline, lp(dp(44), dp(44)).apply { leftMargin = dp(12) })
         // 顶栏覆盖到状态栏安全区，让两个区域随滚动共用同一背景。
         frame.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
         PhoneInsets.listen(top) { topInset, _, _ ->
@@ -318,12 +330,6 @@ class PortraitDetail(
         favorite.addView(favoriteLabel, lp(-2, -2))
         actions.addView(favorite, lp(dp(113), dp(54)).apply { leftMargin = if (data.episodes.isNotEmpty()) dp(9) else 0 })
         content.addView(actions, lp())
-        content.addView(text("离线缓存 · 选择分集", 14f, PortraitStyle.accent).apply {
-            gravity = Gravity.CENTER
-            minHeight = dp(44)
-            background = PortraitStyle.selectable(activity, android.graphics.Color.TRANSPARENT)
-            setOnClickListener { if (loadingSeasonId == null) PhoneOfflineLibrary.pick(activity, data.series, data) }
-        }, lp())
 
         val seasonHost = PortraitUi.column(activity).apply { setPadding(dp(16), dp(20), dp(16), dp(4)) }
         content.addView(seasonHost, lp())
@@ -488,6 +494,8 @@ class PortraitDetail(
 
         fun setLoading(seasonId: String?) {
             loadingSeasonId = seasonId
+            offline.isEnabled = seasonId == null && data.episodes.isNotEmpty()
+            offline.alpha = if (offline.isEnabled) 1f else .4f
             play.visibility = if (data.episodes.isNotEmpty()) View.VISIBLE else View.GONE
             favorite.layoutParams = (favorite.layoutParams as LinearLayout.LayoutParams).apply {
                 leftMargin = if (data.episodes.isNotEmpty()) dp(9) else 0

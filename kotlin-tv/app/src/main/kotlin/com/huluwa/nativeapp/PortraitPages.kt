@@ -329,22 +329,28 @@ class PortraitPages(
         body.addView(recent, lp())
         val retainedCards = mutableMapOf<String, RecentWatchCard>()
 
-        val tabs = row().apply { setPadding(dp(16), dp(16), dp(16), dp(10)) }
+        val tabHost = column().apply { setPadding(dp(16), dp(16), dp(16), dp(14)) }
+        val tabs = row().apply {
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 14)
+        }
         val tabButtons = listOf("收藏", "离线缓存").mapIndexed { index, label ->
-            text(label, 20f).apply {
+            text(label, 16f).apply {
                 gravity = Gravity.CENTER
                 minHeight = dp(44)
+                setPadding(dp(8), dp(10), dp(8), dp(10))
                 setTypeface(null, Typeface.BOLD)
                 setOnClickListener { activity.selectMineOfflineTab(index == 1) }
                 tabs.addView(this, lp(0, -2).apply { weight = 1f })
             }
         }
-        body.addView(tabs, lp())
+        tabHost.addView(tabs, lp())
+        body.addView(tabHost, lp())
         val emptyFavorites = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
         body.addView(emptyFavorites, lp())
         val favoritesAdapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) }, null)
         page.addGrid(favoritesAdapter)
-        val offline = PhoneOfflineLibrary(activity, page)
+        val offline = PhoneOfflineLibrary(activity, page, loadCover)
         page.addBlock(offline.header)
         page.addRows(offline.adapter)
         var shownHistory: List<WatchProgress>? = null
@@ -374,8 +380,12 @@ class PortraitPages(
             tabButtons.forEachIndexed { index, button ->
                 val selected = (index == 1) == offlineSelected
                 button.isSelected = selected
-                button.setTextColor(if (selected) PortraitStyle.accent else PortraitStyle.muted)
-                button.background = PortraitStyle.selectable(activity, if (selected) PortraitStyle.surface else Color.TRANSPARENT, radius = 12)
+                if (button.tag != selected) {
+                    button.tag = selected
+                    button.setTextColor(if (selected) PortraitStyle.onChipSelected else PortraitStyle.text)
+                    button.background = PortraitStyle.selectable(activity, if (selected) PortraitStyle.chipSelected else Color.TRANSPARENT, radius = 11)
+                    button.setTypeface(null, if (selected) Typeface.BOLD else Typeface.NORMAL)
+                }
                 button.contentDescription = "${button.text}，${if (selected) "已选中" else "未选中"}"
             }
             offline.update(offlineSelected)

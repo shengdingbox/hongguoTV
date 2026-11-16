@@ -53,7 +53,7 @@ object PhoneDialog {
      * 返回未显示的弹框，调用方仍可绑定原来的关闭与业务回调。
      * 标题固定，内容按剩余高度滚动；异步内容、键盘和系统栏变化都会重新参与测量。
      */
-    fun sheet(activity: Activity, title: String, subtitle: String? = null, content: View): AlertDialog {
+    fun sheet(activity: Activity, title: String, subtitle: String? = null, content: View, footer: View? = null): AlertDialog {
         PortraitStyle.refresh(activity)
         val dialog = object : AlertDialog(activity, R.style.PhoneAlertDialog) {
             override fun onCreate(savedInstanceState: Bundle?) {
@@ -154,6 +154,7 @@ object PhoneDialog {
             addView(scrollingContent, ViewGroup.LayoutParams(-1, -2))
         }
         root.addView(scroll, lp().apply { weight = 1f })
+        if (footer != null) root.addView(footer, lp().apply { topMargin = dp(activity, 16) })
         dialog.setView(root, 0, 0, 0, 0)
         dialog.setCanceledOnTouchOutside(true)
         PhoneInsets.listen(root) { top, bottom, ime ->

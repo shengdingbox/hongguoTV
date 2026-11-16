@@ -366,20 +366,20 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         if(previous!=null && !previous.page.hasMore) return CatalogPage(emptyList(),false)
         return searchBudget(10_000) {
             val cursor=previous?.cursor
-            // 翻页只能续接原数据源；失败时保留当前结果供重试，不拿网站页码冒充 App 游标。
-            // 搜索不分内容类型：统一走无筛选综合页，剧集页签与网站仅作兜底。
-            val routes=cursor?.let { listOf(it.route) }
-                ?: listOf(SearchRoute.COMMON,SearchRoute.SERIES,SearchRoute.WEBSITE)
+            // 翻页只能续接原数据源和筛选；失败时保留当前结果供重试，不拿网站页码冒充 App 游标。
+            val routes=cursor?.let { listOf(it.route) } ?: if(type==ContentType.COMIC)
+                listOf(SearchRoute.COMIC,SearchRoute.COMIC_LEGACY,SearchRoute.WEBSITE)
+                else listOf(SearchRoute.SHORT,SearchRoute.SERIES,SearchRoute.WEBSITE)
             var failure: Exception?=null
             for(route in routes) {
                 ensureSearchActive()
                 if(cursor==null && route!=SearchRoute.WEBSITE && synchronized(searchRetryAt) { clock()<(searchRetryAt[route] ?: 0L) }) continue
                 try {
                     val result=if(route==SearchRoute.WEBSITE) {
-                        // 网站兜底同样不限类型，避免切库后丢掉另一类型的结果。
-                        val result=webSearch(query,page,null,retry=false,transport=searchHttp)
+                        val genre=if(type==ContentType.COMIC) COMIC_WEB_GENRE else SHORT_WEB_GENRE
+                        val result=webSearch(query,page,genre,retry=false,transport=searchHttp)
                         SearchResponse(result.items,result.hasMore,null,"","")
-                    } else appSearch(query,route,cursor)
+                    } else appSearch(query,type,route,cursor)
                     val seen=cursor?.seen.orEmpty()
                     val fresh=result.items.filter { it.id !in seen }
                     val nextOffset=result.offset ?: ((cursor?.offset ?: 0)+20)
@@ -531,7 +531,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return result
     }
 
-    private fun appSearch(keyword: String, route: SearchRoute, cursor: SearchCursor?): SearchResponse {
+    private fun appSearch(keyword: String, type: ContentType, route: SearchRoute, cursor: SearchCursor?): SearchResponse {
         val values=linkedMapOf("query" to keyword,"tab_type" to route.tab.toString(),"count" to "20",
             "offset" to (cursor?.offset ?: 0).toString(),"use_correct" to "true","bookshelf_search_plan" to "4",
             "search_source" to "1","tab_name" to "feed","bookstore_tab" to "16","user_is_login" to "0")
@@ -541,7 +541,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             if(it.passback.isNotBlank()) values["passback"]=it.passback
         }
         val signed=signer.signCatalog("$API/reading/bookapi/search/tab/v",values)
-        return SearchResults.parse(JSONObject(text(signed.url,signed,searchHttp)),route)
+        return SearchResults.parse(JSONObject(text(signed.url,signed,searchHttp)),route,type)
     }
 
     /** 支持中文、完整剧名和电视键盘首拼；失败时保持输入框可用。 */
@@ -1176,6 +1176,10 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // 推荐、系列剧与评分在主详情显示后并行补齐，共享两秒预算。
         private const val DETAIL_AUX_TIMEOUT=2_000L
         private const val DETAIL_CACHE_TTL=600_000L
+        // 网站搜索混合两类内容：video_data.genre 205 是漫剧，203 是短剧
+        // （2026-10-13 用站点自带的漫剧热播榜与短剧分类列表逐条核对确认）。
+        private const val COMIC_WEB_GENRE="205"
+        private const val SHORT_WEB_GENRE="203"
         // 首条路由的空响应重发次数与退避：网关抖动时先原地重试，再换下一条路由。
         private const val BLANK_RETRIES=2
         private const val BLANK_BACKOFF_MS=400L

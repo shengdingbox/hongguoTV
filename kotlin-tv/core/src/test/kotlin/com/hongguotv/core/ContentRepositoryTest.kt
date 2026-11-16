@@ -408,13 +408,14 @@ class ContentRepositoryTest {
         assertEquals(3,requests)
     }
 
-    @Test fun comicSearchFallsBackToWebsiteAndKeepsOnlyComicGenreRows() {
+    @Test fun searchFallsBackToWebsiteWithoutFilteringByGenre() {
         val repo=repository { request ->
             if(request.url.host.endsWith("fqnovel.com")) ""
             else """{"searchList":[{"video_data":{"series_id":"111","series_name":"短剧测试","genre":"203"}},{"video_data":{"series_id":"222","series_name":"漫画测试","genre":"205"}}]}"""
         }
+        // 搜索不分内容类型：短剧与漫剧两条站点结果都保留。
         val result=repo.search("修仙",1,ContentType.COMIC)
-        assertEquals(listOf("222"),result.items.map { it.id })
+        assertEquals(listOf("111","222"),result.items.map { it.id })
         // 站点没有 hasMore 时不再提示翻页
         assertFalse(result.hasMore)
     }
@@ -440,13 +441,14 @@ class ContentRepositoryTest {
         assertEquals(listOf("/reading/bookapi/search/tab/v","/reading/bookapi/search/tab/v","/api/search/result/"),paths)
     }
 
-    @Test fun shortSearchFallsBackToWebsiteAndKeepsOnlyShortGenreRows() {
+    @Test fun shortSearchAlsoKeepsEveryGenreOnWebsiteFallback() {
         val repo=repository { request ->
             if(request.url.host.endsWith("fqnovel.com")) ""
             else """{"searchList":[{"video_data":{"series_id":"111","series_name":"短剧测试","genre":"203"}},{"video_data":{"series_id":"222","series_name":"漫画测试","genre":"205"}}]}"""
         }
+        // 同为网站兜底路径，不再按当前片库类型裁剪。
         val result=repo.search("总裁",1,ContentType.SHORT)
-        assertEquals(listOf("111"),result.items.map { it.id })
+        assertEquals(listOf("111","222"),result.items.map { it.id })
     }
 
     @Test fun websiteSearchPaginatesWithSitePageAndHasMore() {
@@ -484,12 +486,13 @@ class ContentRepositoryTest {
         .put("data",JSONArray().put(JSONObject().put("video_data",JSONArray().put(JSONObject()
             .put("series_id",id).put("title","测试剧集").put("episode_cnt",8)))))
 
-    @Test fun comicSearchRequestsAndSelectsOnlyComicTab() {
+    @Test fun searchRequestsTheUnfilteredCommonTab() {
         var requests=0
         val repo=repository { request ->
             requests++
             assertEquals("11",request.url.queryParameter("tab_type"))
-            assertEquals("content_type_dynamic_comic",request.url.queryParameter("selected_items"))
+            // 搜索不传类型筛选，短剧/漫剧/合集一并召回。
+            assertNull(request.url.queryParameter("selected_items"))
             assertEquals("1",request.url.queryParameter("search_source"))
             assertEquals("feed",request.url.queryParameter("tab_name"))
             assertEquals("16",request.url.queryParameter("bookstore_tab"))
@@ -505,21 +508,21 @@ class ContentRepositoryTest {
         assertEquals(listOf("999"),repo.search("修仙",2,ContentType.COMIC).items.map { it.id })
     }
 
-    @Test fun emptyComicSearchDoesNotFallBackToShortResults() {
+    @Test fun emptyCommonSearchReturnsEmptyWithoutExtraRoutes() {
         var requests=0
         val repo=repository { requests++; """{"code":0,"search_tabs":[{"tab_type":11,"data":[],"has_more":false}]}""" }
         assertTrue(repo.search("无结果",1,ContentType.COMIC).items.isEmpty())
         assertEquals(1,requests)
     }
 
-    @Test fun missingComicTabFallsBackToWebsiteWithoutShortResults() {
+    @Test fun missingCommonTabFallsBackToSeriesThenWebsite() {
         var requests=0
         val repo=repository { request ->
             requests++
-            if(request.url.host.endsWith("fqnovel.com")) """{"code":0,"search_tabs":[{"tab_type":29,"data":[]}]}"""
+            if(request.url.host.endsWith("fqnovel.com")) """{"code":0,"search_tabs":[{"tab_type":30,"data":[]}]}"""
             else """{"searchList":[{"video_data":{"series_id":"111","series_name":"短剧测试","genre":"203"}}]}"""
         }
-        assertTrue(repo.search("修仙",1,ContentType.COMIC).items.isEmpty())
+        assertEquals("111",repo.search("修仙",1,ContentType.COMIC).items.single().id)
         assertEquals(3,requests)
     }
 
@@ -546,12 +549,10 @@ class ContentRepositoryTest {
         assertEquals(1,requests)
     }
 
-    @Test fun shortSearchReadsTheIosSeriesTabAndNestedObjectCards() {
+    @Test fun searchReadsNestedObjectCardsFromTheCommonTab() {
         val repo=repository { request ->
-            // 短剧库优先读无筛选综合页；综合页没有该剧集页签时降级到剧集页签。
-            if(request.url.queryParameter("tab_type")=="11")
-                """{"code":0,"search_tabs":[{"tab_type":29,"has_more":false,"data":[]}]}"""
-            else """{"code":0,"search_tabs":[{"tab_type":29,"has_more":false,"data":[{"video_data":{"series_id":"999","content_type":1,"video_detail":{"series_title":"测试短剧","series_intro":"介绍","series_cover":"https://example.com/poster.jpg","episode_cnt":12}}}]}]}"""
+            assertEquals("11",request.url.queryParameter("tab_type"))
+            """{"code":0,"search_tabs":[{"tab_type":11,"has_more":false,"data":[{"video_data":{"series_id":"999","content_type":1,"video_detail":{"series_title":"测试短剧","series_intro":"介绍","series_cover":"https://example.com/poster.jpg","episode_cnt":12}}}]}]}"""
         }
         val item=repo.search("测试",type=ContentType.SHORT).items.single()
         assertEquals("999",item.id)
@@ -560,11 +561,13 @@ class ContentRepositoryTest {
         assertEquals("全 12 集",item.badge)
     }
 
-    @Test fun comicFilterKeepsAllArrayCardsAndDropsExplicitShortDrama() {
+    @Test fun searchKeepsEveryContentTypeAndDoesNotFilterByLibrary() {
         val repo=repository {
-            """{"code":0,"search_tabs":[{"tab_type":11,"has_more":false,"data":[{"video_data":[{"series_id":"111","content_type":1004,"video_detail":{"series_title":"测试漫剧第三季"}},{"series_id":"222","content_type":1,"title":"真人剧"},{"series_id":"333","content_type":1004,"video_detail":{"series_title":"测试漫剧第一季"}}]}]}]}"""
+            """{"code":0,"search_tabs":[{"tab_type":11,"has_more":false,"data":[{"video_data":[{"series_id":"111","content_type":1004,"video_detail":{"series_title":"测试漫剧第三季"}},{"series_id":"222","content_type":1,"title":"真人剧"},{"series_id":"333","content_type":1003,"title":"合集卡"},{"series_id":"444","content_type":1004,"video_detail":{"series_title":"测试漫剧第一季"}}]}]}]}"""
         }
-        assertEquals(listOf("333","111"),repo.search("测试").items.map { it.id })
+        // 漫剧库不再裁掉短剧与合集，全部按服务端召回顺序返回。
+        assertEquals(listOf("111","222","333","444"),repo.search("测试",type=ContentType.COMIC).items.map { it.id })
+        assertEquals(listOf("111","222","333","444"),repo.search("测试",type=ContentType.SHORT).items.map { it.id })
     }
 
     @Test fun duplicateOnlyPageEndsSearchInsteadOfRequestingTheSameItemsForever() {

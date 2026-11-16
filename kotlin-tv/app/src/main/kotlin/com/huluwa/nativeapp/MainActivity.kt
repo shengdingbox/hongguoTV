@@ -3075,7 +3075,7 @@ class MainActivity: Activity() {
         ?: series.takeIf { it.release!=null }
 
     private fun withReleaseSchedule(data: Detail, scheduled: Series?): Detail =
-        if(data.episodes.isEmpty() && data.series.release==null && scheduled?.release!=null)
+        if(data.episodes.isEmpty() && data.series.release?.isSpecified!=true && scheduled?.release!=null)
             data.copy(series=data.series.copy(badge=scheduled.badge,release=scheduled.release))
         else data
 

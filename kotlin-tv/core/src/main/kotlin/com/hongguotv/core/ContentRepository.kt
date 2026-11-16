@@ -669,9 +669,27 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             row.optInt("vid_index", Int.MAX_VALUE) to vid
         }.sortedBy { it.first }.map { it.second }
         if (episodes.distinct().size != episodes.size) throw IOException("分集数据异常")
-        val schedule = if (episodes.isEmpty() && (v.optLong("schedule_publish_time") > 0 ||
-            v.optLong("expected_publish_time") > 0 || (v.has("is_online") && !v.optBoolean("is_online", true))))
-            ReleaseSchedule.fromItem(v) else null
+        var schedule = series.release.takeIf { episodes.isEmpty() }
+        if (schedule != null && !schedule.isSpecified) {
+            // 预告详情只给 content_type=1007 和空分集；排期需从同系列的预约条目补取。
+            // 使用当前剧集 ID 查询，收藏、搜索直达也不依赖先打开新剧日历。
+            val scope = RequestScope.current()?.child(2_000) ?: RequestScope(2_000)
+            val reserved = try {
+                scope.run {
+                    planCells(id, "single_col_same_ip_series", id, detailHttp)
+                        .firstOrNull { it.optInt("show_type") == 547 }
+                        ?.optJSONArray("video_data")?.objects()?.map(::planCardSeries)
+                        ?.firstOrNull { it.id == id }?.release
+                }
+            } catch (problem: IOException) {
+                RequestScope.current()?.ensureActive()
+                if (Thread.currentThread().isInterrupted) throw problem
+                null
+            } finally {
+                scope.cancel()
+            }
+            if (reserved?.isSpecified == true) schedule = reserved
+        }
         return SeriesPayload(if (schedule != null) series.copy(badge = schedule.label, release = schedule) else series,
             episodes, detailSocial(v))
     }
@@ -705,7 +723,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     }
 
     /** 统一打 plan feed；按 `from` 场景取回 data 下的 cell 数组。 */
-    private fun planCells(bookId: String, from: String, filterId: String? = null): List<JSONObject> {
+    private fun planCells(bookId: String, from: String, filterId: String? = null, transport: OkHttpClient = http): List<JSONObject> {
         val values = linkedMapOf(
             "book_id" to bookId,
             "from" to from,
@@ -714,7 +732,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             "user_is_login" to "0",
         )
         if (filterId != null) values["filter_ids"] = filterId
-        val data = signedJson("$API/reading/bookapi/plan/v1/", values, null)
+        val data = signedJson("$API/reading/bookapi/plan/v1/", values, null, transport)
         return data.optJSONArray("data")?.objects().orEmpty()
     }
 
@@ -734,12 +752,13 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return rows.objects().map(::planCardSeries)
     }
 
-    /** 详情/推荐/系列剧共用的卡片解析：尽量凑齐 Series 需要的六个字段。 */
+    /** 详情/推荐/系列剧共用的卡片解析，同时保留预告作品的预约排期。 */
     private fun planCardSeries(o: JSONObject): Series {
         val id = o.str("series_id_str").ifEmpty { o.str("series_id") }.ifEmpty { o.str("vid") }
         val title = o.str("series_title").ifEmpty { o.str("title") }
         val cover = o.str("series_cover").ifEmpty { o.str("cover") }
-        val intro = o.str("series_intro").ifEmpty { o.str("description") }
+        val intro = o.str("series_intro").ifEmpty { o.str("description") }.ifEmpty { o.str("video_desc") }
+            .ifEmpty { o.optJSONObject("subscribe_item")?.str("item_desc").orEmpty() }
         val count = o.optInt("episode_cnt", 0)
         val badge = o.str("episode_right_text").ifEmpty { if (count > 0) "全 $count 集" else "" }
         // 题材标签取 secondary_infos 里 data_type=3 的可搜索标签；
@@ -754,7 +773,8 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             ?.filter { it.isNotEmpty() && !it.startsWith("全") && !it.contains("热度") }
             .orEmpty()
         val tags = (infoTags.ifEmpty { fallbackTags }).distinct().take(3).joinToString(" · ")
-        return Series(id, seriesTitle(title), cleanUrl(cover), intro, badge, tags)
+        val release = ReleaseSchedule.fromSeries(o)
+        return Series(id, seriesTitle(title), cleanUrl(cover), intro, release?.label ?: badge, tags, release)
     }
 
     /** 网页详情提供十分制评分；只接收与当前剧集匹配的有效分数。 */

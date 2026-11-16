@@ -10,6 +10,8 @@ import java.util.TimeZone
 
 /** 仅未上线作品携带排期；时间戳统一为毫秒，日期来自平台上新日历。 */
 data class ReleaseSchedule(val publishAt: Long = 0, val date: String = "", val note: String = "") {
+    val isSpecified get() = publishAt > 0 || NewReleaseCalendar.valid(date) || ABSOLUTE_DATE.containsMatchIn(note)
+
     val label: String get() {
         if (publishAt > 0) {
             val calendar = Calendar.getInstance(ZONE).apply { timeInMillis = publishAt }
@@ -54,9 +56,28 @@ data class ReleaseSchedule(val publishAt: Long = 0, val date: String = "", val n
             else -> value
         }
 
-        internal fun fromItem(item: JSONObject, date: String = "", note: String = item.str("sub_info")): ReleaseSchedule =
-            ReleaseSchedule(millis(item.optLong("schedule_publish_time").takeIf { it > 0 }
-                ?: item.optLong("expected_publish_time")), date.takeIf(NewReleaseCalendar::valid).orEmpty(), note.take(500))
+        /** 系列预告把排期放在 subscribe_item.sub_title_list，预约人数不属于上线文案。 */
+        internal fun fromItem(item: JSONObject, date: String = "", note: String = item.str("sub_info")): ReleaseSchedule {
+            val sources = listOfNotNull(item, item.optJSONObject("subscribe_item"))
+            val stamp = sources.asSequence().flatMap { source ->
+                sequenceOf(source.optLong("schedule_publish_time"), source.optLong("expected_publish_time"))
+            }.firstOrNull { it > 0 } ?: 0
+            val notes = listOf(note) + sources.flatMap { source ->
+                listOf(source.str("sub_info")) + source.optJSONArray("sub_title_list")?.objects()
+                    .orEmpty().map { it.str("content") }
+            }
+            val releaseNote = notes.firstOrNull { ABSOLUTE_DATE.containsMatchIn(it) || TIME.containsMatchIn(it) }
+                ?: notes.firstOrNull { it.isNotBlank() }.orEmpty()
+            return ReleaseSchedule(millis(stamp), date.takeIf(NewReleaseCalendar::valid).orEmpty(), releaseNote.take(500))
+        }
+
+        internal fun fromSeries(item: JSONObject): ReleaseSchedule? {
+            val trailer = item.optInt("content_type") == 1007
+            if (!trailer && item.optInt("episode_cnt") > 0) return null
+            val schedule = fromItem(item)
+            return schedule.takeIf { trailer || item.optJSONObject("subscribe_item") != null || it.publishAt > 0 ||
+                (item.has("is_online") && !item.optBoolean("is_online", true)) }
+        }
 
         fun fromJson(item: JSONObject) = ReleaseSchedule(millis(item.optLong("publishAt")),
             item.str("date").takeIf(NewReleaseCalendar::valid).orEmpty(), item.str("note").take(500))

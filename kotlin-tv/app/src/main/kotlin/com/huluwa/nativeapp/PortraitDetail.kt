@@ -318,6 +318,12 @@ class PortraitDetail(
         favorite.addView(favoriteLabel, lp(-2, -2))
         actions.addView(favorite, lp(dp(113), dp(54)).apply { leftMargin = if (data.episodes.isNotEmpty()) dp(9) else 0 })
         content.addView(actions, lp())
+        content.addView(text("离线缓存 · 选择分集", 14f, PortraitStyle.accent).apply {
+            gravity = Gravity.CENTER
+            minHeight = dp(44)
+            background = PortraitStyle.selectable(activity, android.graphics.Color.TRANSPARENT)
+            setOnClickListener { if (loadingSeasonId == null) PhoneOfflineLibrary.pick(activity, data.series, data) }
+        }, lp())
 
         val seasonHost = PortraitUi.column(activity).apply { setPadding(dp(16), dp(20), dp(16), dp(4)) }
         content.addView(seasonHost, lp())

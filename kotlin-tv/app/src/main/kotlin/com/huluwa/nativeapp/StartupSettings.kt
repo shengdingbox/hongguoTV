@@ -14,7 +14,7 @@ object StartupSettings {
     private const val PREFS = "native-ui-v1"
     private const val MIGRATED = "migrated-v1"
     private val keys = setOf("theme", "uiScale", "orientationMode", "phoneAppearance", "backdropStyle",
-        "favoriteSort", "newReleaseWindow", "newReleaseDay", "nativeSigningMode")
+        "favoriteSort", "newReleaseWindow", "newReleaseDay", "nativeSigningMode", "mineContentTab")
     private val main = Handler(Looper.getMainLooper())
     private val loader = Executors.newSingleThreadExecutor { Thread(it, "hongguotv-startup-settings") }
     private val callbacks = mutableListOf<(Result<Unit>) -> Unit>()

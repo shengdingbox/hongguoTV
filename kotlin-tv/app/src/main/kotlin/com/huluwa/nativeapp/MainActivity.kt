@@ -95,6 +95,39 @@ class MainActivity: Activity() {
     // 直接 getSharedPreferences 会 NPE 导致启动即闪退。
     private val signerStore by lazy { SharedPrefsSignerStore(this) }
     private val repository by lazy { ContentRepository(signer=SigningSettings.createSigner(signerStore)) }
+    val offlineDownloads by lazy { OfflineDownloads.get(this) }
+    @Volatile private var offlineOnly = false
+    val mineOfflineSelected get() = StartupSettings.string("mineContentTab") == "offline"
+    fun selectMineOfflineTab(offline: Boolean) {
+        StartupSettings.set("mineContentTab", if (offline) "offline" else "favorites")
+        renderPhoneTab()
+    }
+    fun showOfflineLibraryPhone() {
+        StartupSettings.set("mineContentTab", "offline")
+        if (screen == "player") returnToDetail()
+        offlineOnly = false
+        switchPhoneTab("mine")
+    }
+    /** 使用原始分集表保留集号；播放来源始终来自手动离线库。 */
+    fun openOfflinePhone(item: OfflineDownloads.Item, index: Int, position: Long? = null, autoplay: Boolean = true) {
+        if (item.downloaded.none { it.number == index + 1 }) { PhoneUi.toast(this, "该集尚未离线"); return }
+        rememberPhoneCatalogPosition()
+        restoringPhoneDetail = null
+        favoriteMonitor.stop()
+        invalidatePage(); releaseCatalogViews(); playbackCache.clear()
+        offlineOnly = true
+        phoneDetailReturn = "mine"
+        pendingDetail = item.series
+        detail = Detail(item.series, item.episodeIds)
+        phoneTab = "detail"; screen = "detail"; directPlayback = true
+        val progress = library.progress(item.series.id)?.takeIf { it.episodeId == item.episodeIds[index] && !it.completed }
+        playEpisodePhone(index, position ?: progress?.position ?: 0, autoplay)
+    }
+    private fun adjacentEpisodeIndex(direction: Int): Int? {
+        val data = detail ?: return null
+        val indices = if (direction > 0) (episodeIndex + 1..data.episodes.lastIndex) else (episodeIndex - 1 downTo 0)
+        return indices.firstOrNull { !offlineOnly || offlineDownloads.lookup(data.episodes[it]) != null }
+    }
     private val touchPlayback by lazy { TouchControls.isHandheld(this) }
     private val randomRecommender by lazy {
         val raw=getSharedPreferences("random_pool", MODE_PRIVATE).getString("pool", null)
@@ -123,7 +156,7 @@ class MainActivity: Activity() {
             cache?.playbackMeta(id,q) ?: cache?.readableMeta(id,q)?.takeIf {
                 !it.done && (it.expiresAt<=0 || it.expiresAt>System.currentTimeMillis()+60_000L)
             }
-        },onPrepared={ _,_ ->
+        },localEpisode={ offlineDownloads.lookup(it) },localOnly={ offlineOnly },onPrepared={ _,_ ->
             // 地址和索引一就绪便交给 Media3，不再等下一次一秒定时刷新。
             main.post { if(!isDestroyed && screen=="player") maybePrefetch() }
         })
@@ -519,9 +552,9 @@ class MainActivity: Activity() {
                         // 那条路会 pauseForSwitch + dropQueuedNext，与交接撞在一起就是「播到下一集却卡住」。
                         val alreadyHandedOff=queuedNextId.isNotEmpty() && p.currentMediaItem?.mediaId==queuedNextId
                         if(alreadyHandedOff) { /* onMediaItemTransition 正在接管 */ }
-                        else if(library.autoNext && episodeIndex<data.episodes.lastIndex) {
+                        else if(library.autoNext && adjacentEpisodeIndex(1) != null) {
                             Toast.makeText(this@MainActivity,"已跳过片尾，播放下一集",Toast.LENGTH_SHORT).show()
-                            playEpisode(episodeIndex+1,savedPosition(episodeIndex+1))
+                            adjacentEpisodeIndex(1)?.let { playEpisode(it,savedPosition(it)) }
                         } else if(continueToNextSeason()) { /* season jump in progress */ }
                     }
                 }
@@ -3102,6 +3135,7 @@ class MainActivity: Activity() {
      * @param preloaded 已经取到的详情，在进入详情页时复用，避免重复请求。
      */
     private fun openDetail(series: Series,resume: Boolean=false,autoplay: Boolean=true,cloud: CloudProgress?=null,preloaded: Detail?=null) {
+        offlineOnly = false
         favoriteMonitor.stop()
         pendingDetail=series; detailAutoplay=autoplay; pendingCloudResume=cloud
         invalidatePage(); releaseCatalogViews(); screen="detail"; directPlayback=resume; detail=null; synopsisExpanded=false; detailEpisodePage=-1
@@ -3151,6 +3185,7 @@ class MainActivity: Activity() {
     }
     /** 先显示本地分季，再后台刷新；分季返回后立即更新界面和缓存，不等待相关推荐或评分。 */
     fun loadDetailExtras(data: Detail, render: (Detail)->Unit = {}) {
+        if (offlineOnly) return
         cancelDetailExtras()
         val initial=withCachedSeasons(data)
         if(detail?.series?.id==data.series.id) detail=initial
@@ -3189,6 +3224,7 @@ class MainActivity: Activity() {
      *  只放进 EpisodePlaybackCache 的窗口，不启动播放；用户点「开始观看」时直接命中，
      *  起播前不再需要两次网络往返（取模型 + 取清晰度）。预取失败由缓存自己退避，不影响页面。 */
     private fun prefetchDetailWindow(vararg extra: Int) {
+        if (offlineOnly) return
         val data=detail ?: return
         if(data.episodes.isEmpty() || !prefetchMemoryReady()) return
         val quality=effectiveQuality()
@@ -3534,6 +3570,10 @@ class MainActivity: Activity() {
             Toast.makeText(this,"暂时没有可看的剧集",Toast.LENGTH_SHORT).show()
             return
         }
+        if (offlineOnly && offlineDownloads.lookup(data.episodes[index.coerceIn(0, data.episodes.lastIndex)]) == null) {
+            PhoneUi.toast(this, "该集尚未离线，请在离线缓存中下载")
+            return
+        }
         cancelSkipUnplayable()
         val playbackStarted=android.os.SystemClock.elapsedRealtime()
         // 切集先撤掉后台整集下载的带宽占用，首帧和当前集缓冲就绪后逐步恢复。
@@ -3722,7 +3762,7 @@ class MainActivity: Activity() {
         val beginPlayback: (EpisodePlaybackCache.PreparedEpisode)->Unit={ prepared ->
             val remote=prepared.video
             val diskMeta=prepared.diskMeta
-            val sourceKind=when { diskMeta==null -> "在线"; diskMeta.done -> "完整缓存"; else -> "部分缓存" }
+            val sourceKind=when { remote.isLocal -> "离线缓存"; diskMeta==null -> "在线"; diskMeta.done -> "完整缓存"; else -> "部分缓存" }
             RuntimeLog.add("Playback source episode=${selectedIndex+1} source=$sourceKind elapsedMs=${android.os.SystemClock.elapsedRealtime()-playbackStarted}")
             video=remote; quality=remote.info.quality
             // 与竖屏一样等首帧后再结束起播加载；横屏沿用页面自己的加载圈。
@@ -3775,7 +3815,7 @@ class MainActivity: Activity() {
                         // 会恢复，所以一集播完就直接停住、不切下一集。
                         if(sleepTimer.episodeEnded()) stopForSleep()
                         else if(userPausedIntentionally) { requestedAutoplay=false; p.pause(); showEndedPanel() }
-                        else if(foreground && library.autoNext && episodeIndex<data.episodes.lastIndex) playEpisode(episodeIndex+1,savedPosition(episodeIndex+1))
+                        else if(foreground && library.autoNext && adjacentEpisodeIndex(1) != null) adjacentEpisodeIndex(1)?.let { playEpisode(it,savedPosition(it)) }
                         else if(foreground && continueToNextSeason()) { /* season jump in progress */ }
                         else { requestedAutoplay=false; p.pause(); showEndedPanel() }
                     }
@@ -4039,7 +4079,7 @@ class MainActivity: Activity() {
         val strip=cacheStripView ?: return
         val segments=cacheStripSegments ?: return
         val data=detail
-        val visible=library.episodeCache && data!=null && screen=="player"
+        val visible=!offlineOnly && library.episodeCache && data!=null && screen=="player"
         strip.visibility=if(visible) View.VISIBLE else View.GONE
         // 隐藏的缓存条不会参与测量；不再为零宽度反复向主线程投递刷新任务。
         if(!visible || data==null) return
@@ -4085,6 +4125,7 @@ class MainActivity: Activity() {
     }
     /** 仅主动下载下三集；上一集和当前集保留已有缓存，避免与当前在线读取重复下载。 */
     private fun scheduleDiskCache() {
+        if (offlineOnly || video?.isLocal == true) { episodeDiskCache?.pause(); return }
         // 提前返回的每一种情况都记一笔（同一原因只记一次）：用户导出的日志里必须能看到
         // 「为什么三条进度条一直不填」，而不是只有一片空白
         fun idle(reason: String) {
@@ -4161,6 +4202,8 @@ class MainActivity: Activity() {
         android.util.Log.i("HongguoTV","Next episode queued episode=${queuedIndex+1} quality=$quality")
     }
     private fun maybePrefetch() {
+        // 离线入口仅由结束/切集事件加载下一份本地文件，不发起在线预取。
+        if (offlineOnly) return
         // 整集缓存根据当前集缓冲量恢复 1～3 路下载；起播和再次缓冲时先让出带宽。
         if(foreground && screen=="player") scheduleDiskCache()
         val p=player ?: return; val data=detail ?: return
@@ -4211,6 +4254,12 @@ class MainActivity: Activity() {
         if(!recovery.remaining) {
             autoRecovery=false
             playbackText.text="已自动重试 3 次，仍无法播放。可手动重试或切换清晰度。"
+            showManualRecoveryPanel(incompatible=false,decoding=false)
+            return
+        }
+        if (offlineOnly) {
+            autoRecovery=false
+            playbackText.text="离线文件无法播放，请删除后重新下载"
             showManualRecoveryPanel(incompatible=false,decoding=false)
             return
         }
@@ -4481,9 +4530,7 @@ class MainActivity: Activity() {
     /** 返回是否真的切换了集数（越界返回 false），切换成功时短暂显示 hud 反馈。 */
     private fun skipEpisode(direction: Int): Boolean {
         if(!foreground || screen!="player") return false
-        val count=detail?.episodes?.size ?: return false
-        val target=episodeIndex+direction
-        if(target !in 0 until count) return false
+        val target=adjacentEpisodeIndex(direction) ?: return false
         playEpisode(target,savedPosition(target)); showHud(); return true
     }
     private fun syncMediaSession() {
@@ -5141,6 +5188,7 @@ class MainActivity: Activity() {
     }
     /** Season finale auto-continues into the next season only when both the master autoplay and the season switch are on. */
     private fun continueToNextSeason(): Boolean {
+        if (offlineOnly) return false
         val data=detail ?: return false
         if(!library.autoNext || !library.autoSeason || episodeIndex<data.episodes.lastIndex) return false
         val next=data.nextSeason ?: return false
@@ -5420,6 +5468,7 @@ class MainActivity: Activity() {
     private fun savedPosition(index: Int): Long = episodeKey(index)?.let { episodePositions[it] } ?: 0L
     /** Starts the official-comment overlay for the current episode; safe to call repeatedly. */
     private fun startDanmaku() {
+        if (offlineOnly) return
         val layer=danmakuView ?: return
         val data=detail ?: return
         val p=player
@@ -5512,6 +5561,7 @@ class MainActivity: Activity() {
             }, ORIENTATION_RESTORE_DELAY_MS)
             WindowCompat.getInsetsController(window,window.decorView).show(WindowInsetsCompat.Type.systemBars())
         }
+        if (offlineOnly) { offlineOnly = false; goBackPhone(); return }
         if(phoneLayout()) {
             // 手机竖屏：回到手机版详情页（resume 进来的回首页）
             if(directPlayback && !forceDetail) goBackPhone()
@@ -5579,9 +5629,15 @@ class MainActivity: Activity() {
                 markPageShown()
                 val series=saved.series
                 if(series!=null && (saved.screen in listOf("detail","player","settings"))) {
-                    restoringPhoneDetail=saved
-                    phoneTab=saved.originTab
-                    openDetailPhone(series)
+                    if (saved.offlineOnly) {
+                        StartupSettings.set("mineContentTab", "offline")
+                        phoneTab = "mine"
+                        switchPhoneTab("mine")
+                    } else {
+                        restoringPhoneDetail=saved
+                        phoneTab=saved.originTab
+                        openDetailPhone(series)
+                    }
                 } else if(saved.screen=="settings") {
                     showPhoneSettings()
                 } else {
@@ -5622,7 +5678,7 @@ class MainActivity: Activity() {
         val series=if(playing) data?.series else if(detailPage) pendingDetail ?: data?.series else null
         phoneSessionStore.save(PhoneSessionSnapshot(
             screen=if(playing) "player" else screen,
-            tab=baseTab, originTab=phoneDetailReturn,
+            tab=baseTab, originTab=phoneDetailReturn, offlineOnly=offlineOnly,
             query=phoneQuery, searchText=phoneSearchDraft,
             rankContent=phoneRankContentId, rankBoard=phoneRankBoardId, hotBoard=phoneHotBoardName,
             newDate=newReleaseDatePhone, series=series,
@@ -6524,6 +6580,7 @@ class MainActivity: Activity() {
 
     /** 手机详情入口：复用 openDetail 的数据流，统一由 PortraitDetail 渲染。 */
     fun openDetailPhone(series: com.hongguotv.core.Series,resume: Boolean=false) {
+        offlineOnly = false
         if(!phoneLayout()) { openDetail(series,resume); return }
         rememberPhoneCatalogPosition()
         if(restoringPhoneDetail?.series?.id!=series.id) restoringPhoneDetail=null
@@ -6638,6 +6695,7 @@ class MainActivity: Activity() {
 
     /** 手机详情页返回：回到进详情前的那个页签。 */
     fun goBackPhone() {
+        offlineOnly = false
         val back=phoneDetailReturn
         restoringPhoneDetail=null
         phoneTab=back; phoneDetailCollection=false; leaveCollection(); screen="catalog"
@@ -6685,7 +6743,7 @@ class MainActivity: Activity() {
             if(phoneEpisodeSheet===sheet) playerUi?.setEpisodeSheetTop(top)
         },onAnimationProgress={ progress ->
             if(phoneEpisodeSheet===sheet) playerUi?.setEpisodeSheetProgress(progress)
-        })
+        },availableEpisodes=if (offlineOnly) data.episodes.indices.filter { offlineDownloads.lookup(data.episodes[it]) != null }.toSet() else null)
         phoneEpisodeSheet=sheet
         sheet.show()
     }

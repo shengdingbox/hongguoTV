@@ -43,6 +43,7 @@ class PhoneEpisodeSheet(
     private var previewAspectRatio: Float? = null,
     private val onPanelTopChanged: (Int) -> Unit = {},
     private val onAnimationProgress: (Float) -> Unit = {},
+    private val availableEpisodes: Set<Int>? = null,
 ) {
     private fun dp(v: Int) = PhoneUi.dp(activity, v)
     private fun text(v: String, size: Float, color: Int = Color.WHITE) = PhoneUi.text(activity, v, size, color)
@@ -259,7 +260,10 @@ class PhoneEpisodeSheet(
             gravity = Gravity.CENTER
             setTypeface(null, if (selected) Typeface.BOLD else Typeface.NORMAL)
             background = TvStyle.shape(activity, if (selected) Color.rgb(0xE4, 0x4B, 0x40) else Color.rgb(0x29, 0x29, 0x29), radius = 10)
-            contentDescription = "第 ${index + 1} 集" + if (selected) "，当前播放" else ""
+            val available = availableEpisodes?.contains(index) != false
+            isEnabled = available
+            alpha = if (available) 1f else .3f
+            contentDescription = "第 ${index + 1} 集" + if (!available) "，尚未缓存" else if (selected) "，当前播放" else ""
             setOnClickListener {
                 requestDismiss(if (index == current) null else index)
             }

@@ -339,8 +339,10 @@ object PortraitUi {
 
     private fun favoriteMenu(activity: MainActivity, anchor: View, series: Series, changed: () -> Unit) {
         val menu = PopupMenu(PortraitStyle.popupContext(activity), anchor)
-        menu.menu.add(if (activity.phoneLibrary.favorite(series.id)) "取消收藏" else "收藏")
-        menu.setOnMenuItemClickListener {
+        menu.menu.add(0, 0, 0, if (activity.phoneLibrary.favorite(series.id)) "取消收藏" else "收藏")
+        menu.menu.add(0, 1, 1, "离线缓存")
+        menu.setOnMenuItemClickListener { item ->
+            if (item.itemId == 1) { PhoneOfflineLibrary.pick(activity, series); return@setOnMenuItemClickListener true }
             activity.phoneFavoriteMonitor.stop()
             activity.phoneLibrary.toggle(series)
             changed()

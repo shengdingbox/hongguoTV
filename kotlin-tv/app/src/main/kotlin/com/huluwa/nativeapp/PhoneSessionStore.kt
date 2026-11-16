@@ -10,6 +10,7 @@ data class PhoneSessionSnapshot(
     val screen: String = "catalog",
     val tab: String = "home",
     val originTab: String = "home",
+    val offlineOnly: Boolean = false,
     val query: String = "",
     val searchText: String = "",
     val rankContent: String = "",
@@ -49,6 +50,7 @@ class PhoneSessionStore(context: Context) {
             screen = if (screen in listOf("detail", "player") && series == null) "catalog" else screen,
             tab = tab,
             originTab = origin,
+            offlineOnly = json.optBoolean("offlineOnly"),
             query = json.optString("query").take(80),
             searchText = json.optString("searchText").take(80),
             rankContent = json.optString("rankContent").take(100),
@@ -74,6 +76,7 @@ class PhoneSessionStore(context: Context) {
         }
         val json = JSONObject().put("version", 1)
             .put("screen", snapshot.screen).put("tab", snapshot.tab).put("originTab", snapshot.originTab)
+            .put("offlineOnly", snapshot.offlineOnly)
             .put("query", snapshot.query.take(80)).put("searchText", snapshot.searchText.take(80))
             .put("rankContent", snapshot.rankContent.take(100)).put("rankBoard", snapshot.rankBoard.take(100))
             .put("hotBoard", snapshot.hotBoard.take(100)).put("newDate", snapshot.newDate.take(10))

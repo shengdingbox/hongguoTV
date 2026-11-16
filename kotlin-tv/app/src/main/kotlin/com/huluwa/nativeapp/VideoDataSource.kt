@@ -11,7 +11,7 @@ import com.hongguotv.core.RemoteVideo
 
 /** 播放取数：完整与部分缓存均按已落盘区间优先读取，缺口回落在线分块读取。 */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-class VideoDataSource(private val video: RemoteVideo, private val disk: () -> EpisodeDiskCache? = { null }): BaseDataSource(true) {
+class VideoDataSource(private val video: RemoteVideo, private val disk: () -> EpisodeDiskCache? = { null }): BaseDataSource(!video.isLocal) {
     private var position=0L
     private var remaining=0L
     private var opened=false
@@ -32,7 +32,7 @@ class VideoDataSource(private val video: RemoteVideo, private val disk: () -> Ep
         if(remaining==0L) return C.RESULT_END_OF_INPUT
         val want=minOf(length.toLong(),remaining,64*1024L).toInt()
         // 缓存池可在播放中开关；下载在媒体源打开后完成时，也应从后续读取开始命中。
-        val cache=disk()
+        val cache=if (video.isLocal) null else disk()
         if(cache!==activeDisk) { activeDisk=cache; meta=null; diskUnavailable=false }
         if(cache!=null && !diskUnavailable) {
             val snapshot=meta ?: cache.readableMeta(video.info.idHint,video.info.qualityNumber)

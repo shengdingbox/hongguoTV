@@ -6,6 +6,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.Closeable
 import java.io.IOException
+import java.io.File
+import java.io.RandomAccessFile
 
 /** One playback stream. No listening socket or local HTTP service.
  *  Reads are served from an in-memory chunk cache keyed by absolute offset. A daemon
@@ -19,6 +21,16 @@ class RemoteVideo(
     private val aheadBytes: Long = 8*1024*1024L,
 ): Closeable {
     companion object {
+        /** 手动离线库已保存为明文 MP4，直接读私有文件，不请求播放地址或 CDN。 */
+        fun fromFile(http: OkHttpClient, file: File, id: String, quality: Int): RemoteVideo {
+            if (!file.isFile || file.length() <= 0) throw IOException("离线文件已丢失，请重新下载")
+            return RemoteVideo(http, StreamInfo(file.toURI().toString(), null, "离线", idHint = id, qualityNumber = quality)).also {
+                it.localFile = file
+                it.total = file.length()
+                it.prepared = MediaCrypto.Prepared(byteArrayOf(), emptyList())
+            }
+        }
+
         /** 直接复用落盘缓存保存的明文头与加密索引，起播无需重新访问取址接口和 CDN。 */
         internal fun fromPrepared(http: OkHttpClient, info: StreamInfo, length: Long, snapshot: MediaCrypto.Prepared): RemoteVideo {
             if (length <= 0 || snapshot.header.size.toLong() > length ||
@@ -34,6 +46,8 @@ class RemoteVideo(
             }
         }
     }
+    private var localFile: File? = null
+    val isLocal get() = localFile != null
     @Volatile private var closed=false
     private val calls=mutableSetOf<Call>()
     data class Range(val bytes: ByteArray,val total: Long)
@@ -140,6 +154,7 @@ class RemoteVideo(
     }
     /** 相邻集的读取由 Media3 的样本时长目标限制，不启动额外的 8 MiB 后台预读。 */
     fun setPlaybackActive(active: Boolean) {
+        if (isLocal) return
         synchronized(lock) {
             if(playbackActive==active) return
             playbackActive=active
@@ -202,6 +217,11 @@ class RemoteVideo(
         require(length in 1..chunkBytes && start>=0)
         if(closed) throw IOException("播放请求已取消")
         if(start>=total) return byteArrayOf()
+        localFile?.let { file ->
+            val result = ByteArray(minOf(length.toLong(), total - start).toInt())
+            RandomAccessFile(file, "r").use { input -> input.seek(start); input.readFully(result) }
+            return result
+        }
         val end=minOf(total,start+length)
         synchronized(lock) {
             if(closed) throw IOException("播放请求已取消")

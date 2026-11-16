@@ -2,6 +2,7 @@
 package com.hongguotv.core
 
 import java.io.Closeable
+import java.io.File
 import java.io.InterruptedIOException
 import java.io.IOException
 import java.util.concurrent.CancellationException
@@ -15,6 +16,8 @@ class EpisodePlaybackCache(
     private val clock: () -> Long = System::currentTimeMillis,
     private val onPrepared: (String, Int) -> Unit = { _, _ -> },
     private val cachedEpisode: (String, Int) -> EpisodeDiskCache.Meta? = { _, _ -> null },
+    private val localEpisode: (String) -> File? = { null },
+    private val localOnly: () -> Boolean = { false },
 ) : Closeable {
     // 包装结果，资源始终由缓存持有；取消某个页面的等待不能关闭其他页面即将复用的视频。
     data class PreparedEpisode(val video: RemoteVideo, val createdAt: Long, val diskMeta: EpisodeDiskCache.Meta? = null)
@@ -45,6 +48,8 @@ class EpisodePlaybackCache(
         }
 
     private fun fresh(prepared: PreparedEpisode): Boolean {
+        if (prepared.video.isLocal) return true
+        if (localOnly()) return false
         prepared.diskMeta?.let { meta ->
             val current = cachedEpisode(meta.id, meta.quality)
             return Key(meta.id, meta.quality) !in rejectedDiskEntries && current != null && current.header === meta.header
@@ -117,6 +122,11 @@ class EpisodePlaybackCache(
             try {
                 var diskMeta: EpisodeDiskCache.Meta? = null
                 val prepared = entry.scope.run {
+                    val file = localEpisode(key.id)
+                    if (file != null) {
+                        return@run RemoteVideo.fromFile(repository.http, file, key.id, key.quality).also { video = it }
+                    }
+                    if (localOnly()) throw IOException("该集尚未离线，请先下载")
                     val local = cachedEpisode(key.id, key.quality)?.takeIf {
                         synchronized(this) { Key(it.id, it.quality) !in rejectedDiskEntries }
                     }

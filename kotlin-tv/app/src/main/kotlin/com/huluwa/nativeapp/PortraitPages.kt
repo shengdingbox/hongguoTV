@@ -329,11 +329,24 @@ class PortraitPages(
         body.addView(recent, lp())
         val retainedCards = mutableMapOf<String, RecentWatchCard>()
 
-        section(body, "收藏")
+        val tabs = row().apply { setPadding(dp(16), dp(16), dp(16), dp(10)) }
+        val tabButtons = listOf("收藏", "离线缓存").mapIndexed { index, label ->
+            text(label, 20f).apply {
+                gravity = Gravity.CENTER
+                minHeight = dp(44)
+                setTypeface(null, Typeface.BOLD)
+                setOnClickListener { activity.selectMineOfflineTab(index == 1) }
+                tabs.addView(this, lp(0, -2).apply { weight = 1f })
+            }
+        }
+        body.addView(tabs, lp())
         val emptyFavorites = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
         body.addView(emptyFavorites, lp())
         val favoritesAdapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) }, null)
         page.addGrid(favoritesAdapter)
+        val offline = PhoneOfflineLibrary(activity, page)
+        page.addBlock(offline.header)
+        page.addRows(offline.adapter)
         var shownHistory: List<WatchProgress>? = null
         var shownFavorites: List<Series>? = null
         return { _ ->
@@ -357,9 +370,18 @@ class PortraitPages(
                 recent.visibility = if (history.isEmpty()) View.GONE else View.VISIBLE
                 shownHistory = history
             }
-            val favorites = activity.phoneLibrary.favorites()
+            val offlineSelected = activity.mineOfflineSelected
+            tabButtons.forEachIndexed { index, button ->
+                val selected = (index == 1) == offlineSelected
+                button.isSelected = selected
+                button.setTextColor(if (selected) PortraitStyle.accent else PortraitStyle.muted)
+                button.background = PortraitStyle.selectable(activity, if (selected) PortraitStyle.surface else Color.TRANSPARENT, radius = 12)
+                button.contentDescription = "${button.text}，${if (selected) "已选中" else "未选中"}"
+            }
+            offline.update(offlineSelected)
+            val favorites = if (offlineSelected) emptyList() else activity.phoneLibrary.favorites()
+            emptyFavorites.visibility = if (!offlineSelected && favorites.isEmpty()) View.VISIBLE else View.GONE
             if (shownFavorites != favorites) {
-                emptyFavorites.visibility = if (favorites.isEmpty()) View.VISIBLE else View.GONE
                 favoritesAdapter.submitItems(favorites, false)
                 shownFavorites = favorites
             }

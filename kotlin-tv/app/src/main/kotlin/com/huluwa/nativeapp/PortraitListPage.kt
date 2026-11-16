@@ -70,6 +70,8 @@ class PortraitListPage(private val activity: MainActivity) : FrameLayout(activit
         })
     }
 
+    fun addRows(adapter: RecyclerView.Adapter<*>) { sections.addAdapter(adapter) }
+
     fun addGrid(adapter: PortraitUi.PosterGrid) {
         sections.addAdapter(adapter)
         adapter.onListApplied = { recycler.post { applyPendingPosition() } }

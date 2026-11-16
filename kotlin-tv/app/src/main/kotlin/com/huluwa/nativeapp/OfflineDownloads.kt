@@ -13,21 +13,34 @@ import java.io.RandomAccessFile
 import java.security.MessageDigest
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /** 手动离线库独立于自动预载池，任务随进程保留，页面退出不取消。所有索引和文件操作均在后台。 */
 class OfflineDownloads private constructor(context: Context) {
     data class Episode(val id: String, val number: Int, val size: Long, val quality: String)
+    data class Transfer(val id: String, val number: Int, val bytes: Long = 0, val totalBytes: Long = 0)
     data class Item(
         val series: Series, val episodeIds: List<String>, val selected: Set<String>,
         val downloaded: List<Episode> = emptyList(), val running: Boolean = false,
-        val current: Int = 0, val bytes: Long = 0, val totalBytes: Long = 0, val message: String = "",
+        val transfers: List<Transfer> = emptyList(), val message: String = "",
     ) {
         val size get() = downloaded.sumOf { it.size }
         val pending get() = selected - downloaded.map { it.id }.toSet()
-        val progress get() = if (selected.isEmpty()) 0 else
-            ((downloaded.count { it.id in selected } + if (totalBytes > 0) bytes.toDouble() / totalBytes else 0.0) * 1000 / selected.size).toInt().coerceIn(0, 1000)
+        val progress: Int get() {
+            if (selected.isEmpty()) return 0
+            val done = downloaded.map { it.id }.toSet()
+            val partial = transfers.filter { it.id in selected && it.id !in done }.sumOf {
+                if (it.totalBytes > 0) (it.bytes.toDouble() / it.totalBytes).coerceIn(0.0, 1.0) else 0.0
+            }
+            return ((done.count { it in selected } + partial) * 1000 / selected.size).toInt().coerceIn(0, 1000)
+        }
     }
-    private class Job {
+    private data class Key(val seriesId: String, val episodeId: String)
+    private class Run {
+        val attempted = mutableSetOf<String>()
+        val failures = linkedMapOf<String, String>()
+    }
+    private class Job(val key: Key, val run: Run, val number: Int) {
         val scope = RequestScope()
         @Volatile var video: RemoteVideo? = null
         fun cancel() { scope.cancel(); video?.close() }
@@ -36,12 +49,21 @@ class OfflineDownloads private constructor(context: Context) {
     private val root = File(app.getExternalFilesDir(null) ?: app.filesDir, "offline-library")
     private val index = File(root, "library.json")
     private val control = Executors.newSingleThreadExecutor { Thread(it, "offline-library") }
-    private val worker = Executors.newSingleThreadExecutor { Thread(it, "offline-download") }
+    private val threadCount = AtomicInteger()
+    private val worker = Executors.newFixedThreadPool(MAX_CONCURRENCY) { Thread(it, "offline-download-${threadCount.incrementAndGet()}") }
     private val metadata = Executors.newSingleThreadExecutor { Thread(it, "offline-details") }
     private val main = Handler(Looper.getMainLooper())
     private val repository by lazy { ContentRepository(signer = SigningSettings.createSigner(SharedPrefsSignerStore(app))) }
     private val records = linkedMapOf<String, Item>()
-    private val jobs = mutableMapOf<String, Job>()
+    // 以下调度状态只在 control 线程修改；取消中的任务收尾前仍占用槽位和文件。
+    private val runs = linkedMapOf<String, Run>()
+    private val jobs = mutableMapOf<Key, Job>()
+    private val removing = mutableSetOf<String>()
+    private val waitingStarts = mutableMapOf<String, Pair<Detail, Set<String>>>()
+    private val spaceLock = Any()
+    private val reservations = mutableMapOf<Job, Long>()
+    val concurrency get() = StartupSettings.int(CONCURRENCY_KEY, DEFAULT_CONCURRENCY).coerceIn(1, MAX_CONCURRENCY)
+    private var parallelism = concurrency
     private val listeners = CopyOnWriteArraySet<() -> Unit>()
     @Volatile var items: List<Item> = emptyList(); private set
     @Volatile var loaded = false; private set
@@ -65,74 +87,152 @@ class OfflineDownloads private constructor(context: Context) {
             main.post { done(result) }
         }
     }
+    /** 增加并发立即补满槽位，降低并发时让在途分集完成，保留已有下载进度。 */
+    fun setConcurrency(value: Int) {
+        val next = value.coerceIn(1, MAX_CONCURRENCY)
+        StartupSettings.set(CONCURRENCY_KEY, next)
+        control.execute { parallelism = next; schedule(); publish() }
+    }
+
     fun start(detail: Detail, selected: Set<String>) = control.execute {
         if (!loaded) return@execute
-        val id = detail.series.id
-        val old = records[id]
-        val ids = (old?.episodeIds.orEmpty() + detail.episodes).distinct()
-        // 同一剧的接口顺序决定集号，继续下载沿用最初保存的分集表。
-        val savedIds = if (old == null) detail.episodes else ids
-        records[id] = Item(detail.series, savedIds,
-            old?.selected.orEmpty() + selected.filter { it in savedIds }, old?.downloaded.orEmpty())
-        jobs.remove(id)?.cancel()
-        if (persist()) launch(id)
+        startInternal(detail, selected)
     }
-    fun resume(id: String) = control.execute { if (loaded) launch(id) }
+    private fun startInternal(detail: Detail, selected: Set<String>) {
+        val id = detail.series.id
+        if (id in removing) {
+            val old = waitingStarts[id]
+            waitingStarts[id] = detail.copy(episodes = (old?.first?.episodes.orEmpty() + detail.episodes).distinct()) to
+                (old?.second.orEmpty() + selected)
+            return
+        }
+        val old = records[id]
+        // 同一剧继续缓存保留最初的分集顺序和在途任务，只追加新目标。
+        val ids = (old?.episodeIds.orEmpty() + detail.episodes).distinct()
+        val targets = old?.selected.orEmpty() + selected.filter { it in ids }
+        records[id] = old?.copy(series = detail.series, episodeIds = ids, selected = targets)
+            ?: Item(detail.series, ids, targets)
+        if (persist()) launch(id) else {
+            stop(id, "离线记录保存失败，请重试")
+            schedule(); publish()
+        }
+    }
+    fun resume(id: String) = control.execute { if (loaded && persist()) launch(id) }
     fun pause(id: String) = control.execute {
-        jobs.remove(id)?.cancel()
-        records[id]?.let { records[id] = it.copy(running = false, current = 0, bytes = 0, totalBytes = 0, message = "已暂停，可继续下载") }
-        persist()
+        waitingStarts.remove(id)
+        stop(id, "已暂停，可继续下载")
+        persist(); schedule(); publish()
+    }
+    private fun stop(id: String, message: String) {
+        runs.remove(id)
+        jobs.values.filter { it.key.seriesId == id }.forEach { it.cancel() }
+        records[id]?.let { records[id] = it.copy(running = false, transfers = emptyList(), message = message) }
     }
     fun remove(id: String) = control.execute {
+        waitingStarts.remove(id)
         val old = records.remove(id) ?: return@execute
-        jobs.remove(id)?.cancel()
-        if (persist()) worker.execute { File(root, id).deleteRecursively() }
-        else { records[id] = old.copy(running = false); publish() }
+        runs.remove(id)
+        jobs.values.filter { it.key.seriesId == id }.forEach { it.cancel() }
+        if (persist()) {
+            removing += id
+            cleanRemoved(id)
+        } else {
+            records[id] = old.copy(running = false, transfers = emptyList())
+            publish()
+        }
+        schedule(); publish()
+    }
+    /** 取消中的任务全部退出后才能删目录；同剧重新缓存也在清理后启动。 */
+    private fun cleanRemoved(id: String) {
+        if (id !in removing || jobs.keys.any { it.seriesId == id }) return
+        File(root, id).deleteRecursively()
+        removing.remove(id)
+        waitingStarts.remove(id)?.let { (detail, selected) -> startInternal(detail, selected) }
     }
 
     private fun launch(id: String) {
-        if (jobs.containsKey(id)) return
         val item = records[id] ?: return
         if (item.pending.isEmpty()) { publish(); return }
-        val job = Job(); jobs[id] = job
-        records[id] = item.copy(running = true, message = "等待下载", current = 0, bytes = 0, totalBytes = 0)
-        publish()
-        worker.execute {
-            val failures = mutableListOf<String>()
-            for (episodeId in item.episodeIds.filter { it in item.pending }) {
-                if (job.scope.isCancelled) break
-                val number = item.episodeIds.indexOf(episodeId) + 1
-                try {
-                    val episode = download(id, episodeId, number, job)
-                    control.submit {
-                        if (jobs[id] === job) {
-                            val current = records.getValue(id)
-                            records[id] = current.copy(downloaded = (current.downloaded.filterNot { it.id == episodeId } + episode).sortedBy { it.number },
-                                current = 0, bytes = 0, totalBytes = 0, message = "")
-                            if (!persist()) throw IOException("离线索引保存失败，请重试")
-                        }
-                    }.get()
-                } catch (problem: Exception) {
-                    if (job.scope.isCancelled) break
-                    failures += "第${number}集：${problem.cause?.message ?: problem.message ?: "下载失败"}"
-                    RuntimeLog.add("Offline episode=$episodeId failed: ${problem.message}")
-                }
-            }
-            control.execute {
-                if (jobs[id] === job) {
-                    jobs.remove(id)
-                    records[id]?.let { records[id] = it.copy(running = false, current = 0, bytes = 0, totalBytes = 0,
-                        message = if (failures.isEmpty()) "" else failures.joinToString("；").take(240)) }
-                    persist()
-                }
+        val run = runs.getOrPut(id) { Run() }
+        run.attempted.removeAll(run.failures.keys)
+        run.failures.clear()
+        records[id] = item.copy(running = true, message = "")
+        schedule(); publish()
+    }
+
+    /** 全库共用并发上限，按剧轮转分配槽位，同一分集在旧任务退出前不会再次启动。 */
+    private fun schedule() {
+        var finished = false
+        runs.entries.toList().forEach { (id, run) ->
+            val item = records[id]
+            val hasActive = jobs.values.any { it.key.seriesId == id && it.run === run }
+            if (!hasActive && (item == null || item.pending.none { it !in run.attempted })) {
+                runs.remove(id)
+                if (item != null) records[id] = item.copy(running = false, transfers = emptyList(),
+                    message = run.failures.values.joinToString("；").take(240))
+                finished = true
             }
         }
+        if (finished) persist()
+        while (jobs.size < parallelism) {
+            val next = runs.entries.firstNotNullOfOrNull { (id, run) ->
+                val item = records[id] ?: return@firstNotNullOfOrNull null
+                val pending = item.pending
+                item.episodeIds.firstOrNull { it in pending && it !in run.attempted && Key(id, it) !in jobs }
+                    ?.let { Triple(id, run, it) }
+            } ?: break
+            val (id, run, episodeId) = next
+            val item = records.getValue(id)
+            val key = Key(id, episodeId)
+            val job = Job(key, run, item.episodeIds.indexOf(episodeId) + 1)
+            run.attempted += episodeId
+            runs.remove(id); runs[id] = run
+            jobs[key] = job
+            records[id] = item.copy(transfers = (item.transfers + Transfer(episodeId, job.number)).sortedBy { it.number })
+            worker.execute {
+                val result = runCatching { download(id, episodeId, job.number, job) }
+                control.execute { complete(job, result) }
+            }
+        }
+    }
+
+    private fun complete(job: Job, result: Result<Episode>) {
+        if (jobs[job.key] !== job) return
+        jobs.remove(job.key)
+        val id = job.key.seriesId
+        val item = records[id]
+        if (item != null && id !in removing) {
+            // 暂停恰好发生在落盘完成之后时，完成的文件仍然加入离线库。
+            val episode = result.getOrNull()
+            records[id] = item.copy(transfers = item.transfers.filterNot { it.id == job.key.episodeId },
+                downloaded = if (episode == null) item.downloaded else
+                    (item.downloaded.filterNot { it.id == episode.id } + episode).sortedBy { it.number })
+            if (episode != null) {
+                if (!persist()) stop(id, "离线记录保存失败，请重试")
+            } else if (runs[id] === job.run && !job.scope.isCancelled) {
+                val problem = result.exceptionOrNull()
+                val reason = "第${job.number}集：${problem?.message ?: "下载失败"}"
+                job.run.failures[job.key.episodeId] = reason
+                RuntimeLog.add("Offline episode=${job.key.episodeId} failed: ${problem?.message}")
+            }
+        }
+        cleanRemoved(id)
+        schedule(); publish()
+    }
+
+    /** 各分集预留尚未写入的空间，避免多路同时检查时重复使用同一份剩余容量。 */
+    private fun reserve(job: Job, remaining: Long) = synchronized(spaceLock) {
+        val other = reservations.filterKeys { it !== job }.values.sum()
+        if (root.usableSpace < other + remaining + 50L * 1024 * 1024)
+            throw IOException("存储空间不足，请清理后继续下载")
+        reservations[job] = remaining
     }
 
     /** 复用播放器的 Range 读取和 CENC 解密，逐块写入明文 MP4，密钥只留内存。 */
     private fun download(seriesId: String, id: String, number: Int, job: Job): Episode {
         val target = file(seriesId, id)
-        check(target.parentFile!!.isDirectory || target.parentFile!!.mkdirs()) { "无法创建离线目录" }
+        val parent = target.parentFile!!
+        check(parent.isDirectory || parent.mkdirs() || parent.isDirectory) { "无法创建离线目录" }
         val part = File(target.path + ".part")
         val fingerprint = File(target.path + ".resume")
         var failure: Exception? = null
@@ -154,8 +254,7 @@ class OfflineDownloads private constructor(context: Context) {
                             RandomAccessFile(part, "rw").use { it.setLength(0) }
                             fingerprint.writeText(signature)
                         }
-                        val needed = video.total - part.length() + 50L * 1024 * 1024
-                        if (root.usableSpace < needed) throw IOException("存储空间不足，请清理后继续下载")
+                        reserve(job, video.total - part.length())
                         RandomAccessFile(part, "rw").use { out ->
                             var at = out.length(); out.seek(at)
                             var lastUpdate = 0L
@@ -164,13 +263,18 @@ class OfflineDownloads private constructor(context: Context) {
                                 val bytes = video.read(at, minOf(256 * 1024L, video.total - at).toInt())
                                 if (bytes.isEmpty()) throw IOException("视频分块提前结束")
                                 out.write(bytes); at += bytes.size
+                                synchronized(spaceLock) { reservations[job] = (reservations[job] ?: 0L).minus(bytes.size).coerceAtLeast(0L) }
                                 val now = System.currentTimeMillis()
                                 if (now - lastUpdate >= 250 || at == video.total) {
                                     lastUpdate = now
                                     val downloaded = at
                                     control.execute {
-                                        if (jobs[seriesId] === job) {
-                                            records[seriesId]?.let { records[seriesId] = it.copy(current = number, bytes = downloaded, totalBytes = video.total, message = "") }
+                                        if (jobs[job.key] === job && runs[seriesId] === job.run && !job.scope.isCancelled) {
+                                            records[seriesId]?.let { item ->
+                                                records[seriesId] = item.copy(transfers = item.transfers.map {
+                                                    if (it.id == id) it.copy(bytes = downloaded, totalBytes = video.total) else it
+                                                })
+                                            }
                                             publish()
                                         }
                                     }
@@ -187,7 +291,10 @@ class OfflineDownloads private constructor(context: Context) {
             } catch (problem: Exception) {
                 failure = problem
                 job.scope.ensureActive()
-            } finally { job.video = null }
+            } finally {
+                job.video = null
+                synchronized(spaceLock) { reservations.remove(job) }
+            }
         }
         throw failure ?: IOException("下载失败")
     }
@@ -237,6 +344,9 @@ class OfflineDownloads private constructor(context: Context) {
         publish()
     }
     companion object {
+        const val MAX_CONCURRENCY = 5
+        const val DEFAULT_CONCURRENCY = 3
+        private const val CONCURRENCY_KEY = "offlineDownloadConcurrency"
         private val ID = Regex("[0-9]{1,30}")
         @Volatile private var instance: OfflineDownloads? = null
         fun get(context: Context): OfflineDownloads = instance ?: synchronized(this) {

@@ -42,6 +42,7 @@ class PhoneOfflineEpisodes private constructor(
     private val content = PortraitUi.column(activity)
     private val metadata = text("", 13f, PortraitStyle.muted)
     private val selectionLabel = text("", 14f, PortraitStyle.secondaryText)
+    private val concurrencyValue = text("", 14f, PortraitStyle.accent)
     private val selectAll = text("全选", 14f, PortraitStyle.accent).apply {
         gravity = Gravity.CENTER
         minHeight = dp(44)
@@ -67,6 +68,7 @@ class PhoneOfflineEpisodes private constructor(
         } else open(resumeIndex)
     }
     private val changed: () -> Unit = {
+        concurrencyValue.text = "${downloads.concurrency} 集 ›"
         val next = record()
         val ids = next?.downloaded.orEmpty().map { it.id }.filter { it in detail.episodes }.toSet()
         if (!selecting && next == null) dialog.dismiss()
@@ -90,6 +92,18 @@ class PhoneOfflineEpisodes private constructor(
         content.addView(hero, lp().apply { bottomMargin = dp(14) })
         content.addView(text(if (selecting) "点选想看的分集，已缓存的无需重复下载" else "点选已缓存分集，即可离线观看",
             13f, PortraitStyle.muted).apply { setLineSpacing(dp(3).toFloat(), 1f) }, lp().apply { bottomMargin = dp(10) })
+        if (selecting) content.addView(PortraitUi.row(activity).apply {
+            minimumHeight = dp(48)
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            background = PortraitStyle.selectable(activity, PortraitStyle.raised, radius = 12)
+            isFocusable = true
+            addView(text("同时下载", 14f), lp(0, -2).apply { weight = 1f })
+            concurrencyValue.text = "${downloads.concurrency} 集 ›"
+            addView(concurrencyValue, lp(-2, -2).apply { leftMargin = dp(12) })
+            setOnClickListener {
+                PhoneOfflineLibrary.configureConcurrency(activity) { concurrencyValue.text = "${downloads.concurrency} 集 ›" }
+            }
+        }, lp().apply { bottomMargin = dp(8) })
         val toolbar = PortraitUi.row(activity)
         toolbar.addView(selectionLabel, lp(0, -2).apply { weight = 1f })
         if (selecting) toolbar.addView(selectAll, lp(-2, -2))

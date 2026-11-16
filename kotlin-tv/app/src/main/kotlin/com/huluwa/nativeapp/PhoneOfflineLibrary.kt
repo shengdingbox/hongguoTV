@@ -50,6 +50,24 @@ class PhoneOfflineLibrary(
         }, lp(0, -2).apply { weight = 1f })
         addView(activeCount, lp(-2, -2).apply { leftMargin = dp(8) })
     }
+    private val concurrencyValue = text("", 14f, PortraitStyle.accent)
+    private val downloadSettings = PortraitUi.row(activity).apply {
+        minimumHeight = dp(52)
+        setPadding(dp(14), dp(8), dp(12), dp(8))
+        background = PortraitStyle.selectable(activity, PortraitStyle.surface, radius = 14)
+        isFocusable = true
+        addView(text("同时下载", 14f), lp(0, -2).apply { weight = 1f })
+        addView(concurrencyValue, lp(-2, -2).apply { leftMargin = dp(10) })
+        addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_chevron_right)
+            setColorFilter(PortraitStyle.muted)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, lp(dp(16), dp(18)).apply { leftMargin = dp(6) })
+        setOnClickListener { configureConcurrency(activity) }
+    }
+    private val concurrencyHint = text("已降低并发数，正在下载的分集完成后生效", 12f, PortraitStyle.muted).apply {
+        setLineSpacing(dp(3).toFloat(), 1f)
+    }
     private val warning = text("", 13f, PortraitStyle.secondaryText).apply {
         setPadding(dp(14), dp(12), dp(14), dp(12))
         setLineSpacing(dp(3).toFloat(), 1f)
@@ -79,7 +97,10 @@ class PhoneOfflineLibrary(
     }
 
     init {
-        header.addView(summary, lp()); header.addView(warning, lp())
+        header.addView(summary, lp())
+        header.addView(downloadSettings, lp().apply { bottomMargin = dp(10) })
+        header.addView(concurrencyHint, lp().apply { bottomMargin = dp(10) })
+        header.addView(warning, lp())
         header.addView(loading, lp()); header.addView(empty, lp())
         val changed: () -> Unit = { if (page.isShown) activity.renderPhoneTab() }
         page.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
@@ -94,9 +115,12 @@ class PhoneOfflineLibrary(
         summary.visibility = if (items.isNotEmpty()) View.VISIBLE else View.GONE
         summaryTitle.text = "已缓存 ${items.sumOf { it.downloaded.size }} 集"
         summarySubtitle.text = "${items.size} 部剧集 · 占用 ${bytes(items.sumOf { it.size })}"
-        val running = items.count { it.running }
-        activeCount.text = "$running 部下载中"
+        val running = items.sumOf { it.transfers.size }
+        activeCount.text = "$running 集下载中"
+        concurrencyValue.text = "${downloads.concurrency} 集"
+        downloadSettings.contentDescription = "同时下载 ${downloads.concurrency} 集，调整下载并发数"
         activeCount.visibility = if (running > 0) View.VISIBLE else View.GONE
+        concurrencyHint.visibility = if (running > downloads.concurrency) View.VISIBLE else View.GONE
         warning.text = downloads.error
         warning.visibility = if (downloads.error.isNotBlank()) View.VISIBLE else View.GONE
         loading.visibility = if (!downloads.loaded && downloads.error.isBlank()) View.VISIBLE else View.GONE
@@ -124,8 +148,8 @@ class PhoneOfflineLibrary(
         private val totalLabel = text("", 12f, PortraitStyle.muted)
         private val percent = text("", 12f, PortraitStyle.accent)
         private val total = progress()
-        private val current = text("", 12f, PortraitStyle.muted)
-        private val episode = progress()
+        private val transferHost = PortraitUi.column(activity)
+        private val transferViews = linkedMapOf<String, Triple<LinearLayout, TextView, ProgressBar>>()
         private val problem = text("", 12f, PortraitStyle.secondaryText).apply { setLineSpacing(dp(3).toFloat(), 1f) }
         private val actions = PortraitUi.row(activity)
         private lateinit var item: OfflineDownloads.Item
@@ -177,8 +201,7 @@ class PhoneOfflineLibrary(
             totalHeading.addView(percent, lp(-2, -2).apply { leftMargin = dp(8) })
             card.addView(totalHeading, lp().apply { topMargin = dp(14) })
             card.addView(total, lp(-1, dp(4)).apply { topMargin = dp(7) })
-            card.addView(current, lp().apply { topMargin = dp(9) })
-            card.addView(episode, lp(-1, dp(3)).apply { topMargin = dp(6) })
+            card.addView(transferHost, lp())
             card.addView(problem, lp().apply { topMargin = dp(8) })
             card.addView(actions, lp().apply { topMargin = dp(14) })
             cover.setOnClickListener { chooseEpisode(activity, item) }
@@ -224,8 +247,9 @@ class PhoneOfflineLibrary(
             metadata.text = "已缓存 ${value.downloaded.size} 集 · ${bytes(value.size)}"
             val failed = !value.running && value.pending.isNotEmpty() && value.message.isNotBlank() && !value.message.startsWith("已暂停")
             status.text = when {
-                value.running && value.current == 0 -> "排队中"
-                value.running -> "正在缓存"
+                value.running && value.transfers.isEmpty() -> "排队中"
+                value.running && value.transfers.size == 1 -> "正在缓存"
+                value.running -> "${value.transfers.size} 集同时缓存"
                 failed -> "下载遇到问题"
                 value.pending.isNotEmpty() -> "已暂停"
                 else -> "缓存完成"
@@ -234,11 +258,30 @@ class PhoneOfflineLibrary(
             totalLabel.text = "总进度 ${value.downloaded.size} / ${value.selected.size} 集"
             percent.text = "${value.progress / 10}%"
             total.progress = value.progress
-            val downloading = value.running && value.current > 0
-            current.visibility = if (downloading) View.VISIBLE else View.GONE
-            episode.visibility = current.visibility
-            current.text = "第 ${value.current} 集 · ${bytes(value.bytes)} / ${bytes(value.totalBytes)}"
-            episode.progress = if (value.totalBytes > 0) (value.bytes * 1000 / value.totalBytes).toInt().coerceIn(0, 1000) else 0
+            val active = value.transfers.map { it.id }.toSet()
+            transferViews.keys.filter { it !in active }.forEach { id ->
+                transferViews.remove(id)?.let { transferHost.removeView(it.first) }
+            }
+            value.transfers.forEachIndexed { index, transfer ->
+                val (row, label, bar) = transferViews.getOrPut(transfer.id) {
+                    val row = PortraitUi.column(activity)
+                    val label = text("", 12f, PortraitStyle.muted)
+                    val bar = progress()
+                    row.addView(label, lp().apply { topMargin = dp(9) })
+                    row.addView(bar, lp(-1, dp(3)).apply { topMargin = dp(6) })
+                    Triple(row, label, bar)
+                }
+                if (transferHost.indexOfChild(row) != index) {
+                    transferHost.removeView(row)
+                    transferHost.addView(row, index, lp())
+                }
+                label.text = "第 ${transfer.number} 集 · " + if (transfer.totalBytes > 0)
+                    "${bytes(transfer.bytes)} / ${bytes(transfer.totalBytes)}" else "正在准备…"
+                bar.isIndeterminate = transfer.totalBytes <= 0
+                bar.indeterminateTintList = ColorStateList.valueOf(PortraitStyle.accent)
+                bar.progress = if (transfer.totalBytes > 0) (transfer.bytes * 1000 / transfer.totalBytes).toInt().coerceIn(0, 1000) else 0
+            }
+            transferHost.visibility = if (active.isEmpty()) View.GONE else View.VISIBLE
             problem.text = value.message
             problem.visibility = if (failed) View.VISIBLE else View.GONE
             play.isEnabled = value.downloaded.isNotEmpty(); play.alpha = if (play.isEnabled) 1f else .4f
@@ -249,6 +292,21 @@ class PhoneOfflineLibrary(
     }
 
     companion object {
+        fun configureConcurrency(activity: MainActivity, onChanged: () -> Unit = {}) {
+            val downloads = activity.offlineDownloads
+            val values = (1..OfflineDownloads.MAX_CONCURRENCY).toList()
+            PhoneDialog.choose(activity, "同时下载集数", values.map {
+                when (it) {
+                    1 -> "1 集 · 逐集下载"
+                    OfflineDownloads.DEFAULT_CONCURRENCY -> "$it 集 · 推荐"
+                    else -> "$it 集"
+                }
+            }, { index ->
+                downloads.setConcurrency(values[index])
+                onChanged()
+            }, focusIndex = downloads.concurrency - 1).show()
+        }
+
         private fun bytes(value: Long): String = if (value >= 1024L * 1024 * 1024) String.format(Locale.CHINA, "%.1f GB", value / (1024.0 * 1024 * 1024))
             else String.format(Locale.CHINA, "%.1f MB", value / (1024.0 * 1024))
 

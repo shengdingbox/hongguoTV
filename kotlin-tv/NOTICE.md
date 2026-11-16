@@ -17,6 +17,15 @@ X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios 与魔改 AES-V3）与匿名�
 - 对照版本见 `docs/SIGN_SERVICE.md`；测试向量取自其 `sign_test.go`，见 `LocalSignerTest.kt`。
 - 本版改动：仅保留实际在用的签名路径；hash 分支通过调整 `_rticket` 选取；设备档案落在应用私有目录。
 
+播放 V5 协议（`MobilePlayback.kt`、`PlaybackV5Signer.kt`、`PlaybackV5Aes.kt`、
+`PlaybackV5Constants.kt`）改写自以下 GPL-3.0-only 源码：
+
+- fyworld/hongguoTV，固定提交：`cca1d0fd144cf28641952d691f986f82ce6f15ca`。
+- https://github.com/fyworld/hongguoTV/tree/cca1d0fd144cf28641952d691f986f82ce6f15ca
+- 上游署名来源：N3urda/hongguoTV `6672b55`，经 tsukiyo-zero/hongguoTV `0236976`。
+- 本版仅移植 V5 的摘要、Helios、Medusa、专用 AES 载波和 gzip 播放请求；复用本机 SM3、
+  匿名设备档案、模型缓存与 CENC 播放链路。进程 nonce 和启动时间由共享签名器持有。
+
 `PlaybackSigning.kt` 的 Argus 551 / Ladon 实现移植自 openhongguo PR #7：
 
 - https://github.com/beilunyang/openhongguo/pull/7

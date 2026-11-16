@@ -1,79 +1,75 @@
 # 请求签名与匿名设备
 
-更新日期：2026-11-11。
+更新日期：2026-11-16。
 
-红果官方接口（搜索、联想、分类筛选、播放取址、弹幕、账号）都要求请求携带签名头，
-且只答**平台注册过的匿名设备**。本版起这两件事都在 App 本机完成，**不再依赖任何签名服务**。
+红果TV 支持 Android 签名服务和原生算法两种模式。默认模式与切换方式见
+[README](../README.md#签名模式)。本文说明原生算法模式：注册、普通接口签名和播放 V5
+签名均在本机完成；Android 签名服务模式继续使用原有设备档案及 `video_tab` 请求。
 
 ## 组件
 
 | 文件 | 作用 |
 | --- | --- |
-| `SignPrimitives.kt` | SM3、GF(2^8)、protobuf 编码、IV 派生、AES S 盒 |
-| `SignAlgorithms.kt` | X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios 与 f13 hash 分支 |
-| `PlaybackSigning.kt` | 播放专用 Argus 551 / Ladon，移植自 openhongguo PR #7 |
-| `AesV3.kt` | 魔改 AES-V3（X-Medusa 封装用） |
-| `DeviceRegister.kt` | 匿名设备注册（ttEncrypt = GZIP + AES-CBC） |
-| `RemoteSigner.kt` | 对外接口：`profile()` / `sign()` / `recover()` |
-| `SharedPrefsSignerStore.kt`（app） | 设备档案持久化到应用私有目录 |
+| `SignPrimitives.kt` | SM3、GF(2^8)、protobuf 编码、IV 派生、旧 AES S 盒 |
+| `SignAlgorithms.kt` | 普通接口的 Gorgon / Ladon / Argus / Medusa / Helios |
+| `PlaybackV5Signer.kt` | 播放专用 V5 摘要、Helios、Medusa，以及进程稳定的签名上下文 |
+| `PlaybackV5Aes.kt` / `PlaybackV5Constants.kt` | V5 Medusa 的专用 S 盒、位映射、密钥及协议常量 |
+| `MobilePlayback.kt` | 手机端 V5 参数、gzip POST、指定集模型解析 |
+| `PlaybackSigning.kt` | 兼容旧播放路由的 Argus 551 / Ladon |
+| `AesV3.kt` | 普通接口 Medusa 的旧 AES-V3 载波 |
+| `DeviceRegister.kt` | 匿名设备注册（GZIP + ttEncrypt），注册版本 7.4.3.32 |
+| `RemoteSigner.kt` | 共用匿名设备档案与普通接口签名 |
+| `SharedPrefsSignerStore.kt`（app） | 本机匿名设备档案持久化 |
 
-算法移植自 [openhongguo](https://github.com/beilunyang/openhongguo) 的
-`internal/protocol/sign/`，用其 `sign_test.go` 的官方测试向量逐项校验
-（`LocalSignerTest.kt`）。SM3 另外用 `"abc"` 的标准摘要校验。注意 **AES-V3 的 S 盒不是
-标准 AES S 盒**，而是上游硬编码的 4×256 字节定制表（按 `khronos & 3` 取窗口）；
-不能按 FIPS-197 算法生成，否则 Medusa 签名与真机不一致。
+V5 代码移植自 [fyworld/hongguoTV](https://github.com/fyworld/hongguoTV/tree/cca1d0fd144cf28641952d691f986f82ce6f15ca)
+的固定提交 `cca1d0fd144cf28641952d691f986f82ce6f15ca`（GPL-3.0-only）。其他签名算法来源与
+许可证见 [第三方声明](../kotlin-tv/NOTICE.md)。两套签名的 AES 常量及载波各自保存。
 
 ## 工作方式
 
-1. **注册**：首次播放/搜索时向 `log5-applog-lf.fqnovel.com/service/2/device_register/`
-   发一次匿名注册请求，拿到 `device_id` / `install_id`。平台对未注册设备只回
-   `HTTP 200 + 0 字节`，因此这一步不可省。
-2. **持久化**：档案写进 `SharedPreferences("native-signer-v1")`，冷启动直接复用，
-   不必每次开机重新注册。
-3. **签名**：普通请求继续用六头签名。播放 POST 按
-   [openhongguo PR #7](https://github.com/beilunyang/openhongguo/pull/7)
-   （`bed14595d35b02e0d550270621812ca7386c4108`）生成完整 Argus 551 与 34 轮 Ladon，
-   绑定最终查询串、原始请求体及同一份匿名档案，并移除 `X-Medusa`。
-   `ContentRepository` 优先调用 `POST /novel/player/video_model/v1/`，
-   使用 `video_platform=3`，直接解析 `video_list / video_meta / encrypt_info`，
-   复用既有 CENC 密钥解包与播放；预热和正式播放共用此路径及模型缓存。
-   旧 `video_tab` / `fallback_api` 仅保留为兼容回退。
-4. **恢复**：持续空响应说明当前身份被限制，`recover()` 重新注册一台匿名设备。
+1. **注册与复用身份**：首次访问向 `log5-applog-lf.fqnovel.com/service/2/device_register/`
+   注册匿名设备，取得 `device_id` / `install_id`。档案存入
+   `SharedPreferences("native-signer-v1")`，后续启动复用。内容、播放、弹幕与账号共用同一
+   `RemoteSigner`，V5 请求也从这份档案读取身份。
+2. **普通接口签名**：内容、搜索、弹幕、账号继续走各自现有签名路径。
+3. **V5 播放取址**：原生模式优先请求
+   `POST https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1`。
+   请求只包含当前集，使用 `mixed_video_id_map["1004"]`、`dr_scene=player`、
+   `video_platform=1024`、`device_level=1`。查询串使用上游手机端模板
+   `74332 / 7.4.3.32 / vivo_8662_64 / PGT-AN10 / Android 12`；UA 沿用该协议模板原值。
+4. **压缩与签名绑定**：先将 JSON gzip，再对实际发送的压缩字节计算摘要及 `X-SS-STUB`。
+   查询串不添加 `ts`，通过调整 `_rticket` 选中 `iv & 15 == 12` 分支；核心签名头只保留
+   `X-Khronos`、`X-Helios`、`X-Medusa`。V5 请求不混入旧 Argus / Ladon / Gorgon /
+   `X-SS-Req-Ticket`，也不携带注册或账号 Cookie。进程 nonce、进程启动时间在所有请求间保持稳定。
+5. **模型与播放**：精确读取 `data["1004"][视频ID].video_model` 或平铺的
+   `data[视频ID].video_model`，兼容模型对象与 JSON 字符串。地址解析兼容明文、Base64、
+   `key_seed`，密钥解析兼容嵌套 `encrypt_info.spade_a` 与平铺 `spade_a`。
+   继续过滤 ByteVC2，调用原有 `MediaCrypto` 解包内容密钥，再交给既有 `RemoteVideo` /
+   Media3 CENC 播放链路。预热、正式播放和离线缓存共用此模型缓存。
+6. **兼容与恢复**：V5 空响应先有限次重读，失败后尝试旧播放路由；只有 V5 和兼容路由
+   都为空时才有限次重新注册匿名设备，并从 V5 开始重试。
 
-所有模块（内容、播放、弹幕、账号）共用同一个 `RemoteSigner` 实例——平台按
-`device_id + iid` 放行，各模块各注册一台会被当成不同设备。
+## 播放器兼容性
 
-## 与旧版本的区别
-
-旧版（0.30.x 早期）通过 FRP 公网入口调用自建签名服务
-（`http://123.57.172.104:8901`），签名与设备身份都由服务端决定。这样做的代价是：
-
-- 签名服务是单点：FRP 断线或容器重启，App 全部受保护接口失效；
-- 每次请求多一次 `/sign` 往返（实测约 110ms）；
-- 4G/5G 下必须能访问公网入口。
-
-现在这些都不需要了。签名服务仓库与容器仍可保留给其他项目使用，
-但红果TV 不再依赖它；`--signer=` 探针参数仅为兼容旧命令行保留，传入不生效。
+本次变化发生在播放模型接口与签名协议。返回的仍是 MP4 视频地址和 CENC AES-CTR
+密钥材料，现有播放器、DataSource、分段下载及离线解密继续复用。具体清晰度仍由设备
+对 AVC / HEVC 的解码能力决定。
 
 ## 已知边界
 
-- **播放空响应需要区分签名与设备限制**：2026-11-10 起旧的 Argus/Ladon 时间戳占位
-  无法通过播放 POST 校验。先使用 PR #7 专用签名，不能仅凭空响应认定设备配额用尽；
-  所有兼容路由仍为空时，才按现有策略有限次更换匿名设备。
-- **平台改算法时需要发版**：内置算法不像服务端那样可以热更新。若红果升级风控，
-  需要跟进 openhongguo 的上游实现后重新发版。
-- **匿名设备仍可能被限制**：注册是无成本的匿名流程，平台若整体收紧匿名访问，
-  本地注册也绕不过去（openhongguo README 同样标注了该限制）。
+- HTTP 200 空体也可能表示协议已变更，不能直接认定当前设备配额用尽。
+- V5 算法内置在 App 中，平台改协议后需要跟进源码并发布新包。
+- 匿名设备仍可能受到平台限制；更换身份不保证解决平台整体收紧访问的问题。
 
-## 验证方法
+## 手动探针
 
-`core` 里有联网探针，可在打包机上直接跑真实链路（不需要任何签名服务）：
+需要验证真实链路时，可在构建环境显式执行：
 
 ```bash
 cd kotlin-tv
 ./gradlew :core:installDist
-core/build/install/core/bin/core --stream-only          # 只验证详情与播放
-core/build/install/core/bin/core --stream-only --warm   # 附带批量预热
+core/build/install/core/bin/core --stream-only
+core/build/install/core/bin/core --stream-only --warm
 ```
 
-探针会先打印 `本机注册设备 device=<device_id>`，用于确认注册成功。
+以上探针使用原生算法模式，不经过 Android 签名服务。

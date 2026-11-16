@@ -60,6 +60,8 @@ adb install -r APK文件路径
 
 Android 模式使用服务的 `/info.deviceProfile` 获取设备参数，并通过 `/sign` 获取签名；POST 请求体以 `body_base64` 原样提交，签名服务需声明 `supportsBodySigning=true`。播放优先使用 `video_tab` GET 接口，沿用现有 CENC 媒体处理。
 
+原生算法模式的播放已接入 V5 协议：优先调用 `/novel/player/multi_video_model/player/v1`，本机对 gzip 请求体生成 Helios / Medusa 签名，直接解析当前集的多档视频地址与内容密钥。正式播放、预取和离线缓存共用新取址链路，继续使用现有 Media3 播放器和 CENC 媒体解密。
+
 ## 常用操作
 
 | 场景 | 操作 |

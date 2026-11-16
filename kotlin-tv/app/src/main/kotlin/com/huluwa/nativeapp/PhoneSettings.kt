@@ -92,6 +92,7 @@ class PhoneSettings(private val activity: MainActivity) {
             accessibilityHeadingCompat()
         }, lp())
         accountCard(content)
+        signingSection(content)
         playbackSection(content)
         danmakuSection(content)
         lookSection(content)
@@ -262,6 +263,15 @@ class PhoneSettings(private val activity: MainActivity) {
         line.addView(chevron(), lp(dp(12), dp(17)).apply { leftMargin = dp(8) })
         group.addView(line, lp())
         parent.addView(group, lp().apply { bottomMargin = dp(24) })
+    }
+
+    private fun signingSection(parent: LinearLayout) {
+        section(parent, "签名模式", "开启后在本机计算签名；关闭时使用 Android 红果签名服务，切换后立即生效。") { group ->
+            addRow(group, toggleRow("原生算法模式", { activity.phoneNativeSigning }) {
+                activity.setNativeSigningMode(!activity.phoneNativeSigning)
+            })
+            addRow(group, row("Android 签名服务", com.hongguotv.core.FridaSigner.DEFAULT_ENDPOINT))
+        }
     }
 
     private fun playbackSection(parent: LinearLayout) {

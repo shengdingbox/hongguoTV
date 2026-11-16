@@ -292,6 +292,9 @@ open class RemoteSigner(
         return profile
     }
 
+    /** Android App 签名模式优先使用 video_tab GET 取址。 */
+    open val prefersVideoTab get() = false
+
     val configured get() = true
 }
 

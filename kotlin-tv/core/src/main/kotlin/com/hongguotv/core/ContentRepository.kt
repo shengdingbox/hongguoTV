@@ -1083,6 +1083,14 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return model
     }
     private fun fetchVideoModel(id: String, level: Int = 1, preferAlt: Boolean = false): JSONObject {
+        if(signer.prefersVideoTab) {
+            // 复用 Android 红果已可用的 GET 路径，避免先等待本机算法使用的 POST 路由。
+            val single=videoTabSingle(id,preferAlt)
+            single.model?.let { return it }
+            videoTabModel(id,level,preferAlt)?.let { return it }
+            if(single.blank) throw EmptyPlaybackResponseException()
+            throw IOException("Android 红果未返回可用播放信息，请稍后重试")
+        }
         val primaryPayload="""{"video_id":"$id","biz_param":{"video_id_type":0,"need_all_video_definition":true,"video_platform":3}}""".toByteArray(Charsets.UTF_8)
         val primary=try {
             sweepRoutes(listOf(PLAYER_PATH to primaryPayload))

@@ -27,6 +27,7 @@ class Library(context: Context) {
         const val NEW_RELEASE_CACHE_PREFIX = "phone-new-releases-v1-"
         const val NEW_RELEASE_CACHE_DAYS = 15
         const val SEASON_CACHE_PREFIX = "series-seasons-v1-"
+        const val RATING_CACHE_PREFIX = "series-rating-v1-"
     }
     private val app = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
@@ -48,6 +49,7 @@ class Library(context: Context) {
     private val mobileRankCaches = mutableMapOf<String, CachedMobileRank>()
     private var hotSearchCache: CachedHotSearch? = null
     private val seasonCaches = mutableMapOf<String, CachedSeasons>()
+    private val ratingCaches = mutableMapOf<String, CachedRating>()
     // 榜单缓存：漫剧/短剧/AI 三个榜各自独立一条，与首页缓存同存同有效期
     private val ranks = mutableMapOf<RankBoard, CatalogPage>()
     private val rankSavedAt = mutableMapOf<RankBoard, Long>()
@@ -62,6 +64,7 @@ class Library(context: Context) {
         val mobileRanks: Map<String, CachedMobileRank>,
         val hotSearch: CachedHotSearch?,
         val seasons: Map<String, CachedSeasons>,
+        val ratings: Map<String, CachedRating>,
     )
     private var loading = false
     private var closed = false
@@ -158,8 +161,20 @@ class Library(context: Context) {
                 if (staleSeasonKeys.isNotEmpty()) {
                     homePrefs.edit().also { edit -> staleSeasonKeys.forEach(edit::remove) }.commit()
                 }
+                val ratingValues = homePrefs.all.filterKeys { it.startsWith(RATING_CACHE_PREFIX) }
+                val ratingRows = ratingValues.mapNotNull { (key, value) ->
+                    RatingSnapshot.decode(value as? String ?: return@mapNotNull null)
+                        ?.takeIf { key == RATING_CACHE_PREFIX + it.seriesId }
+                }.sortedByDescending { it.savedAt }
+                val ratings = ratingRows.take(RatingSnapshot.MAX_ENTRIES).associateBy { it.seriesId }
+                // 超出条数上限的旧评分也要从磁盘清掉，否则评分键会无界增长。
+                val retainedRatingKeys = ratings.keys.map { RATING_CACHE_PREFIX + it }.toSet()
+                val staleRatingKeys = ratingValues.keys - retainedRatingKeys
+                if (staleRatingKeys.isNotEmpty()) {
+                    homePrefs.edit().also { edit -> staleRatingKeys.forEach(edit::remove) }.commit()
+                }
                 Pair(loaded, DiskCaches(cached, stamps, rankCached, rankStamps, recommendations, recommendationStamp,
-                    phoneRankCached, phoneRankStamps, newReleases, mobileRanks, hotSearch, seasons))
+                    phoneRankCached, phoneRankStamps, newReleases, mobileRanks, hotSearch, seasons, ratings))
             }
             main.post {
                 loading = false
@@ -176,6 +191,7 @@ class Library(context: Context) {
                     mobileRankCaches.putAll(boot.mobileRanks)
                     hotSearchCache = boot.hotSearch
                     seasonCaches.putAll(boot.seasons)
+                    ratingCaches.putAll(boot.ratings)
                     ready.forEach { it() }
                 }.onFailure { failure -> errors.forEach { it(failure) } }
             }
@@ -387,6 +403,28 @@ class Library(context: Context) {
         oldest.forEach { cached ->
             seasonCaches.remove(cached.sourceId)
             batch[SEASON_CACHE_PREFIX + cached.sourceId] = { null }
+        }
+        homeWrites.submit(batch)
+    }
+
+    /** 评分只按剧集 ID 保存；读取不做过期判断，保证断网和冷启动时仍能立即显示。 */
+    fun cachedRating(id: String): CachedRating? {
+        state()
+        if (!RatingSnapshot.validId(id)) return null
+        return ratingCaches[id]
+    }
+
+    /** 每次网络返回有效评分都覆盖本机快照，写入走后台队列，不阻塞详情页。 */
+    fun cacheRating(id: String, rating: Double, ratingCount: String) {
+        state()
+        if (!RatingSnapshot.validId(id) || !RatingSnapshot.validRating(rating)) return
+        val cached = CachedRating(id, rating, ratingCount.trim().take(20), System.currentTimeMillis())
+        ratingCaches[id] = cached
+        val batch = linkedMapOf<String, () -> Any?>(
+            RATING_CACHE_PREFIX + id to { RatingSnapshot.encode(cached) })
+        ratingCaches.values.sortedByDescending { it.savedAt }.drop(RatingSnapshot.MAX_ENTRIES).forEach { old ->
+            ratingCaches.remove(old.seriesId)
+            batch[RATING_CACHE_PREFIX + old.seriesId] = { null }
         }
         homeWrites.submit(batch)
     }

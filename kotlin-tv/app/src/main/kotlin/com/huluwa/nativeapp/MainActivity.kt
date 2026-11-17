@@ -118,7 +118,7 @@ class MainActivity: Activity() {
         offlineOnly = true
         phoneDetailReturn = "mine"
         pendingDetail = item.series
-        detail = Detail(item.series, item.episodeIds)
+        detail = withCachedRating(Detail(item.series, item.episodeIds))
         phoneTab = "detail"; screen = "detail"; directPlayback = true
         val progress = library.progress(item.series.id)?.takeIf { it.episodeId == item.episodeIds[index] && !it.completed }
         playEpisodePhone(index, position ?: progress?.position ?: 0, autoplay)
@@ -3079,8 +3079,16 @@ class MainActivity: Activity() {
         return data.copy(series=series,sameName=rows.filter { it.id!=data.series.id },seasonsLoaded=true)
     }
 
+    /** 先用本机评分补齐首屏，联网评分返回后再由详情辅助刷新覆盖。 */
+    private fun withCachedRating(data: Detail): Detail {
+        val current=data.social
+        if(RatingSnapshot.validRating(current.rating)) return data
+        val cached=library.cachedRating(data.series.id) ?: return data
+        return data.copy(social=current.copy(rating=cached.rating,ratingCount=cached.ratingCount))
+    }
+
     private fun withCachedSeasons(data: Detail): Detail = library.cachedSeasons(data.series.id)
-        ?.let { withSeasonRows(data,it.items) } ?: data
+        ?.let { withCachedRating(withSeasonRows(data,it.items)) } ?: withCachedRating(data)
 
     private fun withReleaseSchedule(data: Detail, scheduled: Series?): Detail =
         if(data.episodes.isEmpty() && data.series.release?.isSpecified!=true && scheduled?.release!=null)
@@ -3164,6 +3172,10 @@ class MainActivity: Activity() {
                 })
             } }.getOrNull()
             main.post {
+                // 即使页面已经离开，也把刚取回的评分落入本机，下一次进入可直接展示。
+                if(result!=null && RatingSnapshot.validRating(result.social.rating)) {
+                    library.cacheRating(data.series.id,result.social.rating,result.social.ratingCount)
+                }
                 if(!active()) return@post
                 detailExtrasScope=null; detailExtrasJob=null
                 if(result!=null) {

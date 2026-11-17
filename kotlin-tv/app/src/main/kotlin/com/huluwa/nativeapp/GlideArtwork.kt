@@ -16,21 +16,25 @@ import java.util.WeakHashMap
 /** 页面只记录自己绑定的控件；图片请求、缓存、解码和资源回收全部交给 Glide。 */
 class GlideArtwork(private val context: Context) {
     private val requests = Glide.with(context)
+    private val identities = HashMap<String, String>()
     private val bound = WeakHashMap<ImageView, String>()
     private var closed = false
+
+    fun identity(url: String): String = identities.getOrPut(url) { ArtworkUrl.identity(url) }
 
     fun load(view: ImageView, url: String, priority: Priority = Priority.NORMAL, keepCurrentImage: Boolean = false) {
         if (closed || keepCurrentImage && url.isBlank()) return
         if (url.isBlank()) { clear(view); return }
+        val identity = identity(url)
         val previous = bound[view]
-        if (previous == url && (keepCurrentImage || view.drawable != null) && isSameRequestComplete(view)) {
-            // 排名或文案变化也会重新绑定卡片；已显示的相同封面直接跳过，避免 Glide 清空后重新加载。
+        if (previous == identity && (keepCurrentImage || view.drawable != null) && isSameRequestComplete(view)) {
+            // 文案变化或 CDN 签名轮换都不重新绑定已显示的相同封面。
             // 加载中或失败的请求不跳过，前者继续加载，后者仍可按原路径重试。
             return
         }
-        bound[view] = url
+        bound[view] = identity
         val request = coverRequest(requests, url, priority)
-        if (keepCurrentImage && previous != null && previous != url) {
+        if (keepCurrentImage && previous != null && previous != identity) {
             // 切季时用 Glide 自己持有上一张资源，避免把位图池中的图片当成普通 Drawable 保存。
             val retained = coverRequest(requests, previous, priority).onlyRetrieveFromCache(true)
             val width = view.width - view.paddingLeft - view.paddingRight
@@ -68,7 +72,7 @@ class GlideArtwork(private val context: Context) {
     companion object {
         /** 展示和 RecyclerViewPreloader 共用选项，尺寸由实际 ImageView 提供，缓存键保持一致。 */
         fun coverRequest(requests: RequestManager, url: String, priority: Priority = Priority.NORMAL): RequestBuilder<Bitmap> =
-            requests.asBitmap().load(url)
+            requests.asBitmap().load(ArtworkUrl(url))
                 .diskCacheStrategy(DiskCacheStrategy.ALL)
                 .downsample(DownsampleStrategy.CENTER_INSIDE)
                 .dontTransform()

@@ -820,6 +820,8 @@ class MainActivity: Activity() {
         }
         artwork.load(view,url,if(focused) Priority.HIGH else Priority.NORMAL)
     }
+    /** 卡片差异和图片绑定共用封面身份，CDN 临时签名变化不参与比较。 */
+    fun phoneCoverIdentity(url: String): String = artwork.identity(url)
     /** 同一剧集更新封面地址时保留旧图，等新图就绪后直接替换。 */
     fun updatePhoneCover(view: ImageView,url: String) = artwork.load(view,url,keepCurrentImage=true)
     /** 真正回收卡片时由 Glide 解除绑定并回收资源。 */

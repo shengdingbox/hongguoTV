@@ -214,7 +214,9 @@ object PortraitUi {
             override fun areItemsTheSame(before: Cell, after: Cell) = before.series?.id == after.series?.id
             override fun areContentsTheSame(before: Cell, after: Cell): Boolean {
                 val a = before.series; val b = after.series
-                return a?.title == b?.title && a?.badge == b?.badge && a?.cover == b?.cover && a?.release == b?.release &&
+                // CDN 临时签名轮换不是封面变化，不能让 DiffUtil 把卡片重新绑定一遍。
+                return a?.title == b?.title && a?.badge == b?.badge && a?.release == b?.release &&
+                    activity.phoneCoverIdentity(a?.cover.orEmpty()) == activity.phoneCoverIdentity(b?.cover.orEmpty()) &&
                     before.favorite == after.favorite && before.rank == after.rank && before.finished == after.finished
             }
         })
@@ -312,10 +314,10 @@ object PortraitUi {
                 }
                 card.rank.background = PortraitStyle.shape(activity, color, radius = 6)
             }
-            // 图片请求只在绑定时更新，临时重新挂载沿用 Glide 请求，避免覆盖保留旧封面的请求。
-            // 文案、收藏状态或排名变化时沿用已显示的封面；签名更新仍交给图片缓存复用。
+            // 文案、收藏状态或排名变化时沿用已显示的封面；CDN 签名更新仍使用同一份 Glide 缓存。
             val cover = item.cover.ifBlank { if (sameSeries) holder.cover else "" }
-            if (holder.cover != cover || card.image.drawable == null) {
+            val sameCover = activity.phoneCoverIdentity(holder.cover) == activity.phoneCoverIdentity(cover)
+            if (!sameCover || card.image.drawable == null) {
                 holder.cover = cover
                 if (sameSeries) activity.updatePhoneCover(card.image, cover)
                 else loadCover(card.image, cover)

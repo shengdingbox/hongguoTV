@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.huluwa.nativeapp
 
+import android.app.AlertDialog
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.InsetDrawable
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
@@ -331,7 +333,32 @@ class PortraitPages(
         }, lp(dp(44), dp(44)).apply { gravity = Gravity.BOTTOM; rightMargin = dp(10) })
         body.addView(head, lp())
         val recent = column()
-        section(recent, "最近观看")
+        val recentHeading = row().apply { setPadding(dp(16), 0, dp(8), 0) }
+        recentHeading.addView(text("最近观看", 20f).apply {
+            setTypeface(null, Typeface.BOLD)
+            setPadding(0, dp(16), 0, dp(10))
+        }, lp(0, -2).apply { weight = 1f })
+        recentHeading.addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_delete)
+            setColorFilter(PortraitStyle.muted)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 22)
+            contentDescription = "删除全部播放记录"
+            isFocusable = true
+            setOnClickListener {
+                lateinit var confirmation: AlertDialog
+                val buttons = column()
+                buttons.addView(PhoneDialog.button(activity, "删除", destructive = true) {
+                    confirmation.dismiss()
+                    activity.phoneLibrary.clearHistory()
+                    activity.renderPhoneTab()
+                }, lp())
+                buttons.addView(PhoneDialog.button(activity, "取消") { confirmation.dismiss() }, lp().apply { topMargin = dp(10) })
+                confirmation = PhoneDialog.sheet(activity, "删除播放记录", "是否删除全部播放记录？删除后无法恢复。", buttons)
+                confirmation.show()
+            }
+        }, lp(dp(44), dp(44)))
+        recent.addView(recentHeading, lp())
         val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
         val cards = row().apply { gravity = Gravity.TOP; setPadding(dp(16), 0, dp(16), 0) }
         strip.addView(cards)
@@ -340,22 +367,25 @@ class PortraitPages(
         body.addView(recent, lp())
         val retainedCards = mutableMapOf<String, RecentWatchCard>()
 
-        val tabHost = column().apply { setPadding(dp(16), dp(16), dp(16), dp(14)) }
-        val tabs = row().apply {
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-            background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 14)
+        val tabHost = column().apply { setPadding(dp(16), dp(10), dp(16), dp(8)) }
+        // 底板与选中块向内收紧，点击区域仍保留至少 44dp，并随字体大小伸展。
+        val tabs = FrameLayout(activity).apply {
+            background = InsetDrawable(PortraitStyle.shape(activity, PortraitStyle.raised, radius = 12), 0, dp(4), 0, dp(4))
+            setPadding(0, 0, 0, 0)
         }
+        val tabRow = row().apply { setPadding(dp(3), 0, dp(3), 0) }
         val tabButtons = listOf("收藏", "离线缓存").mapIndexed { index, label ->
-            text(label, 16f).apply {
+            text(label, 14f).apply {
                 gravity = Gravity.CENTER
                 minHeight = dp(44)
-                setPadding(dp(8), dp(10), dp(8), dp(10))
-                setTypeface(null, Typeface.BOLD)
+                setPadding(dp(14), dp(8), dp(14), dp(8))
+                isFocusable = true
                 setOnClickListener { activity.selectMineOfflineTab(index == 1) }
-                tabs.addView(this, lp(0, -2).apply { weight = 1f })
+                tabRow.addView(this, lp(-2, -2))
             }
         }
-        tabHost.addView(tabs, lp())
+        tabs.addView(tabRow, FrameLayout.LayoutParams(-2, -2))
+        tabHost.addView(tabs, lp(-2, -2))
         body.addView(tabHost, lp())
         val emptyFavorites = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
         body.addView(emptyFavorites, lp())
@@ -393,8 +423,10 @@ class PortraitPages(
                 button.isSelected = selected
                 if (button.tag != selected) {
                     button.tag = selected
-                    button.setTextColor(if (selected) PortraitStyle.onChipSelected else PortraitStyle.text)
-                    button.background = PortraitStyle.selectable(activity, if (selected) PortraitStyle.chipSelected else Color.TRANSPARENT, radius = 11)
+                    button.setTextColor(if (selected) PortraitStyle.onChipSelected else PortraitStyle.secondaryText)
+                    button.background = InsetDrawable(PortraitStyle.selectable(activity,
+                        if (selected) PortraitStyle.chipSelected else Color.TRANSPARENT, radius = 9), 0, dp(6), 0, dp(6))
+                    button.setPadding(dp(14), dp(8), dp(14), dp(8))
                     button.setTypeface(null, if (selected) Typeface.BOLD else Typeface.NORMAL)
                 }
                 button.contentDescription = "${button.text}，${if (selected) "已选中" else "未选中"}"

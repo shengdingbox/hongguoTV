@@ -31,6 +31,12 @@ internal object ComicRank {
         RankBoard.AI to "ai_playlet_hot_play",
     )
 
+    /**
+     * 首屏请求要主动指定子榜：不传时服务端按自己的默认项返回（通常是短剧热播），
+     * 电视端就点不到对应榜单。续页沿用游标里的子榜即可。
+     */
+    fun defaultBoardId(board: RankBoard): String = defaultBoards.getValue(board)
+
     fun parse(root: JSONObject, board: RankBoard, cursor: MobileRankCursor?, offsetBefore: Int = 0): Slice {
         val data = root.optJSONObject("data") ?: throw IOException("${board.label}榜单暂不可用")
         val cell = data.optJSONObject("cell_view") ?: throw IOException("${board.label}榜单暂不可用")

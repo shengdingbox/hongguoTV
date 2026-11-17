@@ -187,7 +187,9 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             "limit" to "0", "client_req_type" to "2", "client_template" to "2",
             "unlimited_selector_change_type" to if (cursor == null) "1" else "2",
             "user_is_login" to "0")
-        cursor?.boardId?.takeIf { it.isNotBlank() }?.let { values["sub_selected_items"] = it }
+        // 首屏主动指定默认子榜，否则服务端会按自己的默认项返回（通常是短剧热播）。
+        values["sub_selected_items"] = cursor?.boardId?.takeIf { it.isNotBlank() }
+            ?: ComicRank.defaultBoardId(board)
         if (cursor != null) {
             if (cursor.seen.isNotEmpty()) values["filter_ids"] = cursor.seen.joinToString(",")
             if (cursor.sessionId.isNotBlank()) values["session_id"] = cursor.sessionId

@@ -648,8 +648,6 @@ class ContentRepositoryTest {
 
     /** 官方榜单响应：目录 + 一页 video_data，附带分页游标。 */
     private fun rankCells(
-        content: String = "comic_series_rank",
-        board: String = "comic_series_hot_play",
         rows: List<Triple<String, String, String>> = listOf(
             Triple("7100000000000101", "测试漫剧", "7921万热度"),
             Triple("7100000000000102", "第二部漫剧", "6506万热度"),
@@ -667,14 +665,15 @@ class ContentRepositoryTest {
         }
         val cellView = JSONObject().put("cell_data", JSONArray().put(JSONObject().put("video_data", videoRows)))
         if (withCatalog) {
-            // 目录给出该内容类型的子榜，服务端标出默认选中的那个。
+            // 目录给出各内容类型的子榜，子榜 ID 与线上一致（服务端标出默认选中的那个）。
+            fun content(id: String, name: String, board: String) = JSONObject()
+                .put("selector_item_id", id).put("show_name", name)
+                .put("sub_cell_selector", JSONObject().put("outer_row", JSONObject().put("items", JSONArray()
+                    .put(JSONObject().put("selector_item_id", board).put("show_name", "热播榜").put("is_selected", true)))))
             cellView.put("cell_selector", JSONObject().put("outer_row", JSONObject().put("items", JSONArray()
-                .put(JSONObject().put("selector_item_id", "human").put("show_name", "真人剧")
-                    .put("sub_cell_selector", JSONObject().put("outer_row", JSONObject().put("items", JSONArray()
-                        .put(JSONObject().put("selector_item_id", "human_hot_play").put("show_name", "热播榜").put("is_selected", true))))))
-                .put(JSONObject().put("selector_item_id", "comic_series_rank").put("show_name", "漫剧")
-                    .put("sub_cell_selector", JSONObject().put("outer_row", JSONObject().put("items", JSONArray()
-                        .put(JSONObject().put("selector_item_id", "comic_series_hot_play").put("show_name", "热播榜").put("is_selected", true))))))
+                .put(content("human", "真人剧", "human_hot_play"))
+                .put(content("comic_series_rank", "漫剧", "comic_series_hot_play"))
+                .put(content("ai_playlet", "AI剧", "ai_playlet_hot_play"))
             )))
         }
         return JSONObject().put("code", 0).put("data", JSONObject()
@@ -741,9 +740,10 @@ class ContentRepositoryTest {
         // 会话 a 的续页应当从它自己的第 1 页续，而不是被 b 的重置影响。
         assertEquals("2",queries[2].queryParameter("unlimited_selector_change_type"))
         assertEquals("20",queries[2].queryParameter("offset"))
-        // 会话 b 仍然是第 1 页状态。
+        // 会话 b 自己的第 1 页游标仍在（offset=20），没有被 a 的续页吃掉，也没有被重置。
         repo.ranking(RankBoard.COMIC,2,b)
-        assertEquals("0",queries[3].queryParameter("offset"))
+        assertEquals("20",queries[3].queryParameter("offset"))
+        assertEquals("2",queries[3].queryParameter("unlimited_selector_change_type"))
     }
 
     @Test fun tvRankingRestartsSessionWhenPageOneRequestedAgain() {
@@ -775,7 +775,7 @@ class ContentRepositoryTest {
 
     @Test fun tvRankingRealBoardUsesHumanContent() {
         val queries=mutableListOf<okhttp3.HttpUrl>()
-        val repo=repository { request -> queries+=request.url; rankCells(content="human",board="human_hot_play") }
+        val repo=repository { request -> queries+=request.url; rankCells() }
         repo.realRanking()
         assertEquals("human",queries.single().queryParameter("selected_items"))
         assertEquals("human_hot_play",queries.single().queryParameter("sub_selected_items"))

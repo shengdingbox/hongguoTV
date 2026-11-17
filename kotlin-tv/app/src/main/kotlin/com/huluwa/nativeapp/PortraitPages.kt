@@ -42,6 +42,7 @@ class PortraitPages(
     private fun column() = PortraitUi.column(activity)
     private fun row() = PortraitUi.row(activity)
     private fun lp(w: Int = -1, h: Int = -2) = PortraitUi.lp(w, h)
+    private var recentWatchScrollX = 0
 
     // 扣除列表外层缩进，使标题与排行榜、新剧的页头保持相同边距。
     private fun listPageTitle(page: PortraitListPage, label: String) = PortraitUi.pageTitle(activity, label).apply {
@@ -366,10 +367,24 @@ class PortraitPages(
             }
         }, lp(dp(44), dp(44)))
         recent.addView(recentHeading, lp())
+        val restoreRecentScrollX = recentWatchScrollX
         val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
         val cards = row().apply { gravity = Gravity.TOP; setPadding(startPadding, 0, dp(16), 0) }
         strip.addView(cards)
-        strip.viewTreeObserver.addOnScrollChangedListener { activity.refreshPhoneCovers() }
+        // 详情返回会重建列表，先恢复横向位置，让共享封面动画找到原来的卡片。
+        strip.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+            override fun onLayoutChange(
+                view: View, left: Int, top: Int, right: Int, bottom: Int,
+                oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int,
+            ) {
+                view.removeOnLayoutChangeListener(this)
+                strip.scrollTo(restoreRecentScrollX, 0)
+            }
+        })
+        strip.viewTreeObserver.addOnScrollChangedListener {
+            if (strip.isShown) recentWatchScrollX = strip.scrollX
+            activity.refreshPhoneCovers()
+        }
         recent.addView(strip, lp())
         body.addView(recent, lp())
         val retainedCards = mutableMapOf<String, RecentWatchCard>()
@@ -464,7 +479,7 @@ class PortraitPages(
             leftMargin = dp(8); rightMargin = dp(8); bottomMargin = dp(7)
         })
         val entry = RecentWatchCard(card, progress, watch)
-        card.setOnClickListener { activity.openDetailPhone(entry.watch.series) }
+        card.setOnClickListener { activity.openDetailPhone(entry.watch.series, cover = card.image) }
         card.setOnLongClickListener {
             val current = entry.watch
             val menu = PopupMenu(PortraitStyle.popupContext(activity), card)
@@ -485,6 +500,7 @@ class PortraitPages(
         val previous = entry.watch
         entry.watch = watch
         val card = entry.card
+        card.image.transitionName = PosterSharedTransition.posterName(watch.series.id, source = "recent")
         card.title.text = watch.series.title
         card.badge.text = if (watch.completed) "看完第 ${watch.episodeIndex + 1} 集" else "看到第 ${watch.episodeIndex + 1} 集"
         card.contentDescription = "${watch.series.title}，${card.badge.text}"

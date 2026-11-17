@@ -33,7 +33,7 @@ internal class PosterSharedTransition(private val root: FrameLayout, snapshot: S
     )
 
     companion object {
-        fun posterName(seriesId: String) = "shared-poster:$seriesId"
+        fun posterName(seriesId: String, source: String = "grid") = "shared-poster:$source:$seriesId"
 
         fun capture(root: FrameLayout, source: ImageView?): Snapshot? {
             val enabled = if (Build.VERSION.SDK_INT >= 26) ValueAnimator.areAnimatorsEnabled()
@@ -148,8 +148,8 @@ internal class PosterSharedTransition(private val root: FrameLayout, snapshot: S
     }
 
     /** 返回列表先恢复滚动并等待原卡片布局，避免落点仍在首屏或封面出现重影。 */
-    fun returnTo(seriesId: String?, ready: () -> Boolean) {
-        if (seriesId == null || snapshot?.cover == null) {
+    fun returnTo(posterName: String?, ready: () -> Boolean) {
+        if (posterName == null || snapshot?.cover == null) {
             startAnimation()
             return
         }
@@ -157,7 +157,7 @@ internal class PosterSharedTransition(private val root: FrameLayout, snapshot: S
         val observer = root.viewTreeObserver
         val listener = object : ViewTreeObserver.OnPreDrawListener {
             override fun onPreDraw(): Boolean {
-                val poster = if (ready()) findPoster(root, posterName(seriesId)) else null
+                val poster = if (ready()) findPoster(root, posterName) else null
                 if (poster != null && poster.width > 0 && poster.height > 0) {
                     removePendingDraw()
                     // 已加载的列表封面保持原样，尚未载入时先显示共享封面。

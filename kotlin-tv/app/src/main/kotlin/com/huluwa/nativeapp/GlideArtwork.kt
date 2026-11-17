@@ -100,6 +100,18 @@ class GlideArtwork(private val context: Context) {
 
     fun close() { closed = true; clearPage() }
 
+    /** 不绑定视图，仅把封面拉进 Glide 磁盘/内存缓存。
+     *  排行榜、新剧等网格首屏数据返回后调用，让 RecyclerView 真正的 onBind 命中缓存秒开。 */
+    fun preload(urls: List<String>, width: Int = 0, height: Int = 0) {
+        if (closed) return
+        urls.filter { it.isNotBlank() }.forEach { url ->
+            val req = coverRequest(requests, url, Priority.HIGH)
+            if (width > 0 && height > 0) req.override(width, height)
+            req.preload()
+        }
+        RuntimeLog.add("IMG preload n=${urls.size}")
+    }
+
     companion object {
         /** 请求序列号：追踪一次 into/retry 到最终 OK/FAIL 的完整链路。 */
         private val traceSeq = AtomicLong(0)

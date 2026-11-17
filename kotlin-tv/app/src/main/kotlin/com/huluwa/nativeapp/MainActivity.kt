@@ -1547,6 +1547,9 @@ class MainActivity: Activity() {
                     }
                 } else {
                     catalog=result.items; hasMore=result.hasMore; ranking=result.ranking
+                    // 排行榜/新剧网格：先并发预加载首屏所有封面进 Glide 缓存，再创建视图，
+                    // RecyclerView onBind 时全部命中缓存秒开，视觉效果跟推荐页 loadArtwork 一致。
+                    if(requestTab==2) artwork.preload(result.items.map { it.cover })
                     // 手机输入的精确剧名搜索零结果时自动恢复联想，帮助用户纠正剧名
                     if(requestTab==1 && result.items.isEmpty()) { scheduleSuggest() }
                     val keepNav=nav.any { it.hasFocus() }; val keepType=typeButtons.values.any { it.hasFocus() }
@@ -2913,6 +2916,8 @@ class MainActivity: Activity() {
                 current.replaceItems(result.items,if(hasMore) FOOTER_NONE else FOOTER_END)
                 restoreCatalogFocus()
             } else {
+                // 首屏先并发预加载所有封面，避免 RecyclerView 逐行 onBind 时一张张依次加载。
+                artwork.preload(result.items.map { it.cover })
                 body.removeAllViews(); catalogGrid(body,keepNav,false)
             }
             main.post {

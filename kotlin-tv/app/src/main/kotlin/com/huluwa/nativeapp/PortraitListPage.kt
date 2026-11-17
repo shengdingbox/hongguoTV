@@ -5,7 +5,6 @@ import android.os.Parcelable
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import androidx.core.view.doOnNextLayout
 import androidx.recyclerview.widget.ConcatAdapter
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -116,10 +115,16 @@ class PortraitListPage(private val activity: MainActivity) : FrameLayout(activit
         if (state != null) {
             pendingLayoutState = null
             restoringLayoutState = true
-            recycler.doOnNextLayout {
-                restoringLayoutState = false
-                onPositionChanged?.invoke(position)
-            }
+            recycler.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+                override fun onLayoutChange(
+                    view: View, left: Int, top: Int, right: Int, bottom: Int,
+                    oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int,
+                ) {
+                    view.removeOnLayoutChangeListener(this)
+                    restoringLayoutState = false
+                    onPositionChanged?.invoke(position)
+                }
+            })
             grid.onRestoreInstanceState(state)
             recycler.requestLayout()
             return

@@ -7,7 +7,7 @@
 - 收藏和历史保存在本机，登录红果账号后可同步观看记录。
 - TV 导航独立显示首页、找剧、排行榜、收藏、观看历史和设置。
 - APK 不含 JNI 库，可由 Android 在 ARM32、ARM64、x86、x86_64 上运行；视频解码能力依赖设备。
-- 源码分支：`main`；推送不会自动发版，正式版由维护者手动触发 `.github/workflows/release.yml`。
+- 源码分支：`main`；推送不会自动发版，正式版由维护者在本地手动构建签名包。
 - 下载正式签名 APK：见本仓库 Releases 页面
 - 问题反馈与功能建议：请到本仓库 Issues 提交
 
@@ -443,10 +443,11 @@ keyPassword=your-password
 对应环境变量：`HONGGUOTV_KEYSTORE`、`HONGGUOTV_STORE_PASSWORD`、`HONGGUOTV_KEY_ALIAS`、`HONGGUOTV_KEY_PASSWORD`。使用自己的签名重建时，不能直接覆盖安装官方发布密钥签名的 APK；卸载会清除本机记录。更新已安装的正式版应继续使用同一发布密钥。
 
 ```sh
-./scripts/build-kotlin.sh
-# 输出：outputs/hongguotv-kotlin-0.30.10-android8.apk（minSdk 26）
-# Android 5-7 变体：./gradlew -PHONGGUOTV_MIN_SDK=21 :app:assembleRelease
-# 输出：outputs/hongguotv-kotlin-0.30.10-android5.apk（minSdk 21）
+# 正式签名包（minSdk 26）
+./kotlin-tv/gradlew -p kotlin-tv :core:test :app:lintRelease :app:assembleRelease
+# 输出：kotlin-tv/app/build/outputs/apk/release/app-release.apk
+# Android 5-7 变体：./kotlin-tv/gradlew -p kotlin-tv -PHONGGUOTV_MIN_SDK=21 :app:assembleRelease
+# 输出：同为 app-release.apk，minSdk 21
 ```
 
 ## 工程结构
@@ -476,7 +477,7 @@ node kotlin-tv/tools/signing-oracle.cjs
 - 上报内容只有三项：首次启动随机生成的匿名安装 ID（32 位随机 UUID，仅存于本机 `install_stats` 偏好中）、应用版本名、versionCode。
 - **不收集** IP、设备型号、系统版本、位置、观看/收藏内容或任何账号信息；云函数不解析请求来源 IP，只把上述三项写入一行日志。
 - 请求超时仅 3-5 秒，失败静默丢弃，不重试、不缓存、不阻塞应用启动；无独立开关，因为不含个人信息且单次请求对使用无影响。
-- 日志保留 7 天，统计仅做随机 ID 去重计数（累计安装 / DAU / WAU / MAU / 版本分布）。云函数与查询方式见 `../deploy/scf-stats/`。
+- 日志保留 7 天，统计仅做随机 ID 去重计数（累计安装 / DAU / WAU / MAU / 版本分布）。
 
 除此之外，APK 不包含第三方统计/广告/崩溃上报 SDK。
 

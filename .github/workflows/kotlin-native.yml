@@ -4,7 +4,7 @@ on:
     branches: ['codex/kotlin-standalone']
     tags: ['kotlin-v*']
   pull_request:
-    paths: ['kotlin-tv/**', 'scripts/build-kotlin.sh', '.github/workflows/kotlin-native.yml']
+    paths: ['kotlin-tv/**', '.github/workflows/kotlin-native.yml']
   workflow_dispatch:
 permissions:
   contents: read

@@ -91,7 +91,7 @@ adb install -r APK文件路径
 ./kotlin-tv/gradlew -p kotlin-tv -PHONGGUOTV_MIN_SDK=21 :app:assembleDebug
 ```
 
-正式包签名配置与构建方式见 [原生工程说明](kotlin-tv/README.md#构建)。开发包与正式包签名不同，不能直接互相覆盖安装。正式版发布由维护者手动触发 GitHub Actions，推送代码不会自动发版。
+正式包签名配置与构建方式见 [原生工程说明](kotlin-tv/README.md#构建)。开发包与正式包签名不同，不能直接互相覆盖安装。正式版由维护者在本地手动构建签名包，推送代码不会自动发版。
 
 ## 工程结构
 
@@ -99,9 +99,7 @@ adb install -r APK文件路径
 | --- | --- |
 | `kotlin-tv/app/` | 电视与手机原生界面、播放器、遥控与触屏交互、本机数据和日志 |
 | `kotlin-tv/core/` | 内容浏览、搜索、详情、榜单、账号接口、播放解析、媒体处理与缓存 |
-| `scripts/` | APK 构建与发布脚本 |
-| `.github/workflows/` | 原生工程检查及手动发布流程 |
-| `deploy/` | 匿名装机统计服务 |
+| `.github/workflows/` | 原生工程检查流程 |
 | `docs/` | 更新日志、技术研究与历史交付资料 |
 
 ## 数据与隐私

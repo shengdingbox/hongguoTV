@@ -30,7 +30,7 @@ class PortraitListPage(private val activity: MainActivity) : FrameLayout(activit
         sections.adapters.any { it is PortraitUi.PosterGrid && it.isUpdating }
     var onPositionChanged: ((Int) -> Unit)? = null
     // 零高度提示行也会计入滚动条估算，列表在顶部时必须明确记为零。
-    val position get() = if (recycler.canScrollVertically(-1)) recycler.computeVerticalScrollOffset() else 0
+    val position get() = if (canScrollVertically(-1)) recycler.computeVerticalScrollOffset() else 0
 
     init {
         grid.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
@@ -131,5 +131,16 @@ class PortraitListPage(private val activity: MainActivity) : FrameLayout(activit
         onPositionChanged?.invoke(position)
     }
 
-    override fun canScrollVertically(direction: Int) = recycler.canScrollVertically(direction)
+    override fun canScrollVertically(direction: Int): Boolean {
+        if (direction < 0) {
+            // 榜单和新剧的首个提示块隐藏后高度为零，滚动条估算会跳过它，
+            // 即使实际已到顶部也返回正偏移。刷新判断应以首行的真实布局位置为准。
+            val first = grid.findViewByPosition(0)
+            if (first != null) {
+                val margins = first.layoutParams as RecyclerView.LayoutParams
+                return grid.getDecoratedTop(first) - margins.topMargin < recycler.paddingTop
+            }
+        }
+        return recycler.canScrollVertically(direction)
+    }
 }

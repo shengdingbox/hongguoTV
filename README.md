@@ -91,7 +91,13 @@ adb install -r APK文件路径
 ./kotlin-tv/gradlew -p kotlin-tv -PHONGGUOTV_MIN_SDK=21 :app:assembleDebug
 ```
 
-正式包由维护者的打包服务器构建并签名，开发包与正式包签名不同，不能直接互相覆盖安装。发布时在 [GitHub Actions](https://github.com/superhuluwa/hongguoTV/actions/workflows/release.yml) 点击 **Run workflow**，即可将服务器上最新成功的 APK 发布到 GitHub Release；推送代码不会自动发版。配置和使用方式见 [一键发布说明](docs/GITHUB_RELEASE.md)。
+正式包由维护者的打包服务器构建并签名，开发包与正式包签名不同，不能直接互相覆盖安装。在仓库根目录执行以下命令，即可将 Debian 打包服务器上最新成功的 APK 发布到 GitHub Release：
+
+```bash
+bash scripts/publish-tv-release.sh
+```
+
+也可以在 [GitHub Actions](https://github.com/superhuluwa/hongguoTV/actions/workflows/release.yml) 点击 **Run workflow** 发布；推送代码不会自动发版。认证、可选参数和配置见 [一键发布说明](docs/GITHUB_RELEASE.md)。
 
 ## 工程结构
 

@@ -1,6 +1,14 @@
 # 发布打包服务器上的 APK
 
-发布入口：[GitHub Actions → 发布打包服务器最新版](https://github.com/superhuluwa/hongguoTV/actions/workflows/release.yml)。选择 `main`，点击 **Run workflow** 即可发布打包服务器上最新成功的签名 APK。
+在当前机器的仓库根目录执行，即可将 Debian 打包服务器上最新成功的签名 APK 发布到 GitHub Release：
+
+```bash
+bash scripts/publish-tv-release.sh
+```
+
+脚本默认连接 `root@192.168.3.83:22`，读取 `hongguotv-android-build-data` 卷内的构建任务。无需进入 GitHub Actions，也不依赖发布 Runner 在线。
+
+也可以使用 [GitHub Actions → 发布打包服务器最新版](https://github.com/superhuluwa/hongguoTV/actions/workflows/release.yml)，选择 `main`，点击 **Run workflow** 发布。
 
 - `task_id` 留空：按构建任务 ID 从新到旧选择最新成功的 APK，跳过更新源码、失败、取消和未完成的任务。
 - `task_id` 填写任务 ID：发布指定的成功构建。
@@ -11,6 +19,31 @@
 发布标签为 `build-v<versionName>-<versionCode>`，指向该 APK 构建记录中的完整源码提交，而非运行工作流时的最新源码。对应提交须已同步到 GitHub。Release 附件包括 APK、`build-info.json` 和 `SHA256SUMS`。APK 的大小和 SHA-256 必须与构建记录一致，所有附件上传成功后才会将草稿发布为 Latest。
 
 重复运行已发布的构建会返回原 Release；上传失败时保留草稿，重新运行可继续上传。
+
+## Shell 一键发布
+
+本机需要 Bash、Python 3 和 OpenSSH，打包机需要 Python 3。脚本将当前仓库的 Python 发布程序通过 SSH 标准输入交给打包机执行，直接读取已有 APK；不重新构建，也不在服务器安装脚本。
+
+GitHub 认证复用**执行命令的机器**上的 `GH_TOKEN` / `GITHUB_TOKEN`；未设置时，读取 Git 凭据管理器中保存的 GitHub 凭据，因此此时还需要 Git。凭据须具有目标仓库的 Release 写入权限（fine-grained Token 的 `Contents: Read and write`）。Token 通过加密 SSH 标准输入传输，不写入命令参数、仓库或远程文件。
+
+当前维护环境自动复用已保存的 `debain-server-auth` 认证。其他机器使用 OpenSSH 已配置的密钥或交互式密码认证；首次连接须先通过 SSH 确认并保存服务器主机密钥。
+
+可选参数示例：
+
+```bash
+# 指定构建任务与发布说明
+bash scripts/publish-tv-release.sh --task-id 165 --notes '本次更新说明'
+
+# 如果已在 Debian 打包机上，直接读取本机构建产物并使用该机的 GitHub 凭据
+bash scripts/publish-tv-release.sh --local
+
+# 查看参数
+bash scripts/publish-tv-release.sh --help
+```
+
+`--repo owner/repository` 可指定目标仓库，默认 `superhuluwa/hongguoTV`；`--tasks-dir /path/to/tasks` 可覆盖打包机上的任务目录。
+
+可通过 `HONGGUOTV_BUILD_HOST`、`HONGGUOTV_BUILD_SSH_PORT`、`HONGGUOTV_BUILD_TASKS_DIR` 覆盖默认服务器地址、端口和任务目录。只有默认地址和端口会自动启用已保存的 Debian 认证；如需指定自有 SSH 认证脚本，设置 `HONGGUOTV_SSH_HELPER`，该 Python 脚本应接收远程命令作为唯一参数，并原样转发标准输入和输出。
 
 ## 内网发布节点
 

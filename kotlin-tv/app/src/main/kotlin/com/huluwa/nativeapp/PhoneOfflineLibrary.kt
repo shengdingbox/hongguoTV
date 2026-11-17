@@ -27,7 +27,9 @@ class PhoneOfflineLibrary(
     private fun dp(value: Int) = PortraitUi.dp(activity, value)
     private fun text(value: String, size: Float = 14f, color: Int = PortraitStyle.text) = PortraitUi.text(activity, value, size, color)
     private fun lp(w: Int = -1, h: Int = -2) = LinearLayout.LayoutParams(w, h)
-    val header = PortraitUi.column(activity).apply { setPadding(dp(16), 0, dp(16), 0) }
+    // 列表外层已有缩进，卡片和提示区仅补足到页面统一的 16dp 边距。
+    private val horizontalPadding = dp(16) - page.horizontalContentPadding
+    val header = PortraitUi.column(activity).apply { setPadding(horizontalPadding, 0, horizontalPadding, 0) }
     private val expandedSeries = mutableSetOf<String>()
     private val warning = text("", 13f, PortraitStyle.secondaryText).apply {
         setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -158,7 +160,7 @@ class PhoneOfflineLibrary(
         init {
             itemView.layoutParams = RecyclerView.LayoutParams(-1, -2)
             (itemView as FrameLayout).apply {
-                setPadding(dp(16), 0, dp(16), dp(8))
+                setPadding(horizontalPadding, 0, horizontalPadding, dp(8))
                 addView(card, FrameLayout.LayoutParams(-1, -2))
             }
             card.apply {

@@ -31,6 +31,9 @@ GitHub 认证复用**执行命令的机器**上的 `GH_TOKEN` / `GITHUB_TOKEN`�
 可选参数示例：
 
 ```bash
+# 模拟执行：实际连接 Debian、校验 APK 并查询 GitHub，不创建标签或发布
+bash scripts/publish-tv-release.sh --dry-run
+
 # 指定构建任务与发布说明
 bash scripts/publish-tv-release.sh --task-id 165 --notes '本次更新说明'
 
@@ -40,6 +43,8 @@ bash scripts/publish-tv-release.sh --local
 # 查看参数
 bash scripts/publish-tv-release.sh --help
 ```
+
+`--dry-run` 会读取真实 APK，校验大小与 SHA-256，查询 GitHub 上的源码提交、标签和 Release；需要上传时还会检查 `uploads.github.com` 的连接。它只发送 GET / HEAD 请求，不创建标签、草稿或附件，也不会正式发布。此模式不实际上传，因此不验证上传权限或上传过程中是否断线。
 
 `--repo owner/repository` 可指定目标仓库，默认 `superhuluwa/hongguoTV`；`--tasks-dir /path/to/tasks` 可覆盖打包机上的任务目录。
 

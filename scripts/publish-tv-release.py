@@ -46,7 +46,7 @@ class GitHub:
         for attempt in range(1, attempts + 1):
             request = urllib.request.Request(url, data=data, method=method, headers={
                 "Authorization": f"Bearer {self.token}",
-                "Accept": "application/vnd.github+json",
+                "Accept": "*/*" if method == "HEAD" else "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
                 "User-Agent": "hongguotv-release",
                 "Content-Type": content_type,
@@ -184,10 +184,13 @@ def prepare_assets(directory, result, output):
     return [apk, info, sums], metadata
 
 
-def ensure_tag(github, tag, commit):
+def ensure_tag(github, tag, commit, dry_run=False):
     reference = "/git/ref/tags/" + urllib.parse.quote(tag, safe="")
     existing = github.request("GET", reference, missing_ok=True)
     if existing is None:
+        if dry_run:
+            print(f"模拟创建标签：{tag} → {commit}", flush=True)
+            return
         existing = github.request(
             "POST", "/git/refs", {"ref": f"refs/tags/{tag}", "sha": commit},
             recover=lambda: github.request("GET", reference, missing_ok=True),
@@ -219,7 +222,6 @@ def release_notes(metadata, notes):
     return "\n".join(details)
 
 
-
 def recover_upload(github, release_id, path):
     """Reuse a completed upload or remove its incomplete server-side placeholder."""
     assets = github.request("GET", f"/releases/{release_id}/assets?per_page=100")
@@ -234,13 +236,13 @@ def recover_upload(github, release_id, path):
     return None
 
 
-def publish(github, assets, metadata, notes):
+def publish(github, assets, metadata, notes, dry_run=False):
     tag = f"build-v{metadata['versionName']}-{metadata['versionCode']}"
     print("检查 GitHub 源码提交与发布标签……", flush=True)
     # Fail before creating anything when the build commit has not reached GitHub.
     if github.request("GET", "/commits/" + metadata["commit"], missing_ok=True) is None:
         raise ReleaseError("APK 对应的源码提交尚未同步到 GitHub，请先推送该提交。")
-    ensure_tag(github, tag, metadata["commit"])
+    ensure_tag(github, tag, metadata["commit"], dry_run=dry_run)
     release = github.request("GET", "/releases/tags/" + urllib.parse.quote(tag, safe=""), missing_ok=True)
     if release and not release["draft"]:
         print(f"该构建已发布：{release['html_url']}")
@@ -253,6 +255,15 @@ def publish(github, assets, metadata, notes):
         "draft": True,
         "prerelease": False,
     }
+    if dry_run:
+        print("检查 GitHub 附件上传主机连接……", flush=True)
+        github.request("HEAD", "https://uploads.github.com/", missing_ok=True)
+        print(f"模拟{'更新' if release else '创建'} Release 草稿：{tag}", flush=True)
+        for path in assets:
+            print(f"模拟上传：{path.name}（{path.stat().st_size} 字节，"
+                  f"SHA-256：{digest(path)}）", flush=True)
+        print("模拟将草稿发布为 Latest。", flush=True)
+        return tag, None
     print(f"准备 Release 草稿：{tag}", flush=True)
     if release:
         release = github.request("PATCH", f"/releases/{release['id']}", fields)
@@ -296,6 +307,8 @@ def main():
     parser.add_argument("--task-id", default=os.environ.get("RELEASE_TASK_ID", ""))
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", DEFAULT_REPOSITORY))
     parser.add_argument("--notes", default=os.environ.get("RELEASE_NOTES", ""))
+    parser.add_argument("--dry-run", action="store_true",
+                        help="读取并校验真实 APK，查询 GitHub；不创建标签、上传附件或发布 Release")
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo):
         raise ReleaseError("GitHub 仓库名称格式应为 owner/repository。")
@@ -304,7 +317,10 @@ def main():
         assets, metadata = prepare_assets(directory, result, Path(temporary))
         print(f"发布构建任务 {metadata['taskId']}：{metadata['versionName']} ({metadata['versionCode']})，源码 {metadata['commit']}", flush=True)
         github = GitHub(args.repo, token_from_environment())
-        tag, url = publish(github, assets, metadata, args.notes)
+        tag, url = publish(github, assets, metadata, args.notes, dry_run=args.dry_run)
+        if args.dry_run:
+            print(f"模拟执行完成：{tag}。未向 GitHub 写入任何变更。", flush=True)
+            return
         if os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
                 output.write(f"tag={tag}\nurl={url}\n")

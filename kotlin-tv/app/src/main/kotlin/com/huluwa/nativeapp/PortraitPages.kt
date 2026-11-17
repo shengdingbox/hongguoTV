@@ -43,7 +43,18 @@ class PortraitPages(
 
     fun home(page: PortraitListPage): (Boolean) -> Unit {
         val body=column(); page.addBlock(body)
-        body.addView(PortraitUi.pageTitle(activity, "推荐"), lp())
+        val header = row()
+        header.addView(PortraitUi.pageTitle(activity, "推荐"), lp(0, -2).apply { weight = 1f })
+        header.addView(ImageView(activity).apply {
+            setImageResource(R.drawable.ic_search)
+            setColorFilter(PortraitStyle.text)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 24)
+            contentDescription = "搜索"
+            isFocusable = true
+            setOnClickListener { activity.switchPhoneTab("search") }
+        }, lp(dp(48), dp(48)).apply { rightMargin = dp(4) })
+        body.addView(header, lp())
         val empty = PortraitUi.emptyHint(activity, "正在加载推荐…")
         body.addView(empty, lp())
         val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },

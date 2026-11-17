@@ -44,13 +44,12 @@ object PortraitUi {
     fun text(activity: Activity, value: String, size: Float, color: Int = PortraitStyle.text): TextView =
         TextView(activity).apply { text = value; textSize = size; setTextColor(color); includeFontPadding = false }
 
-    /** 手机五项导航，新剧使用红果公开上新日历。 */
+    /** 手机四项导航，新剧使用红果公开上新日历；搜索从推荐页标题进入。 */
     val TABS = listOf(
         Tab("home", "推荐", R.drawable.ic_phone_home),
         Tab("rank", "排行榜", R.drawable.ic_phone_rank),
         Tab("new", "新剧", R.drawable.ic_phone_grid),
         Tab("mine", "我的", R.drawable.ic_phone_star),
-        Tab("search", "搜索", R.drawable.ic_search),
     )
 
     data class Tab(val key: String, val label: String, val icon: Int)
@@ -102,8 +101,13 @@ object PortraitUi {
     }
 
     fun paintNav(nav: LinearLayout, active: String, previous: String? = null) {
-        val selectedTab = if (active == "fav") "mine" else active
-        val previousTab = if (previous == "fav") "mine" else previous
+        fun navigationTab(tab: String?) = when (tab) {
+            "fav" -> "mine"
+            "search" -> "home"
+            else -> tab
+        }
+        val selectedTab = navigationTab(active)
+        val previousTab = navigationTab(previous)
         (nav as? PortraitGlassNavigation)?.selectItem(
             TABS.indexOfFirst { it.key == selectedTab },
             TABS.indexOfFirst { it.key == previousTab },

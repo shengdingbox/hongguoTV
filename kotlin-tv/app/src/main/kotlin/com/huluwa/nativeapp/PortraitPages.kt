@@ -190,7 +190,7 @@ class PortraitPages(
         }
     }
 
-    fun rankPager(refresh: () -> Unit): PortraitFeedPager {
+    fun rankPager(): PortraitFeedPager {
         lateinit var feed: PortraitFeedPager
         val tabs=column()
         // 两行保持各自的滚动容器，切换子榜只更新选中态，不重建类型行。
@@ -211,7 +211,6 @@ class PortraitPages(
             selected={ activity.mobileRankSelectedKeyPhone },
             select=activity::switchRankBoardPhone,
             updateTabs=::updateTabs,
-            loading={ activity.rankLoadingPhone },refresh=refresh,
         ) { key,page ->
             val body=column(); page.addBlock(body)
             val empty=PortraitUi.emptyHint(activity,"正在读取榜单…")
@@ -241,7 +240,7 @@ class PortraitPages(
     }
 
     /** 每个日期持有独立列表和滚动位置，Tab 与原生分页双向联动。 */
-    fun newReleasesPager(refresh: () -> Unit): PortraitFeedPager {
+    fun newReleasesPager(): PortraitFeedPager {
         lateinit var feed: PortraitFeedPager
         val strip = FeedTabs(false, dateTabs = true) { feed.selectPage(it) }
         fun updateDates(selectedDay: String) {
@@ -268,8 +267,6 @@ class PortraitPages(
             selected = { activity.newReleaseDatePhone },
             select = { activity.chooseNewReleaseDayPhone(it) },
             updateTabs = ::updateDates,
-            loading = { activity.newReleaseLoadingPhone },
-            refresh = refresh,
         ) { key, page ->
             val body=column(); page.addBlock(body)
             val loading = PortraitUi.emptyHint(activity, "正在加载新剧…")

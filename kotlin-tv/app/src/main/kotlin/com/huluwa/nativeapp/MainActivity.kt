@@ -5704,7 +5704,7 @@ class MainActivity: Activity() {
             override fun onPreDraw(): Boolean {
                 if(observer.isAlive) observer.removeOnPreDrawListener(this)
                 if(phoneTab==tab && screen=="catalog" && view.isShown) {
-                    if(pager!=null) pager.restorePosition(y) else scroll?.restorePosition(y)
+                    if(pager!=null) pager.restorePosition(y,expandTitle=true) else scroll?.restorePosition(y)
                     phoneScrollY=pager?.position ?: scroll?.position ?: y
                     phoneSessionPositions[tab]=phoneScrollY
                     pendingPhoneScrolls.remove(tab)
@@ -6080,7 +6080,8 @@ class MainActivity: Activity() {
         artwork.refreshVisible()
         restorePhoneCatalogScroll(renderedTab,scroll,feedPager)
         val restoreY=pendingPhoneScrolls[renderedTab] ?: phoneScrollY
-        if(feedPager!=null) feedPager.post {
+        // 冷启动由数据就绪后的现场恢复处理，避免重复恢复把已展开的标题再次收起。
+        if(feedPager!=null && renderedTab !in pendingPhoneScrolls) feedPager.post {
             if(feedPager.isShown && phoneTab==renderedTab) feedPager.restorePosition(restoreY)
         }
         scroll?.let { feedScroll ->

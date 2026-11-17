@@ -184,9 +184,12 @@ class PortraitFeedPager(
     private fun updatePages() { pages.toMap().forEach { (key, page) -> updatePage(key, page) } }
     fun finishRefresh() { pages.values.forEach { it.refresh.finishRefresh() } }
 
-    fun restorePosition(y: Int) {
-        moveHeader(y.coerceAtLeast(0) - collapsed)
-        currentPage?.scroll?.restorePosition((y - collapsed).coerceAtLeast(0))
+    /** 冷启动可展开标题，同时扣除原来的标题收起距离，保留列表位置。 */
+    fun restorePosition(y: Int, expandTitle: Boolean = false) {
+        val savedCollapsed = y.coerceIn(0, titleView.measuredHeight)
+        val targetCollapsed = if (expandTitle) 0 else savedCollapsed
+        moveHeader(targetCollapsed - collapsed)
+        currentPage?.scroll?.restorePosition((y - savedCollapsed).coerceAtLeast(0))
     }
 
     override fun onAttachedToWindow() {

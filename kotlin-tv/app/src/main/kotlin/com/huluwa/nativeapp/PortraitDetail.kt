@@ -15,6 +15,7 @@ import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -46,6 +47,7 @@ class PortraitDetail(
     )
     private var pageBinding: PageBinding? = null
     private var posterView: ImageView? = null
+    private var posterSeriesId: String? = null
 
     fun sharedPoster(): ImageView? = posterView?.takeIf { it.isAttachedToWindow }
 
@@ -105,15 +107,21 @@ class PortraitDetail(
         data.social.heatText.takeIf { it.isNotBlank() }?.let { "热度 $it" }.orEmpty(),
     ).filter { it.isNotBlank() }.joinToString(" · ")
 
-    private fun poster(cover: String) = ImageView(activity).apply {
-        posterView = this
-        scaleType = ImageView.ScaleType.CENTER_CROP
-        background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 10)
-        clipToOutline = true
-        elevation = dp(3).toFloat()
-        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        onPosterReady(this)
-        loadCover(this, cover)
+    private fun poster(series: Series): ImageView {
+        // 加载页切换到正式详情时沿用同一海报及图片绑定，动画结束后也不会重新露出灰底。
+        val view = posterView?.takeIf { posterSeriesId == series.id } ?: ImageView(activity).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 10)
+            clipToOutline = true
+            elevation = dp(3).toFloat()
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        (view.parent as? ViewGroup)?.removeView(view)
+        posterView = view
+        posterSeriesId = series.id
+        onPosterReady(view)
+        loadCover(view, series.cover)
+        return view
     }
 
     private fun backButton() = ImageView(activity).apply {
@@ -139,7 +147,7 @@ class PortraitDetail(
                 gravity = Gravity.TOP
                 setPadding(dp(16), 0, dp(16), 0)
             }
-            hero.addView(poster(series.cover), lp(dp(118), dp(157)).apply { rightMargin = dp(16) })
+            hero.addView(poster(series), lp(dp(118), dp(157)).apply { rightMargin = dp(16) })
             hero.addView(text(series.title, 20f).apply {
                 setTypeface(null, Typeface.BOLD)
                 maxLines = 2
@@ -245,7 +253,7 @@ class PortraitDetail(
             gravity = Gravity.TOP
             setPadding(dp(16), 0, dp(16), 0)
         }
-        val poster = poster(data.series.cover)
+        val poster = poster(data.series)
         hero.addView(poster, lp(dp(118), dp(157)).apply { rightMargin = dp(16) })
         val info = PortraitUi.column(activity)
         val heroTitle = text(data.series.title, 20f).apply {
@@ -533,6 +541,7 @@ class PortraitDetail(
             val oldScrollY = scroll.scrollY
             val oldSeasonTop = seasonHost.top
             data = next
+            posterSeriesId = next.series.id
             playback = playbackState(next)
             loadingSeasonId = null
             titleInBar.text = next.series.title

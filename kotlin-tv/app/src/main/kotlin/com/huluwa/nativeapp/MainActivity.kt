@@ -5908,7 +5908,7 @@ class MainActivity: Activity() {
     private val portraitDetail by lazy {
         PortraitDetail(this,
             loadCover = { view, url -> artwork.load(view, url, keepCurrentImage = true) },
-            onPosterReady = { phoneCoverTransition?.bind(it) })
+            onPosterReady = { view -> phoneCoverTransition?.bind(view,seedCover=view.drawable==null) })
     }
 
     /** 所有手机竖屏详情统一使用新版界面，播放页继续使用原生 PhonePlayer。 */

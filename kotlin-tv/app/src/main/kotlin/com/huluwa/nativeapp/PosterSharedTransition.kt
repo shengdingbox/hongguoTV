@@ -188,7 +188,7 @@ internal class PosterSharedTransition(private val root: FrameLayout, snapshot: S
         if (animator != null || snapshot == null) return
         overlay.fadeCover = target == null
         animator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 360L
+            duration = 250L
             interpolator = PathInterpolator(.2f, 0f, 0f, 1f)
             addUpdateListener {
                 target?.takeIf { poster -> poster.isAttachedToWindow }?.let(::updateDestination)

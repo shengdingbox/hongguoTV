@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // GPL-3.0-only derived; see the README 来源与声明 section.
 package com.hongguotv.core
 

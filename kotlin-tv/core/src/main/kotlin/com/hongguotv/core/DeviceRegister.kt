@@ -1,5 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Adapted from charlie901208/HGTV feat/phone-login (GPL-3.0-only).
-// SPDX-License-Identifier: GPL-3.0-only.
 package com.hongguotv.core
 
 import java.io.ByteArrayOutputStream

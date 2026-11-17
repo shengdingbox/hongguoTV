@@ -124,18 +124,21 @@ adb install -r APK文件路径
 
 ## 开源协议
 
-本项目自主原创代码采用 [MIT 开源协议](https://opensource.org/license/mit/) 提供。`kotlin-tv/` 原生应用及其中的 GPL 派生实现按 [GPL-3.0-only](kotlin-tv/LICENSE) 发布，第三方代码保留各自许可，详见下文「来源与声明」。
+本项目整体采用 [GNU General Public License v3.0 only](https://www.gnu.org/licenses/gpl-3.0.html) 发布，许可证全文见根目录 [LICENSE](LICENSE)。全部 `.kt` 源文件均带有 `SPDX-License-Identifier: GPL-3.0-only` 声明。第三方依赖与参考项目保留各自许可，详见下文「来源与声明」。
 
 ## 来源与声明
 
-本仓库不引用、不分发其他仓库的构建产物，也不指向外部代码托管地址。以下说明派生关系与许可证归属：
+本仓库不引用、不分发其他仓库的构建产物。以下说明派生关系与许可证归属：
 
-- `kotlin-tv/` 原生应用及其中的 GPL 派生实现按 GPL-3.0-only 发布，许可证全文见 `kotlin-tv/LICENSE`。
-- `core` 中的 Spade URL / key 处理与 MP4 CENC 处理，是对某 GPL-3.0 授权的红果接口解析 JavaScript 实现的 Kotlin 移植；本版改为完整 Kotlin 实现，加密媒体通过 Media3 DataSource 直接读取，并增加样本边界检查、子样本处理和 AVC 原始编码恢复。
-- `core` 中的请求签名算法（`SignPrimitives.kt`、`SignAlgorithms.kt`、`AesV3.kt`，含 SM3、X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios 与魔改 AES-V3）与匿名设备注册协议（`DeviceRegister.kt`），是对某开源 Go 实现的 Kotlin 移植，全部在设备本地离线计算，不依赖任何外部签名服务；`PlaybackSigning.kt` 的 Argus 551 / Ladon 实现同源，原实现以 Apache-2.0 发布，许可证全文随 APK 打包于 `kotlin-tv/app/src/main/assets/licenses/`。
-- 播放 V5 协议（`MobilePlayback.kt`、`PlaybackV5Signer.kt`、`PlaybackV5Aes.kt`、`PlaybackV5Constants.kt`）改写自 GPL-3.0-only 授权的开源实现，仅移植 V5 的摘要、Helios、Medusa、专用 AES 载波和 gzip 播放请求，复用本机 SM3、匿名设备档案、模型缓存与 CENC 播放链路。
-- 手机推荐流、新剧日历、热搜与排行榜的请求参数与响应字段，参考某 Apache-2.0 授权的开源实现及某 iOS 客户端的接口定义；本仓库以 Kotlin 接入相同的公开协议，并复用本机匿名设备签名。
-- TV 浏览、详情、选集与播放页的布局和原生绘制样式，参考并改写自某 GPL-3.0-only 授权的开源电视客户端：迁移视觉布局与首页自动播放交互，接入本仓库的收藏、历史、筛选、播放和焦点恢复；背景与控件直接绘制，未引入参考项目的账号业务、字体、噪点位图或媒体资源。
+- 本仓库代码与文档按 GPL-3.0-only 发布，许可证全文见根目录 `LICENSE`，各源文件头部含 SPDX 声明。
+- 分发本项目的二进制（如 APK）时，需同时提供对应版本的完整源码、Gradle 包装器与构建说明。
+- `core` 中的 Spade URL / key 处理与 MP4 CENC 处理（`MediaCrypto.kt`、`VendorConstants.kt`）为 GPL-3.0 源码的 Kotlin 移植；本版改为完整 Kotlin 实现，加密媒体通过 Media3 DataSource 直接读取，并增加样本边界检查、子样本处理和 AVC 原始编码恢复。
+- `core` 中的请求签名算法（`SignPrimitives.kt`、`SignAlgorithms.kt`、`AesV3.kt`，含 SM3、X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios 与魔改 AES-V3）为 GPL-3.0 Go 源码的 Kotlin 移植，全部在设备本地离线计算，不依赖任何外部签名服务。
+- 匿名设备注册协议（`DeviceRegister.kt`）改写自 GPL-3.0-only 授权的开源实现。
+- `PlaybackSigning.kt` 的 Argus 551 / Ladon 实现源自以 Apache-2.0 发布的实现，其许可证全文随 APK 打包于 `kotlin-tv/app/src/main/assets/licenses/`。
+- 播放 V5 协议（`MobilePlayback.kt`、`PlaybackV5Signer.kt`、`PlaybackV5Aes.kt`、`PlaybackV5Constants.kt`）改写自 GPL-3.0-only 授权的开源实现，包含 V5 的摘要、Helios、Medusa、专用 AES 载波和 gzip 播放请求，复用本机 SM3、匿名设备档案、模型缓存与 CENC 播放链路。
+- 手机推荐流、新剧日历、热搜与排行榜的请求参数与响应字段，参考 [kadaliao/kaixinguo-ios](https://github.com/kadaliao/kaixinguo-ios) 与 openhongguo（Apache-2.0）的接口定义；本仓库以 Kotlin 接入相同的公开协议，并复用本机匿名设备签名。
+- TV 浏览、详情、选集与播放页的布局和原生绘制样式，参考并改写自 [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV)（GPL-3.0-only）：迁移视觉布局与首页自动播放交互，接入本仓库的收藏、历史、筛选、播放和焦点恢复；背景与控件直接绘制，未引入参考项目的账号业务、字体、噪点位图或媒体资源。
 
 第三方依赖及其许可证：
 
@@ -150,3 +153,8 @@ adb install -r APK文件路径
 | JUnit（仅测试） | EPL-1.0 |
 
 应用图标和 TV banner 使用本仓库素材。本应用不是内容平台官方客户端。
+
+## 界面参考
+
+- **手机版**：参考 [kadaliao/kaixinguo-ios](https://github.com/kadaliao/kaixinguo-ios) 的竖屏页面组织与播放页交互。
+- **TV 版**：参考 [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV) 的电视端导航、首页大卡片轮播、找剧分栏、排行榜海报网格与左右分栏设置；该项目以 GPL-3.0-only 授权，与本仓库许可一致。

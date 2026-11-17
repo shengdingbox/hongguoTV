@@ -490,4 +490,4 @@ node kotlin-tv/tools/signing-oracle.cjs
 
 本项目**仅做技术交流与学习用途**，旨在研究 Android 原生开发、媒体播放、网络请求签名等技术实现，不提供、不存储、不传播任何视频内容。三方片源接口需由用户自行添加，应用不内置任何接口地址，其内容的合法性由对应源站自行负责。
 
-原生代码按 GPL-3.0-only 发布；派生来源和依赖声明见根目录 [README.md](../README.md) 的「来源与声明」，完整许可见 [LICENSE](LICENSE)。
+原生代码按 GPL-3.0-only 发布；派生来源和依赖声明见根目录 [README.md](../README.md) 的「来源与声明」，完整许可见根目录 [LICENSE](../LICENSE)。

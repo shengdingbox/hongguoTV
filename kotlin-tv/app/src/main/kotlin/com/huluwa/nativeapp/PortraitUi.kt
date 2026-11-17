@@ -188,7 +188,7 @@ object PortraitUi {
     class PosterGrid(
         private val activity: MainActivity,
         private val loadCover: (ImageView, String) -> Unit,
-        private val open: (Series) -> Unit,
+        private val open: (Series, ImageView) -> Unit,
         private val more: (() -> Unit)?,
         private val ranked: Boolean = false,
         private val loadAheadScreens: Int = 0,
@@ -313,7 +313,9 @@ object PortraitUi {
                 else loadCover(card.image, cover)
             }
             // 未展示字段更新时不重绑卡片，交互始终读取当前列表中的最新剧集数据。
-            card.setOnClickListener { differ.currentList.getOrNull(holder.bindingAdapterPosition)?.series?.let(open) }
+            card.setOnClickListener {
+                differ.currentList.getOrNull(holder.bindingAdapterPosition)?.series?.let { open(it, card.image) }
+            }
             card.setOnLongClickListener {
                 val current = differ.currentList.getOrNull(holder.bindingAdapterPosition)?.series ?: return@setOnLongClickListener false
                 favoriteMenu(activity, card, current) {

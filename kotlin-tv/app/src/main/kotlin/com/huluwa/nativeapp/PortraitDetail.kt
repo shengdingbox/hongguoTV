@@ -32,6 +32,7 @@ import java.util.Locale
 class PortraitDetail(
     private val activity: MainActivity,
     private val loadCover: (ImageView, String) -> Unit,
+    private val onPosterReady: (ImageView) -> Unit = {},
 ) {
     private fun dp(v: Int) = PortraitUi.dp(activity, v)
     private fun text(v: String, size: Float, color: Int = PortraitStyle.text) = PortraitUi.text(activity, v, size, color)
@@ -101,25 +102,58 @@ class PortraitDetail(
         data.social.heatText.takeIf { it.isNotBlank() }?.let { "热度 $it" }.orEmpty(),
     ).filter { it.isNotBlank() }.joinToString(" · ")
 
-    fun renderState(root: FrameLayout, label: String, retry: (() -> Unit)? = null) {
+    private fun poster(cover: String) = ImageView(activity).apply {
+        scaleType = ImageView.ScaleType.CENTER_CROP
+        background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 10)
+        clipToOutline = true
+        elevation = dp(3).toFloat()
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        onPosterReady(this)
+        loadCover(this, cover)
+    }
+
+    private fun backButton() = ImageView(activity).apply {
+        setImageResource(R.drawable.ic_page_back)
+        setColorFilter(PortraitStyle.text)
+        setPadding(dp(13), dp(13), dp(13), dp(13))
+        background = PortraitStyle.selectable(activity, PortraitStyle.translucentSurface, radius = 24)
+        contentDescription = "返回"
+        isFocusable = true
+        setOnClickListener { activity.goBackPhone() }
+    }
+
+    fun renderState(root: FrameLayout, label: String, series: Series? = null, retry: (() -> Unit)? = null) {
         pageBinding = null
         root.removeAllViews()
         activity.phoneStatusBarLight(!PortraitStyle.isDark)
         val (frame, body, _) = PortraitUi.scaffold(activity, activity.phoneDetailOriginTab, activity::switchPhoneTab)
-        val back = ImageView(activity).apply {
-            setImageResource(R.drawable.ic_page_back)
-            setColorFilter(PortraitStyle.text)
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-            contentDescription = "返回"
-            setOnClickListener { activity.goBackPhone() }
+        val content = PortraitUi.column(activity).apply { setPadding(0, dp(80), 0, 0) }
+        body.addView(content, lp(-1, -1))
+        if (series != null) {
+            // 与正式详情共用海报尺寸和边距，数据未返回时就能完成共享元素进场。
+            val hero = PortraitUi.row(activity).apply {
+                gravity = Gravity.TOP
+                setPadding(dp(16), 0, dp(16), 0)
+            }
+            hero.addView(poster(series.cover), lp(dp(118), dp(157)).apply { rightMargin = dp(16) })
+            hero.addView(text(series.title, 20f).apply {
+                setTypeface(null, Typeface.BOLD)
+                maxLines = 2
+                ellipsize = TextUtils.TruncateAt.END
+                setLineSpacing(dp(3).toFloat(), 1f)
+            }, lp(0, -2).apply { weight = 1f })
+            content.addView(hero, lp())
         }
-        body.addView(back, lp(dp(48), dp(48)).apply { leftMargin = dp(12); topMargin = dp(12) })
         val state = PortraitUi.column(activity).apply { gravity = Gravity.CENTER }
         if (retry == null) state.addView(ProgressBar(activity).apply {
             indeterminateTintList = android.content.res.ColorStateList.valueOf(PortraitStyle.accent)
         }, lp(dp(30), dp(30)).apply { gravity = Gravity.CENTER_HORIZONTAL })
         state.addView(PortraitUi.messageBlock(activity, label, retry), lp(-2, -2))
-        body.addView(state, lp(-1, 0).apply { weight = 1f; bottomMargin = dp(90) })
+        content.addView(state, lp(-1, 0).apply { weight = 1f; bottomMargin = dp(90) })
+        val top = PortraitUi.row(activity).apply { setPadding(dp(18), dp(16), dp(18), dp(20)) }
+        top.addView(backButton(), lp(dp(44), dp(44)))
+        frame.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        PhoneInsets.listen(top) { topInset, _, _ -> top.setPadding(dp(18), dp(16) + topInset, dp(18), dp(20)) }
         root.addView(frame, FrameLayout.LayoutParams(-1, -1))
     }
 
@@ -168,15 +202,7 @@ class PortraitDetail(
             background = topBackground
             setPadding(dp(18), dp(16), dp(18), dp(20))
         }
-        top.addView(ImageView(activity).apply {
-            setImageResource(R.drawable.ic_page_back)
-            setColorFilter(PortraitStyle.text)
-            setPadding(dp(13), dp(13), dp(13), dp(13))
-            background = PortraitStyle.selectable(activity, PortraitStyle.translucentSurface, radius = 24)
-            contentDescription = "返回"
-            isFocusable = true
-            setOnClickListener { activity.goBackPhone() }
-        }, lp(dp(44), dp(44)))
+        top.addView(backButton(), lp(dp(44), dp(44)))
         val titleInBar = text(data.series.title, 16f).apply {
             setTypeface(null, Typeface.BOLD)
             maxLines = 1
@@ -215,14 +241,7 @@ class PortraitDetail(
             gravity = Gravity.TOP
             setPadding(dp(16), 0, dp(16), 0)
         }
-        val poster = ImageView(activity).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 10)
-            clipToOutline = true
-            elevation = dp(3).toFloat()
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }
-        loadCover(poster, data.series.cover)
+        val poster = poster(data.series.cover)
         hero.addView(poster, lp(dp(118), dp(157)).apply { rightMargin = dp(16) })
         val info = PortraitUi.column(activity)
         val heroTitle = text(data.series.title, 20f).apply {

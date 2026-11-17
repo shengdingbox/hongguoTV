@@ -64,7 +64,7 @@ class PortraitPages(
         body.addView(header, lp())
         val empty = PortraitUi.emptyHint(activity, "正在加载推荐…")
         body.addView(empty, lp())
-        val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
+        val adapter = PortraitUi.PosterGrid(activity, loadCover, { series, cover -> activity.openDetailPhone(series, cover = cover) },
             { activity.loadMorePhone() }, loadAheadScreens = 2)
         page.addGrid(adapter)
         val error = text("", 14f, PortraitStyle.muted).apply {
@@ -209,7 +209,7 @@ class PortraitPages(
             val body=column(); page.addBlock(body)
             val empty=PortraitUi.emptyHint(activity,"正在读取榜单…")
             body.addView(empty,lp())
-            val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },
+            val adapter=PortraitUi.PosterGrid(activity,loadCover,{ series, cover -> activity.openDetailPhone(series, cover = cover) },
                 { if(feed.isCurrent(key)) activity.loadMorePhone() },ranked=true,loadAheadScreens=1)
             page.addGrid(adapter)
             val error=text("",14f,PortraitStyle.muted).apply {
@@ -289,7 +289,7 @@ class PortraitPages(
             body.addView(loading, lp())
             val empty = PortraitUi.emptyState(activity, R.drawable.ic_phone_grid, "这一天没有新剧", "换个日期看看，或下拉刷新")
             body.addView(empty, lp())
-            val adapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) },
+            val adapter = PortraitUi.PosterGrid(activity, loadCover, { series, cover -> activity.openDetailPhone(series, cover = cover) },
                 { if (feed.isCurrent(key)) activity.loadMoreNewReleasesPhone() })
             page.addGrid(adapter)
             val error = text("", 14f, PortraitStyle.muted).apply {
@@ -396,7 +396,7 @@ class PortraitPages(
         body.addView(tabHost, lp())
         val emptyFavorites = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
         body.addView(emptyFavorites, lp())
-        val favoritesAdapter = PortraitUi.PosterGrid(activity, loadCover, { activity.openDetailPhone(it) }, null)
+        val favoritesAdapter = PortraitUi.PosterGrid(activity, loadCover, { series, cover -> activity.openDetailPhone(series, cover = cover) }, null)
         page.addGrid(favoritesAdapter)
         val offline = PhoneOfflineLibrary(activity, page, loadCover)
         page.addBlock(offline.header)
@@ -499,7 +499,7 @@ class PortraitPages(
         body.addView(PortraitUi.pageTitle(activity, "收藏"), lp())
         val empty=PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
         body.addView(empty,lp())
-        val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },null)
+        val adapter=PortraitUi.PosterGrid(activity,loadCover,{ series, cover -> activity.openDetailPhone(series, cover = cover) },null)
         page.addGrid(adapter)
         return { _ ->
             val items=activity.phoneLibrary.favorites()
@@ -625,7 +625,7 @@ class PortraitPages(
             setPadding(horizontalPadding, paddingTop, horizontalPadding, paddingBottom)
         }
         results.addView(empty,lp())
-        val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },
+        val adapter=PortraitUi.PosterGrid(activity,loadCover,{ series, cover -> activity.openDetailPhone(series, cover = cover) },
             { activity.loadMorePhone() })
         page.addGrid(adapter)
         val hotBody=column()
@@ -693,7 +693,7 @@ class PortraitPages(
         val errorBody=column()
         body.addView(errorBody,lp())
         fun grid(ranked: Boolean): PortraitUi.PosterGrid {
-            val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },null,ranked=ranked)
+            val adapter=PortraitUi.PosterGrid(activity,loadCover,{ series, cover -> activity.openDetailPhone(series, cover = cover) },null,ranked=ranked)
             page.addGrid(adapter)
             return adapter
         }

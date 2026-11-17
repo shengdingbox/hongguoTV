@@ -834,6 +834,7 @@ class MainActivity: Activity() {
         (pageIo as? java.util.concurrent.ThreadPoolExecutor)?.purge()
     }
     private fun invalidatePage() {
+        phoneCoverTransition?.cancel(); phoneCoverTransition=null
         generation++; cancelWork(); cancelDetailExtras(); artwork.cancelPage()
     }
     private fun releaseCatalogViews() {
@@ -5899,8 +5900,11 @@ class MainActivity: Activity() {
     private var phonePlayerRenderedFullscreen=false
     // 手机页面实例：首次使用时创建后缓存（lazy 不能修饰 var）
     private val portraitPages by lazy { PortraitPages(this,::loadCover) }
+    private var phoneCoverTransition: PosterSharedTransition?=null
     private val portraitDetail by lazy {
-        PortraitDetail(this) { view, url -> artwork.load(view, url, keepCurrentImage = true) }
+        PortraitDetail(this,
+            loadCover = { view, url -> artwork.load(view, url, keepCurrentImage = true) },
+            onPosterReady = { phoneCoverTransition?.bind(it) })
     }
 
     /** 所有手机竖屏详情统一使用新版界面，播放页继续使用原生 PhonePlayer。 */
@@ -6104,6 +6108,7 @@ class MainActivity: Activity() {
     }
 
     fun switchPhoneTab(next: String) {
+        phoneCoverTransition?.cancel(); phoneCoverTransition=null
         rememberPhoneCatalogPosition()
         restoringPhoneDetail=null
         if(next==phoneTab && !phoneDetailCollection && !initialCatalogPending) {
@@ -6425,7 +6430,7 @@ class MainActivity: Activity() {
         val items=localItems()
         if(items.isEmpty()) body.addView(PortraitUi.emptyHint(this,"这里暂时没有内容"))
         else {
-            val adapter=PortraitUi.PosterGrid(this,::loadCover,{ openDetailPhone(it) },null)
+            val adapter=PortraitUi.PosterGrid(this,::loadCover,{ series, cover -> openDetailPhone(series, cover = cover) },null)
             scroll.addGrid(adapter)
             adapter.submitItems(items,false)
         }
@@ -6568,9 +6573,11 @@ class MainActivity: Activity() {
     }
 
     /** 手机详情入口：复用 openDetail 的数据流，统一由 PortraitDetail 渲染。 */
-    fun openDetailPhone(series: com.hongguotv.core.Series,resume: Boolean=false) {
+    fun openDetailPhone(series: com.hongguotv.core.Series,resume: Boolean=false,cover: ImageView?=null) {
         offlineOnly = false
         if(!phoneLayout()) { openDetail(series,resume); return }
+        phoneCoverTransition?.cancel(); phoneCoverTransition=null
+        val sharedCover=if(!resume && cover!=null) PosterSharedTransition.capture(root,cover) else null
         rememberPhoneCatalogPosition()
         if(restoringPhoneDetail?.series?.id!=series.id) restoringPhoneDetail=null
         // 记住从哪个页签进来的：详情返回时回到原处（从排行/收藏点进去不该被丢回首页）。
@@ -6580,8 +6587,8 @@ class MainActivity: Activity() {
         pendingDetail=series; detailAutoplay=true
         invalidatePage(); releaseCatalogViews(); screen="detail"; detail=null; synopsisExpanded=false; phoneTab="detail"
         markPageShown()
-        root.removeAllViews()
-        portraitDetail.renderState(root,"正在加载剧集…")
+        sharedCover?.let { phoneCoverTransition=PosterSharedTransition(root,it) }
+        portraitDetail.renderState(root,"正在加载剧集…",series=series)
         val scheduled=scheduledSeries(series)
         val apply: (Detail) -> Unit = { loaded ->
             val result=withCachedSeasons(withReleaseSchedule(loaded,scheduled))
@@ -6628,7 +6635,7 @@ class MainActivity: Activity() {
         cached?.let(apply) ?: work({ repository.seriesDetail(series.id) }, apply, { problem ->
             if(scheduled!=null) apply(Detail(scheduled,emptyList()))
             else if(phoneLayout()) {
-                portraitDetail.renderState(root,problem.message ?: "加载失败") { openDetailPhone(series,resume) }
+                portraitDetail.renderState(root,problem.message ?: "加载失败",series=series,retry={ openDetailPhone(series,resume) })
             }
         })
     }
@@ -6679,11 +6686,13 @@ class MainActivity: Activity() {
 
     /** 手机播放入口：复用 playEpisode 全部播放管线，播放界面换手机版。 */
     fun playEpisodePhone(index: Int,position: Long=0,autoplay: Boolean=true) {
+        phoneCoverTransition?.cancel(); phoneCoverTransition=null
         playEpisode(index,position,autoplay)
     }
 
     /** 手机详情页返回：回到进详情前的那个页签。 */
     fun goBackPhone() {
+        phoneCoverTransition?.cancel(); phoneCoverTransition=null
         offlineOnly = false
         val back=phoneDetailReturn
         restoringPhoneDetail=null
@@ -7430,6 +7439,7 @@ class MainActivity: Activity() {
     }
     override fun onStop() {
         if(!activityInitialized) { super.onStop(); return }
+        phoneCoverTransition?.cancel(); phoneCoverTransition=null
         restoreStoppedPage=true; generation++; cancelWork(); cancelDetailExtras(); tvTools.close()
         // 播放页留在屏幕上但被切到后台（切 App / 锁屏 / 下拉通知栏）：只暂停，不拆播放器。
         // 以前这里无条件 releasePlayer()，回来要重新取址、重新 prepare、重新缓冲。

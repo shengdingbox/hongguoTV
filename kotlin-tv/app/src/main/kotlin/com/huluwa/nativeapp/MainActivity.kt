@@ -6981,7 +6981,7 @@ class MainActivity: Activity() {
 
     private fun showSigningModePicker(anchor: View?) {
         val selected=if(SigningSettings.nativeAlgorithms) 0 else 1
-        val labels=listOf("本地算法","远程算法").mapIndexed { index,label ->
+        val labels=SigningSettings.algorithmLabels.mapIndexed { index,label ->
             label+if(index==selected) "   ·   当前" else ""
         }
         tvTools.choose("算法模式",labels,anchor,{ choice ->

@@ -61,8 +61,8 @@ internal class PhoneSettingsSwitch(context: Context) : CompoundButton(context) {
         val left = (width - w) / 2f
         val top = (height - h) / 2f
         track.set(left, top, left + w, top + h)
-        val off = if (PortraitStyle.isDark) Color.rgb(57, 57, 61) else Color.rgb(233, 233, 235)
-        val on = Color.rgb(52, 199, 89)
+        val off = PortraitStyle.subtleButton
+        val on = PortraitStyle.navigationSelected
         paint.clearShadowLayer()
         paint.color = Color.rgb(
             (Color.red(off) + (Color.red(on) - Color.red(off)) * progress).toInt(),
@@ -94,9 +94,9 @@ internal class PhoneSettingsAvatar(context: Context) : View(context) {
         val size = minOf(width, height).toFloat()
         val cx = width / 2f
         val cy = height / 2f
-        paint.color = if (PortraitStyle.isDark) Color.rgb(99, 99, 104) else Color.rgb(174, 174, 178)
+        paint.color = PortraitStyle.raised
         canvas.drawCircle(cx, cy, size / 2, paint)
-        paint.color = Color.WHITE
+        paint.color = PortraitStyle.navigationSelected
         canvas.drawCircle(cx, cy - size * .13f, size * .135f, paint)
         shoulders.set(cx - size * .245f, cy + size * .06f, cx + size * .245f, cy + size * .32f)
         canvas.drawRoundRect(shoulders, size * .16f, size * .16f, paint)

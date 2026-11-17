@@ -14,14 +14,15 @@ import android.widget.TextView
 import androidx.core.widget.NestedScrollView
 import com.hongguotv.core.PlaybackSpeed
 
-/** 手机竖屏的 iOS 分组设置页；设置取值、落盘与操作仍复用原有桥接。 */
+/** 手机设置页沿用竖屏配色、分组标题与圆角卡片，设置操作复用原有桥接。 */
 class PhoneSettings(private val activity: MainActivity) {
     private val library get() = activity.phoneLibrary
-    private val pageColor get() = if (PortraitStyle.isDark) Color.BLACK else Color.rgb(242, 242, 247)
-    private val groupColor get() = if (PortraitStyle.isDark) Color.rgb(28, 28, 30) else Color.WHITE
-    private val secondaryColor get() = if (PortraitStyle.isDark) Color.rgb(152, 152, 159) else Color.rgb(109, 109, 114)
-    private val separatorColor get() = if (PortraitStyle.isDark) Color.rgb(56, 56, 59) else Color.rgb(218, 218, 222)
+    private val pageColor get() = PortraitStyle.background
+    private val groupColor get() = PortraitStyle.surface
+    private val secondaryColor get() = PortraitStyle.secondaryText
+    private val separatorColor get() = PortraitStyle.outline
     private val accent get() = PortraitStyle.navigationSelected
+    private val pagePadding get() = dp(16)
 
     private class Binding(val provider: () -> String?, val view: TextView)
     private class ToggleBinding(val provider: () -> Boolean, val view: PhoneSettingsSwitch)
@@ -32,7 +33,7 @@ class PhoneSettings(private val activity: MainActivity) {
     private var activeScroll: NestedScrollView? = null
 
     private fun dp(value: Int) = PhoneUi.dp(activity, value)
-    private fun text(value: String, size: Float = 17f, color: Int = PortraitStyle.text) = PhoneUi.text(activity, value, size, color)
+    private fun text(value: String, size: Float = 16f, color: Int = PortraitStyle.text) = PhoneUi.text(activity, value, size, color)
     private fun lp(w: Int = -1, h: Int = -2) = LinearLayout.LayoutParams(w, h)
 
     fun render(root: FrameLayout) {
@@ -82,7 +83,7 @@ class PhoneSettings(private val activity: MainActivity) {
             clipToPadding = false
         }
         activeScroll = scroll
-        val content = PhoneUi.column(activity).apply { setPadding(dp(20), 0, dp(20), dp(24)) }
+        val content = PhoneUi.column(activity).apply { setPadding(pagePadding, dp(16), pagePadding, dp(24)) }
         accountCard(content)
         signingSection(content)
         playbackSection(content)
@@ -97,7 +98,7 @@ class PhoneSettings(private val activity: MainActivity) {
         PhoneInsets.listen(shell) { topInset, bottomInset, _ ->
             navigation.layoutParams = lp(-1, dp(48) + topInset)
             navigation.setPadding(0, topInset, 0, 0)
-            content.setPadding(dp(20), 0, dp(20), dp(24) + bottomInset)
+            content.setPadding(pagePadding, dp(16), pagePadding, dp(24) + bottomInset)
         }
         scroll.viewTreeObserver.addOnScrollChangedListener {
             if (activeScroll === scroll) {
@@ -139,37 +140,34 @@ class PhoneSettings(private val activity: MainActivity) {
     }
 
     private fun card() = PhoneUi.column(activity).apply {
-        background = PortraitStyle.shape(activity, groupColor, radius = 12)
+        background = PortraitStyle.shape(activity, groupColor, radius = 16)
         clipToOutline = true
     }
 
-    private fun section(parent: LinearLayout, title: String, footer: String? = null, build: (LinearLayout) -> Unit) {
-        parent.addView(text(title, 13f, secondaryColor).apply {
-            setPadding(dp(16), dp(8), dp(16), dp(7))
+    private fun section(parent: LinearLayout, title: String, build: (LinearLayout) -> Unit) {
+        val section = PhoneUi.column(activity)
+        section.addView(text(title, 20f).apply {
+            setTypeface(null, Typeface.BOLD)
             accessibilityHeadingCompat()
-        }, lp())
+        }, lp().apply { bottomMargin = dp(12) })
         val group = card()
         build(group)
-        parent.addView(group, lp())
-        if (footer != null) parent.addView(text(footer, 12f, secondaryColor).apply {
-            setPadding(dp(16), dp(7), dp(16), 0)
-            setLineSpacing(dp(2).toFloat(), 1f)
-        }, lp())
-        parent.addView(View(activity), lp(-1, dp(20)))
+        section.addView(group, lp())
+        parent.addView(section, lp().apply { bottomMargin = dp(24) })
     }
 
     private fun addRow(parent: LinearLayout, line: LinearLayout) {
         if (parent.childCount > 0) parent.addView(View(activity).apply {
             setBackgroundColor(separatorColor)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }, lp(-1, 1).apply { leftMargin = dp(16) })
+        }, lp(-1, 1).apply { leftMargin = dp(16); rightMargin = dp(16) })
         parent.addView(line, lp())
     }
 
     private fun baseRow(onClick: (() -> Unit)?): LinearLayout = PhoneUi.row(activity).apply {
         isBaselineAligned = false
-        minimumHeight = dp(52)
-        setPadding(dp(16), dp(10), dp(14), dp(10))
+        minimumHeight = dp(56)
+        setPadding(dp(16), dp(12), dp(16), dp(12))
         background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 0)
         isClickable = onClick != null
         isFocusable = onClick != null
@@ -178,14 +176,14 @@ class PhoneSettings(private val activity: MainActivity) {
     }
 
     private fun row(label: String, value: String? = null, provider: (() -> String?)? = null,
-        actionColor: Int? = null, onClick: (() -> Unit)? = null): LinearLayout {
+        valueColor: Int = secondaryColor, actionColor: Int? = null, onClick: (() -> Unit)? = null): LinearLayout {
         val line = baseRow(onClick)
         line.addView(text(label, color = actionColor ?: PortraitStyle.text).apply {
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
         }, lp(0, -2).apply { weight = 1f })
         if (value != null) {
-            val current = text(value, 16f, secondaryColor).apply {
+            val current = text(value, 15f, valueColor).apply {
                 maxLines = 1
                 maxWidth = dp(136)
                 ellipsize = TextUtils.TruncateAt.END
@@ -210,7 +208,7 @@ class PhoneSettings(private val activity: MainActivity) {
         }
         toggles += ToggleBinding(provider, toggle)
         return baseRow { toggle.performClick() }.apply {
-            setPadding(dp(16), dp(4), dp(12), dp(4))
+            setPadding(dp(16), dp(6), dp(14), dp(6))
             addView(text(label).apply { maxLines = 2 }, lp(0, -2).apply { weight = 1f; rightMargin = dp(12) })
             addView(toggle, lp(dp(55), dp(44)))
             accessibilityDelegate = object : View.AccessibilityDelegate() {
@@ -229,14 +227,15 @@ class PhoneSettings(private val activity: MainActivity) {
         val account = activity.phoneAccount
         val group = card()
         val line = baseRow { account.showPhoneAccountDialog(activity) }.apply {
-            minimumHeight = dp(88)
-            setPadding(dp(16), dp(14), dp(14), dp(14))
+            minimumHeight = dp(92)
+            setPadding(dp(16), dp(16), dp(16), dp(16))
         }
         line.addView(PhoneSettingsAvatar(activity).apply {
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }, lp(dp(56), dp(56)).apply { rightMargin = dp(14) })
+        }, lp(dp(56), dp(56)).apply { rightMargin = dp(12) })
         val labels = PhoneUi.column(activity)
-        labels.addView(text(if (account.signedIn) account.displayName else "红果账号", 20f).apply {
+        labels.addView(text(if (account.signedIn) account.displayName else "红果账号", 18f).apply {
+            setTypeface(null, Typeface.BOLD)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
         }, lp())
@@ -251,15 +250,15 @@ class PhoneSettings(private val activity: MainActivity) {
     }
 
     private fun signingSection(parent: LinearLayout) {
-        section(parent, "算法模式", "默认使用本地算法，选择后立即生效。") { group ->
-            addRow(group, row("算法模式", activity.phoneSigningModeLabel, { activity.phoneSigningModeLabel }) {
+        section(parent, "算法模式") { group ->
+            addRow(group, row("计算方式", activity.phoneSigningModeLabel, { activity.phoneSigningModeLabel }, valueColor = accent) {
                 activity.phoneSigningModePicker()
             })
         }
     }
 
     private fun offlineSection(parent: LinearLayout) {
-        section(parent, "离线缓存", "并发数适用于所有离线任务。降低并发后，正在下载的分集会先完成。") { group ->
+        section(parent, "离线缓存") { group ->
             val value = { "${activity.offlineDownloads.concurrency} 集" }
             addRow(group, row("同时下载", value(), value) {
                 PhoneOfflineLibrary.configureConcurrency(activity, ::refreshValues)
@@ -268,7 +267,7 @@ class PhoneSettings(private val activity: MainActivity) {
     }
 
     private fun playbackSection(parent: LinearLayout) {
-        section(parent, "播放与观看", "默认设置适用于所有剧集。缓存后续三集会占用设备存储空间。") { group ->
+        section(parent, "播放与观看") { group ->
             addRow(group, row("默认清晰度", "${library.maxQuality}P", { "${library.maxQuality}P" }) { activity.phoneQualityPicker() })
             addRow(group, row("默认倍速", PlaybackSpeed.label(library.playbackSpeed), { PlaybackSpeed.label(library.playbackSpeed) }) { activity.phoneSpeedPicker() })
             addRow(group, row("画面模式", library.frameMode.label, { library.frameMode.label }) { activity.phoneFramePicker() })
@@ -302,7 +301,7 @@ class PhoneSettings(private val activity: MainActivity) {
     }
 
     private fun lookSection(parent: LinearLayout) {
-        section(parent, "外观与界面", "手机外观可跟随系统或固定为浅色、深色，横屏和电视使用独立主题。") { group ->
+        section(parent, "外观与界面") { group ->
             addRow(group, row("手机外观", phoneAppearanceLabel(), { phoneAppearanceLabel() }) { showAppearancePicker() })
             addRow(group, row("横屏与电视风格", TvStyle.theme.label, { TvStyle.theme.label }) { activity.phoneThemeToggle() })
             addRow(group, row("界面缩放", UiScale.label(activity), { UiScale.label(activity) }) { activity.phoneUiScalePicker() })
@@ -324,15 +323,9 @@ class PhoneSettings(private val activity: MainActivity) {
             addRow(group, row("运行日志") { activity.phoneRuntimeLogs() })
             addRow(group, row("异常日志", "${CrashReporter.count(activity)} 份", { "${CrashReporter.count(activity)} 份" }) { activity.phoneCrashLogs() })
         }
-        parent.addView(text("红果 ${BuildConfig.VERSION_NAME}", 12f, secondaryColor).apply { gravity = Gravity.CENTER }, lp())
-        parent.addView(text("收藏与本机记录保存在设备，登录后可同步到红果账号。", 12f, secondaryColor).apply {
+        parent.addView(text("红果 ${BuildConfig.VERSION_NAME}", 12f, PortraitStyle.muted).apply {
             gravity = Gravity.CENTER
-            setPadding(dp(8), dp(7), dp(8), 0)
-            setLineSpacing(dp(2).toFloat(), 1f)
-        }, lp())
-        parent.addView(text("仅用于技术交流与学习，内容版权归原平台所有。", 12f, secondaryColor).apply {
-            gravity = Gravity.CENTER
-            setPadding(dp(8), dp(4), dp(8), dp(12))
+            setPadding(0, 0, 0, dp(8))
         }, lp())
     }
 }

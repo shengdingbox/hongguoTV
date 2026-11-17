@@ -12,8 +12,9 @@ object SigningSettings {
         get() = StartupSettings.string(KEY, "local") != "frida"
         set(value) = StartupSettings.set(KEY, if (value) "local" else "frida")
 
+    val algorithmLabels = listOf("本地计算", "远程计算")
     val algorithmLabel: String
-        get() = if (nativeAlgorithms) "本地算法" else "远程算法"
+        get() = algorithmLabels[if (nativeAlgorithms) 0 else 1]
 
     fun createSigner(store: SignerProfileStore): RemoteSigner =
         if (nativeAlgorithms) RemoteSigner(store = store) else FridaSigner()

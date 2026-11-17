@@ -20,7 +20,7 @@ import android.view.View
  * 拖动期间对 [progress] 的写入会被忽略：播放器每秒刷新一次进度，
  * 不挡住的话手指按住的位置会被播放位置拽回去，拖到一半就跳。
  *
- * 轨道粗细与配色可自定义：电视版用主题色粗轨道，手机播放页按葫芦娃红果的样式
+ * 轨道粗细与配色可自定义：电视版用主题色粗轨道，手机播放页按第三方参考实现的样式
  * 传白色细线 + 小圆点（[trackColor] / [fillColor] / [thumbRadiusDp] / [trackHeightDp]）。
  */
 class PlaybackSeekBar(

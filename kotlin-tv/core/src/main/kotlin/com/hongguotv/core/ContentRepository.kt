@@ -150,7 +150,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         require(page in 1..100)
         return ComicRank.parse(text("$site/rank/${board.path}?page=$page"),page,board)
     }
-    /** 与开心果 iOS 的 Discover 对齐：首屏合并频道预加载和首批猜你喜欢，之后沿游标加载。 */
+    /** 与第三方参考 iOS 客户端的 Discover 对齐：首屏合并频道预加载和首批猜你喜欢，之后沿游标加载。 */
     open fun recommendations(cursor: RecommendationCursor? = null): RecommendationPage {
         require(cursor == null || (cursor.cellId.isNotBlank() && cursor.sessionId.isNotBlank() &&
             cursor.showType.isNotBlank() && cursor.offset >= 0)) { "推荐分页信息已过期，请下拉刷新" }
@@ -235,7 +235,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return root
     }
 
-    /** 公开上新日历，与开心果 iOS 的 NewReleases 使用同一签名接口。 */
+    /** 公开上新日历，与第三方参考 iOS 客户端的 NewReleases 使用同一签名接口。 */
     open fun newReleases(date: String = "", cursor: NewReleaseCursor? = null): NewReleasePage {
         require(date.isEmpty() || NewReleaseCalendar.valid(date)) { "新剧日期必须为 YYYYMMDD" }
         require(cursor == null || (NewReleaseCalendar.valid(cursor.date) && cursor.offset > 0 &&
@@ -513,7 +513,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
         return final
     }
-    /** 搜索、联想复用书城的匿名游客票据和设备签名，与开心果 SDK 的请求头一致。 */
+    /** 搜索、联想复用书城的匿名游客票据和设备签名，与第三方参考实现 SDK 的请求头一致。 */
     private fun suggestRaw(query: String): List<String> {
         if(query.isBlank() || query.length>40 || query.any { it.isISOControl() }) return emptyList()
         synchronized(suggestCache) { suggestCache[query]?.takeIf { clock()-it.first in 0..(if(it.second.isEmpty()) 10_000L else 300_000L) }?.let { return it.second } }
@@ -672,7 +672,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             ?: throw IOException("剧集详情暂不可用")
         val series = planCardSeries(v)
         if (series.id != id || series.title.isBlank()) throw IOException("剧集详情数据异常")
-        // 与开心果一致：详情有效但尚无分集时仍可展示、收藏；缺失或 null 列表同样视为空。
+        // 与第三方参考实现一致：详情有效但尚无分集时仍可展示、收藏；缺失或 null 列表同样视为空。
         // 非空列表必须逐项合法，避免把格式损坏或无效 ID 误当作暂无分集。
         val rows = if (v.isNull("video_list")) JSONArray()
             else v.optJSONArray("video_list") ?: throw IOException("分集数据异常")
@@ -1017,7 +1017,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
      *  而下面的 `multi_video_model` 对匿名设备基本是一次性配额（同一设备第 1 次成功后持续空响应，
      *  换主机只能再成功一次），也是「一直卡在正在获取播放地址」的根因。
      *  因此单集取址优先走这里，`multi_video_model` 只作为兜底。
-     *  参数照抄葫芦娃后端已验证的组合：video_id / source / need_all_video_definition。 */
+     *  参数照抄第三方参考实现的后端已验证的组合：video_id / source / need_all_video_definition。 */
     private fun videoTabSingleModel(id: String, preferAlt: Boolean = false): JSONObject? = videoTabSingle(id,preferAlt).model
     /** 单集取址的完整结果：`model` 为空时由 [blank] 区分「空体」和「有明确错误码」，
      *  后者不该再触发换设备重扫。 */

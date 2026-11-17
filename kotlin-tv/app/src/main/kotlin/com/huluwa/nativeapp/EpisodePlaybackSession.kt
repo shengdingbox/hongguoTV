@@ -14,7 +14,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
 import com.hongguotv.core.RemoteVideo
 
-/** 相邻集与葫芦娃共用同样的 Media3 预加载策略，不为后台分集创建播放器或解码器。 */
+/** 相邻集与第三方参考实现共用同样的 Media3 预加载策略，不为后台分集创建播放器或解码器。 */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal class EpisodePlaybackSession(context: Context, private val disk: (RemoteVideo) -> com.hongguotv.core.EpisodeDiskCache? = { null }) {
     data class Episode(

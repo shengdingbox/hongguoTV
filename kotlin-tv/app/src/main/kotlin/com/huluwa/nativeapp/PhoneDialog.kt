@@ -21,7 +21,7 @@ import android.widget.TextView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 
-/** 开心果 iOS 的 sheet、分组选项与绿色强调色，只用于手机竖屏。 */
+/** 第三方参考 iOS 客户端的 sheet、分组选项与绿色强调色，只用于手机竖屏。 */
 object PhoneDialog {
     fun shouldUse(activity: Activity): Boolean = PhoneUi.shouldUse(activity)
     private fun dp(activity: Activity, value: Int) = PhoneUi.dp(activity, value)

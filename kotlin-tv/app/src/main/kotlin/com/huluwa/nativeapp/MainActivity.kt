@@ -3592,7 +3592,7 @@ class MainActivity: Activity() {
             }
             playerView=view
             if(phonePlayerLayout()) {
-                // 手机播放页（竖屏或横屏全屏）：仿葫芦娃红果播放页，视频铺满整屏，控件浮在画面上
+                // 手机播放页（竖屏或横屏全屏）：仿第三方参考实现，视频铺满整屏，控件浮在画面上
                 val playerUi=phonePlayerOrCreate
                 phonePlayerRenderedFullscreen=phoneFullscreenPlayback
                 playerUi.render(root,data,fullscreen=phoneFullscreenPlayback)
@@ -5320,7 +5320,7 @@ class MainActivity: Activity() {
     private fun showEpisodePanel(anchor: View) {
         val data=detail ?: return
         if(episodePanel!=null) return
-        // 手机竖屏播放页按葫芦娃的交互：选集只弹「数字宫格」底部弹层，不再套 TV 的
+        // 手机竖屏播放页按第三方参考实现的交互：选集只弹「数字宫格」底部弹层，不再套 TV 的
         // 侧边面板（那边有跳转集数/上一组等遥控向操作，手机上一没必要二挡画面）。
         if(phonePlayerLayout()) { showPhoneEpisodeSheet(data); return }
         val ticket=generation
@@ -6680,7 +6680,7 @@ class MainActivity: Activity() {
     fun skipEpisodePhone(direction: Int): Boolean = skipEpisode(direction).also { if(!it) PhoneUi.toast(this,"没有更多集数") }
     fun showPhoneEpisodePicker() { if(detail!=null) showEpisodePanel(pickerAnchor) }
 
-    /** 手机竖屏选集：底部数字宫格弹层（对齐葫芦娃红果播放页），选中后直接切集。 */
+    /** 手机竖屏选集：底部数字宫格弹层（对齐第三方参考实现），选中后直接切集。 */
     private fun showPhoneEpisodeSheet(data: com.hongguotv.core.Detail) {
         // 已开着就先收掉旧的，避免叠两层
         if(phoneEpisodeSheet!=null) { phoneEpisodeSheet?.dismiss(); phoneEpisodeSheet=null }
@@ -6812,7 +6812,7 @@ class MainActivity: Activity() {
             if(mode==OrientationMode.AUTO) {
                 // 跟随系统：先锁一次竖屏把界面掰回来，转屏动画结束后再交还传感器。
                 // 设备此刻还横着时只设 UNSPECIFIED 系统不会转，退出全屏会卡在横屏皮肤上
-                // （葫芦娃同样在退出时主动锁回进入前的方向）。postDelayed 是给转屏动画留时间。
+                // （第三方参考实现同样在退出时主动锁回进入前的方向）。postDelayed 是给转屏动画留时间。
                 requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                 // 正在退出 App 时不要再排这个回调：窗口都拆了，交还方向也没有意义
                 if(!isFinishing && !isDestroyed) main.postDelayed({
@@ -7155,7 +7155,7 @@ class MainActivity: Activity() {
             }
         }
         when(screen) {
-            // 手机全屏播放：返回键先退出全屏回到竖屏播放页（葫芦娃 BackHandler 同款），
+            // 手机全屏播放：返回键先退出全屏回到竖屏播放页（与第三方参考实现相同），
             // 再按一次才退出播放。电视播放器那套仍按原逻辑走。
             "player" -> when {
                 phonePlayer?.isFullscreen()==true -> phonePlayer?.exitFullscreenFromBack()

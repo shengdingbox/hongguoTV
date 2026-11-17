@@ -5,7 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 
-/** 与开心果使用的 SDK 对齐：漫剧用综合页的服务端筛选，短剧优先读取逐季列出的剧集页。 */
+/** 与第三方参考实现 SDK 对齐：漫剧用综合页的服务端筛选，短剧优先读取逐季列出的剧集页。 */
 internal enum class SearchRoute(val tab: Int, val filter: String = "") {
     COMIC(11, "content_type_dynamic_comic"),
     COMIC_LEGACY(19),

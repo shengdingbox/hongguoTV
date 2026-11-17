@@ -26,7 +26,7 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * 手机竖屏选集弹层，对齐葫芦娃红果播放页的 HongguoEpisodeSheet：
+ * 手机竖屏选集弹层，对齐第三方参考实现的 HongguoEpisodeSheet：
  *
  *  - 从底部升起的深色圆角面板（#171717，顶部两角 22dp），背后是半透明遮罩，点遮罩关闭
  *  - 每行 5 个数字方块，当前集用红果红 #E44B40 高亮，其余深灰 #292929

@@ -20,13 +20,13 @@ import androidx.media3.common.VideoSize
 import com.hongguotv.core.Detail
 
 /**
- * 手机播放页，逐项对齐葫芦娃 App 的红果播放页（huluwa/ui/HongguoPlayer.kt），
+ * 手机播放页，逐项对齐第三方参考实现的播放页（同类 App 的 HongguoPlayer），
  * 同一套类同时负责「竖屏播放」与「横屏全屏」两种皮肤：
  *
  *  - 竖屏皮肤：顶部返回 / 「第 N 集」/ 倍速 / 更多，压在黑色渐变里；
  *    底部剧名 + 「第N集 | 简介」（可展开）/ 白色细线进度条 /
  *    「选集 · 全N集」整行按钮 + 收藏爱心；横向视频下方居中显示「全屏观看」
- *  - 横屏全屏皮肤（葫芦娃 fullscreen 同款）：顶部标题变成「剧名 · 第N集」；
+ *  - 横屏全屏皮肤（第三方参考实现 fullscreen 同款）：顶部标题变成「剧名 · 第N集」；
  *    底部换成一行紧凑控制条（播放/暂停、时间、选集、退出全屏），
  *    不再显示剧名行与简介；轻点画面显隐控件
  *  - 点击交互：竖屏轻点 = 播放 / 暂停，双击 = 播放 / 暂停，上下滑动切集；
@@ -139,7 +139,7 @@ class PhonePlayer(
         }
         episodePage.addView(videoHost, FrameLayout.LayoutParams(-1, -1))
 
-        // 暂停时居中显示的大播放按钮（葫芦娃红果播放页同款）
+        // 暂停时居中显示的大播放按钮（第三方参考实现同款）
         centerPlay = ImageView(activity).apply {
             setImageResource(R.drawable.ic_play_circle)
             setColorFilter(Color.WHITE)
@@ -343,7 +343,7 @@ class PhonePlayer(
 
     /**
      * 弹幕层挂在视频区，上沿按皮肤走：
-     *  - 竖屏：让出顶部标题栏（葫芦娃红果播放页同款），第一行弹幕不被返回键与倍速压住；
+     *  - 竖屏：让出顶部标题栏（第三方参考实现同款），第一行弹幕不被返回键与倍速压住；
      *  - 横屏全屏：直接顶到顶部标题栏的位置（标题栏那一行控件占位），沉浸观看时
      *    控件整层淡出，弹幕就成为画面最上方的那一排。
      */
@@ -369,16 +369,16 @@ class PhonePlayer(
         currentCover = data.series.cover
         episodeCount = data.episodes.size
         val number = activity.phoneEpisodeIndex + 1
-        // 竖屏标题只写集号；横屏全屏按葫芦娃写成「剧名 · 第N集」
+        // 竖屏标题只写集号；横屏全屏按第三方参考实现写成「剧名 · 第N集」
         titleText?.text = if (fullscreen) "$currentTitle · 第 $number 集" else "第 $number 集"
         seriesTitleText?.text = currentTitle
         episodePickerText?.text = "选集 · 全${episodeCount}集"
         fsEpisodeButton?.text = "选集 · 全${episodeCount}集"
-        // 文案严格对齐葫芦娃 HongguoPlayerInfo：「第N集 · 共M集」/「第N集 | 简介」，集号不带空格
+        // 文案严格对齐第三方参考实现 HongguoPlayerInfo：「第N集 · 共M集」/「第N集 | 简介」，集号不带空格
         introText?.text = if (currentDescription.isBlank()) "第${number}集 · 共${episodeCount}集"
             else "第${number}集 | $currentDescription"
         introText?.maxLines = if (introExpanded) 4 else 1
-        // 简介为空时葫芦娃不显示「展开」，这里跟着切
+        // 简介为空时第三方参考实现不显示「展开」，这里跟着切
         introToggle?.visibility = if (currentDescription.isBlank()) View.GONE else View.VISIBLE
         val episodeId = data.episodes.getOrNull(activity.phoneEpisodeIndex)
         if (displayedEpisodeId != episodeId || episodePlaceholder == null) {
@@ -407,7 +407,7 @@ class PhonePlayer(
         buffering?.visibility = View.GONE
     }
 
-    /** 与葫芦娃分页相同，用封面、集号和滑动提示承接相邻页与首帧等待。 */
+    /** 与第三方参考实现分页相同，用封面、集号和滑动提示承接相邻页与首帧等待。 */
     private fun buildEpisodePlaceholder(index: Int, showInfo: Boolean): View {
         val page = FrameLayout(activity).apply { setBackgroundColor(Color.rgb(0x19, 0x1F, 0x1C)) }
         val cover = ImageView(activity).apply {
@@ -523,7 +523,7 @@ class PhonePlayer(
     /**
      * 控件层按皮肤分两套：
      *  - 竖屏：[buildPortraitControls]，剧名 + 简介 + 进度条 + 选集行；
-     *  - 横屏全屏：[buildFullscreenControls]，紧凑一行控制条，对应葫芦娃 fullscreen 布局。
+     *  - 横屏全屏：[buildFullscreenControls]，紧凑一行控制条，对应第三方参考实现 fullscreen 布局。
      * 两套共用顶部状态栏（横屏时标题多带剧名）。
      */
     private fun buildControls(page: FrameLayout) {
@@ -533,7 +533,7 @@ class PhonePlayer(
         if (fullscreen) buildFullscreenControls(layer) else buildPortraitControls(layer)
     }
 
-    /** 顶部状态栏：返回 / 标题 / 倍速 / 更多（葫芦娃红果播放页同构，两套皮肤共用）。 */
+    /** 顶部状态栏：返回 / 标题 / 倍速 / 更多（第三方参考实现同构，两套皮肤共用）。 */
     private fun buildTopBar(layer: FrameLayout) {
         val top = row().apply {
             background = GradientDrawable(
@@ -542,7 +542,7 @@ class PhonePlayer(
             setPadding(dp(4), dp(8), dp(6), dp(24))
         }
         topBar = top
-        // 全屏横屏时返回键即「退出全屏」，与葫芦娃 leavePlayer 一致
+        // 全屏横屏时返回键即「退出全屏」，与第三方参考实现一致
         top.addView(iconButton(R.drawable.ic_back, 26, 44) {
             if (fullscreen) exitFullscreenSkin() else activity.returnToDetailPhone()
         }, rowLp(dp(44), dp(48)))
@@ -552,7 +552,7 @@ class PhonePlayer(
         }
         top.addView(titleText, rowLp(0, -2).apply { weight = 1f; leftMargin = dp(2) })
 
-        // 倍速：时钟图标 + 「1×」文字，点击弹出本剧倍速选择器（与葫芦娃一致）
+        // 倍速：时钟图标 + 「1×」文字，点击弹出本剧倍速选择器（与第三方参考实现一致）
         val speed = row().apply {
             gravity = Gravity.CENTER
             setPadding(dp(8), dp(6), dp(10), dp(6))
@@ -569,7 +569,7 @@ class PhonePlayer(
         layer.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
     }
 
-    /** 竖屏皮肤底部：剧集信息 + 进度条 + 选集行（葫芦娃 HongguoPlayerInfo + 选集按钮）。 */
+    /** 竖屏皮肤底部：剧集信息 + 进度条 + 选集行（第三方参考实现 HongguoPlayerInfo + 选集按钮）。 */
     private fun buildPortraitControls(layer: FrameLayout) {
         val bottomBar = column().apply {
             background = GradientDrawable(
@@ -587,7 +587,7 @@ class PhonePlayer(
         }
         seriesTitleText = text("", 18f).apply {
             setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
-            // 葫芦娃 HongguoPlayerInfo：lineHeight 26sp → 行距 = 26 - 18 = 8sp 额外间距
+            // 第三方参考实现 HongguoPlayerInfo：lineHeight 26sp → 行距 = 26 - 18 = 8sp 额外间距
             setLineSpacing(dp(8).toFloat(), 1f)
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
         }
@@ -603,14 +603,14 @@ class PhonePlayer(
 
         val introRow = row()
         introText = text("", 14f, Color.argb(184, 255, 255, 255)).apply {
-            // 葫芦娃 HongguoPlayerInfo：lineHeight 22sp → 16sp
+            // 第三方参考实现 HongguoPlayerInfo：lineHeight 22sp → 16sp
             setLineSpacing(dp(8).toFloat(), 1f)
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
             // padding(vertical = 4dp)
             setPadding(0, dp(4), 0, dp(4))
         }
         introRow.addView(introText, rowLp(0, -2).apply { weight = 1f })
-        // 葫芦娃：只有简介非空才出现「展开 / 收起」按钮
+        // 第三方参考实现：只有简介非空才出现「展开 / 收起」按钮
         introToggle = text("展开", 14f).apply {
             gravity = Gravity.CENTER
             setPadding(dp(8), 0, dp(8), 0)
@@ -625,7 +625,7 @@ class PhonePlayer(
         info.addView(introRow, rowLp(-1, -2))
         bottomBar.addView(info, rowLp(-1, -2))
 
-        // 进度条：白色细线 + 小圆点（葫芦娃 HongguoSeekBar 外观）
+        // 进度条：白色细线 + 小圆点（第三方参考实现 HongguoSeekBar 外观）
         val seek = row().apply { setPadding(dp(16), dp(4), dp(16), dp(2)) }
         val bar = PlaybackSeekBar(
             activity,
@@ -690,7 +690,7 @@ class PhonePlayer(
     }
 
     /**
-     * 横屏全屏皮肤底部：进度条 + 一行紧凑控制条（葫芦娃 fullscreen 布局）。
+     * 横屏全屏皮肤底部：进度条 + 一行紧凑控制条（第三方参考实现 fullscreen 布局）。
      * 播放/暂停 · 时间 · 选集 · 退出全屏；不再重复剧名与简介。
      */
     private fun buildFullscreenControls(layer: FrameLayout) {
@@ -862,7 +862,7 @@ class PhonePlayer(
     }
 
     /**
-     * 退出全屏：转回竖屏并回到竖屏皮肤（葫芦娃 leavePlayer → fullscreen = false）。
+     * 退出全屏：转回竖屏并回到竖屏皮肤（第三方参考实现的退出逻辑 → fullscreen = false）。
      *
      * `exitFullscreenPhone()` 可能直接重挂外壳（设备本来就竖着；或已横屏时锁回竖屏后
      * 主动重建），那一刻本实例的控件已被 clearRefs 清空，所以刷新动作都放在它之前；
@@ -875,7 +875,7 @@ class PhonePlayer(
         activity.exitFullscreenPhone()
     }
 
-    /** 返回键在全屏播放时退出全屏（葫芦娃 BackHandler 同款），由 MainActivity 的 goBack 调用。 */
+    /** 返回键在全屏播放时退出全屏（与第三方参考实现相同），由 MainActivity 的 goBack 调用。 */
     fun exitFullscreenFromBack() = exitFullscreenSkin()
 
     // ---------------- 小工具 ----------------

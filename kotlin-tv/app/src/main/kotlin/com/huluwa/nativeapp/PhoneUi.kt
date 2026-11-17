@@ -34,7 +34,7 @@ object PhoneUi {
      * 手机播放页的横屏全屏皮肤（[PhonePlayer] 的 fullscreen 布局）。
      *
      * 与电视播放器严格区分：手机强制竖屏 / 跟随系统下点「全屏」都旋转并切成这套
-     * 葫芦娃风格的横屏全屏界面；只有强制横屏（[OrientationMode.LANDSCAPE]）和
+     * 第三方参考实现风格的横屏全屏界面；只有强制横屏（[OrientationMode.LANDSCAPE]）和
      * 真正的电视设备才走 TV 播放器那套。
      */
     fun shouldUsePhoneFullscreen(activity: Activity): Boolean =

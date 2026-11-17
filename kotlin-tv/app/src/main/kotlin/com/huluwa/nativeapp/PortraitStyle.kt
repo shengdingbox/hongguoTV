@@ -59,7 +59,7 @@ object PortraitStyle {
     val raised get() = if (isDark) Color.rgb(43, 43, 46) else Color.rgb(239, 239, 239)
     val accent get() = if (isDark) Color.rgb(143, 191, 105) else Color.rgb(78, 141, 43)
     val onAccent get() = if (isDark) Color.rgb(18, 30, 12) else Color.WHITE
-    // 开心果 iOS 的 AccentColor；深色下提高亮度，保持图标及文字清晰。
+    // 第三方参考 iOS 客户端的 AccentColor；深色下提高亮度，保持图标及文字清晰。
     val navigationSelected get() = if (isDark) Color.rgb(151, 201, 110) else Color.rgb(74, 140, 42)
     val text get() = if (isDark) Color.rgb(241, 241, 243) else Color.rgb(17, 17, 17)
     val muted get() = if (isDark) Color.rgb(165, 165, 173) else Color.rgb(145, 145, 145)

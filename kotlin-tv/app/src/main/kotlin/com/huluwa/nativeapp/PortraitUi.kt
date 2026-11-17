@@ -24,7 +24,7 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.hongguotv.core.Series
 import kotlin.math.abs
 
-/** 手机统一竖屏界面组件，布局参照开心果 iOS；跟随系统竖屏与强制竖屏共用。 */
+/** 手机统一竖屏界面组件，布局参照第三方 iOS 客户端；跟随系统竖屏与强制竖屏共用。 */
 object PortraitUi {
     const val PHONE_LIST_LIMIT = 300
 

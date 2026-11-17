@@ -32,7 +32,7 @@ import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
 
-/** 手机统一的开心果 iOS 风格竖屏内容页。数据复用现有内容库。 */
+/** 手机统一的第三方 iOS 客户端风格竖屏内容页。数据复用现有内容库。 */
 class PortraitPages(
     private val activity: MainActivity,
     private val loadCover: (ImageView, String) -> Unit,

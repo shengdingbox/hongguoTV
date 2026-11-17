@@ -43,10 +43,15 @@ class PortraitPages(
     private fun row() = PortraitUi.row(activity)
     private fun lp(w: Int = -1, h: Int = -2) = PortraitUi.lp(w, h)
 
+    // 扣除列表外层缩进，使标题与排行榜、新剧的页头保持相同左边距。
+    private fun listPageTitle(page: PortraitListPage, label: String) = PortraitUi.pageTitle(activity, label).apply {
+        setPadding(paddingLeft - page.horizontalContentPadding, paddingTop, paddingRight, paddingBottom)
+    }
+
     fun home(page: PortraitListPage): (Boolean) -> Unit {
         val body=column(); page.addBlock(body)
         val header = row()
-        header.addView(PortraitUi.pageTitle(activity, "推荐"), lp(0, -2).apply { weight = 1f })
+        header.addView(listPageTitle(page, "推荐"), lp(0, -2).apply { weight = 1f })
         header.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_search)
             setColorFilter(PortraitStyle.text)
@@ -322,7 +327,9 @@ class PortraitPages(
     fun mine(page: PortraitListPage): (Boolean) -> Unit {
         val body=column(); page.addBlock(body)
         val head = row()
-        head.addView(PortraitUi.pageTitle(activity, "我的"), lp(0, -2).apply { weight = 1f })
+        val title = listPageTitle(page, "我的")
+        val startPadding = title.paddingLeft
+        head.addView(title, lp(0, -2).apply { weight = 1f })
         head.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_more)
             setColorFilter(PortraitStyle.text)
@@ -333,7 +340,7 @@ class PortraitPages(
         }, lp(dp(44), dp(44)).apply { gravity = Gravity.BOTTOM; rightMargin = dp(10) })
         body.addView(head, lp())
         val recent = column()
-        val recentHeading = row().apply { setPadding(dp(16), 0, dp(8), 0) }
+        val recentHeading = row().apply { setPadding(startPadding, 0, dp(8), 0) }
         recentHeading.addView(text("最近观看", 20f).apply {
             setTypeface(null, Typeface.BOLD)
             setPadding(0, dp(16), 0, dp(10))
@@ -360,14 +367,14 @@ class PortraitPages(
         }, lp(dp(44), dp(44)))
         recent.addView(recentHeading, lp())
         val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
-        val cards = row().apply { gravity = Gravity.TOP; setPadding(dp(16), 0, dp(16), 0) }
+        val cards = row().apply { gravity = Gravity.TOP; setPadding(startPadding, 0, dp(16), 0) }
         strip.addView(cards)
         strip.viewTreeObserver.addOnScrollChangedListener { activity.refreshPhoneCovers() }
         recent.addView(strip, lp())
         body.addView(recent, lp())
         val retainedCards = mutableMapOf<String, RecentWatchCard>()
 
-        val tabHost = column().apply { setPadding(dp(16), dp(10), dp(16), dp(8)) }
+        val tabHost = column().apply { setPadding(startPadding, dp(10), dp(16), dp(8)) }
         // 底板与选中块向内收紧，点击区域仍保留至少 44dp，并随字体大小伸展。
         val tabs = FrameLayout(activity).apply {
             background = InsetDrawable(PortraitStyle.shape(activity, PortraitStyle.raised, radius = 12), 0, dp(4), 0, dp(4))

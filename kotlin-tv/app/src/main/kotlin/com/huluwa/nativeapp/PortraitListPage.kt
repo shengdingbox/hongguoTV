@@ -10,6 +10,7 @@ import androidx.recyclerview.widget.RecyclerView
 
 /** 页头、提示及海报共用一个有限高度的 RecyclerView，只创建可见行。 */
 class PortraitListPage(private val activity: MainActivity) : FrameLayout(activity) {
+    val horizontalContentPadding = PortraitUi.dp(activity, 10)
     private val sections = ConcatAdapter(ConcatAdapter.Config.Builder()
         .setStableIdMode(ConcatAdapter.Config.StableIdMode.ISOLATED_STABLE_IDS).build())
     private val grid = GridLayoutManager(activity, 3)
@@ -40,7 +41,7 @@ class PortraitListPage(private val activity: MainActivity) : FrameLayout(activit
         }
         addView(recycler, LayoutParams(-1, -1))
         PhoneInsets.listen(this) { _, bottomInset, _ ->
-            recycler.setPadding(PortraitUi.dp(activity, 10), 0, PortraitUi.dp(activity, 10),
+            recycler.setPadding(horizontalContentPadding, 0, horizontalContentPadding,
                 PortraitUi.dp(activity, 92) + bottomInset)
         }
         recycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {

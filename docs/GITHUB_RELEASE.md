@@ -36,9 +36,16 @@ printf '%s' "$registration_token" | docker run --rm -i --user root \
   --entrypoint /bin/bash \
   -v hongguotv-github-release-runner-state:/home/runner \
   hongguotv-github-release-runner:latest -c \
-  'umask 077; cat > /home/runner/.registration-token; chown runner:runner /home/runner/.registration-token'
+  'umask 077; cat > /home/runner/.registration-token; chown runner /home/runner/.registration-token'
 unset registration_token
 docker compose up -d
+```
+
+基础镜像已固定 SHA-256 摘要；如 GHCR 下载较慢，可使用相同摘要的镜像源构建：
+
+```bash
+docker compose build --build-arg \
+  RUNNER_IMAGE=ghcr.nju.edu.cn/actions/actions-runner@sha256:6d0b2d80d80f143f77dcb676e50920100bbb547e39e883454d57f45ab8c31300
 ```
 
 首次注册完成后临时 Token 文件会删除，后续重启复用卷中的 Runner 注册状态。不要删除状态卷；如需重新注册，先在 GitHub 删除旧 Runner，再重新创建状态卷。

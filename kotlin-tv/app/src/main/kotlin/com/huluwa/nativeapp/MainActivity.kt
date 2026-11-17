@@ -816,6 +816,8 @@ class MainActivity: Activity() {
     /** 海报暂时离屏只暂停请求；真正回收卡片时才释放绑定。 */
     fun recyclePhoneCover(view: ImageView) = artwork.clear(view)
     fun refreshPhoneCovers() = artwork.refreshVisible()
+    fun prefetchPhoneCovers(owner: Any,viewport: View,urls: List<String>,widthPx: Int,heightPx: Int) =
+        artwork.prefetch(owner,viewport,urls,widthPx,heightPx)
 
     private fun cancelWork() {
         cancelSearchSuggestions(); main.removeCallbacks(pendingSuggest)
@@ -6582,6 +6584,7 @@ class MainActivity: Activity() {
         val sharedCover=if(!resume && cover!=null) PosterSharedTransition.capture(root,cover) else null
         rememberPhoneCatalogPosition()
         if(restoringPhoneDetail?.series?.id!=series.id) restoringPhoneDetail=null
+        if(phoneTab!="detail") artwork.retainVisible()
         // 记住从哪个页签进来的：详情返回时回到原处（从排行/收藏点进去不该被丢回首页）。
         // 同剧切季（openDetailPhone 在详情页内再次调用）沿用原来的返回目标。
         if(phoneTab!="detail") {
@@ -7480,6 +7483,7 @@ class MainActivity: Activity() {
                 cancelPrefetch()
             }
         } else playbackKeptOnStop=false
+        if(phoneLayout() && screen=="catalog") artwork.retainVisible()
         retainedPhoneCatalogs.clear()
         // 取消页面请求，保留有上限的内存图片缓存；真正内存紧张时由 trimMemory 回收。
         artwork.cancelPage(); library.flush()

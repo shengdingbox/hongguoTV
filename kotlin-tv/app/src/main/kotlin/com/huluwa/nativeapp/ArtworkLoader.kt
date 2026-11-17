@@ -7,6 +7,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Rect
+import android.graphics.drawable.BitmapDrawable
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -54,6 +55,7 @@ class ArtworkLoader(context: Context) {
     }
     private class Job(val key: Key, val url: String, val owner: Long, var priority: Int, val order: Long) : Comparable<Job> {
         val listeners = linkedSetOf<Binding>()
+        val prefetchers = mutableSetOf<Any>()
         @Volatile var cancelled = false
         @Volatile var call: Call? = null
         // PriorityQueue 的比较器构造器要 API 24，这里用自然序（API 1 就有）
@@ -89,6 +91,13 @@ class ArtworkLoader(context: Context) {
     private val pending = PriorityQueue<Job>()
     private val jobs = mutableMapOf<Key, Job>()
     private val bindings = WeakHashMap<ImageView, Binding>()
+    private class PrefetchWindow(view: View, val urls: Map<Key, String>) {
+        val view = WeakReference(view)
+        val attempted = mutableSetOf<Key>()
+    }
+    private val prefetchWindows = WeakHashMap<Any, PrefetchWindow>()
+    // 仅固定返回列表所需的一屏位图，防止详情大图挤掉它们后返回时重新读盘、解码。
+    private val returnBitmaps = linkedMapOf<Key, Bitmap>()
     private var owner = 0L
     private var order = 0L
     @Volatile private var closed = false
@@ -153,6 +162,68 @@ class ArtworkLoader(context: Context) {
         view.setImageDrawable(null)
     }
 
+    /** 进入详情或后台前保留可见封面；下一次进入时替换，内存紧张时释放。 */
+    fun retainVisible() {
+        val visible = Rect()
+        val retained = linkedMapOf<Key, Bitmap>()
+        val bitmaps = mutableSetOf<Bitmap>()
+        var bytes = 0L
+        bindings.values.sortedBy { it.priority }.forEach { binding ->
+            val view = binding.view.get() ?: return@forEach
+            val key = binding.applied ?: return@forEach
+            if (!view.isShown || !view.getGlobalVisibleRect(visible)) return@forEach
+            val bitmap = (view.drawable as? BitmapDrawable)?.bitmap ?: return@forEach
+            if (bitmap.isRecycled) return@forEach
+            val extra = if (bitmap in bitmaps) 0 else bitmap.allocationByteCount
+            if (bytes + extra > cacheBytes / 2) return@forEach
+            retained[key] = bitmap
+            bitmaps += bitmap
+            bytes += extra
+        }
+        returnBitmaps.clear()
+        returnBitmaps.putAll(retained)
+    }
+
+    /** 无需创建离屏 ImageView，按列表实际尺寸预先下载并解码；可见请求始终优先。 */
+    fun prefetch(owner: Any, viewport: View, urls: List<String>, widthPx: Int, heightPx: Int) {
+        if (closed) return
+        val next = if (widthPx > 0 && heightPx > 0 && viewport.isShown && viewport.getGlobalVisibleRect(Rect())) {
+            val size = imageKey("", widthPx, heightPx)
+            val limit = (cacheBytes / 2L / (size.width.toLong() * size.height * 4))
+                .coerceIn(1L, if (lowRam) 6L else 18L).toInt()
+            urls.asSequence().filter { it.isNotBlank() }.distinctBy { ArtworkCache.identity(it) }
+                .take(limit)
+                .associateBy { imageKey(ArtworkCache.identity(it), widthPx, heightPx) }
+        } else emptyMap()
+        val previous = removePrefetch(owner, next.keys)
+        if (next.isEmpty()) return
+        val window = PrefetchWindow(viewport, next)
+        previous?.attempted?.filter { previous.urls[it] == next[it] }?.let { window.attempted.addAll(it) }
+        prefetchWindows[owner] = window
+        next.forEach { (key, url) ->
+            if (key !in window.attempted && cachedBitmap(key) == null) enqueue(key, url, PRIORITY_PREFETCH, prefetchOwner = owner)
+        }
+    }
+
+    private fun removePrefetch(owner: Any, keep: Set<Key> = emptySet()): PrefetchWindow? {
+        val previous = prefetchWindows.remove(owner) ?: return null
+        previous.urls.keys.filter { it !in keep }.forEach { key ->
+            val cancelled = synchronized(signal) {
+                jobs[key]?.let { job ->
+                    job.prefetchers.remove(owner)
+                    if (job.listeners.isEmpty() && job.prefetchers.isEmpty()) { cancelLocked(job); job } else null
+                }
+            }
+            cancelled?.call?.cancel()
+        }
+        return previous
+    }
+
+    private fun imageKey(url: String, width: Int, height: Int): Key {
+        val scale = min(1.0, 1024.0 / max(width, height))
+        return Key(url, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
+    }
+
     /** 外层滚动时重新提升可见海报的优先级，合并同一帧内的频繁通知。 */
     fun refreshVisible() {
         if (closed || viewportRefreshPosted) return
@@ -165,26 +236,25 @@ class ArtworkLoader(context: Context) {
         val width = if (widthPx > 0) widthPx else view.width - view.paddingLeft - view.paddingRight
         val height = if (heightPx > 0) heightPx else view.height - view.paddingTop - view.paddingBottom
         if (width > 0 && height > 0) {
-            val scale = min(1.0, 1024.0 / max(width, height))
-            val key = Key(url, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
+            val key = imageKey(url, width, height)
             cachedBitmap(key)?.let { return key to it }
         }
         // 同封面的较小位图也可先显示；按新尺寸补解码期间不回退到空白。
-        val fallback = cache.snapshot().keys.filter { it.url == url }.minByOrNull {
+        val fallback = (returnBitmaps.keys + cache.snapshot().keys).filter { it.url == url }.minByOrNull {
             if (width > 0 && height > 0) abs(it.width - width).toLong() + abs(it.height - height)
             else it.width.toLong() * it.height
         } ?: return null
-        return cache.get(fallback)?.let { fallback to it }
+        return (returnBitmaps[fallback] ?: cache.get(fallback))?.let { fallback to it }
     }
 
     /** 大海报可直接用于最近观看的小卡片；少量尺寸误差也不重复解码。 */
     private fun cachedBitmap(key: Key): Bitmap? {
-        cache.get(key)?.let { return it }
-        val compatible = cache.snapshot().keys.filter { candidate ->
+        (returnBitmaps[key] ?: cache.get(key))?.let { return it }
+        val compatible = (returnBitmaps.keys + cache.snapshot().keys).filter { candidate ->
             candidate.url == key.url && candidate.width * 10 >= key.width * 9 && candidate.height * 10 >= key.height * 9
         }.minByOrNull { abs(it.width - key.width) + abs(it.height - key.height) } ?: return null
         // 读取实际条目更新 LRU 顺序，不为同一位图建立多个别名，避免重复计入内存预算。
-        return cache.get(compatible)
+        return returnBitmaps[compatible] ?: cache.get(compatible)
     }
 
     private fun request(binding: Binding) {
@@ -196,8 +266,7 @@ class ArtworkLoader(context: Context) {
         val height = if (binding.height > 0) binding.height else view.height - view.paddingTop - view.paddingBottom
         if (width <= 0 || height <= 0) return
         // A malformed layout cannot ask an old TV to allocate a full-screen, multi-megapixel thumbnail.
-        val scale = min(1.0, 1024.0 / max(width, height))
-        val key = Key(binding.cacheUrl, max(1, (width * scale).toInt()), max(1, (height * scale).toInt()))
+        val key = imageKey(binding.cacheUrl, width, height)
         if (binding.key != key) {
             detachJob(binding); binding.key = key; binding.failed = null
             binding.failures = 0; binding.retryAfter = 0L
@@ -212,10 +281,19 @@ class ArtworkLoader(context: Context) {
         // NestedScrollView 会测量并挂载大量离屏卡片，不能让它们抢占当前可见海报的队列。
         val priority = if (binding.priority == PRIORITY_VISIBLE && (!view.isShown || !view.getGlobalVisibleRect(Rect())))
             PRIORITY_PREFETCH else binding.priority
-        var cancelled: Job? = null
+        enqueue(key, binding.url, priority, binding = binding)
+    }
+
+    private fun enqueue(key: Key, url: String, priority: Int, binding: Binding? = null, prefetchOwner: Any? = null) {
+        val cancelled = mutableListOf<Job>()
         synchronized(signal) {
+            // 已经开始下载的纯预取也要给新出现的可见封面让路，不能只调整排队顺序。
+            if (priority < PRIORITY_PREFETCH) jobs.values.firstOrNull {
+                it.key != key && it.priority == PRIORITY_PREFETCH && it.listeners.isEmpty() && it.call != null
+            }?.let { job -> cancelLocked(job); cancelled += job }
             jobs[key]?.let { job ->
-                job.listeners += binding
+                binding?.let { job.listeners += it }
+                prefetchOwner?.let { job.prefetchers += it }
                 if (priority < job.priority) {
                     val queuedCache = cachedPending.remove(job)
                     val queuedNetwork = pending.remove(job)
@@ -223,22 +301,23 @@ class ArtworkLoader(context: Context) {
                     if (queuedCache) cachedPending.add(job)
                     if (queuedNetwork) pending.add(job)
                 }
-                return
+                return@synchronized
             }
             if (cachedPending.size + pending.size >= MAX_PENDING) {
                 val worst = (cachedPending.asSequence() + pending.asSequence())
                     .maxWithOrNull(compareBy<Job> { it.priority }.thenBy { -it.order })!!
-                if (worst.priority < priority || (worst.priority == priority && priority == PRIORITY_PREFETCH)) return
+                if (worst.priority < priority || (worst.priority == priority && priority == PRIORITY_PREFETCH)) return@synchronized
                 cancelLocked(worst)
-                cancelled = worst
+                cancelled += worst
             }
-            val job = Job(key, binding.url, owner, priority, ++order)
-            job.listeners += binding
+            val job = Job(key, url, owner, priority, ++order)
+            binding?.let { job.listeners += it }
+            prefetchOwner?.let { job.prefetchers += it }
             jobs[key] = job
             cachedPending += job
             signal.notifyAll()
         }
-        cancelled?.call?.cancel()
+        cancelled.forEach { it.call?.cancel() }
     }
 
     private fun cancelLocked(job: Job) {
@@ -247,6 +326,7 @@ class ArtworkLoader(context: Context) {
         pending.remove(job)
         if (jobs[job.key] === job) jobs.remove(job.key)
         job.listeners.clear()
+        job.prefetchers.clear()
     }
 
     private fun detachJob(binding: Binding) {
@@ -254,7 +334,7 @@ class ArtworkLoader(context: Context) {
         val cancelled = synchronized(signal) {
             jobs[key]?.takeIf { it.owner == binding.owner }?.let { job ->
                 job.listeners.remove(binding)
-                if (job.listeners.isEmpty()) { cancelLocked(job); job } else null
+                if (job.listeners.isEmpty() && job.prefetchers.isEmpty()) { cancelLocked(job); job } else null
             }
         }
         cancelled?.call?.cancel()
@@ -275,13 +355,14 @@ class ArtworkLoader(context: Context) {
         main.removeCallbacks(viewportRefresh); viewportRefreshPosted = false
         main.removeCallbacks(retryVisible)
         owner++
+        prefetchWindows.clear()
         val old = bindings.values.toList()
         old.forEach { binding -> binding.view.get()?.setImageDrawable(null); unbind(binding) }
         val cancelled = synchronized(signal) {
             jobs.values.toList().also { list -> list.forEach(::cancelLocked); signal.notifyAll() }
         }
         cancelled.forEach { it.call?.cancel() }
-        if (clearMemory) cache.evictAll()
+        if (clearMemory) { returnBitmaps.clear(); cache.evictAll() }
     }
 
     fun cancelAll(clearMemory: Boolean = false) = cancelPage(clearMemory)
@@ -289,8 +370,12 @@ class ArtworkLoader(context: Context) {
     @Suppress("DEPRECATION") // Android 8 devices still report the running-memory pressure levels.
     fun trimMemory(level: Int) {
         when {
-            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL || level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE -> cache.evictAll()
-            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW || level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> cache.trimToSize(cacheBytes / 2)
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL || level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE -> {
+                returnBitmaps.clear(); cache.evictAll()
+            }
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW || level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> {
+                returnBitmaps.clear(); cache.trimToSize(cacheBytes / 2)
+            }
             // UI_HIDDEN 仅表示切到后台，不代表内存紧张；保留缓存让返回时直接显示。
         }
     }
@@ -299,6 +384,7 @@ class ArtworkLoader(context: Context) {
         if (closed) return
         closed = true
         cancelPage()
+        returnBitmaps.clear()
         synchronized(signal) { signal.notifyAll() }
         workers.shutdownNow()
         cacheWorker.shutdownNow()
@@ -336,10 +422,14 @@ class ArtworkLoader(context: Context) {
             val listeners = synchronized(signal) {
                 if (jobs[job.key] === job) jobs.remove(job.key)
                 if (!job.cancelled && !closed && bitmap != null) cache.put(job.key, bitmap)
-                job.listeners.toList().also { job.listeners.clear() }
+                job.listeners.toList().also { job.listeners.clear(); job.prefetchers.clear() }
             }
             if (!job.cancelled && !closed) main.post {
                 if (job.owner == owner && !closed) {
+                    // 同一窗口内只预取一次，避免失败链接或位图被淘汰后在后台循环加载。
+                    prefetchWindows.values.forEach { window ->
+                        if (window.urls[job.key] == job.url) window.attempted += job.key
+                    }
                     var retry = false
                     listeners.forEach { binding ->
                         val view = binding.view.get()
@@ -367,6 +457,13 @@ class ArtworkLoader(context: Context) {
     // Dropped preloads must not leave a visible card blank when a queue slot becomes free.
     private fun refillVisible() {
         val visible = Rect()
+        prefetchWindows.toMap().forEach { (owner, window) ->
+            val view = window.view.get()
+            if (view == null || !view.isShown || !view.getGlobalVisibleRect(visible)) {
+                // 隐藏页签和相邻分页让出下载、解码线程，重新展示后由列表更新预取窗口。
+                removePrefetch(owner)
+            }
+        }
         val snapshot = bindings.values.toList()
         snapshot.filter { it.view.get()?.isShown != true }.forEach(::detachJob)
         snapshot.filter { binding ->
@@ -374,6 +471,11 @@ class ArtworkLoader(context: Context) {
             view?.isShown == true && view.isAttachedToWindow && view.getGlobalVisibleRect(visible) &&
                 (binding.applied != binding.key || view.drawable == null)
         }.sortedBy { it.priority }.take(MAX_PENDING).forEach(::request)
+        prefetchWindows.toMap().forEach { (owner, window) ->
+            window.urls.forEach { (key, url) ->
+                if (key !in window.attempted && cachedBitmap(key) == null) enqueue(key, url, PRIORITY_PREFETCH, prefetchOwner = owner)
+            }
+        }
     }
 
     private fun fetch(job: Job): Bitmap? {

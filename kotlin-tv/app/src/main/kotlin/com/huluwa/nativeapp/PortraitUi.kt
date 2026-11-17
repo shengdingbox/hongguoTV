@@ -3,6 +3,7 @@ package com.huluwa.nativeapp
 
 import android.app.Activity
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.text.TextUtils
 import android.view.Gravity
@@ -198,6 +199,8 @@ object PortraitUi {
         private var nextStableId = 0L
         private var submitted = emptyList<Cell>()
         private var recycler: RecyclerView? = null
+        private var scrollDirection = 1
+        private val warmCovers = Runnable { prefetchCovers() }
         internal var isUpdating = false
             private set
         internal var onListApplied: () -> Unit = {}
@@ -232,7 +235,7 @@ object PortraitUi {
                 isUpdating = false
                 onListApplied()
                 stableIds.keys.retainAll(differ.currentList.mapNotNull { it.series?.id }.toSet())
-                recycler?.post { checkLoadMore() }
+                recycler?.post { checkLoadMore(); scheduleCovers() }
             }
         }
 
@@ -243,7 +246,10 @@ object PortraitUi {
 
         override fun onViewAttachedToWindow(holder: RecyclerView.ViewHolder) {
             super.onViewAttachedToWindow(holder)
-            if (holder is Holder) loadCover(holder.card.image, holder.cover)
+            if (holder is Holder) {
+                loadCover(holder.card.image, holder.cover)
+                scheduleCovers()
+            }
         }
 
         override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
@@ -332,9 +338,56 @@ object PortraitUi {
             view.addOnScrollListener(object : RecyclerView.OnScrollListener() {
                 override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
                     if (dy > 0) checkLoadMore()
+                    if (dy != 0) scrollDirection = if (dy > 0) 1 else -1
+                    scheduleCovers()
                 }
             })
-            view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> view.post { checkLoadMore() } }
+            view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                view.post { checkLoadMore(); scheduleCovers() }
+            }
+            view.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                override fun onViewAttachedToWindow(v: View) = scheduleCovers()
+                override fun onViewDetachedFromWindow(v: View) {
+                    view.removeCallbacks(warmCovers)
+                    activity.prefetchPhoneCovers(this@PosterGrid, view, emptyList(), 0, 0)
+                }
+            })
+            scheduleCovers()
+        }
+
+        private fun scheduleCovers() {
+            recycler?.let { view ->
+                view.removeCallbacks(warmCovers)
+                view.postOnAnimation(warmCovers)
+            }
+        }
+
+        private fun prefetchCovers() {
+            val view = recycler ?: return
+            val visible = if (view.isShown && view.getGlobalVisibleRect(Rect())) {
+                (0 until view.childCount).mapNotNull { index ->
+                    val child = view.getChildAt(index)
+                    val holder = view.getChildViewHolder(child) as? Holder
+                    holder?.takeIf { it.bindingAdapter === this && it.bindingAdapterPosition != RecyclerView.NO_POSITION &&
+                        child.bottom > view.paddingTop && child.top < view.height - view.paddingBottom }
+                }
+            } else emptyList()
+            val sample = visible.firstOrNull()
+            if (sample == null) {
+                activity.prefetchPhoneCovers(this, view, emptyList(), 0, 0)
+                return
+            }
+            val first = visible.minOf { it.bindingAdapterPosition }
+            val last = visible.maxOf { it.bindingAdapterPosition }
+            val columns = (view.layoutManager as? GridLayoutManager)?.spanCount ?: 3
+            val count = (((view.height / sample.card.height.coerceAtLeast(1)) + 1) * columns).coerceIn(6, 15)
+            // 沿滑动方向提前约一屏，同时预备反方向一行，回滑时仍可直接命中内存。
+            val ahead = if (scrollDirection > 0) (last + 1..last + count).toList()
+                else (first - 1 downTo first - count).toList()
+            val behind = if (scrollDirection > 0) (first - 1 downTo first - columns).toList()
+                else (last + 1..last + columns).toList()
+            val urls = (ahead + behind).mapNotNull { differ.currentList.getOrNull(it)?.series?.cover }
+            activity.prefetchPhoneCovers(this, view, urls, sample.card.image.width, sample.card.image.height)
         }
 
         private fun checkLoadMore() {

@@ -33,6 +33,8 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.bumptech.glide.Glide
+import com.bumptech.glide.Priority
 import androidx.media3.common.*
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -137,7 +139,7 @@ class MainActivity: Activity() {
     private var randomReplenishing=false
     private var randomDialog: AlertDialog?=null
     private var exitDialog: AlertDialog?=null
-    private var phoneExitArtwork: ArtworkLoader?=null
+    private var phoneExitArtwork: GlideArtwork?=null
     private var killOnDestroy=false
     /** 播放器自己是否要求常亮。显式持有位，不靠 screen/requestedAutoplay 反推。 */
     private var playerScreenOn=false
@@ -190,7 +192,7 @@ class MainActivity: Activity() {
     private var queuedFromIndex=-1
     private var queuedFromDuration=0L
     private var readySince=0L
-    private lateinit var artwork: ArtworkLoader
+    private lateinit var artwork: GlideArtwork
     private data class DeferredUi(val apply: ()->Unit,val discard: ()->Unit={})
     private var deferredWork: DeferredUi?=null
     private val phoneSessionStore by lazy { PhoneSessionStore(this) }
@@ -670,7 +672,7 @@ class MainActivity: Activity() {
         }
         // 方向策略：电视锁横屏；手机按「启动方向」偏好，跟随系统时竖屏自动切到手机版页面
         requestedOrientation=PhoneUi.requestedOrientation(this)
-        library=Library(this); artwork=ArtworkLoader(this); tvTools=TvTools(this); extras=PlaybackExtras(this); root=FrameLayout(this).apply { setBackgroundColor(bg) }; setContentView(root)
+        library=Library(this); artwork=GlideArtwork(this); tvTools=TvTools(this); extras=PlaybackExtras(this); root=FrameLayout(this).apply { setBackgroundColor(bg) }; setContentView(root)
         // 上新区沿用上次选择的时间窗（只在本机记，识别不了的值回落到默认档）
         newReleaseWindow=library.newReleaseWindow.takeIf { id -> NEW_RELEASE_WINDOWS.any { it.first==id } } ?: NEW_RELEASE_WINDOWS[0].first
         setupMouseGestures()
@@ -809,15 +811,12 @@ class MainActivity: Activity() {
             if(ancestor.isFocused) { focused=true; break }
             ancestor=ancestor.parent as? View
         }
-        artwork.load(view,url,if(focused) ArtworkLoader.PRIORITY_FOCUSED else ArtworkLoader.PRIORITY_VISIBLE)
+        artwork.load(view,url,if(focused) Priority.HIGH else Priority.NORMAL)
     }
     /** 同一剧集更新封面地址时保留旧图，等新图就绪后直接替换。 */
     fun updatePhoneCover(view: ImageView,url: String) = artwork.load(view,url,keepCurrentImage=true)
-    /** 海报暂时离屏只暂停请求；真正回收卡片时才释放绑定。 */
+    /** 真正回收卡片时由 Glide 解除绑定并回收资源。 */
     fun recyclePhoneCover(view: ImageView) = artwork.clear(view)
-    fun refreshPhoneCovers() = artwork.refreshVisible()
-    fun prefetchPhoneCovers(owner: Any,viewport: View,urls: List<String>,widthPx: Int,heightPx: Int) =
-        artwork.prefetch(owner,viewport,urls,widthPx,heightPx)
 
     private fun cancelWork() {
         cancelSearchSuggestions(); main.removeCallbacks(pendingSuggest)
@@ -837,7 +836,7 @@ class MainActivity: Activity() {
     }
     private fun invalidatePage() {
         phoneCoverTransition?.cancel(); phoneCoverTransition=null
-        generation++; cancelWork(); cancelDetailExtras(); artwork.cancelPage()
+        generation++; cancelWork(); cancelDetailExtras(); artwork.clearPage()
     }
     private fun releaseCatalogViews() {
         stopTvHomePlayback()
@@ -988,8 +987,7 @@ class MainActivity: Activity() {
         homeScreen=state.home; catalogRecycler=state.recycler; catalogAdapter=state.adapter; selectionPreview=state.preview
         nav.clear(); nav.addAll(state.nav); typeButtons.clear(); typeButtons.putAll(state.types)
         rankSwitch=state.rankSwitch; rankRefresh=state.rankRefresh; rankSubtitle=state.rankSubtitle
-        // 复用时不能把 switcher 自身从 root 移除：这会连带 detach 两个保留页，
-        // ArtworkLoader 随即将所有图片解绑，保留视图就变成空图重新加载。
+        // 复用时保留 switcher 与子页面的挂载关系，避免列表和 Glide 目标反复解绑。
         switcher.displayedChild=switcher.indexOfChild(state.page)
         // 只刷新导航选中态，不碰内容区的卡片和图片。
         nav.forEachIndexed { index,item ->
@@ -2994,7 +2992,7 @@ class MainActivity: Activity() {
         val items=if(fromUpdates) updated else randomRecommender.pick(3).ifEmpty { library.cachedHome(library.contentType)?.items?.shuffled()?.take(3) ?: emptyList() }
         if(phoneLayout()) {
             // 弹框会跨后台恢复保留，封面不能随主页面清理或重建而解绑。
-            val dialogArtwork=ArtworkLoader(this)
+            val dialogArtwork=GlideArtwork(this)
             phoneExitArtwork=dialogArtwork
             val dlg=PhoneExitDialog.create(this,items,fromUpdates,
                 badge={ item -> if(fromUpdates) library.favoriteLabel(item.id) else item.badge },
@@ -3584,7 +3582,7 @@ class MainActivity: Activity() {
         } else releasePlayer(preservePlaybackCache=true)
         if(retrying) playbackCache.invalidate(data.episodes[selectedIndex])
         // 播放页不展示海报，但返回详情仍要复用同一张位图；清理解绑即可，位图由内存回调统一回收。
-        artwork.cancelPage()
+        artwork.clearPage()
         video=null
         var firstReady=true; var firstFrame=true; var rebufferStart=0L
         if(!recovering) recovery.reset()
@@ -6019,7 +6017,6 @@ class MainActivity: Activity() {
                 if(key!=phoneTab) value.finishRefresh()
             }
             phoneScrollY=retained.position
-            artwork.refreshVisible()
             restorePhoneCatalogScroll(phoneTab,retained.scroll,retained.pager)
             return
         }
@@ -6074,7 +6071,6 @@ class MainActivity: Activity() {
         }
         root.addView(frame,android.widget.FrameLayout.LayoutParams(-1,-1))
         phoneNavigationTab=phoneTab
-        artwork.refreshVisible()
         restorePhoneCatalogScroll(renderedTab,scroll,feedPager)
         // 冷启动由数据就绪后的现场恢复处理，避免重复恢复把已展开的标题再次收起。
         if(feedPager!=null && renderedTab !in pendingPhoneScrolls) feedPager.post {
@@ -6584,7 +6580,6 @@ class MainActivity: Activity() {
         val sharedCover=if(!resume && cover!=null) PosterSharedTransition.capture(root,cover) else null
         rememberPhoneCatalogPosition()
         if(restoringPhoneDetail?.series?.id!=series.id) restoringPhoneDetail=null
-        if(phoneTab!="detail") artwork.retainVisible()
         // 记住从哪个页签进来的：详情返回时回到原处（从排行/收藏点进去不该被丢回首页）。
         // 同剧切季（openDetailPhone 在详情页内再次调用）沿用原来的返回目标。
         if(phoneTab!="detail") {
@@ -7152,8 +7147,9 @@ class MainActivity: Activity() {
         val dirs = listOfNotNull(cacheDir, externalCacheDir)
         TvDialog.confirm(this, "清理缓存", "清除封面图片和已下载的安装包等缓存数据，不影响收藏和观看记录。") {
             retainedPhoneCatalogs.clear()
-            artwork.cancelAll(clearMemory=true)
+            artwork.clearPage(clearMemory=true)
             io.execute {
+                Glide.get(this).clearDiskCache()
                 dirs.forEach { dir -> dir.listFiles()?.forEach { it.deleteRecursively() } }
                 main.post { if(!isDestroyed) PhoneUi.toast(this, "缓存已清理") }
             }
@@ -7407,8 +7403,7 @@ class MainActivity: Activity() {
             if(screen=="catalog") favoriteMonitor.check()
             if(screen=="player") syncMediaSession()
         } else libraryLoadError?.let(::showLibraryError)
-        // 弹框窗口不随主页面重建，回到前台时续载尚未显示的封面。
-        phoneExitArtwork?.refreshVisible()
+        // Glide 随 Activity 生命周期恢复弹框和列表中尚未完成的图片请求。
         maybePromptCrash()
         homePlayback?.setActive(foreground && hasWindowFocus() && screen=="catalog" && tab==0 && !phoneLayout())
     }
@@ -7483,16 +7478,14 @@ class MainActivity: Activity() {
                 cancelPrefetch()
             }
         } else playbackKeptOnStop=false
-        if(phoneLayout() && screen=="catalog") artwork.retainVisible()
         retainedPhoneCatalogs.clear()
-        // 取消页面请求，保留有上限的内存图片缓存；真正内存紧张时由 trimMemory 回收。
-        artwork.cancelPage(); library.flush()
+        // 页面解绑由 Glide 释放资源，缓存与内存压力由 Glide 的应用生命周期回调管理。
+        artwork.clearPage(); library.flush()
         super.onStop()
     }
     override fun onTrimMemory(level: Int) {
         if(!activityInitialized) { super.onTrimMemory(level); return }
         super.onTrimMemory(level)
-        if(::artwork.isInitialized) artwork.trimMemory(level)
         val memoryPressure=level in android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW..android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
             level>=android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND
         if(memoryPressure) {

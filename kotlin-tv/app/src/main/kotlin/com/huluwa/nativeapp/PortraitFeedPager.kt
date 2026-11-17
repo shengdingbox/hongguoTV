@@ -117,9 +117,6 @@ class PortraitFeedPager(
                 updatePages()
                 onPositionChanged?.invoke(this@PortraitFeedPager.position)
             }
-            override fun onPageScrolled(position: Int, positionOffset: Float, positionOffsetPixels: Int) {
-                activity.refreshPhoneCovers()
-            }
             override fun onPageScrollStateChanged(state: Int) {
                 updatePages()
                 if (state == ViewPager2.SCROLL_STATE_IDLE) {
@@ -228,7 +225,6 @@ class PortraitFeedPager(
             pager.offsetTopAndBottom(-consumed)
             header.elevation = if (collapsed > 0) PortraitUi.dp(activity, 3).toFloat() else 0f
             onPositionChanged?.invoke(position)
-            activity.refreshPhoneCovers()
         }
         return consumed
     }

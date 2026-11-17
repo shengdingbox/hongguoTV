@@ -14,14 +14,13 @@ class PortraitListPage(private val activity: MainActivity) : FrameLayout(activit
     val horizontalContentPadding = PortraitUi.dp(activity, 10)
     private val sections = ConcatAdapter(ConcatAdapter.Config.Builder()
         .setStableIdMode(ConcatAdapter.Config.StableIdMode.ISOLATED_STABLE_IDS).build())
-    private val grid = GridLayoutManager(activity, 3).apply { initialPrefetchItemCount = 12 }
+    private val grid = GridLayoutManager(activity, 3)
     val recycler = RecyclerView(activity).apply {
         layoutManager = grid
         adapter = sections
         itemAnimator = null
         isVerticalScrollBarEnabled = false
         clipToPadding = false
-        setItemViewCacheSize(18)
     }
     private var pendingPosition: Int? = null
     private var pendingLayoutState: Parcelable? = null
@@ -54,7 +53,6 @@ class PortraitListPage(private val activity: MainActivity) : FrameLayout(activit
         recycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(view: RecyclerView, dx: Int, dy: Int) {
                 onPositionChanged?.invoke(position)
-                if (dy != 0) activity.refreshPhoneCovers()
             }
         })
     }

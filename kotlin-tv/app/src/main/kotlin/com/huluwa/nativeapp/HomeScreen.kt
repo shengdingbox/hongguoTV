@@ -448,8 +448,7 @@ class HomeScreen(
         requestCover(nextCover,if(entries.size>1) entries[(index+1)%entries.size].series.cover else "")
     }
     private fun requestCover(image: ImageView,url: String) {
-        if(image.tag!=url) { image.setImageDrawable(null); image.tag=url }
-        // ArtworkLoader owns attachment and size listeners, including cancellation for empty covers.
+        // 图片替换、布局尺寸与空地址清理由 Glide 统一处理。
         loadCover(image,url)
     }
     override fun onAttachedToWindow() { super.onAttachedToWindow(); post { loadArtwork() } }

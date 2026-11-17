@@ -151,6 +151,7 @@ bash scripts/publish-tv-release.sh
 | Kotlin 标准库 | Apache-2.0 |
 | AndroidX Media3 | Apache-2.0 |
 | OkHttp / Okio | Apache-2.0 |
+| Glide（图片加载、列表预加载、缓存与位图池） | BSD-2-Clause / Apache-2.0 / MIT |
 | jsoup（仅解析官网 HTML，不执行网页脚本） | MIT |
 | Android desugar_jdk_libs | GPL-2.0 with Classpath Exception |
 | org.json（仅 JVM 工具，APK 使用 Android 内置实现） | 公有领域声明 |

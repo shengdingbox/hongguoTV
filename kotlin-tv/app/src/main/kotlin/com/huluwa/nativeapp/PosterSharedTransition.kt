@@ -11,6 +11,7 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.drawable.Drawable
+import android.graphics.drawable.BitmapDrawable
 import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
@@ -43,7 +44,7 @@ internal class PosterSharedTransition(private val root: FrameLayout, snapshot: S
             val poster = source?.takeIf {
                 it.isAttachedToWindow && it.isShown && it.width > 0 && it.height > 0 && it.getLocalVisibleRect(localVisible)
             }
-            val cover = poster?.drawable?.constantState?.newDrawable(root.resources)?.mutate()
+            val cover = poster?.let { copyCover(root, it) }
             val bounds = if (cover != null) boundsInRoot(root, poster!!) else RectF()
             val clipped = if (cover != null) RectF(localVisible).apply { offset(bounds.left, bounds.top) } else RectF()
             // 背景只用于短暂淡出；限制尺寸，避免分配整屏的高分辨率位图。
@@ -61,6 +62,22 @@ internal class PosterSharedTransition(private val root: FrameLayout, snapshot: S
             } catch (_: OutOfMemoryError) { null }
             if (cover == null && background == null) return null
             return Snapshot(cover, bounds, clipped, background)
+        }
+
+        /** 动画独立持有快照，页面解绑后不能继续引用 Glide 位图池中的原始位图。 */
+        private fun copyCover(root: FrameLayout, poster: ImageView): Drawable? {
+            val drawable = poster.drawable ?: return null
+            val source = (drawable as? BitmapDrawable)?.bitmap
+                ?: return drawable.constantState?.newDrawable(root.resources)?.mutate()
+            if (source.isRecycled) return null
+            return try {
+                val scale = min(1f, 1024f / max(source.width, source.height))
+                val width = max(1, (source.width * scale).toInt())
+                val height = max(1, (source.height * scale).toInt())
+                val snapshot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                Canvas(snapshot).drawBitmap(source, null, Rect(0, 0, width, height), Paint(Paint.FILTER_BITMAP_FLAG))
+                BitmapDrawable(root.resources, snapshot)
+            } catch (_: OutOfMemoryError) { null }
         }
 
         private fun findPoster(view: View, name: String): ImageView? {

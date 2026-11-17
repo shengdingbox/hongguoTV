@@ -2,10 +2,10 @@
 package com.huluwa.nativeapp
 
 import android.app.Activity
+import android.app.ActivityManager
+import android.content.Context
 import android.graphics.Color
-import android.graphics.Rect
 import android.graphics.Typeface
-import android.os.SystemClock
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
@@ -19,10 +19,16 @@ import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.core.widget.NestedScrollView
 import androidx.recyclerview.widget.AsyncListDiffer
+import androidx.recyclerview.widget.ConcatAdapter
 import androidx.recyclerview.widget.DiffUtil
-import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import com.bumptech.glide.Glide
+import com.bumptech.glide.ListPreloader
+import com.bumptech.glide.Priority
+import com.bumptech.glide.RequestBuilder
+import com.bumptech.glide.integration.recyclerview.RecyclerViewPreloader
+import com.bumptech.glide.util.ViewPreloadSizeProvider
 import com.hongguotv.core.Series
 import kotlin.math.abs
 
@@ -200,10 +206,7 @@ object PortraitUi {
         private var nextStableId = 0L
         private var submitted = emptyList<Cell>()
         private var recycler: RecyclerView? = null
-        private var scrollDirection = 1
-        private var scrollPixelsPerSecond = 0f
-        private var lastScrollUptime = 0L
-        private val warmCovers = Runnable { prefetchCovers() }
+        private val preloadSize = ViewPreloadSizeProvider<String>()
         internal var isUpdating = false
             private set
         internal var onListApplied: () -> Unit = {}
@@ -238,7 +241,7 @@ object PortraitUi {
                 isUpdating = false
                 onListApplied()
                 stableIds.keys.retainAll(differ.currentList.mapNotNull { it.series?.id }.toSet())
-                recycler?.post { checkLoadMore(); scheduleCovers() }
+                recycler?.post { checkLoadMore() }
             }
         }
 
@@ -251,7 +254,6 @@ object PortraitUi {
             super.onViewAttachedToWindow(holder)
             if (holder is Holder) {
                 loadCover(holder.card.image, holder.cover)
-                scheduleCovers()
             }
         }
 
@@ -300,6 +302,7 @@ object PortraitUi {
             val sameSeries = holder.seriesId == item.id
             holder.seriesId = item.id
             card.image.transitionName = PosterSharedTransition.posterName(item.id)
+            preloadSize.setView(card.image)
             card.title.text = item.title
             card.badge.text = item.badge
             card.badge.maxLines = if (item.release != null) 2 else 1
@@ -338,84 +341,33 @@ object PortraitUi {
 
         internal fun observe(view: RecyclerView) {
             recycler = view
+            val requests = Glide.with(activity)
+            val models = object : ListPreloader.PreloadModelProvider<String> {
+                override fun getPreloadItems(position: Int): List<String> {
+                    // RecyclerViewPreloader 使用整张列表的位置；页头与其他分区不属于这个海报适配器。
+                    var local = position
+                    val sections = (view.adapter as? ConcatAdapter)?.adapters ?: listOf(this@PosterGrid)
+                    for (section in sections) {
+                        if (local < section.itemCount) {
+                            val cover = if (section === this@PosterGrid) differ.currentList.getOrNull(local)?.series?.cover else null
+                            return if (cover.isNullOrBlank()) emptyList() else listOf(cover)
+                        }
+                        local -= section.itemCount
+                    }
+                    return emptyList()
+                }
+
+                override fun getPreloadRequestBuilder(item: String): RequestBuilder<*> =
+                    GlideArtwork.coverRequest(requests, item, Priority.LOW)
+            }
+            val lowRam = (activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.isLowRamDevice == true
+            view.addOnScrollListener(RecyclerViewPreloader(requests, models, preloadSize, if (lowRam) 12 else 36))
             view.addOnScrollListener(object : RecyclerView.OnScrollListener() {
                 override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
                     if (dy > 0) checkLoadMore()
-                    if (dy != 0) {
-                        val now = SystemClock.uptimeMillis()
-                        val elapsed = if (lastScrollUptime == 0L) 16L else (now - lastScrollUptime).coerceIn(8L, 80L)
-                        val direction = if (dy > 0) 1 else -1
-                        val speed = abs(dy.toFloat()) * 1000f / elapsed
-                        scrollPixelsPerSecond = if (direction != scrollDirection) speed
-                            else maxOf(speed, scrollPixelsPerSecond * .65f)
-                        scrollDirection = direction
-                        lastScrollUptime = now
-                    }
-                    scheduleCovers()
-                }
-                override fun onScrollStateChanged(rv: RecyclerView, newState: Int) {
-                    if (newState == RecyclerView.SCROLL_STATE_IDLE) {
-                        scrollPixelsPerSecond = 0f
-                        lastScrollUptime = 0L
-                    }
-                    scheduleCovers()
                 }
             })
-            view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                view.post { checkLoadMore(); scheduleCovers() }
-            }
-            view.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
-                override fun onViewAttachedToWindow(v: View) = scheduleCovers()
-                override fun onViewDetachedFromWindow(v: View) {
-                    view.removeCallbacks(warmCovers)
-                    activity.prefetchPhoneCovers(this@PosterGrid, view, emptyList(), 0, 0)
-                }
-            })
-            scheduleCovers()
-        }
-
-        private fun scheduleCovers() {
-            recycler?.let { view ->
-                view.removeCallbacks(warmCovers)
-                view.postOnAnimation(warmCovers)
-            }
-        }
-
-        private fun prefetchCovers() {
-            val view = recycler ?: return
-            val visible = if (view.isShown && view.getGlobalVisibleRect(Rect())) {
-                (0 until view.childCount).mapNotNull { index ->
-                    val child = view.getChildAt(index)
-                    val holder = view.getChildViewHolder(child) as? Holder
-                    holder?.takeIf { it.bindingAdapter === this && it.bindingAdapterPosition != RecyclerView.NO_POSITION &&
-                        child.bottom > view.paddingTop && child.top < view.height - view.paddingBottom }
-                }
-            } else emptyList()
-            val sample = visible.firstOrNull()
-            if (sample == null) {
-                activity.prefetchPhoneCovers(this, view, emptyList(), 0, 0)
-                return
-            }
-            val first = visible.minOf { it.bindingAdapterPosition }
-            val last = visible.maxOf { it.bindingAdapterPosition }
-            val columns = (view.layoutManager as? GridLayoutManager)?.spanCount ?: 3
-            val screenCount = (((view.height / sample.card.height.coerceAtLeast(1)) + 1) * columns).coerceIn(6, 15)
-            // 估算未来半秒的位移，快速滑动预取到前方 2–6 屏，并保留反方向两屏。
-            val screensAhead = (2f + scrollPixelsPerSecond * .5f / view.height.coerceAtLeast(1)).toInt().coerceIn(2, 6)
-            val aheadCount = (screenCount * screensAhead).coerceAtMost(54)
-            val behindCount = (screenCount * 2).coerceAtMost(24)
-            val ahead = if (scrollDirection > 0) (last + 1..last + aheadCount).toList()
-                else (first - 1 downTo first - aheadCount).toList()
-            val behind = if (scrollDirection > 0) (first - 1 downTo first - behindCount).toList()
-                else (last + 1..last + behindCount).toList()
-            // 前后按行交替，反方向的近邻也能优先进入预取队列，突然回滑不用从头加载。
-            val positions = ArrayList<Int>(ahead.size + behind.size)
-            for (row in 0 until maxOf(ahead.size, behind.size) step columns) {
-                for (index in row until minOf(row + columns, ahead.size)) positions.add(ahead[index])
-                for (index in row until minOf(row + columns, behind.size)) positions.add(behind[index])
-            }
-            val urls = positions.mapNotNull { differ.currentList.getOrNull(it)?.series?.cover }
-            activity.prefetchPhoneCovers(this, view, urls, sample.card.image.width, sample.card.image.height)
+            view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> view.post { checkLoadMore() } }
         }
 
         private fun checkLoadMore() {

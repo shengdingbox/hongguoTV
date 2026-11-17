@@ -369,7 +369,6 @@ class PortraitPages(
         })
         strip.viewTreeObserver.addOnScrollChangedListener {
             if (strip.isShown) recentWatchScrollX = strip.scrollX
-            activity.refreshPhoneCovers()
         }
         recent.addView(strip, lp())
         body.addView(recent, lp())

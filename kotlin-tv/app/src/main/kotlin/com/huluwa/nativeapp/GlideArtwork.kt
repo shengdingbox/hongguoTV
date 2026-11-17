@@ -3,6 +3,7 @@ package com.huluwa.nativeapp
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.widget.ImageView
 import com.bumptech.glide.Glide
@@ -24,6 +25,8 @@ class GlideArtwork(private val context: Context) {
     private val requests = Glide.with(context)
     private val identities = HashMap<String, String>()
     private val bound = WeakHashMap<ImageView, String>()
+    /** 首屏无图时的占位色：用 surface 色避免白色闪烁，与卡片底色一致。 */
+    private val emptyPlaceholder by lazy { ColorDrawable(TvStyle.surface) }
     private var closed = false
 
     fun identity(url: String): String = identities.getOrPut(url) { ArtworkUrl.identity(url) }
@@ -53,18 +56,10 @@ class GlideArtwork(private val context: Context) {
         bound[view] = identity
         RuntimeLog.add("IMG into v=$viewId id=…$short prev=${previous?.takeLast(8) ?: "null"} showing=${showing != null} keep=$keepCurrentImage")
         val request = coverRequest(requests, url, priority)
-        if (keepCurrentImage && previous != null && previous != identity) {
-            // 切季时用 Glide 自己持有上一张资源，避免把位图池中的图片当成普通 Drawable 保存。
-            val retained = coverRequest(requests, previous, priority).onlyRetrieveFromCache(true)
-            val width = view.width - view.paddingLeft - view.paddingRight
-            val height = view.height - view.paddingTop - view.paddingBottom
-            if (width > 0 && height > 0) retained.override(width, height)
-            request.thumbnail(retained)
-        } else if (showing != null) {
-            // 任何已有显示都要保住：共享动画快照、上一张封面、placeholder 一律作为新图的就位前占位，
-            // 防止 into(view) 默认 clear 造成的瞬时白屏。
-            request.placeholder(showing)
-        }
+        // 任何已有显示都用 placeholder 保住：共享动画快照、上一张封面、旧图一律在新图 ready 前显示，
+        // 防止 into(view) 默认 clear 造成的瞬时白屏；首屏 showing=null 用 surface 色占位避免白屏闪烁。
+        // 不再用 .thumbnail() 加载旧图，那会重新触发两阶段切换（缩略图→原图），首屏就是闪烁本身。
+        request.placeholder(showing ?: emptyPlaceholder)
         request.listener(traceListener(viewId, short, "into"))
         request.into(view)
     }
@@ -120,7 +115,8 @@ class GlideArtwork(private val context: Context) {
                 .dontAnimate()
                 .disallowHardwareConfig()
                 .timeout(10_000)
-                .thumbnail(.25f)
+                // 不再用 .thumbnail(.25f)：日志证实它会让同一 request 触发两次 onResourceReady，
+                // 第一次 25% 缩略图（如 101x144）瞬间硬切到原图（400x572），首屏就是「白屏→小图→大图」的闪烁。
                 .priority(priority)
     }
 }

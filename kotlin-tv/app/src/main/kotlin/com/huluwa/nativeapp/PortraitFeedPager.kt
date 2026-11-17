@@ -48,6 +48,7 @@ class PortraitFeedPager(
     var onPositionChanged: ((Int) -> Unit)? = null
     private val currentPage get() = pageKeys.getOrNull(pager.currentItem)?.let { pages[it] }
     val headerOffset get() = collapsed
+    val isRestoringPosition get() = isLayoutRequested || currentPage?.scroll?.isRestoringPosition != false
     val position get() = headerOffset + (currentPage?.scroll?.position ?: 0)
     private val scrollListener = ViewTreeObserver.OnScrollChangedListener { onPositionChanged?.invoke(position) }
 

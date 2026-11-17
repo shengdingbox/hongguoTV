@@ -12,8 +12,10 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.drawable.Drawable
 import android.os.Build
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.View
+import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
@@ -24,36 +26,52 @@ import kotlin.math.min
 /** 同一 Activity 内的共享封面：在页面替换、异步加载期间独立持有封面与起点。 */
 internal class PosterSharedTransition(private val root: FrameLayout, snapshot: Snapshot) {
     internal class Snapshot(
-        val cover: Drawable,
+        val cover: Drawable?,
         val bounds: RectF,
         val visible: RectF,
         val background: Bitmap?,
     )
 
     companion object {
-        fun capture(root: FrameLayout, source: ImageView): Snapshot? {
+        fun posterName(seriesId: String) = "shared-poster:$seriesId"
+
+        fun capture(root: FrameLayout, source: ImageView?): Snapshot? {
             val enabled = if (Build.VERSION.SDK_INT >= 26) ValueAnimator.areAnimatorsEnabled()
                 else Settings.Global.getFloat(root.context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
-            if (!enabled || !root.isAttachedToWindow || !source.isShown || source.width <= 0 || source.height <= 0) return null
-            val visible = Rect()
-            if (!source.getLocalVisibleRect(visible)) return null
-            val cover = source.drawable?.constantState?.newDrawable(root.resources)?.mutate() ?: return null
-            val bounds = boundsInRoot(root, source)
-            val clipped = RectF(visible).apply { offset(bounds.left, bounds.top) }
+            if (!enabled || !root.isAttachedToWindow || root.width <= 0 || root.height <= 0) return null
+            val localVisible = Rect()
+            val poster = source?.takeIf {
+                it.isAttachedToWindow && it.isShown && it.width > 0 && it.height > 0 && it.getLocalVisibleRect(localVisible)
+            }
+            val cover = poster?.drawable?.constantState?.newDrawable(root.resources)?.mutate()
+            val bounds = if (cover != null) boundsInRoot(root, poster!!) else RectF()
+            val clipped = if (cover != null) RectF(localVisible).apply { offset(bounds.left, bounds.top) } else RectF()
             // 背景只用于短暂淡出；限制尺寸，避免分配整屏的高分辨率位图。
             val scale = min(1f, 1080f / max(root.width, root.height).coerceAtLeast(1))
             val background = try {
                 Bitmap.createBitmap(max(1, (root.width * scale).toInt()), max(1, (root.height * scale).toInt()), Bitmap.Config.RGB_565).also { bitmap ->
-                    val alpha = source.alpha
+                    val alpha = poster?.alpha ?: 1f
                     try {
-                        source.alpha = 0f
+                        if (cover != null) poster?.alpha = 0f
                         root.draw(Canvas(bitmap).apply { scale(scale, scale) })
                     } finally {
-                        source.alpha = alpha
+                        poster?.alpha = alpha
                     }
                 }
             } catch (_: OutOfMemoryError) { null }
+            if (cover == null && background == null) return null
             return Snapshot(cover, bounds, clipped, background)
+        }
+
+        private fun findPoster(view: View, name: String): ImageView? {
+            if (!view.isShown) return null
+            if (view is ImageView && view.transitionName == name && view.getLocalVisibleRect(Rect())) return view
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    findPoster(view.getChildAt(index), name)?.let { return it }
+                }
+            }
+            return null
         }
 
         private fun boundsInRoot(root: View, view: View): RectF {
@@ -88,13 +106,28 @@ internal class PosterSharedTransition(private val root: FrameLayout, snapshot: S
         root.addOnAttachStateChangeListener(attachListener)
     }
 
+    /** 进场尚未结束就返回时，从屏幕上正在移动的位置接续反向动画。 */
+    fun captureForReturn(poster: ImageView?): Snapshot? {
+        val current = snapshot ?: return capture(root, poster)
+        val bounds = overlay.currentBounds(current.bounds, overlay.destination)
+        val visible = overlay.currentBounds(current.visible, overlay.destinationVisible)
+        overlay.drawCover = false
+        val background = try { capture(root, null) } finally { overlay.drawCover = true }
+        return background?.let {
+            Snapshot(current.cover?.constantState?.newDrawable(root.resources)?.mutate(), bounds, visible, it.background)
+        }
+    }
+
     /** 加载外壳与正式详情可以先后接管落点，动画持续进行且不重新起播。 */
-    fun bind(poster: ImageView) {
+    fun bind(poster: ImageView, seedCover: Boolean = true) {
         val current = snapshot ?: return
+        if (current.cover == null) { startAnimation(); return }
         removePendingDraw()
         target?.alpha = 1f
         target = poster
-        poster.setImageDrawable(current.cover.constantState?.newDrawable(root.resources)?.mutate())
+        if (seedCover && current.cover != null) {
+            poster.setImageDrawable(current.cover.constantState?.newDrawable(root.resources)?.mutate())
+        }
         poster.alpha = 0f
         val observer = root.viewTreeObserver
         val listener = object : ViewTreeObserver.OnPreDrawListener {
@@ -104,31 +137,69 @@ internal class PosterSharedTransition(private val root: FrameLayout, snapshot: S
                     cancel()
                     return true
                 }
-                overlay.destination.set(boundsInRoot(root, poster))
-                overlay.invalidate()
-                if (animator == null) {
-                    animator = ValueAnimator.ofFloat(0f, 1f).apply {
-                        duration = 360L
-                        interpolator = PathInterpolator(.2f, 0f, 0f, 1f)
-                        addUpdateListener {
-                            target?.takeIf { poster -> poster.isAttachedToWindow }?.let { poster ->
-                                overlay.destination.set(boundsInRoot(root, poster))
-                            }
-                            overlay.progress = it.animatedValue as Float
-                            overlay.invalidate()
-                        }
-                        addListener(object : AnimatorListenerAdapter() {
-                            override fun onAnimationEnd(animation: Animator) = this@PosterSharedTransition.cancel()
-                        })
-                    }
-                    animator?.start()
-                }
+                updateDestination(poster)
+                startAnimation()
                 return true
             }
         }
         pendingObserver = observer
         pendingDraw = listener
         observer.addOnPreDrawListener(listener)
+    }
+
+    /** 返回列表先恢复滚动并等待原卡片布局，避免落点仍在首屏或封面出现重影。 */
+    fun returnTo(seriesId: String?, ready: () -> Boolean) {
+        if (seriesId == null || snapshot?.cover == null) {
+            startAnimation()
+            return
+        }
+        val deadline = SystemClock.uptimeMillis() + 500L
+        val observer = root.viewTreeObserver
+        val listener = object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                val poster = if (ready()) findPoster(root, posterName(seriesId)) else null
+                if (poster != null && poster.width > 0 && poster.height > 0) {
+                    removePendingDraw()
+                    // 已加载的列表封面保持原样，尚未载入时先显示共享封面。
+                    bind(poster, seedCover = poster.drawable == null)
+                } else if (SystemClock.uptimeMillis() >= deadline) {
+                    removePendingDraw()
+                    startAnimation()
+                } else root.postInvalidateOnAnimation()
+                return true
+            }
+        }
+        pendingObserver = observer
+        pendingDraw = listener
+        observer.addOnPreDrawListener(listener)
+        root.postInvalidateOnAnimation()
+    }
+
+    private fun updateDestination(poster: ImageView) {
+        overlay.destination.set(boundsInRoot(root, poster))
+        val visible = Rect()
+        if (poster.getLocalVisibleRect(visible)) {
+            overlay.destinationVisible.set(visible)
+            overlay.destinationVisible.offset(overlay.destination.left, overlay.destination.top)
+        } else overlay.destinationVisible.setEmpty()
+    }
+
+    private fun startAnimation() {
+        if (animator != null || snapshot == null) return
+        overlay.fadeCover = target == null
+        animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 360L
+            interpolator = PathInterpolator(.2f, 0f, 0f, 1f)
+            addUpdateListener {
+                target?.takeIf { poster -> poster.isAttachedToWindow }?.let(::updateDestination)
+                overlay.progress = it.animatedValue as Float
+                overlay.invalidate()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) = this@PosterSharedTransition.cancel()
+            })
+        }
+        animator?.start()
     }
 
     private fun removePendingDraw() {
@@ -155,7 +226,10 @@ internal class PosterSharedTransition(private val root: FrameLayout, snapshot: S
 
     private inner class CoverOverlay(var snapshot: Snapshot?) : View(root.context) {
         var progress = 0f
+        var fadeCover = false
+        var drawCover = true
         val destination = RectF(snapshot!!.bounds)
+        val destinationVisible = RectF(snapshot!!.visible)
         private val bounds = RectF()
         private val visible = RectF()
         private val path = Path()
@@ -164,12 +238,21 @@ internal class PosterSharedTransition(private val root: FrameLayout, snapshot: S
 
         init { importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO }
 
+        fun currentBounds(start: RectF, end: RectF) = RectF(
+            start.left + (end.left - start.left) * progress,
+            start.top + (end.top - start.top) * progress,
+            start.right + (end.right - start.right) * progress,
+            start.bottom + (end.bottom - start.bottom) * progress,
+        )
+
         override fun onDraw(canvas: Canvas) {
             val current = snapshot ?: return
             current.background?.let { bitmap ->
                 paint.alpha = (255 * (1f - progress)).toInt()
                 canvas.drawBitmap(bitmap, null, Rect(0, 0, width, height), paint)
             }
+            if (!drawCover) return
+            val cover = current.cover ?: return
             fun interpolate(start: RectF, end: RectF, out: RectF) {
                 out.set(start.left + (end.left - start.left) * progress,
                     start.top + (end.top - start.top) * progress,
@@ -177,19 +260,20 @@ internal class PosterSharedTransition(private val root: FrameLayout, snapshot: S
                     start.bottom + (end.bottom - start.bottom) * progress)
             }
             interpolate(current.bounds, destination, bounds)
-            interpolate(current.visible, destination, visible)
+            interpolate(current.visible, destinationVisible, visible)
             path.rewind()
             path.addRoundRect(bounds, radius, radius, Path.Direction.CW)
             val save = canvas.save()
             canvas.clipRect(visible)
             canvas.clipPath(path)
-            val imageWidth = current.cover.intrinsicWidth.coerceAtLeast(1)
-            val imageHeight = current.cover.intrinsicHeight.coerceAtLeast(1)
+            val imageWidth = cover.intrinsicWidth.coerceAtLeast(1)
+            val imageHeight = cover.intrinsicHeight.coerceAtLeast(1)
             val scale = max(bounds.width() / imageWidth, bounds.height() / imageHeight)
             canvas.translate(bounds.centerX() - imageWidth * scale / 2f, bounds.centerY() - imageHeight * scale / 2f)
             canvas.scale(scale, scale)
-            current.cover.setBounds(0, 0, imageWidth, imageHeight)
-            current.cover.draw(canvas)
+            cover.setBounds(0, 0, imageWidth, imageHeight)
+            cover.alpha = if (fadeCover) (255 * (1f - progress)).toInt() else 255
+            cover.draw(canvas)
             canvas.restoreToCount(save)
         }
     }

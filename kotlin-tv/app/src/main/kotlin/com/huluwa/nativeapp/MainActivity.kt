@@ -5901,6 +5901,8 @@ class MainActivity: Activity() {
     // 手机页面实例：首次使用时创建后缓存（lazy 不能修饰 var）
     private val portraitPages by lazy { PortraitPages(this,::loadCover) }
     private var phoneCoverTransition: PosterSharedTransition?=null
+    private var phoneCoverReturnId: String?=null
+    private var phoneCoverReturnScrollState: android.os.Parcelable?=null
     private val portraitDetail by lazy {
         PortraitDetail(this,
             loadCover = { view, url -> artwork.load(view, url, keepCurrentImage = true) },
@@ -6582,7 +6584,11 @@ class MainActivity: Activity() {
         if(restoringPhoneDetail?.series?.id!=series.id) restoringPhoneDetail=null
         // 记住从哪个页签进来的：详情返回时回到原处（从排行/收藏点进去不该被丢回首页）。
         // 同剧切季（openDetailPhone 在详情页内再次调用）沿用原来的返回目标。
-        if(phoneTab!="detail") phoneDetailReturn=phoneTab
+        if(phoneTab!="detail") {
+            phoneDetailReturn=phoneTab
+            phoneCoverReturnId=cover?.let { series.id }
+            phoneCoverReturnScrollState=if(cover!=null) retainedPhoneCatalogs[phoneTab]?.scroll?.captureLayoutState() else null
+        }
         favoriteMonitor.stop()
         pendingDetail=series; detailAutoplay=true
         invalidatePage(); releaseCatalogViews(); screen="detail"; detail=null; synopsisExpanded=false; phoneTab="detail"
@@ -6692,7 +6698,15 @@ class MainActivity: Activity() {
 
     /** 手机详情页返回：回到进详情前的那个页签。 */
     fun goBackPhone() {
-        phoneCoverTransition?.cancel(); phoneCoverTransition=null
+        val returnId=phoneCoverReturnId
+        val returnScrollState=phoneCoverReturnScrollState
+        val poster=if(returnId!=null) portraitDetail.sharedPoster() else null
+        val sharedCover=if(phoneLayout() && screen=="detail") {
+            phoneCoverTransition?.captureForReturn(poster) ?: PosterSharedTransition.capture(root,poster)
+        } else null
+        // 返回时停止详情请求，防止加载回调再次覆盖正在恢复的列表。
+        invalidatePage()
+        phoneCoverReturnId=null; phoneCoverReturnScrollState=null
         offlineOnly = false
         val back=phoneDetailReturn
         restoringPhoneDetail=null
@@ -6708,6 +6722,16 @@ class MainActivity: Activity() {
             back=="search" && phoneQuery.isNotBlank() && (phoneCatalogSource!="search" || catalog.isEmpty()) -> runPhoneSearch(phoneQuery)
             // 从搜索结果点进详情：返回搜索页时结果还在，直接重画即可
             else -> renderPhone()
+        }
+        returnScrollState?.let { retainedPhoneCatalogs[back]?.scroll?.restoreLayoutState(it) }
+        sharedCover?.let { snapshot ->
+            val transition=PosterSharedTransition(root,snapshot)
+            phoneCoverTransition=transition
+            transition.returnTo(returnId) {
+                val retained=retainedPhoneCatalogs[back]
+                back !in pendingPhoneScrolls && retained!=null && !retained.frame.isLayoutRequested &&
+                    retained.scroll?.isRestoringPosition!=true && retained.pager?.isRestoringPosition!=true
+            }
         }
     }
 

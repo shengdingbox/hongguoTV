@@ -251,6 +251,7 @@ object PortraitUi {
                 activity.recyclePhoneCover(holder.card.image)
                 holder.seriesId = ""
                 holder.cover = ""
+                holder.card.image.transitionName = null
             }
             super.onViewRecycled(holder)
         }
@@ -289,6 +290,7 @@ object PortraitUi {
             val item = checkNotNull(cell.series)
             val sameSeries = holder.seriesId == item.id
             holder.seriesId = item.id
+            card.image.transitionName = PosterSharedTransition.posterName(item.id)
             card.title.text = item.title
             card.badge.text = item.badge
             card.badge.maxLines = if (item.release != null) 2 else 1

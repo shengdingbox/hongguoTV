@@ -45,6 +45,9 @@ class PortraitDetail(
         val loading: (String?) -> Unit,
     )
     private var pageBinding: PageBinding? = null
+    private var posterView: ImageView? = null
+
+    fun sharedPoster(): ImageView? = posterView?.takeIf { it.isAttachedToWindow }
 
     fun captureScrollY(): Int = pageBinding?.scroll?.scrollY ?: 0
 
@@ -103,6 +106,7 @@ class PortraitDetail(
     ).filter { it.isNotBlank() }.joinToString(" · ")
 
     private fun poster(cover: String) = ImageView(activity).apply {
+        posterView = this
         scaleType = ImageView.ScaleType.CENTER_CROP
         background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 10)
         clipToOutline = true

@@ -1,87 +1,85 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.core
 
-import org.json.JSONArray
 import org.json.JSONObject
-import org.jsoup.Jsoup
-import org.jsoup.nodes.Document
 import java.io.IOException
 
-/** Website rank boards share one layout and one serialized payload shape. */
-enum class RankBoard(val path: String, val route: String, val rankKey: String, val label: String) {
-    COMIC("hot-comic-drama","rank_hot-comic-drama/page","comic","漫剧"),
-    REAL("hot-real-drama","rank_hot-real-drama/page","real","短剧"),
-    AI("hot-ai-drama","rank_hot-ai-drama/page","ai","AI剧");
+/**
+ * 电视排行榜：官方 App 的短剧榜单接口（`cell/change/v1`，`tab_type=26`）。
+ *
+ * 三类榜单与官网热播榜一一对应，字段口径沿用 [ComicRanking]：
+ * 名次取页内顺序、热度取 `rec_text_item.RecommendText`。
+ *
+ * 名次为什么不用 `recommend_info.rank`：那是服务端自己的编号，推荐榜上按个人兴趣
+ * 排序会出现重复，推广位还会照抄下一行的名次。只有「已加载条数 + 页内序号」才是
+ * 稳定的名次，与官网榜单的口径一致。
+ */
+enum class RankBoard(val contentId: String, val rankKey: String, val label: String) {
+    COMIC("comic_series_rank", "comic", "漫剧"),
+    REAL("human", "real", "短剧"),
+    AI("ai_playlet", "ai", "AI剧");
 }
 
-/** Read the website's serialized data only; never execute its scripts. */
 internal object ComicRank {
-    fun parse(html: String, page: Int, board: RankBoard = RankBoard.COMIC): CatalogPage {
-        try {
-            val document=Jsoup.parse(html)
-            val updatedText=runCatching { ContentRepository.extractRouter(html).optJSONObject("loaderData")
-                ?.optJSONObject(board.route)?.str("updatedText") }.getOrNull().orEmpty()
-            for(tag in document.select("script[data-fn-name][data-fn-args]")) {
-                val name=tag.attr("data-fn-name")
-                if(name!="r" && name!="mergeLoaderData") continue
-                val args=JSONArray(tag.attr("data-fn-args"))
-                if(args.optString(0)!=board.route) continue
-                val raw=if(name=="r" && args.optString(1)=="content") args.opt(2) else if(name=="mergeLoaderData") {
-                    args.optJSONArray(1)?.objects()?.firstOrNull { it.str("key")=="content" && it.str("routerDataFnName")=="p" }
-                        ?.optJSONArray("routerDataFnArgs")?.opt(0)
-                } else null
-                val payload=when(raw) { is JSONObject -> raw; is String -> JSONObject(raw); else -> continue }
-                if(!payload.optBoolean("isSuccess")) throw IOException("${board.label}榜单暂不可用")
-                val rows=payload.optJSONArray("rankList") ?: throw IOException("${board.label}榜单格式已变化")
-                val pagination=payload.optJSONObject("pagination") ?: throw IOException("${board.label}分页信息缺失")
-                val totalPages=pagination.optInt("totalPages",0)
-                if(totalPages<1 || pagination.optInt("pageNum",page)!=page) throw IOException("${board.label}分页信息异常")
-                val positions=linkedMapOf<String,RankPosition>()
-                val pageSize=rows.length()
-                val items=rows.objects().mapIndexed { index,row ->
-                    val count=row.optInt("episodeCount",row.optJSONArray("episodeVids")?.length() ?: 0)
-                    val tags=row.optJSONArray("tags") ?: JSONArray()
-                    val id=row.str("seriesId").ifEmpty { row.str("id") }
-                    // The site only includes explicit ranks on page 1; derive the rest from order.
-                    val rank=row.optInt("rank").takeIf { it>0 } ?: (page-1)*pageSize+index+1
-                    if(id !in positions) positions[id]=RankPosition(rank,row.str("heatText"))
-                    Series(id,row.str("title"),cleanUrl(row.str("cover")),
-                        row.str("description"),if(count>0) "全 $count 集" else row.str("heatText"),
-                        (0 until minOf(tags.length(),5)).joinToString(" · ") { tags.optString(it) })
-                }.filter { it.id.matches(Regex("[0-9]{1,30}")) && it.title.isNotBlank() }.distinctBy { it.id }
-                return CatalogPage(items,items.isNotEmpty() && page<minOf(totalPages,100),
-                    ComicRanking(positions.filterKeys { id -> items.any { it.id==id } },minOf(totalPages,100),updatedText))
-            }
-            return renderedPage(document,html,page,board)
-        } catch(e: IOException) { throw e } catch(e: Exception) { throw IOException("${board.label}榜单格式已变化",e) }
+    /** 一页官方榜单：条目、名次与「下一页从哪里开始」的游标。 */
+    data class Slice(val page: CatalogPage, val next: MobileRankCursor?)
+
+    /** 该内容类型没出现在返回目录里时，用服务端对它的默认子榜。 */
+    private val defaultBoards = mapOf(
+        RankBoard.COMIC to "comic_series_hot_play",
+        RankBoard.REAL to "human_hot_play",
+        RankBoard.AI to "ai_playlet_hot_play",
+    )
+
+    fun parse(root: JSONObject, board: RankBoard, cursor: MobileRankCursor?, offsetBefore: Int = 0): Slice {
+        val data = root.optJSONObject("data") ?: throw IOException("${board.label}榜单暂不可用")
+        val cell = data.optJSONObject("cell_view") ?: throw IOException("${board.label}榜单暂不可用")
+
+        // 目录用于校验内容类型；接口没给就退回本类默认子榜，不让整页失败。
+        val contents = MobileDiscoveryParser.rankContents(cell)
+        val content = contents.firstOrNull { it.id == board.contentId }
+        if (contents.isNotEmpty() && content == null) throw IOException("${board.label}榜单暂不可用")
+        val boardId = cursor?.boardId
+            ?: content?.boards?.firstOrNull { it.id == defaultBoards[board] }?.id
+            ?: content?.boards?.firstOrNull { it.selected }?.id
+            ?: content?.boards?.firstOrNull()?.id
+            ?: defaultBoards.getValue(board)
+
+        val rows = cell.optJSONArray("cell_data")?.objects().orEmpty()
+            .flatMap { it.optJSONArray("video_data")?.objects().orEmpty() }
+        val positions = linkedMapOf<String, RankPosition>()
+        val items = rows.mapNotNull { row ->
+            val id = row.str("series_id")
+            val title = seriesTitle(row.str("title"))
+            if (id == "0" || !id.matches(Regex("[0-9]{1,30}")) || title.isBlank()) return@mapNotNull null
+            Series(id, title, cleanUrl(row.str("cover")), badge = episodeBadge(row))
+        }.distinctBy { it.id }
+        // 第 1 页空结果说明该榜单不可用；续页空则只是到头了，让 hasMore 正常收尾。
+        if (items.isEmpty() && cursor == null) throw IOException("${board.label}榜单暂不可用")
+        // 热度按系列 ID 建索引，避免逐条回扫整页。
+        val heats = rows.associate { it.str("series_id") to it.optJSONObject("rec_text_item")?.str("RecommendText").orEmpty() }
+        items.forEachIndexed { index, series ->
+            positions[series.id] = RankPosition(
+                rank = offsetBefore + index + 1,
+                // 推广位显示「平台推荐」，既不是热度也不是名次依据，按无热度处理。
+                heat = heats[series.id].orEmpty().takeUnless { it == PROMOTED } ?: "",
+            )
+        }
+
+        val offset = data.optInt("next_offset")
+        val seen = (cursor?.seen.orEmpty() + items.map { it.id }).distinct()
+        val next = if (data.optBoolean("has_more") && items.isNotEmpty() &&
+            offset > (cursor?.offset ?: 0) && seen.size > cursor?.seen.orEmpty().size && seen.size < 2000) {
+            MobileRankCursor(board.contentId, boardId, offset,
+                data.str("session_id").ifBlank { cursor?.sessionId.orEmpty() }, seen)
+        } else null
+        return Slice(CatalogPage(items, next != null, ComicRanking(positions, 0, "")), next)
     }
 
-    private fun renderedPage(document: Document, html: String, page: Int, board: RankBoard): CatalogPage {
-        // Some responses contain rendered cards while the deferred JSON is still unresolved.
-        val route=ContentRepository.extractRouter(html).optJSONObject("loaderData")
-            ?.optJSONObject(board.route) ?: throw IOException("页面没有${board.label}榜单数据")
-        if(route.str("rankKey")!=board.rankKey || route.optInt("pageNum")!=page) throw IOException("${board.label}分页信息异常")
-        val positions=linkedMapOf<String,RankPosition>()
-        val cards=document.select("article[aria-labelledby^=rank-title-]")
-        val pageSize=cards.size
-        val items=cards.mapIndexedNotNull { index,article ->
-            val heading=article.attr("aria-labelledby")
-            val id=heading.removePrefix("rank-title-")
-            val title=article.getElementById(heading)?.text().orEmpty()
-            if(!id.matches(Regex("[0-9]{1,30}")) || title.isBlank()) return@mapIndexedNotNull null
-            val explicitRank=article.selectFirst("[class*=badge-number-]")?.text()?.toIntOrNull()?.takeIf { it>0 }
-            if(id !in positions) positions[id]=RankPosition(
-                explicitRank ?: (page-1)*pageSize+index+1,
-                article.selectFirst("p[class*=metrics-]")?.text().orEmpty())
-            Series(id,title,article.selectFirst("img[src]")?.attr("src").orEmpty(),
-                article.selectFirst("p[class*=description-]")?.text().orEmpty(),
-                article.selectFirst("p[class*=metrics-]")?.text().orEmpty(),
-                article.select("p[class*=categories-] > span").take(5).joinToString(" · ") { it.text() })
-        }.distinctBy { it.id }
-        if(items.isEmpty()) throw IOException("页面没有${board.label}榜单数据")
-        val paging=document.selectFirst("nav[aria-label=榜单分页]") ?: throw IOException("${board.label}分页信息缺失")
-        if(paging.selectFirst("[aria-current=page]")?.text()?.toIntOrNull()!=page) throw IOException("${board.label}分页信息异常")
-        val lastPage=maxOf(page,paging.select("a[href]").mapNotNull { it.attr("href").substringAfter("?page=","").substringBefore('&').toIntOrNull() }.maxOrNull() ?: page)
-        return CatalogPage(items,page<minOf(lastPage,100),ComicRanking(positions,minOf(lastPage,100),route.str("updatedText")))
+    private fun episodeBadge(row: JSONObject): String {
+        val count = row.optInt("episode_cnt")
+        return if (count > 0) "全 $count 集" else ""
     }
+
+    private const val PROMOTED = "平台推荐"
 }

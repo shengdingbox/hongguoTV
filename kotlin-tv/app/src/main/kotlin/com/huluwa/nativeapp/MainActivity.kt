@@ -222,6 +222,11 @@ class MainActivity: Activity() {
     private var collectionBack: View?=null
     private val gridColumns=6
     private val waterfallMaxPages=10
+    /** 榜单条目上限：官方接口每页约 10 条，按页数收尾会把榜单截短，所以按条数兜底。 */
+    private val rankMaxItems=200
+    /** 当前榜单按条数判断是否还能继续加载；非榜单页沿用按页数的口径。 */
+    private fun rankCanLoadMore(items: Int, pageNo: Int)=items<rankMaxItems && pageNo<rankMaxPages
+    private val rankMaxPages=20
     private var catalogRecycler: RecyclerView?=null
     private var catalogAdapter: CatalogAdapter?=null
     private var catalogFocusPos=RecyclerView.NO_POSITION
@@ -241,6 +246,8 @@ class MainActivity: Activity() {
     private var homeFromCache=false
     /** 榜单页当前内容是否来自缓存：影响联网回调要不要打断展示。 */
     private var rankFromCache=false
+    /** 电视榜单页自己的分页会话：与首页漫剧、随机荐剧互不影响。 */
+    private val rankSession by lazy { repository.rankSession(RankBoard.COMIC) }
     private var homeUpdateCount=0
     private var launchStarted=android.os.SystemClock.elapsedRealtime()
     private val activityStarted=launchStarted
@@ -945,7 +952,7 @@ class MainActivity: Activity() {
     }
 
     private fun reusableSavedCatalog(saved: CatalogState)=saved.page==1 && saved.items.isNotEmpty() && !saved.newRelease && !saved.aiCatalog &&
-        saved.cursor==null && (!saved.hasMore || (saved.board==rankBoard && saved.items.size<waterfallMaxPages*20))
+        saved.cursor==null && (!saved.hasMore || (saved.board==rankBoard && saved.items.size<rankMaxItems))
 
     /** 两个页面始终留在同一个窗口，只切可见性，避免 detach 触发清图和重新解码。 */
     private fun retainCurrentCatalog() {
@@ -1308,6 +1315,8 @@ class MainActivity: Activity() {
                 val boards=RankBoard.entries.map { board ->
                     chip(board.label,rankBoard==board) {
                         if(rankBoard!=board) {
+                            // 榜单切换是一条新会话：旧游标属于上一个榜，必须丢掉。
+                            rankSession.reset()
                             rankBoard=board; page=1; catalogFocus=""; tabState.remove(2); tabFocus.remove(2); showCatalog(true)
                             rankSwitch?.post { if(rankSwitch?.isAttachedToWindow==true) rankSwitch?.requestFocus() }
                         }
@@ -1337,7 +1346,10 @@ class MainActivity: Activity() {
                         aiEntry?.post { if(aiEntry?.isAttachedToWindow==true) aiEntry?.requestFocus() }
                     }.apply { nextFocusUpId=nav[tab].id }
                 }
-                rankRefresh=addButton(heading,"刷新榜单") { page=1; catalogFocus=""; showCatalog(true)
+                rankRefresh=addButton(heading,"刷新榜单") {
+                    // 官方榜单靠游标续页；手动刷新必须丢掉旧会话，从第 1 页重新建立。
+                    rankSession.reset()
+                    page=1; catalogFocus=""; showCatalog(true)
                     rankRefresh?.post { if(rankRefresh?.isAttachedToWindow==true) rankRefresh?.requestFocus() }
                 }.apply { nextFocusUpId=nav[tab].id }
             }
@@ -1497,7 +1509,7 @@ class MainActivity: Activity() {
             work({
                 val result=when(requestTab) {
                     0 -> repository.home(requestPage,requestType,requestGenre)
-                    2 -> if(requestAi) repository.home(requestPage,ContentType.AI,requestAiGenre) else repository.ranking(requestBoard,requestPage)
+                    2 -> if(requestAi) repository.home(requestPage,ContentType.AI,requestAiGenre) else repository.ranking(requestBoard,requestPage,rankSession)
                     else -> repository.search(requestQuery,requestPage,requestType)
                 }
                 result
@@ -1869,7 +1881,10 @@ class MainActivity: Activity() {
         val adapter=catalogAdapter ?: return
         if(randomDialog?.isShowing==true || loadingMore || !hasMore || localCatalog() || screen!="catalog") return
         if((tab==1 && advancedSearch) || (tab==2 && newRelease)) { loadMoreDiscovery(adapter); return }
-        if(page>=waterfallMaxPages || catalog.size>=waterfallMaxPages*20) { hasMore=false; rememberCatalogFocus(); adapter.updateFooter(FOOTER_END); restoreCatalogFocus(); return }
+        // 榜单走官方接口，每页约 10 条：按条数收尾，避免页数上限把榜单截短。
+        val rankTab=tab==2 && !aiCatalog
+        val capped=if(rankTab) !rankCanLoadMore(catalog.size,page) else page>=waterfallMaxPages || catalog.size>=waterfallMaxPages*20
+        if(capped) { hasMore=false; rememberCatalogFocus(); adapter.updateFooter(FOOTER_END); restoreCatalogFocus(); return }
         val requestTab=tab; val requestPage=page+1; val requestQuery=query; val requestType=library.contentType
         val requestBoard=rankBoard; val requestGenre=if(requestTab==0) genre else null
         val requestAi=if(requestTab==2) aiCatalog else false; val requestAiGenre=if(requestAi) aiGenre else null
@@ -1877,7 +1892,7 @@ class MainActivity: Activity() {
         work({
             when(requestTab) {
                 0 -> repository.home(requestPage,requestType,requestGenre)
-                2 -> if(requestAi) repository.home(requestPage,ContentType.AI,requestAiGenre) else repository.ranking(requestBoard,requestPage)
+                2 -> if(requestAi) repository.home(requestPage,ContentType.AI,requestAiGenre) else repository.ranking(requestBoard,requestPage,rankSession)
                 else -> repository.search(requestQuery,requestPage,requestType)
             }
         }, { result ->
@@ -1888,14 +1903,17 @@ class MainActivity: Activity() {
             if(requestTab==2 && !requestAi) rankSubtitle?.text=ranking?.updatedText?.ifBlank { "来源：红果${rankBoard.label}热播榜" } ?: "来源：红果${rankBoard.label}热播榜"
             val known=catalog.mapTo(HashSet()) { it.id }
             val fresh=result.items.filter { it.id !in known }
-            catalog=catalog+result.items
+            // 续页只追加新条目：与服务端 filter_ids 去重口径一致，也保证 catalog 与 displayed 同步。
+            catalog=catalog+fresh
             val current=catalogAdapter
             if(current!=null) {
                 val visible=fresh.filter { tab!=0 || it.id !in library.hidden() }
                 val insertAt=current.displayed.size
                 current.displayed.addAll(visible)
                 if(visible.isNotEmpty()) current.notifyItemRangeInserted(insertAt,visible.size)
-                current.updateFooter(if(hasMore && page<waterfallMaxPages && catalog.size<waterfallMaxPages*20) FOOTER_NONE else FOOTER_END)
+                val canContinue=if(requestTab==2 && !requestAi) rankCanLoadMore(catalog.size,page)
+                    else page<waterfallMaxPages && catalog.size<waterfallMaxPages*20
+                current.updateFooter(if(hasMore && canContinue) FOOTER_NONE else FOOTER_END)
                 restoreCatalogFocus()
             }
             if(requestTab==1) loadSearchArtwork()

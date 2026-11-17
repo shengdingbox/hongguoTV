@@ -59,8 +59,14 @@ class RandomRecommender(
         val type = if (rand.nextBoolean()) ContentType.SHORT else ContentType.COMIC
         if (rand.nextFloat() < rankWeight) {
             val board = if (type == ContentType.COMIC) RankBoard.COMIC else RankBoard.REAL
-            // 热播榜深页可信度低，只取前 3 页。
-            return repo.ranking(board, rand.nextInt(1, 4))
+            // 深页可信度低，只取前 3 页；用独立会话，不干扰页面上正在浏览的榜单。
+            val session = repo.rankSession(board)
+            var page = repo.ranking(board, 1, session)
+            for (ignored in 1 until rand.nextInt(1, 4)) {
+                if (!page.hasMore) break
+                page = repo.ranking(board, 2, session)
+            }
+            return page
         }
         val genres = runCatching { repo.genres(type) }.getOrDefault(emptyList())
         val genre = if (genres.isNotEmpty() && rand.nextBoolean()) genres.random(rand) else null

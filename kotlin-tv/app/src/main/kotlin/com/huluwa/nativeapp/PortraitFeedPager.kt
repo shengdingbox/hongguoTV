@@ -35,6 +35,8 @@ class PortraitFeedPager(
     private val pager = ViewPager2(activity).apply {
         orientation = ViewPager2.ORIENTATION_HORIZONTAL
         offscreenPageLimit = 1
+        // 目录刷新只应用差异；整页增删动画会使缓存页淡出，横向手势仍由 ViewPager2 处理。
+        (getChildAt(0) as RecyclerView).itemAnimator = null
     }
     private val nestedParent = NestedScrollingParentHelper(this)
     private var pageKeys = emptyList<String>()

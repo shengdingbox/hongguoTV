@@ -93,6 +93,8 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     private val site = "https://hongguoduanju.com"
     /** 红果官方 App 的 JSON 网关；签名与设备身份由 [RemoteSigner] 统一补齐。 */
     private val API = "https://api5-normal-sinfonlinea.fqnovel.com"
+    /** 短剧榜单页面的书城 cell：电视与手机排行榜共用同一份官方目录。 */
+    private companion object { const val RANK_CELL_ID = "7470092475068071998" }
     // 点击卡片后的关键请求独立限时，复用连接池；不继承普通内容请求最长 45 秒的等待。
     private val detailHttp by lazy {
         http.newBuilder()
@@ -148,10 +150,60 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return Series(o.str("series_id"),seriesTitle(o.str("series_name").ifEmpty { o.str("series_title").ifEmpty { item.str("name") } }),cleanUrl(o.str("series_cover")),o.str("series_intro"),o.str("episode_right_text").ifEmpty { if(count>0) "全 ${count} 集" else "" },(0 until minOf(tags.length(),5)).joinToString(" · ") { tags.optJSONObject(it)?.str("name") ?: tags.optString(it) })
     }
     private fun valid(rows: List<Series>) = rows.filter { it.id.matches(Regex("[0-9]{1,30}")) && it.title.isNotBlank() }.distinctBy { it.id }
-    open fun ranking(board: RankBoard, page: Int = 1): CatalogPage {
-        require(page in 1..100)
-        return ComicRank.parse(text("$site/rank/${board.path}?page=$page"),page,board)
+    /**
+     * 电视排行榜的分页会话。
+     *
+     * 同一个榜单可能被首页、排行榜页签和随机荐剧同时消费，各自的分页进度不能互相覆盖，
+     * 因此游标按会话隔离：调用方自己持有 [RankSession]，翻页时传回来即可。
+     */
+    class RankSession internal constructor(var board: RankBoard) {
+        internal var cursor: MobileRankCursor? = null
+        /** 已加载条数：名次按累计顺序编号，跨页连续。 */
+        internal var offset: Int = 0
+        /** 丢弃当前游标，下次请求从第 1 页重新建立会话。 */
+        fun reset() { cursor = null; offset = 0 }
     }
+
+    /**
+     * 为某榜单开一份独立的分页会话。会话只服务构造时指定的榜单：
+     * 同一个会话对象被换成别的榜单时自动重开，避免把 A 榜的游标用到 B 榜上。
+     */
+    fun rankSession(board: RankBoard): RankSession = RankSession(board)
+
+    /**
+     * 电视排行榜的一页。
+     *
+     * 官方接口不按页码翻页，进度由 [session] 上的游标决定：
+     * - 传 `page == 1` 或首次使用该会话，从第 1 页重新建立；
+     * - 传 `page > 1` 沿会话游标续页；会话没有游标时同样从第 1 页起。
+     */
+    @Synchronized
+    open fun ranking(board: RankBoard, page: Int = 1, session: RankSession? = null): CatalogPage {
+        require(page in 1..100)
+        val state = session ?: rankDefaultSessions.getOrPut(board) { RankSession(board) }
+        // 会话绑定的榜单与本次请求不一致说明调用方换榜了，旧游标不能沿用。
+        if (state.board != board || page == 1) { state.reset(); state.board = board }
+        val cursor = state.cursor
+        val values = linkedMapOf("cell_id" to RANK_CELL_ID, "tab_type" to "26",
+            "selected_items" to board.contentId, "offset" to (cursor?.offset ?: 0).toString(),
+            "limit" to "0", "client_req_type" to "2", "client_template" to "2",
+            "unlimited_selector_change_type" to if (cursor == null) "1" else "2",
+            "user_is_login" to "0")
+        cursor?.boardId?.takeIf { it.isNotBlank() }?.let { values["sub_selected_items"] = it }
+        if (cursor != null) {
+            if (cursor.seen.isNotEmpty()) values["filter_ids"] = cursor.seen.joinToString(",")
+            if (cursor.sessionId.isNotBlank()) values["session_id"] = cursor.sessionId
+        }
+        val root = catalogJson("$API/reading/bookapi/bookmall/cell/change/v1/", values)
+        val slice = ComicRank.parse(root, board, cursor, state.offset)
+        state.offset += slice.page.items.size
+        state.cursor = slice.next
+        return slice.page
+    }
+
+    /** 未显式传会话时的默认会话，供只取单页的调用方使用。 */
+    private val rankDefaultSessions = mutableMapOf<RankBoard, RankSession>()
+
     /** 与第三方参考 iOS 客户端的 Discover 对齐：首屏合并频道预加载和首批猜你喜欢，之后沿游标加载。 */
     open fun recommendations(cursor: RecommendationCursor? = null): RecommendationPage {
         require(cursor == null || (cursor.cellId.isNotBlank() && cursor.sessionId.isNotBlank() &&
@@ -231,9 +283,9 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     private fun catalogJson(url: String, values: Map<String, String>): JSONObject {
         val signed = signer.signCatalog(url, values)
         val raw = text(signed.url, signed)
-        val root = runCatching { JSONObject(raw) }.getOrElse { throw IOException("推荐接口数据格式异常", it) }
+        val root = runCatching { JSONObject(raw) }.getOrElse { throw IOException("内容接口数据格式异常", it) }
         val code = root.str("code")
-        if (code.isNotBlank() && code != "0") throw IOException("推荐接口返回错误（code=$code）")
+        if (code.isNotBlank() && code != "0") throw IOException("内容接口返回错误（code=$code）")
         return root
     }
 
@@ -269,13 +321,13 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return MobileDiscoveryParser.hot(catalogJson("$API/reading/bookapi/plan/v1/", values))
     }
 
-    /** 手机榜单使用官方动态目录；电视仍保留原有网站三类热播榜。 */
+    /** 手机榜单使用官方动态目录，可选内容类型与子榜由服务端返回。 */
     open fun mobileRanking(contentId: String = "", boardId: String = "", cursor: MobileRankCursor? = null): MobileRankPage {
         require(cursor == null || ((contentId.isBlank() || cursor.contentId == contentId) &&
             (boardId.isBlank() || cursor.boardId == boardId) && cursor.offset > 0 && cursor.seen.size <= 2000)) { "榜单游标已过期，请下拉刷新" }
         val content = cursor?.contentId ?: contentId.ifBlank { "all" }
         val board = cursor?.boardId ?: boardId
-        val values = linkedMapOf("cell_id" to "7470092475068071998", "tab_type" to "26", "selected_items" to content,
+        val values = linkedMapOf("cell_id" to RANK_CELL_ID, "tab_type" to "26", "selected_items" to content,
             "offset" to (cursor?.offset ?: 0).toString(), "limit" to "0", "client_req_type" to "2",
             "client_template" to "2", "unlimited_selector_change_type" to if (cursor == null) "1" else "2",
             "user_is_login" to "0")

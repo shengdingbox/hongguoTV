@@ -250,13 +250,6 @@ object PortraitUi {
             var cover = ""
         }
 
-        override fun onViewAttachedToWindow(holder: RecyclerView.ViewHolder) {
-            super.onViewAttachedToWindow(holder)
-            if (holder is Holder) {
-                loadCover(holder.card.image, holder.cover)
-            }
-        }
-
         override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
             if (holder is Holder) {
                 activity.recyclePhoneCover(holder.card.image)
@@ -319,6 +312,7 @@ object PortraitUi {
                 }
                 card.rank.background = PortraitStyle.shape(activity, color, radius = 6)
             }
+            // 图片请求只在绑定时更新，临时重新挂载沿用 Glide 请求，避免覆盖保留旧封面的请求。
             // 文案、收藏状态或排名变化时沿用已显示的封面；签名更新仍交给图片缓存复用。
             val cover = item.cover.ifBlank { if (sameSeries) holder.cover else "" }
             if (holder.cover != cover || card.image.drawable == null) {

@@ -18,10 +18,11 @@ class RandomRecommenderTest {
             val items = (0 until itemsPerPage).map { series((page - 1) * itemsPerPage + it + 1) }
             return CatalogPage(items, page < pagesPerGenre)
         }
-        override fun ranking(board: RankBoard, page: Int): CatalogPage {
+        override fun ranking(board: RankBoard, page: Int, session: ContentRepository.RankSession?): CatalogPage {
             val items = (0 until itemsPerPage).map { series(1000 + (page - 1) * itemsPerPage + it + 1) }
             return CatalogPage(items, page < 3)
         }
+
         override fun genres(type: ContentType): List<Genre> = genreList
     }
 

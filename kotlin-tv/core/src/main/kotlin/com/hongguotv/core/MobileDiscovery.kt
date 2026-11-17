@@ -60,16 +60,20 @@ internal object MobileDiscoveryParser {
         return HotSearchPage(guesses.distinctBy { it.series.id }, boards.distinctBy { it.name })
     }
 
-    fun rank(root: JSONObject, requestedContent: String, requestedBoard: String, previous: MobileRankCursor?): MobileRankPage {
-        val data = root.optJSONObject("data") ?: throw IOException("排行榜数据暂不可用")
-        val cell = data.optJSONObject("cell_view") ?: throw IOException("排行榜目录暂不可用")
-        val contents = cell.optJSONObject("cell_selector")?.optJSONObject("outer_row")?.optJSONArray("items")?.objects().orEmpty().mapNotNull { item ->
+    /** 榜单目录：内容类型与各自的子榜。演员榜列的是人而不是剧，故不纳入。 */
+    internal fun rankContents(cell: JSONObject): List<MobileRankContent> =
+        cell.optJSONObject("cell_selector")?.optJSONObject("outer_row")?.optJSONArray("items")?.objects().orEmpty().mapNotNull { item ->
             val id = item.str("selector_item_id")
             val boards = item.optJSONObject("sub_cell_selector")?.optJSONObject("outer_row")?.optJSONArray("items")?.objects().orEmpty()
                 .mapNotNull { b -> b.str("selector_item_id").takeIf { it.isNotBlank() }?.let { MobileRankBoard(it, b.str("show_name"), b.optBoolean("is_selected")) } }
             if (id.isBlank() || boards.isEmpty() || item.str("show_name").contains("演员")) null
             else MobileRankContent(id, item.str("show_name"), item.optBoolean("is_selected"), boards)
         }
+
+    fun rank(root: JSONObject, requestedContent: String, requestedBoard: String, previous: MobileRankCursor?): MobileRankPage {
+        val data = root.optJSONObject("data") ?: throw IOException("排行榜数据暂不可用")
+        val cell = data.optJSONObject("cell_view") ?: throw IOException("排行榜目录暂不可用")
+        val contents = rankContents(cell)
         val selectedContent = contents.firstOrNull { it.selected }
             ?: contents.firstOrNull { it.id == requestedContent } ?: contents.firstOrNull()
         val content = selectedContent?.id ?: requestedContent.ifBlank { "all" }

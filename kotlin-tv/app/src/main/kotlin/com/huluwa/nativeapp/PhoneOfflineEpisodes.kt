@@ -33,7 +33,7 @@ class PhoneOfflineEpisodes private constructor(
         previousIndex >= 0 && detail.episodes[previousIndex] in cached -> previousIndex
         else -> null
     } ?: detail.episodes.indexOfFirst { it in cached }.coerceAtLeast(0)
-    private val pageSize = 60
+    private val pageSize = if (selecting) 60 else 200
     private var pageIndex = if (selecting) detail.episodes.indexOfFirst { it in selected }.coerceAtLeast(0) / pageSize else resumeIndex / pageSize
     private var columns = 6
     private val cells = linkedMapOf<Int, LinearLayout>()

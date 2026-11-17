@@ -69,12 +69,11 @@ class PhoneSettings(private val activity: MainActivity) {
         bar.addView(back, FrameLayout.LayoutParams(-2, -1, Gravity.START))
         val inlineTitle = text("设置", 17f).apply {
             setTypeface(null, Typeface.BOLD)
-            alpha = 0f
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            accessibilityHeadingCompat()
         }
         bar.addView(inlineTitle, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
         navigation.addView(bar, FrameLayout.LayoutParams(-1, dp(48), Gravity.BOTTOM))
-        val hairline = View(activity).apply { setBackgroundColor(separatorColor); alpha = 0f }
+        val hairline = View(activity).apply { setBackgroundColor(separatorColor) }
         navigation.addView(hairline, FrameLayout.LayoutParams(-1, 1, Gravity.BOTTOM))
         shell.addView(navigation, lp(-1, dp(48)))
 
@@ -85,12 +84,6 @@ class PhoneSettings(private val activity: MainActivity) {
         }
         activeScroll = scroll
         val content = PhoneUi.column(activity).apply { setPadding(dp(20), 0, dp(20), dp(24)) }
-        content.addView(text("设置", 34f).apply {
-            typeface = Typeface.create("sans-serif", Typeface.BOLD)
-            letterSpacing = -.025f
-            setPadding(0, dp(4), 0, dp(20))
-            accessibilityHeadingCompat()
-        }, lp())
         accountCard(content)
         signingSection(content)
         playbackSection(content)
@@ -103,11 +96,6 @@ class PhoneSettings(private val activity: MainActivity) {
         shell.addView(scroll, lp(-1, 0).apply { weight = 1f })
         root.addView(shell, FrameLayout.LayoutParams(-1, -1))
 
-        fun updateNavigation() {
-            val progress = ((scroll.scrollY - dp(24)).toFloat() / dp(32).coerceAtLeast(1)).coerceIn(0f, 1f)
-            inlineTitle.alpha = progress
-            hairline.alpha = progress
-        }
         PhoneInsets.listen(shell) { topInset, bottomInset, _ ->
             navigation.layoutParams = lp(-1, dp(48) + topInset)
             navigation.setPadding(0, topInset, 0, 0)
@@ -116,14 +104,12 @@ class PhoneSettings(private val activity: MainActivity) {
         scroll.viewTreeObserver.addOnScrollChangedListener {
             if (activeScroll === scroll) {
                 lastScrollY = scroll.scrollY
-                updateNavigation()
             }
         }
         scroll.post {
             if (activeScroll === scroll) {
                 scroll.scrollTo(0, restoreY)
                 lastScrollY = scroll.scrollY
-                updateNavigation()
             }
         }
     }

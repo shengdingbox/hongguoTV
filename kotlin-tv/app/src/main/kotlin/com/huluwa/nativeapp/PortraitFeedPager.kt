@@ -22,6 +22,8 @@ class PortraitFeedPager(
     private val selected: () -> String,
     private val select: (String) -> Unit,
     private val updateTabs: (String) -> Unit,
+    private val loading: () -> Boolean,
+    private val refresh: () -> Unit,
     private val buildPage: (String, PortraitListPage) -> (() -> Unit),
 ) : FrameLayout(activity), NestedScrollingParent3 {
     private val titleView = PortraitUi.pageTitle(activity, title)
@@ -52,7 +54,7 @@ class PortraitFeedPager(
     val position get() = headerOffset + (currentPage?.scroll?.position ?: 0)
     private val scrollListener = ViewTreeObserver.OnScrollChangedListener { onPositionChanged?.invoke(position) }
 
-    private class Page(val scroll: PortraitListPage, val update: () -> Unit)
+    private class Page(val scroll: PortraitListPage, val refresh: PortraitUi.RefreshLayout, val update: () -> Unit)
     private class Holder(val container: FrameLayout) : RecyclerView.ViewHolder(container) {
         var key: String? = null
         var page: Page? = null
@@ -88,11 +90,17 @@ class PortraitFeedPager(
                 onPositionChanged = { this@PortraitFeedPager.onPositionChanged?.invoke(this@PortraitFeedPager.position) }
             }
             val update = buildPage(key, scroll)
-            val page = Page(scroll, update)
+            // 每个分页独立包住下拉刷新，嵌套滚动直接到达，转圈动画不再受外层分页影响。
+            val refreshLayout = PortraitUi.RefreshLayout(activity, scroll, {
+                if (isCurrent(key)) refresh()
+            }).apply {
+                setOnChildScrollUpCallback { _, _ -> collapsed > 0 || scroll.canScrollVertically(-1) }
+            }
+            val page = Page(scroll, refreshLayout, update)
             holder.key = key
             holder.page = page
             pages[key] = page
-            holder.container.addView(scroll, LayoutParams(-1, -1))
+            holder.container.addView(refreshLayout, LayoutParams(-1, -1))
             updatePage(key, page)
             positions[key]?.let { y -> scroll.post { if (pages[key] === page) scroll.restorePosition(y) } }
         }
@@ -171,12 +179,12 @@ class PortraitFeedPager(
 
     private fun updatePage(key: String, page: Page) {
         page.update()
+        page.refresh.isEnabled = isCurrent(key)
+        page.refresh.updateLoading(key == selected() && loading())
     }
 
     private fun updatePages() { pages.toMap().forEach { (key, page) -> updatePage(key, page) } }
-
-    /** 外层刷新容器据此判断当前分页是否已回到顶部。 */
-    val canScrollUp get() = collapsed > 0 || currentPage?.scroll?.canScrollVertically(-1) != false
+    fun finishRefresh() { pages.values.forEach { it.refresh.finishRefresh() } }
 
     /** 标题收起距离独立恢复，不能从列表滚动条的估算偏移反推。冷启动仍展开标题。 */
     fun restorePosition(y: Int, headerOffset: Int = 0, expandTitle: Boolean = false) {
@@ -192,6 +200,7 @@ class PortraitFeedPager(
     }
     override fun onDetachedFromWindow() {
         viewTreeObserver.removeOnScrollChangedListener(scrollListener)
+        finishRefresh()
         super.onDetachedFromWindow()
     }
 

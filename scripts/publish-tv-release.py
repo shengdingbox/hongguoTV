@@ -232,20 +232,36 @@ def release_notes(metadata, notes):
         f"- 最低系统：Android API {metadata['minSdk']}",
         f"- APK SHA-256：`{metadata['sha256']}`",
         "",
-        "APK 来自打包服务器已成功完成的签名构建。附件包含构建信息和 SHA256SUMS 校验文件。",
+        "请在本 Release 的 Assets 中下载 APK；同时提供 build-info.json 和 SHA256SUMS 校验文件。",
+        "APK 来自打包服务器已成功完成的签名构建。",
     ]
     return "\n".join(details)
 
 
+def list_release_assets(github, release_id):
+    assets = []
+    page = 1
+    while True:
+        batch = github.request("GET", f"/releases/{release_id}/assets?per_page=100&page={page}")
+        assets.extend(batch)
+        if len(batch) < 100:
+            return assets
+        page += 1
+
+
+def asset_matches(asset, path):
+    if not asset or asset.get("state") != "uploaded" or asset.get("size") != path.stat().st_size:
+        return False
+    server_digest = asset.get("digest")
+    return not server_digest or server_digest == "sha256:" + digest(path)
+
+
 def recover_upload(github, release_id, path):
     """Reuse a completed upload or remove its incomplete server-side placeholder."""
-    assets = github.request("GET", f"/releases/{release_id}/assets?per_page=100")
-    for asset in assets:
+    for asset in list_release_assets(github, release_id):
         if asset["name"] != path.name:
             continue
-        server_digest = asset.get("digest")
-        if (asset.get("state") == "uploaded" and asset.get("size") == path.stat().st_size
-                and (not server_digest or server_digest == "sha256:" + digest(path))):
+        if asset_matches(asset, path):
             return asset
         github.request("DELETE", f"/releases/assets/{asset['id']}", missing_ok=True)
     return None
@@ -253,15 +269,14 @@ def recover_upload(github, release_id, path):
 
 def publish(github, assets, metadata, notes, dry_run=False):
     tag = f"build-v{metadata['versionName']}-{metadata['versionCode']}"
+    if not any(path.name == metadata["artifactName"] for path in assets):
+        raise ReleaseError("发布附件中缺少本次构建的 APK，已停止发布。")
     print("检查 GitHub 源码提交与发布标签……", flush=True)
     # Fail before creating anything when the build commit has not reached GitHub.
     if github.request("GET", "/commits/" + metadata["commit"], missing_ok=True) is None:
         raise ReleaseError("APK 对应的源码提交尚未同步到 GitHub，请先推送该提交。")
     check_tag(github, tag, metadata["commit"])
     release = find_release(github, tag)
-    if release and not release["draft"]:
-        print(f"该构建已发布：{release['html_url']}")
-        return tag, release["html_url"]
     fields = {
         "tag_name": tag,
         "target_commitish": metadata["commit"],
@@ -271,56 +286,79 @@ def publish(github, assets, metadata, notes, dry_run=False):
         "prerelease": False,
     }
     if dry_run:
+        old_assets = {
+            item["name"]: item for item in list_release_assets(github, release["id"])
+        } if release else {}
         print("检查 GitHub 附件上传主机连接……", flush=True)
         github.request("HEAD", "https://uploads.github.com/", missing_ok=True)
-        print(f"模拟{'更新' if release else '创建'} Release 草稿：{tag}", flush=True)
+        if release and not release["draft"]:
+            print(f"模拟补齐已发布 Release 的 Assets：{release['html_url']}", flush=True)
+        else:
+            print(f"模拟{'更新' if release else '创建'} Release 草稿：{tag}", flush=True)
         for path in assets:
-            print(f"模拟上传：{path.name}（{path.stat().st_size} 字节，"
-                  f"SHA-256：{digest(path)}）", flush=True)
-        print(f"模拟正式发布 Release 并设为 Latest（缺少标签 {tag} 时由 GitHub 自动创建）。", flush=True)
+            if asset_matches(old_assets.get(path.name), path):
+                print(f"Assets 已有完整附件，保留：{path.name}", flush=True)
+            else:
+                print(f"模拟上传到 Assets：{path.name}（{path.stat().st_size} 字节，"
+                      f"SHA-256：{digest(path)}）", flush=True)
+        if not release or release["draft"]:
+            print(f"模拟正式发布 Release 并设为 Latest（缺少标签 {tag} 时由 GitHub 自动创建）。", flush=True)
         return tag, None
-    print(f"准备 Release 草稿：{tag}", flush=True)
     if release:
-        release = github.request("PATCH", f"/releases/{release['id']}", fields)
+        if release["draft"]:
+            release = github.request("PATCH", f"/releases/{release['id']}", fields)
     else:
+        print(f"创建 Release 草稿：{tag}", flush=True)
         release = github.request(
             "POST", "/releases", fields,
             recover=lambda: find_release(github, tag),
         )
-        if not release["draft"]:
-            print(f"该构建已发布：{release['html_url']}")
-            return tag, release["html_url"]
-    draft_url = release["html_url"]
-    print(f"Release 草稿：{draft_url}", flush=True)
+    release_url = release["html_url"]
+    is_draft = release["draft"]
+    print(f"{'Release 草稿' if is_draft else '补齐已发布 Release 的 Assets'}：{release_url}", flush=True)
     try:
         old_assets = {
-            item["name"]: item for item in github.request("GET", f"/releases/{release['id']}/assets?per_page=100")
+            item["name"]: item for item in list_release_assets(github, release["id"])
         }
         upload_url = release["upload_url"].split("{", 1)[0]
         for path in assets:
-            print(f"上传附件：{path.name}（{path.stat().st_size} 字节）", flush=True)
-            if path.name in old_assets:
-                github.request("DELETE", f"/releases/assets/{old_assets[path.name]['id']}", missing_ok=True)
+            existing = old_assets.get(path.name)
+            if asset_matches(existing, path):
+                print(f"Assets 已有完整附件，保留：{path.name}", flush=True)
+                continue
+            print(f"上传到 Assets：{path.name}（{path.stat().st_size} 字节）", flush=True)
+            if existing:
+                github.request("DELETE", f"/releases/assets/{existing['id']}", missing_ok=True)
             url = upload_url + "?" + urllib.parse.urlencode({"name": path.name})
+            content_type = "application/vnd.android.package-archive" if path.suffix == ".apk" else "application/octet-stream"
             uploaded = github.request(
-                "POST", url, path.read_bytes(), "application/octet-stream",
+                "POST", url, path.read_bytes(), content_type,
                 recover=lambda: recover_upload(github, release["id"], path),
             )
-            if uploaded.get("state") != "uploaded" or uploaded.get("size") != path.stat().st_size:
-                raise ReleaseError(f"附件 {path.name} 上传未完成。")
-            server_digest = uploaded.get("digest")
-            if server_digest and server_digest != "sha256:" + digest(path):
-                raise ReleaseError(f"附件 {path.name} 上传校验失败。")
-            print(f"已上传：{path.name}", flush=True)
-        print("附件上传完成，正在正式发布 Release 并设为 Latest……", flush=True)
-        published = github.request("PATCH", f"/releases/{release['id']}", {"draft": False, "make_latest": "true"})
-        if published.get("draft", True):
-            raise ReleaseError("GitHub 返回的 Release 仍为草稿。")
+            if not asset_matches(uploaded, path):
+                raise ReleaseError(f"附件 {path.name} 上传未完成或校验失败。")
+            print(f"已上传到 Assets：{path.name}", flush=True)
+        # Also check existing published Releases: an empty Release must never be
+        # treated as complete simply because its tag already has a Release.
+        uploaded_assets = {
+            item["name"]: item for item in list_release_assets(github, release["id"])
+        }
+        missing = [path.name for path in assets if not asset_matches(uploaded_assets.get(path.name), path)]
+        if missing:
+            raise ReleaseError("Release 的 Assets 中缺少完整附件：" + "、".join(missing))
+        if is_draft:
+            print("APK 和配套附件已上传到 Assets，正在正式发布 Release 并设为 Latest……", flush=True)
+            published = github.request("PATCH", f"/releases/{release['id']}", {"draft": False, "make_latest": "true"})
+            if published.get("draft", True):
+                raise ReleaseError("GitHub 返回的 Release 仍为草稿。")
+            release_url = published["html_url"]
     except (ReleaseError, OSError) as error:
         raise ReleaseError(
-            f"{error}\nRelease 尚未确认发布完成：{draft_url}。重新执行脚本可继续发布。"
+            f"{error}\nRelease 尚未确认附件齐全并发布完成：{release_url}。重新执行脚本可继续补传。"
         ) from None
-    return tag, published["html_url"]
+    apk = uploaded_assets[metadata["artifactName"]]
+    print(f"APK 下载地址：{apk['browser_download_url']}", flush=True)
+    return tag, release_url
 
 
 def main():

@@ -13,7 +13,9 @@ usage() {
 用法：bash scripts/publish-tv-release.sh [--local] [发布参数]
 
 默认连接 Debian 打包服务器，创建包含最新成功构建 APK 的正式 GitHub Release，并设为 Latest。
+APK 会上传到 Release 的 Assets，同时附带 build-info.json 和 SHA256SUMS。
 发布流程为创建 Release 草稿、上传附件、正式发布；所需 tag 由 GitHub 随发布自动创建。
+重复执行会补齐已有 Release 缺失的附件，已上传完整的文件会保留。
 GitHub 认证复用本机 GH_TOKEN / GITHUB_TOKEN 或已保存的 GitHub Git 凭据。
 
   --local           已在 Debian 打包机上时使用，直接读取本机构建产物

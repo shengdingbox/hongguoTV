@@ -84,6 +84,8 @@ class MainActivity: Activity() {
     private var activityInitialized=false
     private val main=Handler(Looper.getMainLooper())
     private val io=Executors.newFixedThreadPool(3)
+    /** 焦点触发封面重载的防抖 tag 键（View.setTag 用），避免使用 R.id 与 Glide 冲突。 */
+    private val focusReloadTagKey = 0x7f0e0001
     // 页面请求独占线程，不排在随机推荐补池、云同步等后台任务之后。
     private val pageIo=Executors.newFixedThreadPool(1)
     // 联想独立于云同步等后台任务；新输入会取消旧请求并清掉队列。
@@ -2089,7 +2091,21 @@ class MainActivity: Activity() {
             card.setOnLongClickListener { catalogFocus=item.id; quickActions(item,card); true }
             card.setOnKeyListener { _,key,event -> if(key==KeyEvent.KEYCODE_MENU) { if(event.action==KeyEvent.ACTION_UP) { catalogFocus=item.id; quickActions(item,card) }; true } else false }
             card.background=TvVisual.card(this@MainActivity,card.hasFocus(),managePicked)
-            card.setOnFocusChangeListener { _,focused -> card.background=TvVisual.card(this@MainActivity,focused,managePicked); if(focused) { catalogFocus=item.id; loadCover(holder.image,item.cover); selectionPreview?.show(item,selectionStatus(item)) } }
+            card.setOnFocusChangeListener { _,focused ->
+                card.background=TvVisual.card(this@MainActivity,focused,managePicked)
+                if(focused) {
+                    catalogFocus=item.id
+                    // 焦点抖动（进出详情、跨卡片快速滑动）会反复触发 loadCover；
+                    // 相同 identity 在 300ms 内不重复发起请求，彻底阻断 Glide 重新 into(view)。
+                    val now=android.os.SystemClock.uptimeMillis()
+                    val last=holder.image.getTag(focusReloadTagKey) as? Long ?: 0L
+                    if(now-last>=300L) {
+                        holder.image.setTag(focusReloadTagKey,now)
+                        loadCover(holder.image,item.cover)
+                    }
+                    selectionPreview?.show(item,selectionStatus(item))
+                }
+            }
             // 高级搜索下 searchInput 未挂载但非空，会让 Elvis 链提前命中导致 ↑ 回不到筛选面板，故面板分支必须放最前
             card.nextFocusUpId=if(di<cols) (if(tab==1 && advancedSearch) filterRows.lastOrNull()?.firstOrNull()?.id else null) ?: suggestFirst?.id ?: historyFirst?.id ?: azLastRow.firstOrNull()?.id ?: searchInput?.id ?: collectionBack?.id ?: genreClear?.id ?: typeButtons[library.contentType]?.id ?: rankSwitch?.id ?: rankRefresh?.id ?: favoriteSelectAll?.id ?: favoriteSortFirst?.id ?: favoriteFilterFirst?.id ?: favoriteCheck?.id ?: historySync?.id ?: historyManage?.id ?: nav[tab].id else View.NO_ID
             if(di>=displayed.size-12) catalogRecycler?.post { maybeLoadMore() }

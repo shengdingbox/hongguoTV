@@ -27,9 +27,18 @@ class GlideArtwork(private val context: Context) {
         if (url.isBlank()) { clear(view); return }
         val identity = identity(url)
         val previous = bound[view]
-        if (previous == identity && (keepCurrentImage || view.drawable != null) && isSameRequestComplete(view)) {
+        val showing = view.drawable
+        if (previous == identity && (keepCurrentImage || showing != null) && isSameRequestComplete(view)) {
             // 文案变化或 CDN 签名轮换都不重新绑定已显示的相同封面。
             // 加载中或失败的请求不跳过，前者继续加载，后者仍可按原路径重试。
+            return
+        }
+        if (previous == identity && showing != null) {
+            // 同一封面仍在加载或上次失败：直接重试，绝不让 Glide 清空当前显示。
+            // 焦点抖动、DiffUtil 局部刷新、签名轮换后重绑都会命中这里。
+            val retry = coverRequest(requests, url, priority)
+            retry.placeholder(showing)
+            retry.into(view)
             return
         }
         bound[view] = identity
@@ -41,9 +50,10 @@ class GlideArtwork(private val context: Context) {
             val height = view.height - view.paddingTop - view.paddingBottom
             if (width > 0 && height > 0) retained.override(width, height)
             request.thumbnail(retained)
-        } else if (keepCurrentImage && previous == null && view.drawable != null) {
-            // 共享动画提供的是独立快照，可以作为 Glide 请求的占位图。
-            request.placeholder(view.drawable)
+        } else if (showing != null) {
+            // 任何已有显示都要保住：共享动画快照、上一张封面、placeholder 一律作为新图的就位前占位，
+            // 防止 into(view) 默认 clear 造成的瞬时白屏。
+            request.placeholder(showing)
         }
         request.into(view)
     }

@@ -184,17 +184,13 @@ def prepare_assets(directory, result, output):
     return [apk, info, sums], metadata
 
 
-def ensure_tag(github, tag, commit, dry_run=False):
+def check_tag(github, tag, commit):
     reference = "/git/ref/tags/" + urllib.parse.quote(tag, safe="")
     existing = github.request("GET", reference, missing_ok=True)
     if existing is None:
-        if dry_run:
-            print(f"模拟创建标签：{tag} → {commit}", flush=True)
-            return
-        existing = github.request(
-            "POST", "/git/refs", {"ref": f"refs/tags/{tag}", "sha": commit},
-            recover=lambda: github.request("GET", reference, missing_ok=True),
-        )
+        # GitHub creates a missing tag from target_commitish when publishing the
+        # Release. Do not leave a standalone tag if creating the draft fails.
+        return
     target = existing["object"]
     for _ in range(10):
         if target["type"] != "tag":
@@ -202,6 +198,25 @@ def ensure_tag(github, tag, commit, dry_run=False):
         target = github.request("GET", "/git/tags/" + target["sha"])["object"]
     if target["type"] != "commit" or target["sha"] != commit:
         raise ReleaseError(f"标签 {tag} 已指向其他提交，已停止发布。")
+
+
+def find_release(github, tag):
+    release = github.request(
+        "GET", "/releases/tags/" + urllib.parse.quote(tag, safe=""), missing_ok=True,
+    )
+    if release is not None:
+        return release
+    # The tag endpoint only returns published Releases. Authenticated listing
+    # also includes drafts, which must be reused after an interrupted publish.
+    page = 1
+    while True:
+        releases = github.request("GET", f"/releases?per_page=100&page={page}")
+        for release in releases:
+            if release["tag_name"] == tag:
+                return release
+        if len(releases) < 100:
+            return None
+        page += 1
 
 
 def release_notes(metadata, notes):
@@ -242,8 +257,8 @@ def publish(github, assets, metadata, notes, dry_run=False):
     # Fail before creating anything when the build commit has not reached GitHub.
     if github.request("GET", "/commits/" + metadata["commit"], missing_ok=True) is None:
         raise ReleaseError("APK 对应的源码提交尚未同步到 GitHub，请先推送该提交。")
-    ensure_tag(github, tag, metadata["commit"], dry_run=dry_run)
-    release = github.request("GET", "/releases/tags/" + urllib.parse.quote(tag, safe=""), missing_ok=True)
+    check_tag(github, tag, metadata["commit"])
+    release = find_release(github, tag)
     if release and not release["draft"]:
         print(f"该构建已发布：{release['html_url']}")
         return tag, release["html_url"]
@@ -262,7 +277,7 @@ def publish(github, assets, metadata, notes, dry_run=False):
         for path in assets:
             print(f"模拟上传：{path.name}（{path.stat().st_size} 字节，"
                   f"SHA-256：{digest(path)}）", flush=True)
-        print("模拟将草稿发布为 Latest。", flush=True)
+        print(f"模拟正式发布 Release 并设为 Latest（缺少标签 {tag} 时由 GitHub 自动创建）。", flush=True)
         return tag, None
     print(f"准备 Release 草稿：{tag}", flush=True)
     if release:
@@ -270,34 +285,41 @@ def publish(github, assets, metadata, notes, dry_run=False):
     else:
         release = github.request(
             "POST", "/releases", fields,
-            recover=lambda: github.request(
-                "GET", "/releases/tags/" + urllib.parse.quote(tag, safe=""), missing_ok=True,
-            ),
+            recover=lambda: find_release(github, tag),
         )
         if not release["draft"]:
             print(f"该构建已发布：{release['html_url']}")
             return tag, release["html_url"]
-    old_assets = {
-        item["name"]: item for item in github.request("GET", f"/releases/{release['id']}/assets?per_page=100")
-    }
-    upload_url = release["upload_url"].split("{", 1)[0]
-    for path in assets:
-        print(f"上传附件：{path.name}（{path.stat().st_size} 字节）", flush=True)
-        if path.name in old_assets:
-            github.request("DELETE", f"/releases/assets/{old_assets[path.name]['id']}", missing_ok=True)
-        url = upload_url + "?" + urllib.parse.urlencode({"name": path.name})
-        uploaded = github.request(
-            "POST", url, path.read_bytes(), "application/octet-stream",
-            recover=lambda: recover_upload(github, release["id"], path),
-        )
-        if uploaded.get("state") != "uploaded" or uploaded.get("size") != path.stat().st_size:
-            raise ReleaseError(f"附件 {path.name} 上传未完成，Release 已保留为草稿。")
-        server_digest = uploaded.get("digest")
-        if server_digest and server_digest != "sha256:" + digest(path):
-            raise ReleaseError(f"附件 {path.name} 上传校验失败，Release 已保留为草稿。")
-        print(f"已上传：{path.name}", flush=True)
-    print("附件上传完成，正在发布 Release……", flush=True)
-    published = github.request("PATCH", f"/releases/{release['id']}", {"draft": False, "make_latest": "true"})
+    draft_url = release["html_url"]
+    print(f"Release 草稿：{draft_url}", flush=True)
+    try:
+        old_assets = {
+            item["name"]: item for item in github.request("GET", f"/releases/{release['id']}/assets?per_page=100")
+        }
+        upload_url = release["upload_url"].split("{", 1)[0]
+        for path in assets:
+            print(f"上传附件：{path.name}（{path.stat().st_size} 字节）", flush=True)
+            if path.name in old_assets:
+                github.request("DELETE", f"/releases/assets/{old_assets[path.name]['id']}", missing_ok=True)
+            url = upload_url + "?" + urllib.parse.urlencode({"name": path.name})
+            uploaded = github.request(
+                "POST", url, path.read_bytes(), "application/octet-stream",
+                recover=lambda: recover_upload(github, release["id"], path),
+            )
+            if uploaded.get("state") != "uploaded" or uploaded.get("size") != path.stat().st_size:
+                raise ReleaseError(f"附件 {path.name} 上传未完成。")
+            server_digest = uploaded.get("digest")
+            if server_digest and server_digest != "sha256:" + digest(path):
+                raise ReleaseError(f"附件 {path.name} 上传校验失败。")
+            print(f"已上传：{path.name}", flush=True)
+        print("附件上传完成，正在正式发布 Release 并设为 Latest……", flush=True)
+        published = github.request("PATCH", f"/releases/{release['id']}", {"draft": False, "make_latest": "true"})
+        if published.get("draft", True):
+            raise ReleaseError("GitHub 返回的 Release 仍为草稿。")
+    except (ReleaseError, OSError) as error:
+        raise ReleaseError(
+            f"{error}\nRelease 尚未确认发布完成：{draft_url}。重新执行脚本可继续发布。"
+        ) from None
     return tag, published["html_url"]
 
 

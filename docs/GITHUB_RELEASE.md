@@ -16,9 +16,9 @@ bash scripts/publish-tv-release.sh
 
 工作流直接读取已完成的 APK，不重新编译或修改签名。打包服务目前只生成 Android 8.0+ 包；只有实际构建了其他最低系统版本时，才会发布相应安装包。
 
-发布标签为 `build-v<versionName>-<versionCode>`，指向该 APK 构建记录中的完整源码提交，而非运行工作流时的最新源码。对应提交须已同步到 GitHub。Release 附件包括 APK、`build-info.json` 和 `SHA256SUMS`。APK 的大小和 SHA-256 必须与构建记录一致，所有附件上传成功后才会将草稿发布为 Latest。
+脚本创建的是正式 GitHub Release：先创建草稿、上传 APK、`build-info.json` 和 `SHA256SUMS`，所有附件上传成功后再正式发布并设为 Latest。APK 的大小和 SHA-256 必须与构建记录一致。Release 使用 `build-v<versionName>-<versionCode>` 标签，指向该 APK 构建记录中的完整源码提交，而非运行脚本或工作流时的最新源码。对应提交须已同步到 GitHub；已有标签必须指向同一提交，缺少标签时由 GitHub 在发布 Release 时自动生成，脚本不再提前单独创建 tag。
 
-重复运行已发布的构建会返回原 Release；上传失败时保留草稿，重新运行可继续上传。遇到连接重置、超时或 GitHub 临时服务错误时，每个请求最多尝试 4 次，重试间隔依次为 2、4、8 秒。创建标签、草稿或上传附件的响应中断后，会先查询 GitHub 上的状态，复用已完成的结果，并清理未完成的附件后补传。
+重复运行已发布的构建会返回原 Release；之前只有 tag 时会为其创建 Release。脚本会输出草稿链接，上传失败时保留草稿，重新运行会通过 Release 列表查找并复用同名草稿，继续发布。遇到连接重置、超时或 GitHub 临时服务错误时，每个请求最多尝试 4 次，重试间隔依次为 2、4、8 秒。创建草稿或上传附件的响应中断后，会先查询 GitHub 上的状态，复用已完成的结果，并清理未完成的附件后补传。
 
 ## Shell 一键发布
 

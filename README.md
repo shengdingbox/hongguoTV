@@ -91,6 +91,8 @@ adb install -r APK文件路径
 ./kotlin-tv/gradlew -p kotlin-tv -PHONGGUOTV_MIN_SDK=21 :app:assembleDebug
 ```
 
+发布包只保留普通 MP4 与分片 MP4 提取器。Glide 4.16.0 的默认组件注册由 R8 规则移除，静态封面所需的网络、解码及磁盘缓存组件在 `ArtworkGlideModule` 中显式注册；升级 Glide 时需同步维护该模块与 `app/proguard-rules.pro` 中的方法签名。
+
 正式包由维护者的打包服务器构建并签名，开发包与正式包签名不同，不能直接互相覆盖安装。在仓库根目录执行以下命令，即可将 Debian 打包服务器上最新成功的 APK 发布到 GitHub Release：
 
 ```bash

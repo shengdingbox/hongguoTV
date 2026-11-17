@@ -9,8 +9,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MediaSource
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
 import com.hongguotv.core.RemoteVideo
 
@@ -40,6 +40,7 @@ internal class EpisodePlaybackSession(context: Context, private val disk: (Remot
     private var canPreload = false
     private var preloadingEnabled = false
     private var dirty = false
+    private val mediaSourceFactory = Mp4MediaSources.factory()
     private val builder = DefaultPreloadManager.Builder(context) { ranking ->
         if (!preloadingEnabled || !canPreload) null else {
             sources.values.firstOrNull { it.episode.index * 2 == ranking }?.let { source ->
@@ -49,14 +50,15 @@ internal class EpisodePlaybackSession(context: Context, private val disk: (Remot
                 )
             }
         }
-    }.setRenderersFactory(PlaybackRenderersFactory(context))
+    }.setMediaSourceFactory(mediaSourceFactory)
+        .setRenderersFactory(PlaybackRenderersFactory(context))
         .setLoadControl(DefaultLoadControl.Builder()
             .setBufferDurationsMs(if (tvPlayback) 1_500 else 10_000, if (tvPlayback) 8_000 else 25_000, 250, 750)
             .setTargetBufferBytes(targetBufferBytes)
             .setPrioritizeTimeOverSizeThresholds(!tvPlayback)
             .build())
     private val preloadManager = builder.build()
-    val player = builder.buildExoPlayer().apply {
+    val player = builder.buildExoPlayer(ExoPlayer.Builder(context, mediaSourceFactory)).apply {
         setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
         setHandleAudioBecomingNoisy(true)
@@ -134,7 +136,7 @@ internal class EpisodePlaybackSession(context: Context, private val disk: (Remot
         episode.video.setPlaybackActive(episode.id == currentId)
         val item = MediaItem.Builder().setMediaId(episode.id)
             .setUri("hongguotv://episode/${episode.id}").setMimeType(MimeTypes.VIDEO_MP4).build()
-        val mediaSource = ProgressiveMediaSource.Factory { VideoDataSource(episode.video, disk = { disk(episode.video) }) }.createMediaSource(item)
+        val mediaSource = Mp4MediaSources.factory { VideoDataSource(episode.video, disk = { disk(episode.video) }) }.createMediaSource(item)
         return Source(episode, item).also {
             sources[episode.id] = it
             preloadManager.add(mediaSource, episode.index * 2)

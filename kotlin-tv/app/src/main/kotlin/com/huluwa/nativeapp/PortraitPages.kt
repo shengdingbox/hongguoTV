@@ -100,96 +100,102 @@ class PortraitPages(
         }
     }
 
+    /** 日期栏与排行榜共用定位逻辑，重建页面时在首帧绘制前直接定位选中项。 */
+    private inner class FeedTabs(
+        private val segmented: Boolean,
+        private val dateTabs: Boolean=false,
+        private val choose: (String)->Unit,
+    ): HorizontalScrollView(activity) {
+        private val line=row().apply { setPadding(dp(16),dp(if(dateTabs) 4 else 3),dp(16),dp(10)) }
+        private var values=emptyList<Pair<String,String>>()
+        private val buttons=linkedMapOf<String,TextView>()
+        private var selected=""
+        private var pendingCenter: ViewTreeObserver.OnPreDrawListener?=null
+        private var pendingObserver: ViewTreeObserver?=null
+
+        init {
+            isHorizontalScrollBarEnabled=false
+            addView(line)
+            addOnLayoutChangeListener { _,left,_,right,_,oldLeft,_,oldRight,_ ->
+                if(right-left!=oldRight-oldLeft) centerAfterLayout(false)
+            }
+        }
+
+        private fun cancelCenter() {
+            pendingCenter?.let { listener ->
+                val observer=pendingObserver?.takeIf { it.isAlive } ?: viewTreeObserver
+                if(observer.isAlive) observer.removeOnPreDrawListener(listener)
+            }
+            pendingCenter=null; pendingObserver=null
+        }
+
+        private fun centerAfterLayout(animate: Boolean) {
+            cancelCenter()
+            val observer=viewTreeObserver
+            val listener=object: ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if(pendingCenter!==this) return true
+                    cancelCenter()
+                    val button=buttons[selected] ?: return true
+                    val viewport=width-paddingLeft-paddingRight
+                    if(viewport<=0 || button.width<=0) return true
+                    val maxScroll=(line.width-viewport).coerceAtLeast(0)
+                    val target=(line.left+button.left+button.width/2-paddingLeft-viewport/2).coerceIn(0,maxScroll)
+                    if(animate) smoothScrollTo(target,0) else scrollTo(target,0)
+                    return true
+                }
+            }
+            pendingCenter=listener; pendingObserver=observer
+            observer.addOnPreDrawListener(listener)
+            invalidate()
+        }
+
+        fun update(nextValues: List<Pair<String,String>>,nextSelected: String) {
+            val rebuilt=values!=nextValues
+            if(!rebuilt && selected==nextSelected) return
+            val animate=!rebuilt && selected.isNotEmpty() && isShown
+            if(rebuilt) {
+                values=nextValues
+                line.removeAllViews(); buttons.clear()
+                values.forEach { (key,label) ->
+                    val button=text(label,13f).apply {
+                        gravity=Gravity.CENTER
+                        setPadding(dp(if(dateTabs) 13 else 14),dp(8),dp(if(dateTabs) 13 else 14),dp(8))
+                        setOnClickListener { choose(key) }
+                    }
+                    buttons[key]=button
+                    line.addView(button,lp(-2,-2).apply { rightMargin=dp(6) })
+                }
+            }
+            selected=nextSelected
+            values.forEach { (key,label) -> buttons[key]?.apply {
+                val on=key==selected
+                setTextColor(if(on) PortraitStyle.onChipSelected else PortraitStyle.text)
+                background=PortraitStyle.selectable(activity,if(on) PortraitStyle.chipSelected else PortraitStyle.raised,radius=if(segmented) 9 else 20)
+                if(!dateTabs) setTypeface(null,if(on) Typeface.BOLD else Typeface.NORMAL)
+                isSelected=on
+                contentDescription="$label，${if(on) "已选择" else if(dateTabs) "查看新剧" else "查看榜单"}"
+            } }
+            centerAfterLayout(animate)
+        }
+
+        override fun onAttachedToWindow() {
+            super.onAttachedToWindow()
+            centerAfterLayout(false)
+        }
+
+        override fun onDetachedFromWindow() {
+            cancelCenter()
+            super.onDetachedFromWindow()
+        }
+    }
+
     fun rankPager(refresh: () -> Unit): PortraitFeedPager {
         lateinit var feed: PortraitFeedPager
         val tabs=column()
         // 两行保持各自的滚动容器，切换子榜只更新选中态，不重建类型行。
-        class RankTabs(private val segmented: Boolean,private val choose: (String)->Unit): HorizontalScrollView(activity) {
-            private val line=row().apply { setPadding(dp(16),dp(3),dp(16),dp(10)) }
-            private var values=emptyList<Pair<String,String>>()
-            private val buttons=linkedMapOf<String,TextView>()
-            private var selected=""
-            private var pendingCenter: ViewTreeObserver.OnPreDrawListener?=null
-            private var pendingObserver: ViewTreeObserver?=null
-
-            init {
-                isHorizontalScrollBarEnabled=false
-                addView(line)
-                addOnLayoutChangeListener { _,left,_,right,_,oldLeft,_,oldRight,_ ->
-                    if(right-left!=oldRight-oldLeft) centerAfterLayout(false)
-                }
-            }
-
-            private fun cancelCenter() {
-                pendingCenter?.let { listener ->
-                    val observer=pendingObserver?.takeIf { it.isAlive } ?: viewTreeObserver
-                    if(observer.isAlive) observer.removeOnPreDrawListener(listener)
-                }
-                pendingCenter=null; pendingObserver=null
-            }
-
-            private fun centerAfterLayout(animate: Boolean) {
-                cancelCenter()
-                val observer=viewTreeObserver
-                val listener=object: ViewTreeObserver.OnPreDrawListener {
-                    override fun onPreDraw(): Boolean {
-                        if(pendingCenter!==this) return true
-                        cancelCenter()
-                        val button=buttons[selected] ?: return true
-                        val viewport=width-paddingLeft-paddingRight
-                        if(viewport<=0 || button.width<=0) return true
-                        val maxScroll=(line.width-viewport).coerceAtLeast(0)
-                        val target=(line.left+button.left+button.width/2-paddingLeft-viewport/2).coerceIn(0,maxScroll)
-                        if(animate) smoothScrollTo(target,0) else scrollTo(target,0)
-                        return true
-                    }
-                }
-                pendingCenter=listener; pendingObserver=observer
-                observer.addOnPreDrawListener(listener)
-                invalidate()
-            }
-
-            fun update(nextValues: List<Pair<String,String>>,nextSelected: String) {
-                val rebuilt=values!=nextValues
-                if(!rebuilt && selected==nextSelected) return
-                val animate=!rebuilt && selected.isNotEmpty() && isShown
-                if(rebuilt) {
-                    values=nextValues
-                    line.removeAllViews(); buttons.clear()
-                    values.forEach { (key,label) ->
-                        val button=text(label,13f).apply {
-                            gravity=Gravity.CENTER
-                            setPadding(dp(14),dp(8),dp(14),dp(8))
-                            setOnClickListener { choose(key) }
-                        }
-                        buttons[key]=button
-                        line.addView(button,lp(-2,-2).apply { rightMargin=dp(6) })
-                    }
-                }
-                selected=nextSelected
-                values.forEach { (key,label) -> buttons[key]?.apply {
-                    val on=key==selected
-                    setTextColor(if(on) PortraitStyle.onChipSelected else PortraitStyle.text)
-                    background=PortraitStyle.selectable(activity,if(on) PortraitStyle.chipSelected else PortraitStyle.raised,radius=if(segmented) 9 else 20)
-                    setTypeface(null,if(on) Typeface.BOLD else Typeface.NORMAL)
-                    isSelected=on
-                    contentDescription="$label，${if(on) "已选择" else "查看榜单"}"
-                } }
-                centerAfterLayout(animate)
-            }
-
-            override fun onAttachedToWindow() {
-                super.onAttachedToWindow()
-                centerAfterLayout(false)
-            }
-
-            override fun onDetachedFromWindow() {
-                cancelCenter()
-                super.onDetachedFromWindow()
-            }
-        }
-        val contentTabs=RankTabs(true,activity::switchRankContentPhone)
-        val boardTabs=RankTabs(false) { feed.selectPage(it) }
+        val contentTabs=FeedTabs(true,choose=activity::switchRankContentPhone)
+        val boardTabs=FeedTabs(false) { feed.selectPage(it) }
         tabs.addView(contentTabs,lp())
         tabs.addView(boardTabs,lp())
         fun updateTabs(key: String) {
@@ -237,45 +243,25 @@ class PortraitPages(
     /** 每个日期持有独立列表和滚动位置，Tab 与原生分页双向联动。 */
     fun newReleasesPager(refresh: () -> Unit): PortraitFeedPager {
         lateinit var feed: PortraitFeedPager
-        val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
-        val dates = row().apply { setPadding(dp(16), dp(4), dp(16), dp(10)) }
-        strip.addView(dates)
-        var shownDates = emptyList<String>()
-        var shownSelected = ""
+        val strip = FeedTabs(false, dateTabs = true) { feed.selectPage(it) }
         fun updateDates(selectedDay: String) {
             val days = activity.newReleaseDatesPhone
-            if (shownDates == days && shownSelected == selectedDay) return
-            shownDates = days; shownSelected = selectedDay
-            dates.removeAllViews()
             val format = SimpleDateFormat("yyyyMMdd", Locale.CHINA).apply {
                 timeZone = TimeZone.getTimeZone("Asia/Shanghai")
             }
             val today = NewReleaseCalendar.today()
             val yesterday = format.format(Calendar.getInstance(format.timeZone).apply { add(Calendar.DAY_OF_MONTH, -1) }.time)
             val tomorrow = format.format(Calendar.getInstance(format.timeZone).apply { add(Calendar.DAY_OF_MONTH, 1) }.time)
-            var selectedChip: TextView? = null
-            days.forEach { key ->
-                val selected = key == selectedDay
+            val values = days.map { key ->
                 val label = when (key) {
                     today -> "今天"
                     yesterday -> "昨天"
                     tomorrow -> "明天"
                     else -> "${key.substring(4, 6).toInt()}月${key.substring(6, 8).toInt()}日"
                 }
-                val chip = text(label, 13f, if (selected) PortraitStyle.onChipSelected else PortraitStyle.text).apply {
-                    gravity = Gravity.CENTER
-                    setPadding(dp(13), dp(8), dp(13), dp(8))
-                    background = PortraitStyle.selectable(activity, if (selected) PortraitStyle.chipSelected else PortraitStyle.raised, radius = 20)
-                    isSelected = selected
-                    contentDescription = "$label，${if (selected) "已选择" else "查看新剧"}"
-                    setOnClickListener { feed.selectPage(key) }
-                }
-                dates.addView(chip, lp(-2, -2).apply { rightMargin = dp(6) })
-                if (selected) selectedChip = chip
+                key to label
             }
-            strip.post {
-                selectedChip?.let { strip.smoothScrollTo((it.left - strip.width / 2 + it.width / 2).coerceAtLeast(0), 0) }
-            }
+            strip.update(values, selectedDay)
         }
         feed = PortraitFeedPager(activity, "新剧上线", strip,
             keys = { activity.newReleaseDatesPhone },

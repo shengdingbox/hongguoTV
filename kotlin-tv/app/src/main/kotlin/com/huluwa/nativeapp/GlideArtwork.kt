@@ -3,7 +3,6 @@ package com.huluwa.nativeapp
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.widget.ImageView
 import com.bumptech.glide.Glide
@@ -25,8 +24,6 @@ class GlideArtwork(private val context: Context) {
     private val requests = Glide.with(context)
     private val identities = HashMap<String, String>()
     private val bound = WeakHashMap<ImageView, String>()
-    /** 首屏无图时的占位色：用 surface 色避免白色闪烁，与卡片底色一致。 */
-    private val emptyPlaceholder by lazy { ColorDrawable(TvStyle.surface) }
     private var closed = false
 
     fun identity(url: String): String = identities.getOrPut(url) { ArtworkUrl.identity(url) }
@@ -56,10 +53,10 @@ class GlideArtwork(private val context: Context) {
         bound[view] = identity
         RuntimeLog.add("IMG into v=$viewId id=…$short prev=${previous?.takeLast(8) ?: "null"} showing=${showing != null} keep=$keepCurrentImage")
         val request = coverRequest(requests, url, priority)
-        // 任何已有显示都用 placeholder 保住：共享动画快照、上一张封面、旧图一律在新图 ready 前显示，
-        // 防止 into(view) 默认 clear 造成的瞬时白屏；首屏 showing=null 用 surface 色占位避免白屏闪烁。
+        // 任何已有显示都用 placeholder 保住：共享动画快照、上一张封面、旧图一律在新图 ready 前显示。
+        // 首屏 showing=null 时不设 placeholder，露出卡片背景（与 Glide 迁移前的旧行为一致）。
         // 不再用 .thumbnail() 加载旧图，那会重新触发两阶段切换（缩略图→原图），首屏就是闪烁本身。
-        request.placeholder(showing ?: emptyPlaceholder)
+        if (showing != null) request.placeholder(showing)
         request.listener(traceListener(viewId, short, "into"))
         request.into(view)
     }

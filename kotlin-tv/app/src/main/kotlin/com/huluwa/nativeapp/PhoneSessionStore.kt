@@ -22,6 +22,7 @@ data class PhoneSessionSnapshot(
     val episodeIndex: Int = 0,
     val position: Long = 0L,
     val scrollPositions: Map<String, Int> = emptyMap(),
+    val headerOffsets: Map<String, Int> = emptyMap(),
     val detailScroll: Int = 0,
 )
 
@@ -46,6 +47,7 @@ class PhoneSessionStore(context: Context) {
         val series = json.optJSONObject("series")?.let { Series.fromJson(it) }
             ?.takeIf { it.id.matches(ID) && it.title.isNotBlank() }
         val positions = json.optJSONObject("scrollPositions")
+        val headerOffsets = json.optJSONObject("headerOffsets")
         PhoneSessionSnapshot(
             screen = if (screen in listOf("detail", "player") && series == null) "catalog" else screen,
             tab = tab,
@@ -62,6 +64,7 @@ class PhoneSessionStore(context: Context) {
             episodeIndex = json.optInt("episodeIndex").coerceIn(0, 100_000),
             position = json.optLong("position").coerceIn(0L, 604_800_000L),
             scrollPositions = TABS.associateWith { positions?.optInt(it)?.coerceIn(0, MAX_SCROLL) ?: 0 },
+            headerOffsets = TABS.associateWith { headerOffsets?.optInt(it)?.coerceIn(0, MAX_SCROLL) ?: 0 },
             detailScroll = json.optInt("detailScroll").coerceIn(0, MAX_SCROLL),
         ).also { lastSaved = raw }
     }.getOrNull()
@@ -70,6 +73,10 @@ class PhoneSessionStore(context: Context) {
         val scroll = JSONObject()
         snapshot.scrollPositions.filterKeys { it in TABS }.forEach { (key, value) ->
             scroll.put(key, value.coerceIn(0, MAX_SCROLL))
+        }
+        val headerOffsets = JSONObject()
+        snapshot.headerOffsets.filterKeys { it in TABS }.forEach { (key, value) ->
+            headerOffsets.put(key, value.coerceIn(0, MAX_SCROLL))
         }
         val series = snapshot.series?.let {
             it.copy(title = it.title.take(200), cover = it.cover.take(2048), description = "", badge = it.badge.take(100), tags = it.tags.take(200))
@@ -83,7 +90,8 @@ class PhoneSessionStore(context: Context) {
             .put("series", series?.toJson() ?: JSONObject.NULL)
             .put("episodeId", snapshot.episodeId).put("episodeIndex", snapshot.episodeIndex)
             .put("position", snapshot.position.coerceIn(0L, 604_800_000L))
-            .put("scrollPositions", scroll).put("detailScroll", snapshot.detailScroll.coerceIn(0, MAX_SCROLL))
+            .put("scrollPositions", scroll).put("headerOffsets", headerOffsets)
+            .put("detailScroll", snapshot.detailScroll.coerceIn(0, MAX_SCROLL))
             .toString()
         if (json == lastSaved || json.length > MAX_LENGTH) return
         lastSaved = json

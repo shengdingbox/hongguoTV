@@ -24,7 +24,8 @@ class PortraitListPage(private val activity: MainActivity) : FrameLayout(activit
     }
     private var pendingPosition: Int? = null
     var onPositionChanged: ((Int) -> Unit)? = null
-    val position get() = recycler.computeVerticalScrollOffset()
+    // 零高度提示行也会计入滚动条估算，列表在顶部时必须明确记为零。
+    val position get() = if (recycler.canScrollVertically(-1)) recycler.computeVerticalScrollOffset() else 0
 
     init {
         grid.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {

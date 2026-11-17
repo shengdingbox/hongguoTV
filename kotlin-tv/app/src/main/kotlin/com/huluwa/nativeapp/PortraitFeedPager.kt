@@ -47,7 +47,8 @@ class PortraitFeedPager(
     private var nextId = 0L
     var onPositionChanged: ((Int) -> Unit)? = null
     private val currentPage get() = pageKeys.getOrNull(pager.currentItem)?.let { pages[it] }
-    val position get() = collapsed + (currentPage?.scroll?.position ?: 0)
+    val headerOffset get() = collapsed
+    val position get() = headerOffset + (currentPage?.scroll?.position ?: 0)
     private val scrollListener = ViewTreeObserver.OnScrollChangedListener { onPositionChanged?.invoke(position) }
 
     private class Page(val scroll: PortraitListPage, val refresh: PortraitUi.RefreshLayout, val update: () -> Unit)
@@ -184,9 +185,9 @@ class PortraitFeedPager(
     private fun updatePages() { pages.toMap().forEach { (key, page) -> updatePage(key, page) } }
     fun finishRefresh() { pages.values.forEach { it.refresh.finishRefresh() } }
 
-    /** 冷启动可展开标题，同时扣除原来的标题收起距离，保留列表位置。 */
-    fun restorePosition(y: Int, expandTitle: Boolean = false) {
-        val savedCollapsed = y.coerceIn(0, titleView.measuredHeight)
+    /** 标题收起距离独立恢复，不能从列表滚动条的估算偏移反推。冷启动仍展开标题。 */
+    fun restorePosition(y: Int, headerOffset: Int = 0, expandTitle: Boolean = false) {
+        val savedCollapsed = headerOffset.coerceIn(0, titleView.measuredHeight)
         val targetCollapsed = if (expandTitle) 0 else savedCollapsed
         moveHeader(targetCollapsed - collapsed)
         currentPage?.scroll?.restorePosition((y - savedCollapsed).coerceAtLeast(0))

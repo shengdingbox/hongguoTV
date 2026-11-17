@@ -195,6 +195,7 @@ class MainActivity: Activity() {
     private var deferredWork: DeferredUi?=null
     private val phoneSessionStore by lazy { PhoneSessionStore(this) }
     private val phoneSessionPositions=mutableMapOf<String,Int>()
+    private val phoneSessionHeaderOffsets=mutableMapOf<String,Int>()
     private val pendingPhoneScrolls=mutableMapOf<String,Int>()
     private var restoringPhoneDetail: PhoneSessionSnapshot?=null
     private var phoneSessionInitialized=false
@@ -5595,6 +5596,7 @@ class MainActivity: Activity() {
             val saved=phoneSessionStore.load()
             if(saved!=null) {
                 phoneSessionPositions.putAll(saved.scrollPositions)
+                phoneSessionHeaderOffsets.putAll(saved.headerOffsets)
                 pendingPhoneScrolls.putAll(saved.scrollPositions)
                 phoneQuery=saved.query; phoneSearchDraft=saved.searchText
                 restorePhoneRankSelection(saved.rankContent,saved.rankBoard)
@@ -5638,7 +5640,9 @@ class MainActivity: Activity() {
 
     private fun rememberPhoneCatalogPosition() {
         if(screen=="catalog" && !phoneDetailCollection && phoneTab in PhoneSessionStore.TABS && phoneTab !in pendingPhoneScrolls) {
-            phoneSessionPositions[phoneTab]=retainedPhoneCatalogs[phoneTab]?.position ?: phoneScrollY
+            val retained=retainedPhoneCatalogs[phoneTab]
+            phoneSessionPositions[phoneTab]=retained?.position ?: phoneScrollY
+            retained?.pager?.let { phoneSessionHeaderOffsets[phoneTab]=it.headerOffset }
         }
     }
 
@@ -5662,7 +5666,7 @@ class MainActivity: Activity() {
             episodeId=if(playing) data?.episodes?.getOrNull(episodeIndex).orEmpty() else "",
             episodeIndex=if(playing) episodeIndex else 0,
             position=if(playing) currentPosition() else 0L,
-            scrollPositions=phoneSessionPositions.toMap(),
+            scrollPositions=phoneSessionPositions.toMap(), headerOffsets=phoneSessionHeaderOffsets.toMap(),
             detailScroll=if(screen=="settings" && detailPage) phoneSettingsDetailScroll else if(detailPage) portraitDetail.captureScrollY() else 0))
     }
 
@@ -5683,7 +5687,10 @@ class MainActivity: Activity() {
             override fun onPreDraw(): Boolean {
                 if(observer.isAlive) observer.removeOnPreDrawListener(this)
                 if(phoneTab==tab && screen=="catalog" && view.isShown) {
-                    if(pager!=null) pager.restorePosition(y,expandTitle=true) else scroll?.restorePosition(y)
+                    if(pager!=null) {
+                        pager.restorePosition(y,headerOffset=phoneSessionHeaderOffsets[tab] ?: 0,expandTitle=true)
+                        phoneSessionHeaderOffsets[tab]=pager.headerOffset
+                    } else scroll?.restorePosition(y)
                     phoneScrollY=pager?.position ?: scroll?.position ?: y
                     phoneSessionPositions[tab]=phoneScrollY
                     pendingPhoneScrolls.remove(tab)
@@ -6009,6 +6016,9 @@ class MainActivity: Activity() {
             return
         }
         val renderedTab=phoneTab
+        // 在新视图回调滚动位置前，先固定本次要恢复的列表与标题状态。
+        val restoreY=pendingPhoneScrolls[renderedTab] ?: phoneScrollY
+        val restoreHeaderOffset=phoneSessionHeaderOffsets[renderedTab] ?: 0
         val (frame,content,nav)=PortraitUi.scaffold(this,phoneTab,::switchPhoneTab,phoneNavigationTab)
         previousNavigation?.let { (nav as? PortraitGlassNavigation)?.continueFrom(it) }
         val feedPager=when(phoneTab) {
@@ -6058,10 +6068,11 @@ class MainActivity: Activity() {
         phoneNavigationTab=phoneTab
         artwork.refreshVisible()
         restorePhoneCatalogScroll(renderedTab,scroll,feedPager)
-        val restoreY=pendingPhoneScrolls[renderedTab] ?: phoneScrollY
         // 冷启动由数据就绪后的现场恢复处理，避免重复恢复把已展开的标题再次收起。
         if(feedPager!=null && renderedTab !in pendingPhoneScrolls) feedPager.post {
-            if(feedPager.isShown && phoneTab==renderedTab) feedPager.restorePosition(restoreY)
+            if(feedPager.isShown && phoneTab==renderedTab && screen=="catalog") {
+                feedPager.restorePosition(restoreY,headerOffset=restoreHeaderOffset)
+            }
         }
         scroll?.let { feedScroll ->
             feedScroll.post { if(feedScroll.isShown && phoneTab==renderedTab && feedScroll.position!=restoreY) feedScroll.restorePosition(restoreY) }

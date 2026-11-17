@@ -1,75 +1,41 @@
-name: Build and publish TV APK
+name: 发布打包服务器最新版
+
 on:
   workflow_dispatch:
+    inputs:
+      task_id:
+        description: '构建任务 ID（留空自动选择最新成功的 APK）'
+        required: false
+        type: string
+      notes:
+        description: '发布说明（可选，默认使用构建提交说明）'
+        required: false
+        type: string
+
 permissions:
   contents: write
+
 concurrency:
   group: tv-stable-release
   cancel-in-progress: false
+
 jobs:
   release:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+    name: 发布已打包的签名 APK
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, hongguotv-release]
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: 获取发布脚本
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          fetch-depth: 0
-      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
-        with:
-          packages: platform-tools
-      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
-      - name: Set monotonic build version and restore signing key
-        env:
-          KEYSTORE_B64: ${{ secrets.HONGGUOTV_KEYSTORE_B64 }}
-        run: |
-          set -euo pipefail
-          test -n "$KEYSTORE_B64"
-          umask 077
-          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/release.jks"
-          echo "HONGGUOTV_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-          echo "HONGGUOTV_VERSION_CODE=$((10400 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
-          echo "HONGGUOTV_VERSION_NAME=0.30.10+$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG=kotlin-v0.30.10-build.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
-      - name: Tests, release lint, and signed APK
-        env:
-          HONGGUOTV_STORE_PASSWORD: ${{ secrets.HONGGUOTV_STORE_PASSWORD }}
-          HONGGUOTV_KEY_ALIAS: ${{ secrets.HONGGUOTV_KEY_ALIAS }}
-          HONGGUOTV_KEY_PASSWORD: ${{ secrets.HONGGUOTV_KEY_PASSWORD }}
-        run: ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:lintRelease :app:assembleRelease --console=plain
-      - name: Verify Android 8 APK minSdk (26)
-        run: |
-          SDK=$("$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging kotlin-tv/app/build/outputs/apk/release/app-release.apk | sed -n "s/^minSdkVersion: *'\([0-9]*\)'.*/\1/p")
-          echo "Android 8 APK minSdk=$SDK"
-          test "$SDK" = 26
-      - name: Publish APK and checksums
+          persist-credentials: false
+
+      - name: 发布到 GitHub Release
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
+          HONGGUOTV_BUILD_TASKS_DIR: /build-data/tasks
+          RELEASE_TASK_ID: ${{ inputs.task_id }}
+          RELEASE_NOTES: ${{ inputs.notes }}
         run: python3 scripts/publish-tv-release.py
-      - name: Build Android 5-7 variant (minSdk 21) and attach to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HONGGUOTV_STORE_PASSWORD: ${{ secrets.HONGGUOTV_STORE_PASSWORD }}
-          HONGGUOTV_KEY_ALIAS: ${{ secrets.HONGGUOTV_KEY_ALIAS }}
-          HONGGUOTV_KEY_PASSWORD: ${{ secrets.HONGGUOTV_KEY_PASSWORD }}
-        run: |
-          ./kotlin-tv/gradlew -p kotlin-tv -PHONGGUOTV_MIN_SDK=21 :app:assembleRelease --console=plain
-          mkdir -p outputs
-          cp kotlin-tv/app/build/outputs/apk/release/app-release.apk "outputs/hongguotv-kotlin-$HONGGUOTV_VERSION_NAME-android5.apk"
-          SDK=$("$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "outputs/hongguotv-kotlin-$HONGGUOTV_VERSION_NAME-android5.apk" | sed -n "s/^minSdkVersion: *'\([0-9]*\)'.*/\1/p")
-          echo "android5 APK minSdk=$SDK"
-          test "$SDK" = 21
-          gh release upload "$RELEASE_TAG" "outputs/hongguotv-kotlin-$HONGGUOTV_VERSION_NAME-android5.apk" --clobber --repo "$GITHUB_REPOSITORY"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: tv-release-reports
-          path: |
-            kotlin-tv/core/build/reports/tests/test/
-            kotlin-tv/app/build/reports/lint-results-release.*
-      - name: Remove temporary signing material
-        if: always()
-        run: rm -f "$RUNNER_TEMP/release.jks"

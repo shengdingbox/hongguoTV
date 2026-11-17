@@ -91,7 +91,7 @@ adb install -r APK文件路径
 ./kotlin-tv/gradlew -p kotlin-tv -PHONGGUOTV_MIN_SDK=21 :app:assembleDebug
 ```
 
-正式包签名配置与构建方式见 [原生工程说明](kotlin-tv/README.md#构建)。开发包与正式包签名不同，不能直接互相覆盖安装。正式版由维护者在本地手动构建签名包，推送代码不会自动发版。
+正式包由维护者的打包服务器构建并签名，开发包与正式包签名不同，不能直接互相覆盖安装。发布时在 [GitHub Actions](https://github.com/superhuluwa/hongguoTV/actions/workflows/release.yml) 点击 **Run workflow**，即可将服务器上最新成功的 APK 发布到 GitHub Release；推送代码不会自动发版。配置和使用方式见 [一键发布说明](docs/GITHUB_RELEASE.md)。
 
 ## 工程结构
 
@@ -99,7 +99,7 @@ adb install -r APK文件路径
 | --- | --- |
 | `kotlin-tv/app/` | 电视与手机原生界面、播放器、遥控与触屏交互、本机数据和日志 |
 | `kotlin-tv/core/` | 内容浏览、搜索、详情、榜单、账号接口、播放解析、媒体处理与缓存 |
-| `.github/workflows/` | 原生工程检查流程 |
+| `.github/workflows/` | 原生工程检查与手动发布流程 |
 | `docs/` | 更新日志、技术研究与历史交付资料 |
 
 ## 数据与隐私

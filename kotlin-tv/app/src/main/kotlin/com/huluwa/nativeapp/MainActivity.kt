@@ -644,6 +644,9 @@ class MainActivity: Activity() {
             return
         }
         PortraitStyle.refresh(this)
+        // recreate 首帧窗口背景跟随即将显示的页面配色：手机浅色外观下不再闪过深夜影院黑底
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(
+            if(phoneLayout()) PortraitStyle.background else TvStyle.background))
         phoneConfiguration=android.content.res.Configuration(resources.configuration)
         // 系统风格 / 界面缩放切换触发的重建：把原页面和焦点带回来
         if(PageRestore.tab>=0) {
@@ -695,8 +698,15 @@ class MainActivity: Activity() {
         favoriteMonitor=FavoriteMonitor(library,repository) { refreshFavoriteLabels() }
         mediaSession=TvMediaSession(this,{ if(foreground && screen=="player") requestPlayback(true) },{ if(foreground && screen=="player") requestPlayback(false) },{ position -> if(foreground && screen=="player") seekTo(position) },{ direction -> skipEpisode(direction) },{ if(foreground && screen=="player") returnToDetail() })
         activityInitialized=true
-        if(phoneLayout()) message(base(),"正在读取本机记录…") else showTvStartupHome()
+        if(phoneLayout()) phoneLibraryLoading() else showTvStartupHome()
         loadLibrary()
+    }
+    /** 手机端读取本机记录的过渡页：配色跟随手机外观，重建（如切换算法模式）时不再闪过深夜影院黑屏。 */
+    private fun phoneLibraryLoading() {
+        root.removeAllViews()
+        root.setBackgroundColor(PortraitStyle.background)
+        root.addView(text("正在读取本机记录…",16f,PortraitStyle.muted).apply { gravity=Gravity.CENTER },
+            FrameLayout.LayoutParams(-1,-1))
     }
     /** 读取记录期间先展示首页布局，不接触未加载的 Library，也不写入空记录。 */
     private fun showTvStartupHome(retry: (() -> Unit)?=null) {
@@ -5408,7 +5418,7 @@ class MainActivity: Activity() {
                 backdropBitmap=bitmap
                 backdropView?.let {
                     if(bitmap==null) { (it.parent as? android.view.ViewGroup)?.removeView(it); it.setImageDrawable(null) }
-                    else { if(it.parent==null && screen!="player") root.addView(it,0,FrameLayout.LayoutParams(-1,-1)); it.setImageBitmap(bitmap) }
+                    else { if(it.parent==null && screen!="player" && !phoneLayout()) root.addView(it,0,FrameLayout.LayoutParams(-1,-1)); it.setImageBitmap(bitmap) }
                 }
             }
         }

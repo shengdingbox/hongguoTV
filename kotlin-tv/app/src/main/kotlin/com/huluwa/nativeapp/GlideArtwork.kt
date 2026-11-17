@@ -78,7 +78,7 @@ class GlideArtwork(private val context: Context) {
                 RuntimeLog.add("IMG #$seq $tag-FAIL v=$viewId id=…$shortId err=${e?.javaClass?.simpleName}")
                 return false
             }
-            override fun onResourceReady(resource: Bitmap, model: Any?, target: Target<Bitmap>, dataSource: DataSource, isFirstResource: Boolean): Boolean {
+            override fun onResourceReady(resource: Bitmap, model: Any, target: Target<Bitmap>, dataSource: DataSource, isFirstResource: Boolean): Boolean {
                 RuntimeLog.add("IMG #$seq $tag-OK v=$viewId id=…$shortId src=$dataSource ${resource.width}x${resource.height}")
                 return false
             }

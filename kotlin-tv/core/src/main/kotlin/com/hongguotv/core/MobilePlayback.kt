@@ -19,11 +19,14 @@ import org.json.JSONObject
 internal object MobilePlayback {
     const val MODEL_BASE = "https://api5-normal-sinfonlinea.fqnovel.com"
     const val MODEL_PATH = "/novel/player/multi_video_model/player/v1"
+    const val GROUP_SHORT = "1004"
+    const val GROUP_PUGC = "1001"
     // 沿用新协议的原始 UA；查询串中的版本按手机端模板使用 74332。
     private const val PLAYBACK_UA =
         "com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)"
 
-    fun model(id: String, profile: SignerProfile, http: OkHttpClient, now: Long): JSONObject {
+    /** 取址分组：普通短剧在 1004，合集分集属于 PUGC 的 1001，分组错误会回 101000。 */
+    fun model(id: String, profile: SignerProfile, http: OkHttpClient, now: Long, group: String = GROUP_SHORT): JSONObject {
         require(id.matches(Regex("[0-9]{1,30}")))
         if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
         if (!profile.available || profile.params["cdid"].isNullOrBlank()) {
@@ -38,7 +41,7 @@ internal object MobilePlayback {
             "device_id" to profile.deviceId, "_rticket" to now.toString(),
         )
         val payload = JSONObject(
-            """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":["$id"]},"dr_scene":"player"}"""
+            """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"$group":["$id"]},"dr_scene":"player"}"""
         )
         val output = ByteArrayOutputStream()
         GZIPOutputStream(output).use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
@@ -65,9 +68,9 @@ internal object MobilePlayback {
             try {
                 val root = JSONObject(text)
                 val code = root.optInt("Code", root.optInt("code", 0))
-                if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
+                if (code != 0) throw ServiceException(code)
                 val data = root.optJSONObject("data") ?: throw IOException("播放信息为空")
-                val entries = data.optJSONObject("1004") ?: data
+                val entries = data.optJSONObject(group) ?: data
                 val entry = entries.optJSONObject(id) ?: throw IOException("播放信息未包含指定剧集")
                 val model = when (val raw = entry.opt("video_model")) {
                     is JSONObject -> raw

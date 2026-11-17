@@ -5,12 +5,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 
-/** 与第三方参考实现 SDK 对齐：漫剧用综合页的服务端筛选，短剧优先读取逐季列出的剧集页。 */
-internal enum class SearchRoute(val tab: Int, val filter: String = "") {
-    COMIC(11, "content_type_dynamic_comic"),
-    COMIC_LEGACY(19),
+/** 搜索统一使用无类型筛选的综合页，失败再回退剧集页签与网站；结果不再按内容类型裁剪。 */
+internal enum class SearchRoute(val tab: Int) {
+    COMMON(11),
     SERIES(29),
-    SHORT(11, "content_type_short_play"),
     WEBSITE(0),
 }
 
@@ -25,12 +23,12 @@ internal object SearchResults {
         else -> emptyList()
     }
 
-    fun parse(root: JSONObject, route: SearchRoute, type: ContentType): SearchResponse {
+    fun parse(root: JSONObject, route: SearchRoute): SearchResponse {
         if(root.optInt("code", -1) != 0) throw IOException("搜索接口返回错误")
         val tabs = root.optJSONArray("search_tabs") ?: root.optJSONObject("data")?.optJSONArray("search_tabs")
             ?: throw IOException("搜索格式异常")
         val tab = tabs.objects().firstOrNull { it.optInt("tab_type") == route.tab }
-            ?: throw IOException("${type.label}搜索页签暂不可用")
+            ?: throw IOException("搜索页签暂不可用")
         val rows = mutableListOf<JSONObject>()
         fun collect(row: JSONObject, depth: Int = 0) {
             if(depth > 4) return
@@ -44,7 +42,6 @@ internal object SearchResults {
             objects(nested).forEach { collect(it, depth + 1) }
         }
         tab.optJSONArray("data")?.objects()?.forEach { collect(it) }
-        var candidates = 0
         val items = rows.flatMap { row ->
             objects(row.opt("video_data")).flatMap { video ->
                 val detail = video.optJSONObject("video_detail") ?: video
@@ -58,11 +55,6 @@ internal object SearchResults {
                         .ifBlank { row.optJSONObject("search_high_light")?.optJSONObject("title")?.str("text").orEmpty() }
                         .ifBlank { row.str("cell_name") }
                     if(!id.matches(Regex("[0-9]{1,30}")) || id == "0" || title.isBlank()) return@mapNotNull null
-                    candidates++
-                    val content = card.optInt("content_type", video.optInt("content_type"))
-                    // 类型未知时沿用所请求页签的口径；明确标注的其它内容不能混进当前片库。
-                    val matchesType = if(type == ContentType.COMIC) content == 1004 else content == 1 || content == 7 || content == 1002
-                    if(content != 0 && !matchesType) return@mapNotNull null
                     val count = card.optInt("episode_cnt", video.optInt("episode_cnt"))
                     Series(id, seriesTitle(title),
                         cleanUrl(card.str("series_cover").ifBlank { card.str("cover") }
@@ -73,8 +65,6 @@ internal object SearchResults {
                 }
             }
         }.distinctBy { it.id }
-        // 剧集页没有服务端类型筛选；整页都是其它类型时，改走有明确筛选的综合页。
-        if(items.isEmpty() && candidates > 0) throw IOException("当前搜索页没有${type.label}结果")
         return SearchResponse(items, tab.optBoolean("has_more"), tab.str("next_offset").toIntOrNull(),
             tab.str("search_id"), tab.str("passback"))
     }

@@ -409,14 +409,14 @@ class ContentRepositoryTest {
         assertEquals(3,requests)
     }
 
-    @Test fun comicSearchFallsBackToWebsiteAndKeepsOnlyComicGenreRows() {
+    @Test fun websiteSearchKeepsEveryGenreWhenAppSearchFails() {
         val repo=repository { request ->
             if(request.url.host.endsWith("fqnovel.com")) ""
             else """{"searchList":[{"video_data":{"series_id":"111","series_name":"短剧测试","genre":"203"}},{"video_data":{"series_id":"222","series_name":"漫画测试","genre":"205"}}]}"""
         }
         val result=repo.search("修仙",1,ContentType.COMIC)
-        assertEquals(listOf("222"),result.items.map { it.id })
-        // 站点没有 hasMore 时不再提示翻页
+        // 搜索不再按内容类型裁剪，短剧与漫剧都保留服务端顺序。
+        assertEquals(listOf("111","222"),result.items.map { it.id })
         assertFalse(result.hasMore)
     }
 
@@ -441,13 +441,13 @@ class ContentRepositoryTest {
         assertEquals(listOf("/reading/bookapi/search/tab/v","/reading/bookapi/search/tab/v","/api/search/result/"),paths)
     }
 
-    @Test fun shortSearchFallsBackToWebsiteAndKeepsOnlyShortGenreRows() {
+    @Test fun shortSearchWebsiteFallbackKeepsEveryGenre() {
         val repo=repository { request ->
             if(request.url.host.endsWith("fqnovel.com")) ""
             else """{"searchList":[{"video_data":{"series_id":"111","series_name":"短剧测试","genre":"203"}},{"video_data":{"series_id":"222","series_name":"漫画测试","genre":"205"}}]}"""
         }
         val result=repo.search("总裁",1,ContentType.SHORT)
-        assertEquals(listOf("111"),result.items.map { it.id })
+        assertEquals(listOf("111","222"),result.items.map { it.id })
     }
 
     @Test fun websiteSearchPaginatesWithSitePageAndHasMore() {
@@ -485,12 +485,13 @@ class ContentRepositoryTest {
         .put("data",JSONArray().put(JSONObject().put("video_data",JSONArray().put(JSONObject()
             .put("series_id",id).put("title","测试剧集").put("episode_cnt",8)))))
 
-    @Test fun comicSearchRequestsAndSelectsOnlyComicTab() {
+    @Test fun searchUsesUnfilteredCommonTabAndKeepsServerOrder() {
         var requests=0
         val repo=repository { request ->
             requests++
             assertEquals("11",request.url.queryParameter("tab_type"))
-            assertEquals("content_type_dynamic_comic",request.url.queryParameter("selected_items"))
+            // 综合页不带类型筛选，否则合集（content_type=1003）会被服务端筛掉。
+            assertNull(request.url.queryParameter("selected_items"))
             assertEquals("1",request.url.queryParameter("search_source"))
             assertEquals("feed",request.url.queryParameter("tab_name"))
             assertEquals("16",request.url.queryParameter("bookstore_tab"))
@@ -506,22 +507,24 @@ class ContentRepositoryTest {
         assertEquals(listOf("999"),repo.search("修仙",2,ContentType.COMIC).items.map { it.id })
     }
 
-    @Test fun emptyComicSearchDoesNotFallBackToShortResults() {
+    @Test fun emptyCommonSearchDoesNotFallBackToOtherSources() {
         var requests=0
         val repo=repository { requests++; """{"code":0,"search_tabs":[{"tab_type":11,"data":[],"has_more":false}]}""" }
         assertTrue(repo.search("无结果",1,ContentType.COMIC).items.isEmpty())
         assertEquals(1,requests)
     }
 
-    @Test fun missingComicTabFallsBackToWebsiteWithoutShortResults() {
-        var requests=0
+    @Test fun albumResultsAppearInSearchWithoutTypeFiltering() {
         val repo=repository { request ->
-            requests++
-            if(request.url.host.endsWith("fqnovel.com")) """{"code":0,"search_tabs":[{"tab_type":29,"data":[]}]}"""
-            else """{"searchList":[{"video_data":{"series_id":"111","series_name":"短剧测试","genre":"203"}}]}"""
+            assertEquals("11",request.url.queryParameter("tab_type"))
+            assertNull(request.url.queryParameter("selected_items"))
+            """{"code":0,"search_tabs":[{"tab_type":11,"has_more":false,"data":[
+                {"video_data":[{"series_id":"888","content_type":1003,"video_detail":{"series_title":"我的妹妹不可爱","series_cover":"https://example.com/a.jpg"}}]},
+                {"video_data":[{"series_id":"999","content_type":1004,"video_detail":{"series_title":"困兽之战","episode_cnt":17}}]}]}]}"""
         }
-        assertTrue(repo.search("修仙",1,ContentType.COMIC).items.isEmpty())
-        assertEquals(3,requests)
+        // 合集 1003 以前被客户端类型过滤丢弃，现在与短剧一起按服务端顺序展示。
+        val items=repo.search("我的妹妹不可爱",1,ContentType.COMIC).items
+        assertEquals(listOf("888","999"),items.map { it.id })
     }
 
     @Test fun shortSearchKeepsWebsiteFallback() {
@@ -547,10 +550,10 @@ class ContentRepositoryTest {
         assertEquals(1,requests)
     }
 
-    @Test fun shortSearchReadsTheIosSeriesTabAndNestedObjectCards() {
+    @Test fun searchReadsNestedObjectCardsFromTheCommonTab() {
         val repo=repository { request ->
-            assertEquals("29",request.url.queryParameter("tab_type"))
-            """{"code":0,"search_tabs":[{"tab_type":29,"has_more":false,"data":[{"video_data":{"series_id":"999","content_type":1,"video_detail":{"series_title":"测试短剧","series_intro":"介绍","series_cover":"https://example.com/poster.jpg","episode_cnt":12}}}]}]}"""
+            assertEquals("11",request.url.queryParameter("tab_type"))
+            """{"code":0,"search_tabs":[{"tab_type":11,"has_more":false,"data":[{"video_data":{"series_id":"999","content_type":1,"video_detail":{"series_title":"测试短剧","series_intro":"介绍","series_cover":"https://example.com/poster.jpg","episode_cnt":12}}}]}]}"""
         }
         val item=repo.search("测试",type=ContentType.SHORT).items.single()
         assertEquals("999",item.id)
@@ -559,11 +562,12 @@ class ContentRepositoryTest {
         assertEquals("全 12 集",item.badge)
     }
 
-    @Test fun comicFilterKeepsAllArrayCardsAndDropsExplicitShortDrama() {
+    @Test fun searchKeepsEveryCardTypeAndStillOrdersSeasons() {
         val repo=repository {
             """{"code":0,"search_tabs":[{"tab_type":11,"has_more":false,"data":[{"video_data":[{"series_id":"111","content_type":1004,"video_detail":{"series_title":"测试漫剧第三季"}},{"series_id":"222","content_type":1,"title":"真人剧"},{"series_id":"333","content_type":1004,"video_detail":{"series_title":"测试漫剧第一季"}}]}]}]}"""
         }
-        assertEquals(listOf("333","111"),repo.search("测试").items.map { it.id })
+        // 短剧、漫剧、合集混排时都保留，只对同名多季做排序。
+        assertEquals(listOf("333","111","222"),repo.search("测试").items.map { it.id })
     }
 
     @Test fun duplicateOnlyPageEndsSearchInsteadOfRequestingTheSameItemsForever() {
@@ -592,7 +596,7 @@ class ContentRepositoryTest {
         val paths=mutableListOf<String>()
         val repo=repository { request ->
             paths+=request.url.encodedPath
-            if(paths.size==1) """{"code":0,"search_tabs":[{"tab_type":29,"has_more":false,"data":[{"video_data":[{"series_id":"111","title":"第一部"},{"series_id":"222","title":"第二部"}]}]}]}"""
+            if(paths.size==1) """{"code":0,"search_tabs":[{"tab_type":11,"has_more":false,"data":[{"video_data":[{"series_id":"111","title":"第一部"},{"series_id":"222","title":"第二部"}]}]}]}"""
             else {
                 assertEquals("/novel/player/multi_video_detail/player/v1",request.url.encodedPath)
                 val body=JSONObject(okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8())
@@ -783,6 +787,38 @@ class ContentRepositoryTest {
         assertEquals(RankPosition(22,"100万热度"),result.ranking!!.positions["456"])
         assertEquals(5,result.ranking!!.totalPages)
         assertEquals("今日已更新",result.ranking!!.updatedText)
+    }
+
+    private fun albumBody(request: Request)=JSONObject(okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8())
+
+    @Test fun albumDetailResolvesEverySubWorkIntoPlayableEpisodes() {
+        val albumId="888"
+        val first="900"
+        val second="901"
+        val bodies=mutableListOf<JSONObject>()
+        val repo=repository { request ->
+            when(request.url.encodedPath) {
+                detailPath -> """{"code":0,"data":{"$albumId":{"video_data":{"series_id":"$albumId","content_type":1003}}}}"""
+                "/novel/player/album_detail/v1/" -> {
+                    val body=albumBody(request); bodies+=body
+                    if(body.has("series_ids"))
+                        """{"code":0,"data":{"album_data":{},"video_detail_data":{"$second":{"video_data":{"series_id":"$second","video_list":[{"vid":"$second","vid_index":1}]}}}}}"""
+                    else
+                        """{"code":0,"data":{"album_data":{"album_id_str":"$albumId","title":"我的妹妹不可爱","intro":"介绍","sub_title_list":["更新至2集"],
+                            "video_detail_list":[{"series_id_str":"$first"},{"series_id_str":"$second"}]},
+                            "video_detail_data":{"$first":{"video_data":{"series_id":"$first","video_list":[{"vid":"$first","vid_index":1}]}}}}}"""
+                }
+                else -> emptyPlan()
+            }
+        }
+        // 合集详情没有分集，目录项必须逐个补齐 vid 后才算可用分集。
+        val detail=repo.detail(albumId)
+        assertEquals(listOf(first,second),detail.episodes)
+        assertEquals("我的妹妹不可爱",detail.series.title)
+        assertEquals("更新至2集",detail.series.badge)
+        // 第二次请求显式带上缺失的目录项。
+        assertEquals(listOf(second.toLong()),bodies[1].getJSONArray("series_ids").let { list -> (0 until list.length()).map { list.getLong(it) } })
+        assertEquals(albumId,bodies[0].getString("album_id"))
     }
 
     private fun selector(slug: String,name: String,vararg ids: String)=JSONObject().put("selector_item_id",slug).put("show_name",name)

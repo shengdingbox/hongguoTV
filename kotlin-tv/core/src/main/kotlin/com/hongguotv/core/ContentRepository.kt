@@ -67,6 +67,8 @@ class SearchSessionExpiredException: IOException("搜索结果已过期，请从
 class UnplayableVideoException(message: String, val diagnostic: String = ""): IOException(message)
 /** 播放信息接口返回了 HTTP 200 空体；已按有界退避重读仍未成功。 */
 class EmptyPlaybackResponseException: IOException("播放接口暂时返回空响应，请稍后重试")
+/** 播放接口返回了非空错误码；合集分集在普通语义下正是回 101000。 */
+class ServiceException(val code: Int): IOException("播放接口暂不可用（错误码 $code）")
 
 /** 站点 CDN 在重定向时下发 ttwid 并拦截无 Cookie 的后续请求，内存 Cookie 罐使其自动流转。 */
 class MemoryCookies : okhttp3.CookieJar {
@@ -366,20 +368,18 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         if(previous!=null && !previous.page.hasMore) return CatalogPage(emptyList(),false)
         return searchBudget(10_000) {
             val cursor=previous?.cursor
-            // 翻页只能续接原数据源和筛选；失败时保留当前结果供重试，不拿网站页码冒充 App 游标。
-            val routes=cursor?.let { listOf(it.route) } ?: if(type==ContentType.COMIC)
-                listOf(SearchRoute.COMIC,SearchRoute.COMIC_LEGACY,SearchRoute.WEBSITE)
-                else listOf(SearchRoute.SERIES,SearchRoute.SHORT,SearchRoute.WEBSITE)
+            // 翻页只能续接原数据源；失败时保留当前结果供重试，不拿网站页码冒充 App 游标。
+            val routes=cursor?.let { listOf(it.route) }
+                ?: listOf(SearchRoute.COMMON,SearchRoute.SERIES,SearchRoute.WEBSITE)
             var failure: Exception?=null
             for(route in routes) {
                 ensureSearchActive()
                 if(cursor==null && route!=SearchRoute.WEBSITE && synchronized(searchRetryAt) { clock()<(searchRetryAt[route] ?: 0L) }) continue
                 try {
                     val result=if(route==SearchRoute.WEBSITE) {
-                        val genre=if(type==ContentType.COMIC) COMIC_WEB_GENRE else SHORT_WEB_GENRE
-                        val result=webSearch(query,page,genre,retry=false,transport=searchHttp)
+                        val result=webSearch(query,page,null,retry=false,transport=searchHttp)
                         SearchResponse(result.items,result.hasMore,null,"","")
-                    } else appSearch(query,type,route,cursor)
+                    } else appSearch(query,route,cursor)
                     val seen=cursor?.seen.orEmpty()
                     val fresh=result.items.filter { it.id !in seen }
                     val nextOffset=result.offset ?: ((cursor?.offset ?: 0)+20)
@@ -396,7 +396,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
                 } catch(problem: Exception) {
                     ensureSearchActive()
                     failure=problem
-                    // 短期避开失败的具体页签，不让一次失败同时禁用漫剧和短剧五分钟。
+                    // 短期避开失败的具体页签，其他搜索来源仍可继续尝试。
                     if(cursor==null && route!=SearchRoute.WEBSITE) synchronized(searchRetryAt) { searchRetryAt[route]=clock()+30_000 }
                 }
             }
@@ -531,17 +531,16 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return result
     }
 
-    private fun appSearch(keyword: String, type: ContentType, route: SearchRoute, cursor: SearchCursor?): SearchResponse {
+    private fun appSearch(keyword: String, route: SearchRoute, cursor: SearchCursor?): SearchResponse {
         val values=linkedMapOf("query" to keyword,"tab_type" to route.tab.toString(),"count" to "20",
             "offset" to (cursor?.offset ?: 0).toString(),"use_correct" to "true","bookshelf_search_plan" to "4",
             "search_source" to "1","tab_name" to "feed","bookstore_tab" to "16","user_is_login" to "0")
-        if(route.filter.isNotBlank()) values["selected_items"]=route.filter
         cursor?.let {
             if(it.searchId.isNotBlank()) values["search_id"]=it.searchId
             if(it.passback.isNotBlank()) values["passback"]=it.passback
         }
         val signed=signer.signCatalog("$API/reading/bookapi/search/tab/v",values)
-        return SearchResults.parse(JSONObject(text(signed.url,signed,searchHttp)),route,type)
+        return SearchResults.parse(JSONObject(text(signed.url,signed,searchHttp)),route)
     }
 
     /** 支持中文、完整剧名和电视键盘首拼；失败时保持输入框可用。 */
@@ -582,6 +581,9 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     /** 主详情与辅助信息分开缓存，首页点击只等待标题和完整分集。 */
     private data class DetailCache(val at: Long, val detail: Detail, val extrasLoaded: Boolean = false)
     private val detailCache=linkedMapOf<String,DetailCache>()
+    /** 合集分集的 vid；取址语义与普通短剧不同，播放链路按此集合自动选择。 */
+    private val albumEpisodes=linkedSetOf<String>()
+    private fun isAlbumEpisode(id: String): Boolean = synchronized(albumEpisodes) { id in albumEpisodes }
 
     /** 仅请求一次主接口；推荐、系列剧由页面展示后再补齐。 */
     fun seriesDetail(id: String): Detail {
@@ -670,6 +672,8 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // multi_video_detail 按 series_id 包装每部剧，真正的卡片与分集在其 video_data 内。
         val v = data.optJSONObject("data")?.optJSONObject(id)?.optJSONObject("video_data")
             ?: throw IOException("剧集详情暂不可用")
+        // 合集卡片的普通详情没有分集，必须读专用目录；搜索、收藏与续播直达共用此入口。
+        if (v.optInt("content_type") == ALBUM_TYPE) return fetchAlbumDetail(id)
         val series = planCardSeries(v)
         if (series.id != id || series.title.isBlank()) throw IOException("剧集详情数据异常")
         // 与第三方参考实现一致：详情有效但尚无分集时仍可展示、收藏；缺失或 null 列表同样视为空。
@@ -776,6 +780,59 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return rows.objects().map(::planCardSeries)
     }
 
+    /** 合集目录的子作品才是真实分集；单个子作品的 vid 需另发一次批量请求补齐。 */
+    private fun fetchAlbumDetail(id: String): SeriesPayload {
+        val body = JSONObject().put("album_id", id).put("need_video_detail_info", true)
+            .put("biz_param", JSONObject().put("caller_scene", "album").put("detail_page_version", 0)
+                .put("source", 22).put("video_id_type", 1).put("need_all_video_definition", false))
+        val data = signedJson("$API/novel/player/album_detail/v1/", emptyMap(),
+            body.toString().toByteArray(Charsets.UTF_8), detailHttp).optJSONObject("data")
+            ?: throw IOException("合集详情暂不可用")
+        val album = data.optJSONObject("album_data") ?: throw IOException("合集详情数据异常")
+        val albumId = album.str("album_id_str").ifBlank { album.str("album_id") }
+        val title = seriesTitle(album.str("title"))
+        if (albumId != id || title.isBlank()) throw IOException("合集详情数据异常")
+        val directory = if (album.isNull("video_detail_list")) JSONArray()
+            else album.optJSONArray("video_detail_list") ?: throw IOException("合集分集数据异常")
+        val seriesIds = (0 until directory.length()).map { index ->
+            val row = directory.optJSONObject(index) ?: throw IOException("合集分集数据异常")
+            row.str("series_id_str").ifBlank { row.str("series_id") }
+                .takeIf { it.matches(Regex("[0-9]{1,19}")) && it != "0" }
+                ?: throw IOException("合集分集 ID 异常")
+        }
+        if (seriesIds.distinct().size != seriesIds.size) throw IOException("合集分集数据异常")
+        val details = data.optJSONObject("video_detail_data") ?: JSONObject()
+        // 不传 series_ids 时接口只回第一个子作品的详情，其余目录项的 vid 为空。
+        val missing = seriesIds.filter { details.optJSONObject(it)?.optJSONObject("video_data") == null }
+        if (missing.isNotEmpty()) {
+            body.put("series_ids", JSONArray(missing.map { it.toLong() }))
+            val extra = signedJson("$API/novel/player/album_detail/v1/", emptyMap(),
+                body.toString().toByteArray(Charsets.UTF_8), detailHttp)
+                .optJSONObject("data")?.optJSONObject("video_detail_data")
+                ?: throw IOException("合集分集暂不可用")
+            for (seriesId in missing) details.put(seriesId, extra.optJSONObject(seriesId))
+        }
+        val episodes = seriesIds.flatMap { seriesId ->
+            val video = details.optJSONObject(seriesId)?.optJSONObject("video_data")
+                ?: throw IOException("合集分集暂不可用")
+            val rows = video.optJSONArray("video_list") ?: throw IOException("合集分集数据异常")
+            (0 until rows.length()).map { index ->
+                val vid = rows.optJSONObject(index)?.str("vid").orEmpty()
+                if (!vid.matches(Regex("[0-9]{1,30}")) || vid == "0") throw IOException("合集分集 ID 异常")
+                index to vid
+            }
+        }.map { it.second }
+        if (episodes.isEmpty()) throw IOException("合集暂无剧集")
+        if (episodes.distinct().size != episodes.size) throw IOException("合集分集数据异常")
+        synchronized(albumEpisodes) {
+            albumEpisodes += episodes
+            while (albumEpisodes.size > ALBUM_EPISODE_LIMIT) albumEpisodes.remove(albumEpisodes.first())
+        }
+        val badge = album.optJSONArray("sub_title_list")?.optString(0).orEmpty().ifBlank { "更新至 ${episodes.size} 集" }
+        return SeriesPayload(Series(id, title, cleanUrl(album.str("cover")), album.str("intro"), badge, "合集"),
+            episodes, detailSocial(album))
+    }
+
     /** 详情/推荐/系列剧共用的卡片解析，同时保留预告作品的预约排期。 */
     private fun planCardSeries(o: JSONObject): Series {
         val id = o.str("series_id_str").ifEmpty { o.str("series_id") }.ifEmpty { o.str("vid") }
@@ -856,8 +913,9 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     fun stream(id: String, maxQuality: Int = 1080, refreshModel: Boolean = false): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
         if(refreshModel) modelCache.evict(id)
+        val albumEpisode=isAlbumEpisode(id)
         try {
-            return streamFromModel(videoModel(id),maxQuality)
+            return streamFromModel(videoModel(id, albumEpisode = albumEpisode),maxQuality)
         } catch (unplayable: UnplayableVideoException) {
             // 站方对同一集会间歇性下发降级模型（2026-11-08 路由标记诊断证实：来自 video_tab 主接口，
             // video_list 全部清晰度都是 bytevc2 加密 blob，旧 POST 路由已全空、无路由可跳，换身份也不影响下发）。
@@ -871,7 +929,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
                 if(round>1) Thread.sleep(RETRY_BACKOFF_MS*(round-1))
                 try {
                     val (level,preferAlt)=RETRY_PLANS[round-1]
-                    return streamFromModel(videoModel(id,level,preferAlt),maxQuality)
+                    return streamFromModel(videoModel(id,level,preferAlt,albumEpisode),maxQuality)
                 } catch(next: UnplayableVideoException) {
                     failure=next
                 }
@@ -993,7 +1051,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         for(id in missing) {
             if(Thread.currentThread().isInterrupted) break
             // 取消信号必须原样上抛：被 runCatching 吞掉后，预取线程会继续把剩余集数全拉一遍。
-            val model=try { videoModel(id) } catch(problem: java.io.InterruptedIOException) { throw problem } catch(_: Exception) { null } ?: continue
+            val model=try { videoModel(id, albumEpisode = isAlbumEpisode(id)) } catch(problem: java.io.InterruptedIOException) { throw problem } catch(_: Exception) { null } ?: continue
             modelCache.put(id,model.put(LEVEL_KEY,1),clock())
             filled++; route=model.optString(ROUTE_KEY).ifEmpty { route }
         }
@@ -1021,7 +1079,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     private fun videoTabSingleModel(id: String, preferAlt: Boolean = false): JSONObject? = videoTabSingle(id,preferAlt).model
     /** 单集取址的完整结果：`model` 为空时由 [blank] 区分「空体」和「有明确错误码」，
      *  后者不该再触发换设备重扫。 */
-    private data class SingleTab(val model: JSONObject?, val blank: Boolean)
+    private data class SingleTab(val model: JSONObject?, val blank: Boolean, val code: Int = 0)
     private fun videoTabSingle(id: String, preferAlt: Boolean = false): SingleTab {
         val extra=linkedMapOf(
             "video_id" to id, "source" to "0", "need_all_video_definition" to "true",
@@ -1032,6 +1090,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         )
         val ordered=if(preferAlt) hosts.reversed() else hosts
         var allBlank=true
+        var failure=0
         for(base in ordered) {
             val signed=signer.sign(base,extra,null)
             val request=signedBuilder(signed).get().build()
@@ -1050,12 +1109,13 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             if(body.isBlank()) continue
             allBlank=false
             val root=runCatching { JSONObject(body) }.getOrNull() ?: continue
-            if(root.optInt("code",root.optInt("Code",-1))!=0) continue
+            failure=root.optInt("code",root.optInt("Code",-1))
+            if(failure!=0) continue
             val data=root.optJSONObject("data") ?: continue
             val model=modelOf(data.opt("video_model")) ?: continue
             return SingleTab(model.put(ROUTE_KEY,"video_tab|"+base.removePrefix("https://").substringBefore('/')),false)
         }
-        return SingleTab(null,allBlank)
+        return SingleTab(null,allBlank,failure)
     }
     /** 多集取址：`GET /reading/bookapi/video_tab/multi_video_model/v1/`。
      *  参数取自官方 `GetVideoModelRequest` 的 snake_case 字段，缺任一字段会回 `100103`。
@@ -1100,73 +1160,89 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         return null
     }
     /** 本地算法优先走 V5 gzip POST；Android 签名服务与兼容回退继续共用模型缓存。 */
-    private fun videoModel(id: String, level: Int = 1, preferAlt: Boolean = false): JSONObject {
+    private fun videoModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false): JSONObject {
         modelCache.get(id,clock())?.let { return it }
-        val model=fetchVideoModel(id,level,preferAlt).put(LEVEL_KEY,level)
+        val model=fetchVideoModel(id,level,preferAlt,albumEpisode).put(LEVEL_KEY,level)
         modelCache.put(id,model,clock())
         return model
     }
-    private fun fetchVideoModel(id: String, level: Int = 1, preferAlt: Boolean = false): JSONObject {
-        if(signer.prefersVideoTab) {
-            // 复用 Android 红果已可用的 GET 路径，避免先等待本机算法使用的 POST 路由。
-            val single=videoTabSingle(id,preferAlt)
-            single.model?.let { return it }
-            videoTabModel(id,level,preferAlt)?.let { return it }
-            if(single.blank) throw EmptyPlaybackResponseException()
-            throw IOException("Android 红果未返回可用播放信息，请稍后重试")
+    private fun fetchVideoModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false): JSONObject {
+        try {
+            return resolveVideoModel(id, level, preferAlt, albumEpisode)
+        } catch (problem: IOException) {
+            // 自检、离线下载与首页预览可能没先打开详情，合集分集此时还没被标记。
+            // 普通语义对合集回 101000（明确错误码，不是空体），据此确定性地按合集语义重取一次。
+            if (albumEpisode || problem !is ServiceException || problem.code != ALBUM_SERVICE_CODE) throw problem
+            return resolveVideoModel(id, level, preferAlt, true)
         }
-        val mobile=mobilePlaybackModel(id)
+    }
+    private fun resolveVideoModel(id: String, level: Int, preferAlt: Boolean, albumEpisode: Boolean): JSONObject {
+        // 合集分集是 PUGC 子作品：video_tab 对它们回 ILLEGAL_ACCESS，取址只能用 video_id_type=1；
+        // 普通短剧的 ID 语义相反，传 1 会回 101000，所以两者必须分开。
+        val idType = if (albumEpisode) 1 else 0
+        val group = if (albumEpisode) MobilePlayback.GROUP_PUGC else MobilePlayback.GROUP_SHORT
+        if (signer.prefersVideoTab && !albumEpisode) {
+            // 复用 Android 红果已可用的 GET 路径，避免先等待本机算法使用的 POST 路由。
+            val single = videoTabSingle(id, preferAlt)
+            single.model?.let { return it }
+            videoTabModel(id, level, preferAlt)?.let { return it }
+            if (single.blank) throw EmptyPlaybackResponseException()
+            // 合集分集在该路径上固定回 ILLEGAL_ACCESS（110）；带上错误码交给上层按合集语义重取。
+            throw ServiceException(single.code)
+        }
+        val mobile = mobilePlaybackModel(id, group)
         mobile.model?.let { return it }
-        val primaryPayload="""{"video_id":"$id","biz_param":{"video_id_type":0,"need_all_video_definition":true,"video_platform":3}}""".toByteArray(Charsets.UTF_8)
-        val primary=try {
+        val primaryPayload = """{"video_id":"$id","biz_param":{"video_id_type":$idType,"need_all_video_definition":true,"video_platform":3}}""".toByteArray(Charsets.UTF_8)
+        val primary = try {
             sweepRoutes(listOf(PLAYER_PATH to primaryPayload))
-        } catch(problem: java.io.InterruptedIOException) {
+        } catch (problem: java.io.InterruptedIOException) {
             throw problem
-        } catch(problem: IOException) {
-            Sweep(null,null,false,problem)
+        } catch (problem: IOException) {
+            Sweep(null, null, false, problem)
         }
         primary.model?.let { return it }
-        val singleTab=videoTabSingle(id,preferAlt)
+        // 合集分集在 video_tab 上没有可用条目，跳过以免把 ILLEGAL_ACCESS 误当成空体。
+        val singleTab = if (albumEpisode) SingleTab(null, true) else videoTabSingle(id, preferAlt)
         singleTab.model?.let { return it }
-        val multiTab=videoTabModel(id,level,preferAlt)
+        val multiTab = if (albumEpisode) null else videoTabModel(id, level, preferAlt)
         multiTab?.let { return it }
         // 与 video_tab 保持同一 device_level（可诊断轮换）：部分剧集在 3 下会把 360P–720P 全发成
         // bytevc2（MP4 提取器读不出视频轨），只剩超出电视解码上限的 1080P bytevc1，降档无路可走。
-        val biz="""{"detail_page_version":0,"device_level":$level,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024}"""
-        val map="""{"biz_param":$biz,"mixed_video_id_map":{"1004":["$id"]}}""".toByteArray()
-        val routes=linkedMapOf(
+        val biz = """{"detail_page_version":0,"device_level":$level,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024}"""
+        val map = """{"biz_param":$biz,"mixed_video_id_map":{"$group":["$id"]}}""".toByteArray()
+        val routes = linkedMapOf(
             "/novel/player/multi_video_model/v1/" to map,
             "/novel/player/multi_video_model/preload/v1/" to map,
             "/novel/player/multi_video_model/default/v1/" to map,
             "/novel/player/multi_video_model/detail/v1/" to map,
         )
-        val good=goodRoute
-        val ordered=buildList {
-            if(good!=null && routes.containsKey(good)) add(good to routes.getValue(good))
-            for((path,payload) in routes) if(path!=good) add(path to payload)
+        val good = goodRoute
+        val ordered = buildList {
+            if (good != null && routes.containsKey(good)) add(good to routes.getValue(good))
+            for ((path, payload) in routes) if (path != good) add(path to payload)
         }
-        val first=sweepRoutes(ordered)
-        first.model?.let { model -> goodRoute=first.path; return model }
+        val first = sweepRoutes(ordered)
+        first.model?.let { model -> goodRoute = first.path; return model }
         // V5 与所有兼容路由都返回空体时，才有限次更换匿名身份。
-        val allBlank=mobile.allBlank && primary.allBlank && first.allBlank && singleTab.blank && multiTab==null
+        val allBlank = mobile.allBlank && primary.allBlank && first.allBlank && singleTab.blank && multiTab == null
         // 空体基本都发生在「当前匿名身份已经被站方用尽」之后：只在这种情况下换一台匿名设备再扫一轮。
         // 非空体（有明确错误码）重扫没有意义，直接快速失败，避免界面上长时间停在「正在获取播放地址」。
-        if(!allBlank) throw mobile.failure ?: first.failure ?: primary.failure ?: IOException("播放信息为空")
+        if (!allBlank) throw mobile.failure ?: first.failure ?: primary.failure ?: IOException("播放信息为空")
         signer.recover()
-        val healedMobile=mobilePlaybackModel(id)
+        val healedMobile = mobilePlaybackModel(id, group)
         healedMobile.model?.let { return it }
-        val healed=sweepRoutes(listOf(PLAYER_PATH to primaryPayload)+ordered)
-        healed.model?.let { model -> goodRoute=healed.path; return model }
-        if(healedMobile.allBlank && healed.allBlank) throw EmptyPlaybackResponseException()
+        val healed = sweepRoutes(listOf(PLAYER_PATH to primaryPayload) + ordered)
+        healed.model?.let { model -> goodRoute = healed.path; return model }
+        if (healedMobile.allBlank && healed.allBlank) throw EmptyPlaybackResponseException()
         throw healedMobile.failure ?: healed.failure ?: IOException("播放信息为空")
     }
     /** V5 单集请求；先重读空响应，再交给旧路由及整轮身份恢复。 */
-    private fun mobilePlaybackModel(id: String): Sweep {
+    private fun mobilePlaybackModel(id: String, group: String = MobilePlayback.GROUP_SHORT): Sweep {
         for(attempt in 0 until BLANK_RETRIES) {
             if(Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
             try {
                 val profile=signer.profile()
-                val model=MobilePlayback.model(id,profile,http,clock()).put(ROUTE_KEY,MobilePlayback.MODEL_PATH)
+                val model=MobilePlayback.model(id,profile,http,clock(),group).put(ROUTE_KEY,MobilePlayback.MODEL_PATH)
                 return Sweep(model,MobilePlayback.MODEL_PATH,false,null)
             } catch(problem: java.io.InterruptedIOException) {
                 throw problem
@@ -1204,7 +1280,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
                     // 结构异常属于「有明确失败」，不能和空体（配额用尽）混为一谈。
                     return Sweep(null,null,false,IOException("播放信息为空"))
                 }
-                return Sweep(null,null,false,IOException("播放接口暂不可用（错误码 $code）"))
+                return Sweep(null,null,false,ServiceException(code))
             }
         }
         return Sweep(null,null,allBlank,null)
@@ -1232,8 +1308,6 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         private const val DETAIL_CACHE_TTL=600_000L
         // 网站搜索混合两类内容：video_data.genre 205 是漫剧，203 是短剧
         // （2026-10-13 用站点自带的漫剧热播榜与短剧分类列表逐条核对确认）。
-        private const val COMIC_WEB_GENRE="205"
-        private const val SHORT_WEB_GENRE="203"
         // 首条路由的空响应重发次数与退避：网关抖动时先原地重试，再换下一条路由。
         private const val BLANK_RETRIES=2
         private const val BLANK_BACKOFF_MS=400L
@@ -1241,6 +1315,12 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         private const val WARM_LIMIT=8
         // 诊断专用：随模型进缓存的路由标记，streamFromModel 抛不兼容异常时写进 diagnostic。
         private const val ROUTE_KEY="__route"
+        // 合集卡片的 content_type；其分集是 PUGC 子作品，取址分组与 type 都与普通短剧不同。
+        private const val ALBUM_TYPE=1003
+        // 合集分集标记只用于取址语义；上限避免长会话泄漏。
+        private const val ALBUM_EPISODE_LIMIT=4_000
+        // 合集分集用普通 ID 语义取址时，服务端固定回 101000 服务异常。
+        private const val ALBUM_SERVICE_CODE=101000
         // 降级模型按请求间歇出现（实测约 1/3），一次取址失败后最多再赌两轮正常模型；仍降级才报不兼容。
         private const val PLAYBACK_RETRY_ROUNDS=3
         private const val RETRY_BACKOFF_MS=400L

@@ -18,7 +18,7 @@ bash scripts/publish-tv-release.sh
 
 发布标签为 `build-v<versionName>-<versionCode>`，指向该 APK 构建记录中的完整源码提交，而非运行工作流时的最新源码。对应提交须已同步到 GitHub。Release 附件包括 APK、`build-info.json` 和 `SHA256SUMS`。APK 的大小和 SHA-256 必须与构建记录一致，所有附件上传成功后才会将草稿发布为 Latest。
 
-重复运行已发布的构建会返回原 Release；上传失败时保留草稿，重新运行可继续上传。
+重复运行已发布的构建会返回原 Release；上传失败时保留草稿，重新运行可继续上传。遇到连接重置、超时或 GitHub 临时服务错误时，每个请求最多尝试 4 次，重试间隔依次为 2、4、8 秒。创建标签、草稿或上传附件的响应中断后，会先查询 GitHub 上的状态，复用已完成的结果，并清理未完成的附件后补传。
 
 ## Shell 一键发布
 
@@ -44,6 +44,18 @@ bash scripts/publish-tv-release.sh --help
 `--repo owner/repository` 可指定目标仓库，默认 `superhuluwa/hongguoTV`；`--tasks-dir /path/to/tasks` 可覆盖打包机上的任务目录。
 
 可通过 `HONGGUOTV_BUILD_HOST`、`HONGGUOTV_BUILD_SSH_PORT`、`HONGGUOTV_BUILD_TASKS_DIR` 覆盖默认服务器地址、端口和任务目录。只有默认地址和端口会自动启用已保存的 Debian 认证；如需指定自有 SSH 认证脚本，设置 `HONGGUOTV_SSH_HELPER`，该 Python 脚本应接收远程命令作为唯一参数，并原样转发标准输入和输出。
+
+## GitHub 连接中断
+
+脚本会显示当前处于检查提交、准备草稿、上传附件还是正式发布阶段；失败信息包含具体的 GitHub 主机和请求路径。`Connection reset by peer` 表示连接被对端或中间网络设备重置，程序会自动重试。
+
+如果打包机需要代理才能访问 GitHub，在运行脚本前设置 `HTTPS_PROXY`，脚本会通过 SSH 将代理设置提供给打包机。代理地址须能从 Debian 打包机访问，例如下面的局域网 HTTP 代理（替换为实际地址）：
+
+```bash
+HTTPS_PROXY=http://192.168.3.10:7890 bash scripts/publish-tv-release.sh
+```
+
+`HTTP_PROXY`、`NO_PROXY` 及其小写形式同样会同步。设置为 `127.0.0.1` 时指的是 Debian 打包机本身。失败后可以重新执行相同命令，已有正式 Release 不会重复发布。
 
 ## 内网发布节点
 

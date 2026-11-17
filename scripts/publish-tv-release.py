@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,33 +33,62 @@ class GitHub:
         self.token = token
         self.root = f"/repos/{repository}"
 
-    def request(self, method, path, data=None, content_type="application/json", missing_ok=False):
+    def request(self, method, path, data=None, content_type="application/json", missing_ok=False,
+                recover=None):
         url = path if path.startswith("https://") else API_URL + self.root + path
-        if urllib.parse.urlsplit(url).hostname not in ("api.github.com", "uploads.github.com"):
+        endpoint = urllib.parse.urlsplit(url)
+        if endpoint.hostname not in ("api.github.com", "uploads.github.com"):
             raise ReleaseError("GitHub API 返回了无效的上传地址。")
         if data is not None and content_type == "application/json":
             data = json.dumps(data).encode("utf-8")
-        request = urllib.request.Request(url, data=data, method=method, headers={
-            "Authorization": f"Bearer {self.token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "hongguotv-release",
-            "Content-Type": content_type,
-        })
-        try:
-            with urllib.request.urlopen(request, timeout=120) as response:
-                body = response.read()
-                return json.loads(body) if body else None
-        except urllib.error.HTTPError as error:
-            if missing_ok and error.code == 404:
-                return None
+        operation = f"{method} {endpoint.hostname}{endpoint.path}"
+        attempts = 4
+        for attempt in range(1, attempts + 1):
+            request = urllib.request.Request(url, data=data, method=method, headers={
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "hongguotv-release",
+                "Content-Type": content_type,
+            })
             try:
-                message = json.load(error).get("message", "请求失败")
-            except (ValueError, AttributeError):
-                message = "请求失败"
-            raise ReleaseError(f"GitHub API {error.code}: {message}") from None
-        except urllib.error.URLError as error:
-            raise ReleaseError(f"连接 GitHub 失败：{error.reason}") from None
+                with urllib.request.urlopen(request, timeout=120) as response:
+                    body = response.read()
+                    return json.loads(body) if body else None
+            except urllib.error.HTTPError as error:
+                if missing_ok and error.code == 404:
+                    return None
+                try:
+                    message = json.load(error).get("message", "请求失败")
+                except (ValueError, AttributeError, OSError, http.client.HTTPException):
+                    message = "请求失败"
+                reason = f"HTTP {error.code}: {message}"
+                # A lost POST response may appear as an already-existing resource.
+                if error.code not in (408, 429, 500, 502, 503, 504) and not (
+                        error.code == 422 and recover is not None):
+                    raise ReleaseError(f"GitHub {operation} 失败：{reason}") from None
+            except urllib.error.URLError as error:
+                reason = str(error.reason)
+            except (OSError, http.client.HTTPException, json.JSONDecodeError) as error:
+                reason = str(error)
+
+            # Never blindly repeat a POST: GitHub may have accepted it before the
+            # connection broke. Its caller must reconcile the server-side state.
+            if recover is not None:
+                recovered = recover()
+                if recovered is not None:
+                    print(f"连接中断后已确认请求完成：{operation}", flush=True)
+                    return recovered
+            if attempt == attempts or (method == "POST" and recover is None):
+                raise ReleaseError(
+                    f"GitHub {operation} 失败（尝试 {attempt} 次）：{reason}。"
+                    "请检查网络或配置 HTTPS_PROXY 后重新执行。"
+                ) from None
+            delay = 2 ** attempt
+            print(f"GitHub {operation} 连接失败：{reason}；"
+                  f"{delay} 秒后重试（{attempt + 1}/{attempts}）。",
+                  file=sys.stderr, flush=True)
+            time.sleep(delay)
 
 
 def token_from_environment():
@@ -157,8 +188,10 @@ def ensure_tag(github, tag, commit):
     reference = "/git/ref/tags/" + urllib.parse.quote(tag, safe="")
     existing = github.request("GET", reference, missing_ok=True)
     if existing is None:
-        github.request("POST", "/git/refs", {"ref": f"refs/tags/{tag}", "sha": commit})
-        return
+        existing = github.request(
+            "POST", "/git/refs", {"ref": f"refs/tags/{tag}", "sha": commit},
+            recover=lambda: github.request("GET", reference, missing_ok=True),
+        )
     target = existing["object"]
     for _ in range(10):
         if target["type"] != "tag":
@@ -186,8 +219,24 @@ def release_notes(metadata, notes):
     return "\n".join(details)
 
 
+
+def recover_upload(github, release_id, path):
+    """Reuse a completed upload or remove its incomplete server-side placeholder."""
+    assets = github.request("GET", f"/releases/{release_id}/assets?per_page=100")
+    for asset in assets:
+        if asset["name"] != path.name:
+            continue
+        server_digest = asset.get("digest")
+        if (asset.get("state") == "uploaded" and asset.get("size") == path.stat().st_size
+                and (not server_digest or server_digest == "sha256:" + digest(path))):
+            return asset
+        github.request("DELETE", f"/releases/assets/{asset['id']}", missing_ok=True)
+    return None
+
+
 def publish(github, assets, metadata, notes):
     tag = f"build-v{metadata['versionName']}-{metadata['versionCode']}"
+    print("检查 GitHub 源码提交与发布标签……", flush=True)
     # Fail before creating anything when the build commit has not reached GitHub.
     if github.request("GET", "/commits/" + metadata["commit"], missing_ok=True) is None:
         raise ReleaseError("APK 对应的源码提交尚未同步到 GitHub，请先推送该提交。")
@@ -204,25 +253,39 @@ def publish(github, assets, metadata, notes):
         "draft": True,
         "prerelease": False,
     }
+    print(f"准备 Release 草稿：{tag}", flush=True)
     if release:
         release = github.request("PATCH", f"/releases/{release['id']}", fields)
     else:
-        release = github.request("POST", "/releases", fields)
+        release = github.request(
+            "POST", "/releases", fields,
+            recover=lambda: github.request(
+                "GET", "/releases/tags/" + urllib.parse.quote(tag, safe=""), missing_ok=True,
+            ),
+        )
+        if not release["draft"]:
+            print(f"该构建已发布：{release['html_url']}")
+            return tag, release["html_url"]
     old_assets = {
         item["name"]: item for item in github.request("GET", f"/releases/{release['id']}/assets?per_page=100")
     }
     upload_url = release["upload_url"].split("{", 1)[0]
     for path in assets:
+        print(f"上传附件：{path.name}（{path.stat().st_size} 字节）", flush=True)
         if path.name in old_assets:
-            github.request("DELETE", f"/releases/assets/{old_assets[path.name]['id']}")
+            github.request("DELETE", f"/releases/assets/{old_assets[path.name]['id']}", missing_ok=True)
         url = upload_url + "?" + urllib.parse.urlencode({"name": path.name})
-        uploaded = github.request("POST", url, path.read_bytes(), "application/octet-stream")
+        uploaded = github.request(
+            "POST", url, path.read_bytes(), "application/octet-stream",
+            recover=lambda: recover_upload(github, release["id"], path),
+        )
         if uploaded.get("state") != "uploaded" or uploaded.get("size") != path.stat().st_size:
             raise ReleaseError(f"附件 {path.name} 上传未完成，Release 已保留为草稿。")
         server_digest = uploaded.get("digest")
         if server_digest and server_digest != "sha256:" + digest(path):
             raise ReleaseError(f"附件 {path.name} 上传校验失败，Release 已保留为草稿。")
         print(f"已上传：{path.name}", flush=True)
+    print("附件上传完成，正在发布 Release……", flush=True)
     published = github.request("PATCH", f"/releases/{release['id']}", {"draft": False, "make_latest": "true"})
     return tag, published["html_url"]
 

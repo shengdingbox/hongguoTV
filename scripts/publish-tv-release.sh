@@ -27,6 +27,7 @@ GitHub 认证复用本机 GH_TOKEN / GITHUB_TOKEN 或已保存的 GitHub Git 凭
   HONGGUOTV_BUILD_SSH_PORT   SSH 端口，默认 22
   HONGGUOTV_BUILD_TASKS_DIR  打包机上的构建任务目录
   HONGGUOTV_SSH_HELPER       可选的 SSH 认证 Python 脚本，接收远程命令作为唯一参数
+  HTTPS_PROXY / HTTP_PROXY  可选的 HTTP 代理，同步提供给打包机访问 GitHub
 
 当前机器若已安装 debain-server-auth 技能，默认服务器自动复用该技能的认证。
 其他环境使用 OpenSSH 已配置的密钥或交互式密码认证，并核对已知主机密钥。
@@ -92,7 +93,7 @@ sys.argv = ["publish-tv-release.py", *payload["arguments"]]
 exec(compile(payload["source"], "publish-tv-release.py", "exec"),
      {"__name__": "__main__", "__file__": "publish-tv-release.py"})
 '
-remote_command="python3 -c '$remote_bootstrap'"
+remote_command="python3 -u -c '$remote_bootstrap'"
 
 printf '连接打包服务器：%s，读取：%s\n' "$build_host" "$tasks_dir"
 python3 - "$publisher" "$tasks_dir" "$@" <<'PY' | "${ssh_command[@]}" "$remote_command"
@@ -115,7 +116,10 @@ json.dump({
     "arguments": ["--tasks-dir", sys.argv[2], *sys.argv[3:]],
     "environment": {
         key: os.environ[key]
-        for key in ("GITHUB_REPOSITORY", "RELEASE_TASK_ID", "RELEASE_NOTES")
+        for key in (
+            "GITHUB_REPOSITORY", "RELEASE_TASK_ID", "RELEASE_NOTES",
+            "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy",
+        )
         if key in os.environ
     },
 }, sys.stdout, ensure_ascii=False)

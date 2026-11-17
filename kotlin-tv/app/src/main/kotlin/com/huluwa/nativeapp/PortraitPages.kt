@@ -43,9 +43,9 @@ class PortraitPages(
     private fun row() = PortraitUi.row(activity)
     private fun lp(w: Int = -1, h: Int = -2) = PortraitUi.lp(w, h)
 
-    // 扣除列表外层缩进，使标题与排行榜、新剧的页头保持相同左边距。
+    // 扣除列表外层缩进，使标题与排行榜、新剧的页头保持相同边距。
     private fun listPageTitle(page: PortraitListPage, label: String) = PortraitUi.pageTitle(activity, label).apply {
-        setPadding(paddingLeft - page.horizontalContentPadding, paddingTop, paddingRight, paddingBottom)
+        setPadding(paddingLeft - page.horizontalContentPadding, paddingTop, paddingRight - page.horizontalContentPadding, paddingBottom)
     }
 
     fun home(page: PortraitListPage): (Boolean) -> Unit {
@@ -316,10 +316,10 @@ class PortraitPages(
         return feed
     }
 
-    private fun section(body: LinearLayout, title: String) {
+    private fun section(body: LinearLayout, title: String, horizontalPadding: Int) {
         body.addView(text(title, 20f).apply {
             setTypeface(null, Typeface.BOLD)
-            setPadding(dp(16), dp(16), dp(16), dp(10))
+            setPadding(horizontalPadding, dp(16), horizontalPadding, dp(10))
         }, lp())
     }
 
@@ -511,7 +511,8 @@ class PortraitPages(
     fun search(page: PortraitListPage, submit: (String) -> Unit): (Boolean) -> Unit {
         val body=column(); page.addBlock(body)
         var query = activity.phoneQueryText
-        val title = PortraitUi.pageTitle(activity, if (query.isBlank()) "热搜" else "“$query”")
+        val title = listPageTitle(page, if (query.isBlank()) "热搜" else "“$query”")
+        val horizontalPadding = title.paddingLeft
         body.addView(title, lp())
         val suggestions = column()
         val handler = Handler(Looper.getMainLooper())
@@ -575,7 +576,7 @@ class PortraitPages(
                 true
             } else false
         }
-        body.addView(bar, lp().apply { leftMargin = dp(16); rightMargin = dp(16); bottomMargin = dp(12) })
+        body.addView(bar, lp().apply { leftMargin = horizontalPadding; rightMargin = horizontalPadding; bottomMargin = dp(12) })
         body.addView(suggestions, lp())
         input.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -600,7 +601,7 @@ class PortraitPages(
                         val local = activity.phoneLibrary.searches().map { it.query }.filter { it.contains(prefix, ignoreCase = true) }
                         (words + local).distinct().take(8).forEach { word ->
                             suggestions.addView(text(word, 14f).apply {
-                                setPadding(dp(16), dp(13), dp(16), dp(13))
+                                setPadding(horizontalPadding, dp(13), horizontalPadding, dp(13))
                                 background = PortraitStyle.selectable(activity, Color.TRANSPARENT)
                                 setOnClickListener { search(word) }
                             }, lp())
@@ -620,14 +621,16 @@ class PortraitPages(
         body.addView(results,lp())
         val errorBody=column()
         results.addView(errorBody,lp())
-        val empty=PortraitUi.emptyHint(activity,"")
+        val empty=PortraitUi.emptyHint(activity,"").apply {
+            setPadding(horizontalPadding, paddingTop, horizontalPadding, paddingBottom)
+        }
         results.addView(empty,lp())
         val adapter=PortraitUi.PosterGrid(activity,loadCover,{ activity.openDetailPhone(it) },
             { activity.loadMorePhone() })
         page.addGrid(adapter)
         val hotBody=column()
         page.addBlock(hotBody)
-        val updateHotSearch=renderHotSearch(page,hotBody,::search)
+        val updateHotSearch=renderHotSearch(page,hotBody,horizontalPadding,::search)
         val historyBody=column()
         page.addBlock(historyBody)
         var shownError=""
@@ -653,7 +656,9 @@ class PortraitPages(
             if(shownError!=error) {
                 shownError=error
                 errorBody.removeAllViews()
-                if(error.isNotBlank()) errorBody.addView(PortraitUi.messageBlock(activity,error) { submit(query) },lp())
+                if(error.isNotBlank()) errorBody.addView(PortraitUi.messageBlock(activity,error) { submit(query) }.apply {
+                    setPadding(horizontalPadding, paddingTop, horizontalPadding, paddingBottom)
+                },lp())
             }
             empty.text=if(activity.phoneSearchActive) "正在搜索…"
                 else "没有找到“$query”相关的${activity.phoneLibrary.contentType.label}，换个词试试"
@@ -666,10 +671,10 @@ class PortraitPages(
                 shownHistory=history
                 historyBody.removeAllViews()
                 if(history.isNotEmpty()) {
-                    section(historyBody,"搜索历史")
+                    section(historyBody,"搜索历史",horizontalPadding)
                     history.forEach { recent ->
                         historyBody.addView(text(recent,14f).apply {
-                            setPadding(dp(16),dp(13),dp(16),dp(13))
+                            setPadding(horizontalPadding,dp(13),horizontalPadding,dp(13))
                             background=PortraitStyle.selectable(activity,Color.TRANSPARENT)
                             setOnClickListener { search(recent) }
                         },lp())
@@ -680,8 +685,10 @@ class PortraitPages(
     }
 
     /** 缓存首帧、联网刷新及切榜共用网格，只提交剧集差异。 */
-    private fun renderHotSearch(page: PortraitListPage,body: LinearLayout,search: (String)->Unit): (Boolean)->Unit {
-        val loading=PortraitUi.emptyHint(activity,"正在加载热搜…")
+    private fun renderHotSearch(page: PortraitListPage,body: LinearLayout,horizontalPadding: Int,search: (String)->Unit): (Boolean)->Unit {
+        val loading=PortraitUi.emptyHint(activity,"正在加载热搜…").apply {
+            setPadding(horizontalPadding, paddingTop, horizontalPadding, paddingBottom)
+        }
         body.addView(loading,lp())
         val errorBody=column()
         body.addView(errorBody,lp())
@@ -691,12 +698,12 @@ class PortraitPages(
             return adapter
         }
         val guesses=column()
-        section(guesses,"猜你想搜")
+        section(guesses,"猜你想搜",horizontalPadding)
         page.addBlock(guesses)
         val guessesAdapter=grid(false)
         val boards=column()
         val strip=HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled=false }
-        val choices=row().apply { setPadding(dp(16),dp(12),dp(16),dp(8)) }
+        val choices=row().apply { setPadding(horizontalPadding,dp(12),horizontalPadding,dp(8)) }
         strip.addView(choices)
         boards.addView(strip,lp())
         page.addBlock(boards)
@@ -717,7 +724,9 @@ class PortraitPages(
             if(shownError!=error) {
                 shownError=error
                 errorBody.removeAllViews()
-                if(error.isNotBlank()) errorBody.addView(PortraitUi.messageBlock(activity,error,activity::retryHotSearchPhone),lp())
+                if(error.isNotBlank()) errorBody.addView(PortraitUi.messageBlock(activity,error,activity::retryHotSearchPhone).apply {
+                    setPadding(horizontalPadding, paddingTop, horizontalPadding, paddingBottom)
+                },lp())
             }
             val guessItems=hot?.guesses.orEmpty().map { it.series }
             guesses.visibility=if(guessItems.isEmpty()) View.GONE else View.VISIBLE
@@ -758,7 +767,7 @@ class PortraitPages(
                 topics.removeAllViews()
                 nextTopics.forEachIndexed { index,topic ->
                     val line=row().apply {
-                        setPadding(dp(16),dp(14),dp(16),dp(14))
+                        setPadding(horizontalPadding,dp(14),horizontalPadding,dp(14))
                         background=PortraitStyle.selectable(activity,Color.TRANSPARENT)
                         setOnClickListener { search(topic.query) }
                         contentDescription="第 ${index+1} 名，${topic.title}，${topic.heat}"

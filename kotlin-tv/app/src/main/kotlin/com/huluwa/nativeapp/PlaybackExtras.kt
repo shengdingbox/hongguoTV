@@ -4,7 +4,7 @@ package com.huluwa.nativeapp
 import android.content.Context
 
 /**
- * 电视端本地播放增强设置：弹幕屏蔽词、按剧弹幕记忆、遥控器按键与不兼容集跳过。
+ * 电视端本地播放增强设置：弹幕屏蔽词、遥控器按键与不兼容集跳过。
  * 只保存在本机，换机后重新设置即可。
  */
 class PlaybackExtras(context: Context) {
@@ -16,13 +16,6 @@ class PlaybackExtras(context: Context) {
         set(value) { prefs.edit().putStringSet(KEY_BLOCKED, value.map { it.trim() }.filter { it.isNotEmpty() }.toSet()).apply() }
 
     fun blocks(text: String) = blockedWords.any { it.isNotEmpty() && text.contains(it, ignoreCase = true) }
-
-    /** 按剧记忆弹幕开关：全局开关仍是总闸，单剧可以关闭，默认跟随全局。 */
-    fun danmakuEnabled(seriesId: String, global: Boolean) = global && prefs.getBoolean(KEY_DANMAKU + seriesId, true)
-
-    fun setDanmakuEnabled(seriesId: String, on: Boolean) {
-        prefs.edit().putBoolean(KEY_DANMAKU + seriesId, on).apply()
-    }
 
     /** 平台只提供电视不可解码的清晰度时，自动跳到下一集（默认关闭，避免跳过用户想看的集数）。 */
     var autoSkipUnplayable: Boolean
@@ -52,7 +45,6 @@ class PlaybackExtras(context: Context) {
     companion object {
         private const val PREFS = "playback-extras-v1"
         private const val KEY_BLOCKED = "blockedWords"
-        private const val KEY_DANMAKU = "danmaku:"
         private const val KEY_AUTO_SKIP = "autoSkipUnplayable"
         private const val KEY_SEEK_STEP = "seekStepSeconds"
         private const val KEY_FAST_SPEED = "longPressSpeed"

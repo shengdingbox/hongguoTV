@@ -12,7 +12,6 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.widget.NestedScrollView
-import com.hongguotv.core.DanmakuPrefs
 import com.hongguotv.core.PlaybackSpeed
 
 /** 手机竖屏的 iOS 分组设置页；设置取值、落盘与操作仍复用原有桥接。 */
@@ -88,7 +87,6 @@ class PhoneSettings(private val activity: MainActivity) {
         signingSection(content)
         playbackSection(content)
         offlineSection(content)
-        danmakuSection(content)
         lookSection(content)
         deviceSection(content)
         aboutSection(content)
@@ -291,22 +289,6 @@ class PhoneSettings(private val activity: MainActivity) {
                 activity.phoneSetAutoSkip(!activity.phoneAutoSkip)
                 activity.phoneRefreshSettingsValues()
             })
-        }
-    }
-
-    private fun danmakuSection(parent: LinearLayout) {
-        section(parent, "弹幕", "调整官方弹幕的显示效果，屏蔽不想看到的内容。") { group ->
-            addRow(group, toggleRow("官方弹幕", { library.danmaku }) {
-                library.danmaku = !library.danmaku
-                activity.phoneApplyDanmakuPrefs()
-                activity.phoneRefreshSettingsValues()
-            })
-            addRow(group, row("不透明度", "${library.danmakuOpacity}%", { "${library.danmakuOpacity}%" }) { activity.phoneDanmakuOpacity() })
-            addRow(group, row("字体大小", DanmakuPrefs.fontLabel(library.danmakuFont), { DanmakuPrefs.fontLabel(library.danmakuFont) }) { activity.phoneDanmakuFont() })
-            addRow(group, row("移动速度", DanmakuPrefs.speedLabel(library.danmakuSpeed), { DanmakuPrefs.speedLabel(library.danmakuSpeed) }) { activity.phoneDanmakuSpeed() })
-            addRow(group, row("展示行数", "${library.danmakuRows} 行", { "${library.danmakuRows} 行" }) { activity.phoneDanmakuRows() })
-            addRow(group, row("屏蔽词", "${activity.phoneBlockedWordCount()} 个", { "${activity.phoneBlockedWordCount()} 个" }) { activity.phoneBlockedWords() })
-            addRow(group, row("恢复弹幕默认设置", actionColor = accent) { activity.phoneResetDanmakuPrefs() })
         }
     }
 

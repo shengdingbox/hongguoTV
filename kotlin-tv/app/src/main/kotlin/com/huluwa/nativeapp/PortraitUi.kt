@@ -83,9 +83,10 @@ object PortraitUi {
                 tag = "nav-label:${tab.key}"
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             }, lp(-2, -2).apply { topMargin = dp(activity, 2) })
-            nav.addView(item, lp(0, -1).apply { weight = 1f })
+            // 每项以 72dp 收拢宽度，窄屏时仍按权重均分可用空间。
+            nav.addView(item, lp(dp(activity, 72), -1).apply { weight = 1f })
         }
-        root.addView(nav, FrameLayout.LayoutParams(-1, dp(activity, 58), Gravity.BOTTOM).apply {
+        root.addView(nav, FrameLayout.LayoutParams(-2, dp(activity, 58), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
             leftMargin = dp(activity, 18)
             rightMargin = dp(activity, 18)
             bottomMargin = dp(activity, 12)

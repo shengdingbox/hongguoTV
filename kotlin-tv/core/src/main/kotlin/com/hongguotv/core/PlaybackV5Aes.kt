@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Adapted from fyworld/hongguoTV cca1d0fd (N3urda/hongguoTV 6672b55).
+// GPL-3.0-only derived; see the README 来源与声明 section.
 package com.hongguotv.core
 
 /** V5 Medusa 的专用载波，使用新 S 盒、轮密钥和位映射。 */

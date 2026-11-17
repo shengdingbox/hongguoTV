@@ -5,7 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** openhongguo PR #7 playback golden vectors. */
+/** 播放签名的上游基准测试向量（Apache-2.0）。 */
 class PlaybackSigningTest {
     @Test fun ladonMatchesGoldenVectors() {
         assertEquals(

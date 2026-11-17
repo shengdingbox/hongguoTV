@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Adapted from N3urda/hongguoTV 6672b55; GPL-3.0-only.
+// GPL-3.0-only derived; see the README 来源与声明 section.
 package com.hongguotv.core
 
-/** v04.10.03 协议常量；GPL 来源见 kotlin-tv/NOTICE.md。 */
+/** v04.10.03 协议常量；GPL 来源见根目录 README.md 的「来源与声明」。 */
 internal object PlaybackV5Constants {
     val magic = hex("2d4b4fca49750d433fb5ae2c226dcc56")
     const val license = "646637794"

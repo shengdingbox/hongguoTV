@@ -43,4 +43,4 @@
 
 参考 [README.md](README.md) 构建。发布密钥保存在发布机器本地，配置通过忽略的 `keystore.properties` 或环境变量读取，不提交到仓库。以后更新这个包名需保留同一发布密钥。GitHub CI 构建开发签名 APK；正式发布 APK 使用上述独立发布密钥在本机构建。
 
-协议移植来源、许可证及完整代码交付见 [NOTICE.md](NOTICE.md)。
+协议移植来源、许可证及完整代码交付见根目录 [README.md](../README.md) 的「来源与声明」。

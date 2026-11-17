@@ -4,7 +4,7 @@ package com.hongguotv.core
 /**
  * 签名原语：SM3、GF(2^8) 运算、魔改 AES-V3、protobuf 编码。
  *
- * 算法移植自 openhongguo `internal/protocol/sign`（GPL-3.0），
+ * 算法移植自某 GPL-3.0 授权的开源 Go 实现，
  * 已用其官方测试向量逐项校验（见 LocalSignerTest）。
  * 全部为纯本地计算，不依赖任何签名服务。
  */
@@ -185,7 +185,7 @@ internal fun aes128CbcDecrypt(key: ByteArray, iv: ByteArray, data: ByteArray): B
  * 红果客户端的定制 S 盒：4 份 256 字节表首尾拼接，共 1024 字节。
  *
  * 注意：这不是标准 AES 的 FIPS-197 S 盒，也不是按算法生成的标准盒——
- * 每一份都是上游硬编码的置换表（取自 openhongguo `const.go` 的 `sbox()`），
+ * 每一份都是上游硬编码的置换表（取自上游 `const.go` 的 `sbox()`），
  * `AesV3` 按 `khronos and 3` 选取其中一份。用标准盒会让签名结果与真机不一致。
  */
 internal object AesSBox {

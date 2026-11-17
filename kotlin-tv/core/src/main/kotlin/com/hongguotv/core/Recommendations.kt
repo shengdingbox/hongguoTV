@@ -18,7 +18,7 @@ data class RecommendationPage(val items: List<Series>, val cursor: Recommendatio
 /** 推荐首屏为空通常是临时限制或响应结构变化，不能当作已经加载完毕。 */
 class EmptyRecommendationException(val diagnostic: String) : IOException("暂时未取到推荐，请稍后重试")
 
-/** 对照开心果 iOS 所用 openhongguo 的 ParseDiscoverTab / ParseCellChange。 */
+/** 对照某 Apache-2.0 授权开源实现的 ParseDiscoverTab / ParseCellChange。 */
 internal object RecommendationParser {
     private fun rows(value: Any?): List<JSONObject> = when (value) {
         is JSONArray -> value.objects()

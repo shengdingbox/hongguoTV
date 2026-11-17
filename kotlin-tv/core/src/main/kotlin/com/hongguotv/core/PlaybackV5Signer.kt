@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Adapted from fyworld/hongguoTV cca1d0fd144cf28641952d691f986f82ce6f15ca,
-// originally N3urda/hongguoTV 6672b55 via tsukiyo-zero/hongguoTV 0236976.
+// GPL-3.0-only derived; see the README 来源与声明 section.
 package com.hongguotv.core
 
 import java.io.ByteArrayOutputStream

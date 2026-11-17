@@ -4,7 +4,7 @@ package com.hongguotv.core
 /**
  * 红果客户端请求签名（X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios）。
  *
- * 移植自 openhongguo `internal/protocol/sign`（GPL-3.0），
+ * 移植自某 GPL-3.0 授权的开源 Go 实现，
  * 已用其官方测试向量逐项校验（见 LocalSignerTest）。
  *
  * 与参考实现的差异：本文件只保留实际在用的路径——

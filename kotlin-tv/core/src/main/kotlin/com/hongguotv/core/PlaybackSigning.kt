@@ -17,7 +17,7 @@ import javax.crypto.spec.SecretKeySpec
  * 四字节时间戳占位会得到 HTTP 200 空响应。这里实现 Argus 551 信封和 34 轮 Ladon，
  * 只用于播放模型请求，其他接口继续使用 [RemoteSigner] 的通用六头签名。
  *
- * 移植自 openhongguo PR #7（Apache-2.0，bed14595d35b02e0d550270621812ca7386c4108）：
+ * 移植自某 Apache-2.0 授权开源实现的 PR：
  * - X-Argus：protobuf bean → Simon 64/128 → 掩码翻转 → 标准 AES-128-CBC
  * - X-Ladon：34 轮 ARX，密钥由 nonce + aid 的 MD5 派生
  * - 播放 POST 不携带 X-Medusa；video_tab GET 继续使用原有通用签名

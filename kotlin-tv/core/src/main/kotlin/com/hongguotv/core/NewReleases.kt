@@ -41,7 +41,7 @@ object NewReleaseCalendar {
     }
 }
 
-/** 字段协议对照 openhongguo 的 NewReleases（开心果 iOS 所用接口）。 */
+/** 字段协议对照某 Apache-2.0 授权开源实现的 NewReleases。 */
 internal object NewReleaseParser {
     fun parse(root: JSONObject, requestedDate: String, previous: NewReleaseCursor?): NewReleasePage {
         val data = root.optJSONObject("data") ?: throw IOException("新剧日历数据暂不可用")

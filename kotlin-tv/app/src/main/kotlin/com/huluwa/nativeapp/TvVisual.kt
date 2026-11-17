@@ -15,7 +15,7 @@ import android.graphics.Shader
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 
-/** TV browsing visuals adapted from N3urda/hongguoTV; drawn without bitmap assets or blur. */
+/** TV browsing visuals; drawn without bitmap assets or blur. */
 internal object TvVisual {
     private val night get() = TvStyle.theme == TvStyle.Theme.NIGHT
     private fun density(context: Context) = context.resources.displayMetrics.density

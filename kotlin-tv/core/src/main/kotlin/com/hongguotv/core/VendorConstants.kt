@@ -1,4 +1,4 @@
-// Derived from drpys 22261ad; GPL-3.0. See kotlin-tv/NOTICE.md.
+// GPL-3.0 derived; see README.md 的来源与声明 section.
 package com.hongguotv.core
 
 /**

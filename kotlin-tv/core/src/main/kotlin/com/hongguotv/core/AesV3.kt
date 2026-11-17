@@ -4,7 +4,7 @@ package com.hongguotv.core
 /**
  * 红果客户端使用的魔改 AES（AES-V3），用于 X-Medusa 的封装。
  *
- * 移植自 openhongguo `internal/protocol/sign/aes.go`（GPL-3.0）。
+ * 移植自某 GPL-3.0 授权的开源 Go 实现。
  * 与标准 AES 的差异：
  * - S 盒按 `khronos & 3` 选取 256 字节窗口（S 盒共 4 份拼接）；
  * - SubBytes 后额外按 con2 置换行，ShiftRows 使用固定的 16 项顺序表；

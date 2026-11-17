@@ -22,9 +22,8 @@
 | `RemoteSigner.kt` | 共用匿名设备档案与普通接口签名 |
 | `SharedPrefsSignerStore.kt`（app） | 本机匿名设备档案持久化 |
 
-V5 代码移植自 [fyworld/hongguoTV](https://github.com/fyworld/hongguoTV/tree/cca1d0fd144cf28641952d691f986f82ce6f15ca)
-的固定提交 `cca1d0fd144cf28641952d691f986f82ce6f15ca`（GPL-3.0-only）。其他签名算法来源与
-许可证见 [第三方声明](../kotlin-tv/NOTICE.md)。两套签名的 AES 常量及载波各自保存。
+V5 代码移植自 GPL-3.0-only 授权的开源实现，摘要与密钥处理保持原样。其他签名算法来源与
+许可证见根目录 [README.md](../README.md) 的「来源与声明」。两套签名的 AES 常量及载波各自保存。
 
 ## 工作方式
 

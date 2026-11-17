@@ -53,7 +53,7 @@ react-native-video 的 v6 文档列出 Android ExoPlayer、iOS / tvOS AVPlayer �
 1. **客户端直接接入**：若请求和媒体处理能够在目标 RN / 原生运行时可靠完成，可交付独立 APK。
 2. **客户端连接独立服务**：若仍依赖 Node 运行时或独立的媒体处理链路，可将服务部署在电脑 / NAS 等环境，各端配置服务地址。服务器部署位置和访问范围应在选择此模式时明确。
 
-既有研究中的 JavaScript 源依赖 Node 的 crypto、Buffer 及 drpys 运行时，不能因为同为 JavaScript 就直接视作 RN 可用模块。先验证最小调用链，再评估移植成本与服务部署成本。[已有源码研究](research/2026-09-21-hongguo-open-source.md)
+既有研究中的 JavaScript 源依赖 Node 的 crypto、Buffer 及对应运行时，不能因为同为 JavaScript 就直接视作 RN 可用模块。先验证最小调用链，再评估移植成本与服务部署成本。[已有源码研究](research/2026-09-21-hongguo-open-source.md)
 
 首版服务同时处理元数据和媒体代理，视频流量会经过服务。需要服务设备持续在线；电视设置服务地址后才能访问真实内容。分段读取与解码的验证记录见交付说明，长期带宽、资源占用和家庭 Wi-Fi 表现需继续测量。
 

@@ -16,7 +16,7 @@ import android.widget.ScrollView
 import android.widget.Space
 import android.widget.TextView
 
-/** TV side sheet adapted from N3urda/hongguoTV; only selecting a cell changes the episode. */
+/** TV side sheet; only selecting a cell changes the episode. */
 class EpisodePanel(
     private val activity: Activity, private val count: Int, private val current: Int,
     private val locate: (Int, View, (Int) -> Unit) -> Unit,

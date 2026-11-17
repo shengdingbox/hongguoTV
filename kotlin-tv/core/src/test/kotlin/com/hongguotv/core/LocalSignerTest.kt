@@ -8,7 +8,7 @@ import org.junit.Test
 /**
  * 本地签名算法测试。
  *
- * 向量取自 openhongguo `internal/protocol/sign/sign_test.go`（GPL-3.0），
+ * 向量取自上游参考实现的测试用例（GPL-3.0），
  * 其中 Gorgon / Helios / Medusa 的期望值是参考实现在真机上校验过的输出。
  * 这些测试保证本仓库的 Kotlin 移植与参考实现逐位一致。
  */
@@ -23,7 +23,7 @@ class LocalSignerTest {
 
     @Test fun aesSBoxMatchesUpstreamTable() {
         // 红果用的不是标准 AES S 盒：4 份 256 字节定制表，按 khronos & 3 取窗口。
-        // 前 16 字节取自 openhongguo const.go 的 sbox()。
+        // 前 16 字节取自上游 const.go 的 sbox()。
         val box = AesSBox.bytes
         assertEquals(1024, box.size)
         assertEquals(

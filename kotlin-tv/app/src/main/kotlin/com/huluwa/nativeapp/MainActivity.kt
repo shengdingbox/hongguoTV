@@ -31,6 +31,7 @@ import android.text.style.StyleSpan
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
@@ -1523,13 +1524,20 @@ class MainActivity: Activity() {
                     homeScreen?.refresh?.text="查看新推荐"
                     homeScreen?.refresh?.setOnClickListener { catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; showCatalog() }
                 } else if(requestTab==2 && requestPage==1 && !requestAi && rankFromCache) {
-                    // 用户正看着上次榜单：不打断焦点与滚动，刷新按钮换成查看新榜，按确认一次性换上
-                    // rankRefresh 字段按 View 持有（焦点链只用 View 语义），改文字前先转回 TextView
+                    // 缓存刷新保留正在看的旧榜；手动换新时走差异更新，不重建网格和图片控件。
                     (rankRefresh as? TextView)?.text="榜单已更新 · 按确认查看"
                     rankRefresh?.setOnClickListener {
                         // 缓存展示期间可能已翻页，换新后从第 1 页重新起算，避免续页跳页
+                        rememberCatalogFocus()
                         catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; page=1; rankFromCache=false
-                        showCatalog()
+                        rankSubtitle?.text=ranking?.updatedText?.ifBlank { "来源：红果${rankBoard.label}热播榜" } ?: "来源：红果${rankBoard.label}热播榜"
+                        val current=catalogAdapter
+                        if(current!=null && current.cols==gridColumns && catalogRecycler?.parent===body) {
+                            current.replaceItems(result.items,if(hasMore) FOOTER_NONE else FOOTER_END)
+                            restoreCatalogFocus()
+                        } else {
+                            body.removeAllViews(); catalogGrid(body,focusNav=true,focusType=false)
+                        }
                         rankRefresh?.post { if(rankRefresh?.isAttachedToWindow==true) rankRefresh?.requestFocus() }
                     }
                 } else {
@@ -1942,6 +1950,29 @@ class MainActivity: Activity() {
         /** displayed 中云端区的起始下标；云端卡角标、徽标与点击续播都走云端进度。 */
         var cloudStart=Int.MAX_VALUE
         var cloudRows: List<CloudProgress> = emptyList()
+        /** 电视榜单刷新复用已有卡片；相同条目不重绑，封面控件不会被整页销毁。 */
+        fun replaceItems(next: List<Series>, nextFooter: Int) {
+            val previous=displayed.toList()
+            val previousFooter=footer
+            val diff=DiffUtil.calculateDiff(object: DiffUtil.Callback() {
+                override fun getOldListSize()=previous.size+headers.size+if(previousFooter!=FOOTER_NONE) 1 else 0
+                override fun getNewListSize()=next.size+headers.size+if(nextFooter!=FOOTER_NONE) 1 else 0
+                override fun areItemsTheSame(oldPosition: Int,newPosition: Int): Boolean {
+                    val oldFooter=oldPosition==previous.size+headers.size
+                    val newFooter=newPosition==next.size+headers.size
+                    return oldFooter==newFooter && (oldFooter || isHeader(oldPosition)==isHeader(newPosition) &&
+                        (isHeader(oldPosition) || previous[displayedIndex(oldPosition)].id==next[displayedIndex(newPosition)].id))
+                }
+                override fun areContentsTheSame(oldPosition: Int,newPosition: Int): Boolean {
+                    if(isHeader(oldPosition) || isHeader(newPosition)) return headers[oldPosition]==headers[newPosition]
+                    if(isFooter(oldPosition) || isFooter(newPosition)) return previousFooter==nextFooter
+                    val before=previous[displayedIndex(oldPosition)]; val after=next[displayedIndex(newPosition)]
+                    return before==after && ranking?.positions?.get(before.id)==ranking?.positions?.get(after.id)
+                }
+            })
+            displayed.clear(); displayed.addAll(next); footer=nextFooter
+            diff.dispatchUpdatesTo(this)
+        }
         fun isHeader(position: Int)=headers.containsKey(position)
         fun isFooter(position: Int)=footer!=FOOTER_NONE && position==displayed.size+headers.size
         /** adapter 位置 → displayed 下标（前面每有一个分节标题就减一）。 */
@@ -2007,12 +2038,15 @@ class MainActivity: Activity() {
             if(getItemViewType(position)==TYPE_FOOTER) { bindFooter(holder.itemView as FrameLayout); return }
             holder as CardHolder
             val di=displayedIndex(position)
-            val item=displayed[di]; holder.boundId=item.id
+            val item=displayed[di]
+            val sameSeries=holder.boundId==item.id
+            holder.boundId=item.id
             val cloudRow=if(di>=cloudStart) cloudRows.getOrNull(di-cloudStart) else null
             if(di==0) resultFirstCard=holder.card
             val card=holder.card
             card.tag=item.id; card.contentDescription=item.title
-            loadCover(holder.image,item.cover)
+            // 排名或文案变化只更新文字；同一部剧的旧图保留到新封面就绪。
+            if(sameSeries) updatePhoneCover(holder.image,item.cover) else loadCover(holder.image,item.cover)
             // AI 剧分类复用的是片库卡片，没有名次与热度，按普通片库卡片展示
             val ranked=tab==2 && ranking!=null
             val rankPosition=if(ranked) ranking?.positions?.get(item.id) else null
@@ -2843,14 +2877,22 @@ class MainActivity: Activity() {
      * 首页需要 need_selector_panel 才能拿到续页 session，续页复用 loadMoreDiscovery。
      */
     private fun loadNewRelease(body: LinearLayout) {
-        message(body,"正在读取最新上架…")
+        if(catalog.isEmpty()) message(body,"正在读取最新上架…") else catalogGrid(body,focusNav=false,focusType=false)
         val selection=newReleaseSelection()
         discoverySelection=selection
         work({ repository.filteredDiscovery(selection,null) }, { result ->
+            rememberCatalogFocus()
             catalog=result.items; hasMore=result.next!=null; discoveryCursor=result.next; page=1; ranking=null
             rankSubtitle?.text="来源：红果${rankBoard.label} · 最新上架 · ${newReleaseLabel()}"
             val keepNav=nav.any { it.hasFocus() }
-            body.removeAllViews(); catalogGrid(body,keepNav,false)
+            val current=catalogAdapter
+            if(current!=null && current.cols==gridColumns && catalogRecycler?.parent===body) {
+                // 后台更新只移动或修改变化条目，不能移除整页再让所有封面重新加载。
+                current.replaceItems(result.items,if(hasMore) FOOTER_NONE else FOOTER_END)
+                restoreCatalogFocus()
+            } else {
+                body.removeAllViews(); catalogGrid(body,keepNav,false)
+            }
             main.post {
                 // 网格自己会在 layout 后把焦点放到卡片上，这里排到它之后再把焦点还回按钮
                 if(pendingNewReleaseFocus!=null) { catalogRecycler?.postDelayed({ consumePendingNewReleaseFocus() },80); return@post }
@@ -2859,12 +2901,18 @@ class MainActivity: Activity() {
                     rankSubtitle?.text="${newReleaseLabel()}内暂无${rankBoard.label}上新，按「时间」放宽范围"
                     newReleaseWindowButton?.requestFocus(); return@post
                 }
-                if(keepNav) nav[tab].requestFocus() else (resultFirstCard ?: newReleaseBack)?.requestFocus()
+                if(keepNav) nav[tab].requestFocus() else if(current==null) (resultFirstCard ?: newReleaseBack)?.requestFocus()
             }
         }, { problem ->
-            catalog=emptyList(); hasMore=false; discoveryCursor=null; pendingNewReleaseFocus=null
-            rankSubtitle?.text="上新加载失败"
-            body.removeAllViews(); error(body,problem) { showCatalog(true) }
+            if(catalog.isEmpty()) {
+                catalog=emptyList(); hasMore=false; discoveryCursor=null; pendingNewReleaseFocus=null
+                rankSubtitle?.text="上新加载失败"
+                body.removeAllViews(); error(body,problem) { showCatalog(true) }
+            } else {
+                rankSubtitle?.text="上新更新失败 · 当前显示上次结果"
+                catalogAdapter?.updateFooter(FOOTER_ERROR)
+                restoreCatalogFocus()
+            }
         })
     }
     private fun loadDiscovery(body: LinearLayout) {

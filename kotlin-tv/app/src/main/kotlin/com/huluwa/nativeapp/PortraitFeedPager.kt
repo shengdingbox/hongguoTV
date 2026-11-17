@@ -5,7 +5,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.widget.FrameLayout
-import android.widget.LinearLayout
 import androidx.core.view.NestedScrollingParent3
 import androidx.core.view.NestedScrollingParentHelper
 import androidx.core.view.ViewCompat
@@ -53,8 +52,18 @@ class PortraitFeedPager(
     val isRestoringPosition get() = isLayoutRequested || currentPage?.scroll?.isRestoringPosition != false
     val position get() = headerOffset + (currentPage?.scroll?.position ?: 0)
     private val scrollListener = ViewTreeObserver.OnScrollChangedListener { onPositionChanged?.invoke(position) }
+    // 与推荐页共用一个稳定的刷新容器，避免横向分页状态变化禁用或回收刷新动画。
+    // 标题折叠容器在它的外层，先消费展开标题的距离，再由原生刷新控件处理剩余下拉。
+    private val refreshLayout = PortraitUi.RefreshLayout(activity, pager, {
+        if (pager.scrollState == ViewPager2.SCROLL_STATE_IDLE) refresh() else finishRefresh()
+    }).apply {
+        setOnChildScrollUpCallback { _, _ ->
+            pager.scrollState != ViewPager2.SCROLL_STATE_IDLE || collapsed > 0 ||
+                currentPage?.scroll?.canScrollVertically(-1) != false
+        }
+    }
 
-    private class Page(val scroll: PortraitListPage, val refresh: PortraitUi.RefreshLayout, val update: () -> Unit)
+    private class Page(val scroll: PortraitListPage, val update: () -> Unit)
     private class Holder(val container: FrameLayout) : RecyclerView.ViewHolder(container) {
         var key: String? = null
         var page: Page? = null
@@ -82,7 +91,7 @@ class PortraitFeedPager(
         override fun onBindViewHolder(holder: Holder, position: Int) {
             val key = pageKeys[position]
             if (holder.key == key) {
-                holder.page?.let { updatePage(key, it) }
+                holder.page?.update?.invoke()
                 return
             }
             release(holder)
@@ -90,25 +99,19 @@ class PortraitFeedPager(
                 onPositionChanged = { this@PortraitFeedPager.onPositionChanged?.invoke(this@PortraitFeedPager.position) }
             }
             val update = buildPage(key, scroll)
-            // 每个分页独立包住下拉刷新，嵌套滚动直接到达，转圈动画不再受外层分页影响。
-            val refreshLayout = PortraitUi.RefreshLayout(activity, scroll, {
-                if (isCurrent(key)) refresh()
-            }).apply {
-                setOnChildScrollUpCallback { _, _ -> collapsed > 0 || scroll.canScrollVertically(-1) }
-            }
-            val page = Page(scroll, refreshLayout, update)
+            val page = Page(scroll, update)
             holder.key = key
             holder.page = page
             pages[key] = page
-            holder.container.addView(refreshLayout, LayoutParams(-1, -1))
-            updatePage(key, page)
+            holder.container.addView(scroll, LayoutParams(-1, -1))
+            page.update()
             positions[key]?.let { y -> scroll.post { if (pages[key] === page) scroll.restorePosition(y) } }
         }
         override fun onViewRecycled(holder: Holder) { release(holder) }
     }
 
     init {
-        addView(pager)
+        addView(refreshLayout)
         addView(header)
         pager.adapter = adapter
         pager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
@@ -177,14 +180,11 @@ class PortraitFeedPager(
         updatePages()
     }
 
-    private fun updatePage(key: String, page: Page) {
-        page.update()
-        page.refresh.isEnabled = isCurrent(key)
-        page.refresh.updateLoading(key == selected() && loading())
+    private fun updatePages() {
+        pages.values.toList().forEach { it.update() }
+        refreshLayout.updateLoading(loading())
     }
-
-    private fun updatePages() { pages.toMap().forEach { (key, page) -> updatePage(key, page) } }
-    fun finishRefresh() { pages.values.forEach { it.refresh.finishRefresh() } }
+    fun finishRefresh() { refreshLayout.finishRefresh() }
 
     /** 标题收起距离独立恢复，不能从列表滚动条的估算偏移反推。冷启动仍展开标题。 */
     fun restorePosition(y: Int, headerOffset: Int = 0, expandTitle: Boolean = false) {
@@ -210,13 +210,13 @@ class PortraitFeedPager(
         val exactWidth = MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY)
         header.measure(exactWidth, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED))
         val tabHeight = header.measuredHeight - titleView.measuredHeight
-        pager.measure(exactWidth, MeasureSpec.makeMeasureSpec((height - tabHeight).coerceAtLeast(0), MeasureSpec.EXACTLY))
+        refreshLayout.measure(exactWidth, MeasureSpec.makeMeasureSpec((height - tabHeight).coerceAtLeast(0), MeasureSpec.EXACTLY))
         setMeasuredDimension(width, height)
     }
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         collapsed = collapsed.coerceIn(0, titleView.measuredHeight)
         header.layout(0, -collapsed, width, header.measuredHeight - collapsed)
-        pager.layout(0, header.bottom, width, header.bottom + pager.measuredHeight)
+        refreshLayout.layout(0, header.bottom, width, header.bottom + refreshLayout.measuredHeight)
     }
 
     private fun moveHeader(dy: Int): Int {
@@ -225,7 +225,7 @@ class PortraitFeedPager(
         if (consumed != 0) {
             collapsed = next
             header.offsetTopAndBottom(-consumed)
-            pager.offsetTopAndBottom(-consumed)
+            refreshLayout.offsetTopAndBottom(-consumed)
             header.elevation = if (collapsed > 0) PortraitUi.dp(activity, 3).toFloat() else 0f
             onPositionChanged?.invoke(position)
         }

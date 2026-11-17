@@ -10,7 +10,7 @@ import com.bumptech.glide.RequestBuilder
 import com.bumptech.glide.RequestManager
 import com.bumptech.glide.load.engine.DiskCacheStrategy
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy
-import com.bumptech.glide.request.target.Target
+import com.bumptech.glide.request.Request
 import java.util.WeakHashMap
 
 /** 页面只记录自己绑定的控件；图片请求、缓存、解码和资源回收全部交给 Glide。 */
@@ -48,12 +48,10 @@ class GlideArtwork(private val context: Context) {
         request.into(view)
     }
 
-    /** 读取 Glide 绑定到控件的真实请求，不能只凭 Drawable 非空判断加载完成。 */
-    @Suppress("UNCHECKED_CAST")
+    /** ViewTarget 在指定 tag 中直接保存 Request，不是 Target；读取错误会让同图跳过重载永远失效。 */
     private fun isSameRequestComplete(view: ImageView): Boolean {
         val tag = runCatching { view.getTag(com.bumptech.glide.R.id.glide_custom_view_target_tag) }.getOrNull()
-        val target = tag as? Target<*> ?: return false
-        return target.request?.isComplete == true
+        return (tag as? Request)?.isComplete == true
     }
 
     fun clear(view: ImageView) {

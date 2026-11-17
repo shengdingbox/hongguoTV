@@ -6,6 +6,7 @@ import android.app.ActivityManager
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
+import android.os.SystemClock
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
@@ -396,8 +397,11 @@ object PortraitUi {
         scroll: View,
         refresh: () -> Unit,
         private val maxDurationMillis: Long = 0L,
+        private val minDurationMillis: Long = 0L,
     ) : SwipeRefreshLayout(activity) {
         private val refreshTimeout = Runnable { finishRefresh() }
+        private val finishAfterMinimum = Runnable { finishRefresh() }
+        private var refreshStartedAt = 0L
 
         init {
             setColorSchemeColors(PortraitStyle.accent)
@@ -406,6 +410,8 @@ object PortraitUi {
             setProgressViewOffset(true, -dp(activity, 40), dp(activity, 64))
             setOnChildScrollUpCallback { _, _ -> scroll.canScrollVertically(-1) }
             setOnRefreshListener {
+                refreshStartedAt = SystemClock.uptimeMillis()
+                removeCallbacks(finishAfterMinimum)
                 removeCallbacks(refreshTimeout)
                 if (maxDurationMillis > 0L) postDelayed(refreshTimeout, maxDurationMillis)
                 refresh()
@@ -415,11 +421,19 @@ object PortraitUi {
 
         /** 动画由下拉手势启动，首屏和分页加载不会主动弹出刷新圈。 */
         fun updateLoading(loading: Boolean) {
-            if (!loading) finishRefresh()
+            if (loading) return
+            val remaining = minDurationMillis - (SystemClock.uptimeMillis() - refreshStartedAt)
+            if (isRefreshing && refreshStartedAt != 0L && remaining > 0L) {
+                // 缓存或快速响应也保留一段可见的转圈时间，数据仍立即更新。
+                removeCallbacks(finishAfterMinimum)
+                postDelayed(finishAfterMinimum, remaining)
+            } else finishRefresh()
         }
 
         fun finishRefresh() {
             removeCallbacks(refreshTimeout)
+            removeCallbacks(finishAfterMinimum)
+            refreshStartedAt = 0L
             isRefreshing = false
         }
 

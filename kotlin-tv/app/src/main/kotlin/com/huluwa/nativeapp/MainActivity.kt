@@ -6031,7 +6031,7 @@ class MainActivity: Activity() {
         val pager: PortraitFeedPager?=null,
     ) {
         val position get() = pager?.position ?: scroll?.position ?: 0
-        fun finishRefresh() { refreshLayout?.finishRefresh(); pager?.finishRefresh() }
+        fun finishRefresh() { refreshLayout?.finishRefresh() }
     }
     private val retainedPhoneCatalogs=mutableMapOf<String,RetainedPhoneCatalog>()
     private var phoneNavigationTab: String?=null
@@ -6122,15 +6122,19 @@ class MainActivity: Activity() {
         val (frame,content,nav)=PortraitUi.scaffold(this,phoneTab,::switchPhoneTab,phoneNavigationTab)
         previousNavigation?.let { (nav as? PortraitGlassNavigation)?.continueFrom(it) }
         val feedPager=when(phoneTab) {
-            "rank" -> portraitPages.rankPager(::refreshPortraitFeed)
-            "new" -> portraitPages.newReleasesPager(::refreshPortraitFeed)
+            "rank" -> portraitPages.rankPager()
+            "new" -> portraitPages.newReleasesPager()
             else -> null
         }
         val scroll=if(feedPager!=null) null else PortraitListPage(this)
         var refreshLayout: PortraitUi.RefreshLayout?=null
         val update: ((Boolean) -> Unit)?
         if(feedPager!=null) {
-            content.addView(feedPager,lp(-1,0).apply { weight=1f })
+            // 与推荐页使用相同的外层刷新容器，分页容器负责转发标题消费后的剩余滚动。
+            refreshLayout=PortraitUi.RefreshLayout(this,feedPager,::refreshPortraitFeed,minDurationMillis=600L).apply {
+                setOnChildScrollUpCallback { _, _ -> feedPager.canScrollUp }
+            }
+            content.addView(refreshLayout,lp(-1,0).apply { weight=1f })
             feedPager.onPositionChanged={ y ->
                 if(feedPager.isShown && phoneTab==renderedTab && screen=="catalog") phoneScrollY=y
             }

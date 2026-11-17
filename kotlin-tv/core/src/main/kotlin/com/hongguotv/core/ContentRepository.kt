@@ -93,8 +93,6 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     private val site = "https://hongguoduanju.com"
     /** 红果官方 App 的 JSON 网关；签名与设备身份由 [RemoteSigner] 统一补齐。 */
     private val API = "https://api5-normal-sinfonlinea.fqnovel.com"
-    /** 短剧榜单页面的书城 cell：电视与手机排行榜共用同一份官方目录。 */
-    private companion object { const val RANK_CELL_ID = "7470092475068071998" }
     // 点击卡片后的关键请求独立限时，复用连接池；不继承普通内容请求最长 45 秒的等待。
     private val detailHttp by lazy {
         http.newBuilder()
@@ -1380,6 +1378,8 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // （1=现行为，3=官方档位；preferAlt=优先 reading.snssdk.com 备用主机）。
         private val RETRY_PLANS=listOf(1 to true, 3 to false)
         private const val LEVEL_KEY="__level"
+        // 短剧榜单页面的书城 cell：电视与手机排行榜共用同一份官方目录。
+        private const val RANK_CELL_ID="7470092475068071998"
         fun extractRouter(html: String): JSONObject {
             val marker=html.indexOf("_ROUTER_DATA"); if(marker<0) throw IOException("页面没有内容数据")
             val first=html.indexOf('{',marker); if(first<0) throw IOException("页面数据格式错误")

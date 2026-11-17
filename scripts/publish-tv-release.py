@@ -161,8 +161,7 @@ def prepare_assets(directory, result, output):
     minimum_sdk = result.get("minSdk")
     if type(minimum_sdk) is not int or minimum_sdk < 21:
         raise ReleaseError("构建记录中的最低 Android SDK 无效。")
-    suffix = {21: "android5", 26: "android8"}.get(minimum_sdk, f"android-api{minimum_sdk}")
-    apk_name = f"hongguotv-kotlin-{version}-{suffix}.apk"
+    apk_name = f"hongguotv-kotlin-{version}.apk"
     source = directory / name
     if source.is_symlink() or not source.is_file():
         raise ReleaseError(f"构建任务 {directory.name} 的 APK 已不存在。")
@@ -177,11 +176,7 @@ def prepare_assets(directory, result, output):
         ) if key in result
     }
     metadata.update(taskId=int(directory.name), artifactName=apk_name, sourceArtifactName=name)
-    info = output / "build-info.json"
-    info.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    sums = output / "SHA256SUMS"
-    sums.write_text("".join(f"{digest(path)}  {path.name}\n" for path in (apk, info)), encoding="utf-8")
-    return [apk, info, sums], metadata
+    return [apk], metadata
 
 
 def check_tag(github, tag, commit):
@@ -232,7 +227,7 @@ def release_notes(metadata, notes):
         f"- 最低系统：Android API {metadata['minSdk']}",
         f"- APK SHA-256：`{metadata['sha256']}`",
         "",
-        "请在本 Release 的 Assets 中下载 APK；同时提供 build-info.json 和 SHA256SUMS 校验文件。",
+        "请在本 Release 的 Assets 中下载 APK。",
         "APK 来自打包服务器已成功完成的签名构建。",
     ]
     return "\n".join(details)
@@ -330,9 +325,8 @@ def publish(github, assets, metadata, notes, dry_run=False):
             if existing:
                 github.request("DELETE", f"/releases/assets/{existing['id']}", missing_ok=True)
             url = upload_url + "?" + urllib.parse.urlencode({"name": path.name})
-            content_type = "application/vnd.android.package-archive" if path.suffix == ".apk" else "application/octet-stream"
             uploaded = github.request(
-                "POST", url, path.read_bytes(), content_type,
+                "POST", url, path.read_bytes(), "application/vnd.android.package-archive",
                 recover=lambda: recover_upload(github, release["id"], path),
             )
             if not asset_matches(uploaded, path):
@@ -347,7 +341,7 @@ def publish(github, assets, metadata, notes, dry_run=False):
         if missing:
             raise ReleaseError("Release 的 Assets 中缺少完整附件：" + "、".join(missing))
         if is_draft:
-            print("APK 和配套附件已上传到 Assets，正在正式发布 Release 并设为 Latest……", flush=True)
+            print("APK 已上传到 Assets，正在正式发布 Release 并设为 Latest……", flush=True)
             published = github.request("PATCH", f"/releases/{release['id']}", {"draft": False, "make_latest": "true"})
             if published.get("draft", True):
                 raise ReleaseError("GitHub 返回的 Release 仍为草稿。")

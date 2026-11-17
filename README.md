@@ -12,8 +12,9 @@
 
 | 安装包 | 系统要求 |
 | --- | --- |
-| 文件名以 `-android8.apk` 结尾 | Android 8.0 及以上，默认版本 |
-| 文件名以 `-android5.apk` 结尾 | Android 5.0–7.x 兼容版本 |
+| `hongguotv-kotlin-<版本号>.apk` | Android 8.0 及以上，当前默认版本 |
+| 历史版本中以 `-android8.apk` 结尾的文件 | Android 8.0 及以上 |
+| 历史版本中以 `-android5.apk` 结尾的文件 | Android 5.0–7.x 兼容版本 |
 
 APK 不区分 CPU 架构：安装包不包含 ARM、x86 等架构专用的 JNI 库，可在 ARM32、ARM64、x86、x86_64 设备上运行，实际视频解码能力取决于设备。
 

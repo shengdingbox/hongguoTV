@@ -814,13 +814,16 @@ class MainActivity: Activity() {
         if(title!=null) { val heading=row(); PageBackButton.addTo(heading) { goBack() }; heading.addView(text(title,22f).apply { setTypeface(null,Typeface.BOLD); gravity=Gravity.CENTER_VERTICAL },lp(0,dp(44)).apply { weight=1f }); container.addView(heading) }
         return container
     }
-    private fun loadCover(view: ImageView,url: String) {
+    private fun loadCover(view: ImageView,url: String) = loadCoverFrom(view,url,"other")
+    private fun loadCoverFrom(view: ImageView,url: String,src: String) {
         var ancestor: View?=view
         var focused=false
         while(ancestor!=null && ancestor!==root) {
             if(ancestor.isFocused) { focused=true; break }
             ancestor=ancestor.parent as? View
         }
+        val viewId = Integer.toHexString(System.identityHashCode(view))
+        RuntimeLog.add("IMG call src=$src v=$viewId focused=$focused url=…${artwork.identity(url).takeLast(20)}")
         artwork.load(view,url,if(focused) Priority.HIGH else Priority.NORMAL)
     }
     /** 卡片差异和图片绑定共用封面身份，CDN 临时签名变化不参与比较。 */
@@ -2048,7 +2051,7 @@ class MainActivity: Activity() {
             val card=holder.card
             card.tag=item.id; card.contentDescription=item.title
             // 排名或文案变化只更新文字；同一部剧的旧图保留到新封面就绪。
-            if(sameSeries) updatePhoneCover(holder.image,item.cover) else loadCover(holder.image,item.cover)
+            if(sameSeries) updatePhoneCover(holder.image,item.cover) else loadCoverFrom(holder.image,item.cover,"bind")
             // AI 剧分类复用的是片库卡片，没有名次与热度，按普通片库卡片展示
             val ranked=tab==2 && ranking!=null
             val rankPosition=if(ranked) ranking?.positions?.get(item.id) else null
@@ -2101,7 +2104,10 @@ class MainActivity: Activity() {
                     val last=holder.image.getTag(focusReloadTagKey) as? Long ?: 0L
                     if(now-last>=300L) {
                         holder.image.setTag(focusReloadTagKey,now)
-                        loadCover(holder.image,item.cover)
+                        loadCoverFrom(holder.image,item.cover,"focus")
+                    } else {
+                        val viewId = Integer.toHexString(System.identityHashCode(holder.image))
+                        RuntimeLog.add("IMG call src=focus v=$viewId 防抖跳过(${now-last}ms)")
                     }
                     selectionPreview?.show(item,selectionStatus(item))
                 }
@@ -6020,7 +6026,7 @@ class MainActivity: Activity() {
         val pager: PortraitFeedPager?=null,
     ) {
         val position get() = pager?.position ?: scroll?.position ?: 0
-        fun finishRefresh() { refreshLayout?.finishRefresh() }
+        fun finishRefresh() { refreshLayout?.finishRefresh(); pager?.finishRefresh() }
     }
     private val retainedPhoneCatalogs=mutableMapOf<String,RetainedPhoneCatalog>()
     private var phoneNavigationTab: String?=null
@@ -6111,18 +6117,15 @@ class MainActivity: Activity() {
         val (frame,content,nav)=PortraitUi.scaffold(this,phoneTab,::switchPhoneTab,phoneNavigationTab)
         previousNavigation?.let { (nav as? PortraitGlassNavigation)?.continueFrom(it) }
         val feedPager=when(phoneTab) {
-            "rank" -> portraitPages.rankPager()
-            "new" -> portraitPages.newReleasesPager()
+            "rank" -> portraitPages.rankPager(::refreshPortraitFeed)
+            "new" -> portraitPages.newReleasesPager(::refreshPortraitFeed)
             else -> null
         }
         val scroll=if(feedPager!=null) null else PortraitListPage(this)
         var refreshLayout: PortraitUi.RefreshLayout?=null
         val update: ((Boolean) -> Unit)?
         if(feedPager!=null) {
-            refreshLayout=PortraitUi.RefreshLayout(this,feedPager,::refreshPortraitFeed).apply {
-                setOnChildScrollUpCallback { _, _ -> feedPager.canScrollUp }
-            }
-            content.addView(refreshLayout,lp(-1,0).apply { weight=1f })
+            content.addView(feedPager,lp(-1,0).apply { weight=1f })
             feedPager.onPositionChanged={ y ->
                 if(feedPager.isShown && phoneTab==renderedTab && screen=="catalog") phoneScrollY=y
             }

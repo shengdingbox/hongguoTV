@@ -3,15 +3,21 @@ package com.huluwa.nativeapp
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.drawable.Drawable
 import android.widget.ImageView
 import com.bumptech.glide.Glide
 import com.bumptech.glide.Priority
 import com.bumptech.glide.RequestBuilder
 import com.bumptech.glide.RequestManager
+import com.bumptech.glide.load.DataSource
 import com.bumptech.glide.load.engine.DiskCacheStrategy
+import com.bumptech.glide.load.engine.GlideException
 import com.bumptech.glide.load.resource.bitmap.DownsampleStrategy
 import com.bumptech.glide.request.Request
+import com.bumptech.glide.request.RequestListener
+import com.bumptech.glide.request.target.Target
 import java.util.WeakHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /** 页面只记录自己绑定的控件；图片请求、缓存、解码和资源回收全部交给 Glide。 */
 class GlideArtwork(private val context: Context) {
@@ -28,20 +34,24 @@ class GlideArtwork(private val context: Context) {
         val identity = identity(url)
         val previous = bound[view]
         val showing = view.drawable
+        val short = identity.takeLast(20)
+        val viewId = Integer.toHexString(System.identityHashCode(view))
         if (previous == identity && (keepCurrentImage || showing != null) && isSameRequestComplete(view)) {
-            // 文案变化或 CDN 签名轮换都不重新绑定已显示的相同封面。
-            // 加载中或失败的请求不跳过，前者继续加载，后者仍可按原路径重试。
+            RuntimeLog.add("IMG skip v=$viewId id=…$short showing=${showing != null}")
             return
         }
         if (previous == identity && showing != null) {
             // 同一封面仍在加载或上次失败：直接重试，绝不让 Glide 清空当前显示。
             // 焦点抖动、DiffUtil 局部刷新、签名轮换后重绑都会命中这里。
+            RuntimeLog.add("IMG retry v=$viewId id=…$short (上次未完成,保旧图)")
             val retry = coverRequest(requests, url, priority)
             retry.placeholder(showing)
+            retry.listener(traceListener(viewId, short, "retry"))
             retry.into(view)
             return
         }
         bound[view] = identity
+        RuntimeLog.add("IMG into v=$viewId id=…$short prev=${previous?.takeLast(8) ?: "null"} showing=${showing != null} keep=$keepCurrentImage")
         val request = coverRequest(requests, url, priority)
         if (keepCurrentImage && previous != null && previous != identity) {
             // 切季时用 Glide 自己持有上一张资源，避免把位图池中的图片当成普通 Drawable 保存。
@@ -55,7 +65,24 @@ class GlideArtwork(private val context: Context) {
             // 防止 into(view) 默认 clear 造成的瞬时白屏。
             request.placeholder(showing)
         }
+        request.listener(traceListener(viewId, short, "into"))
         request.into(view)
+    }
+
+    /** 监听每次 into/retry 真正的资源到位/失败，定位"旧图被替换/清空"的瞬间。 */
+    private fun traceListener(viewId: String, shortId: String, tag: String): RequestListener<Bitmap> {
+        val seq = traceSeq.incrementAndGet()
+        RuntimeLog.add("IMG #$seq $tag-req v=$viewId id=…$shortId")
+        return object : RequestListener<Bitmap> {
+            override fun onLoadFailed(e: GlideException?, model: Any?, target: Target<Bitmap>, isFirstResource: Boolean): Boolean {
+                RuntimeLog.add("IMG #$seq $tag-FAIL v=$viewId id=…$shortId err=${e?.javaClass?.simpleName}")
+                return false
+            }
+            override fun onResourceReady(resource: Bitmap, model: Any?, target: Target<Bitmap>, dataSource: DataSource, isFirstResource: Boolean): Boolean {
+                RuntimeLog.add("IMG #$seq $tag-OK v=$viewId id=…$shortId src=$dataSource ${resource.width}x${resource.height}")
+                return false
+            }
+        }
     }
 
     /** ViewTarget 在指定 tag 中直接保存 Request，不是 Target；读取错误会让同图跳过重载永远失效。 */
@@ -65,12 +92,16 @@ class GlideArtwork(private val context: Context) {
     }
 
     fun clear(view: ImageView) {
+        val viewId = Integer.toHexString(System.identityHashCode(view))
+        RuntimeLog.add("IMG clear v=$viewId had=${view.drawable != null}")
         bound.remove(view)
         requests.clear(view)
         view.setImageDrawable(null)
     }
 
     fun clearPage(clearMemory: Boolean = false) {
+        val n = bound.size
+        RuntimeLog.add("IMG clearPage n=$n clearMem=$clearMemory caller=${Throwable().stackTrace.getOrNull(1)?.let { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }}")
         bound.keys.toList().forEach(::clear)
         if (clearMemory) Glide.get(context).clearMemory()
     }
@@ -78,6 +109,8 @@ class GlideArtwork(private val context: Context) {
     fun close() { closed = true; clearPage() }
 
     companion object {
+        /** 请求序列号：追踪一次 into/retry 到最终 OK/FAIL 的完整链路。 */
+        private val traceSeq = AtomicLong(0)
         /** 展示和 RecyclerViewPreloader 共用选项，尺寸由实际 ImageView 提供，缓存键保持一致。 */
         fun coverRequest(requests: RequestManager, url: String, priority: Priority = Priority.NORMAL): RequestBuilder<Bitmap> =
             requests.asBitmap().load(ArtworkUrl(url))

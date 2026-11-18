@@ -5543,9 +5543,8 @@ class MainActivity: Activity() {
     }
     /** 切集时该集上次看到的坐标；没有记录（没看过或已看完）返回 0，即从头播。 */
     private fun savedPosition(index: Int): Long = episodeKey(index)?.let { episodePositions[it] } ?: 0L
-    /** Starts the official-comment overlay for the current episode; safe to call repeatedly. */
+    /** Starts the official-comment overlay for online or local playback; safe to call repeatedly. */
     private fun startDanmaku() {
-        if (offlineOnly) return
         val layer=danmakuView ?: return
         val data=detail ?: return
         val p=player

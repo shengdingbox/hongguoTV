@@ -246,12 +246,10 @@ def is_merge_commit(commit):
 
 
 def commit_changes(github, tag, commit):
-    """找出上一个正式发布的提交，列出两个版本之间新增的提交。
+    """列出上一个正式版本到本次构建提交之间的新增提交。
 
-    返回 (上一版本标签, 提交列表)；上一版本不存在时标签为 None，
-    退化为列出该提交之前的提交历史。
+    找不到可对比的版本时，退化为列出该提交之前的提交历史。
     """
-    previous_tag = None
     base_commit = None
     commits = []
     comparison = None
@@ -270,11 +268,11 @@ def commit_changes(github, tag, commit):
         # status 为 ahead 表示上一版本的提交是本次提交的祖先，可直接对比。
         if not compared or compared.get("status") != "ahead":
             continue
-        previous_tag, base_commit, comparison = release["tag_name"], candidate, compared
+        base_commit, comparison = candidate, compared
         commits = compared.get("commits") or []
         break
 
-    if previous_tag is None:
+    if base_commit is None:
         # 没有可对比的版本，退化为列出该提交之前的提交历史。
         page = 1
         while page <= 10:
@@ -285,7 +283,7 @@ def commit_changes(github, tag, commit):
                     1 for item in commits if not is_merge_commit(item)) >= MAX_LISTED_COMMITS:
                 break
             page += 1
-        return None, commits
+        return commits
 
     # compare 单页最多 100 条，按页补齐直到够用。
     span = urllib.parse.quote(f"{base_commit}...{commit}", safe="")
@@ -301,10 +299,11 @@ def commit_changes(github, tag, commit):
             break
         commits.extend(batch)
         page += 1
-    return previous_tag, commits
+    return commits
 
 
-def format_changes(previous_tag, commits):
+def format_changes(commits):
+    """把提交列表渲染为 Release 正文片段，合并记录不列出。"""
     # 去掉合并记录并按提交时间倒序，最新的改动排在最前。
     seen = set()
     changes = []
@@ -315,11 +314,6 @@ def format_changes(previous_tag, commits):
         seen.add(sha)
         changes.append(commit)
     lines = ["## 本次更新", ""]
-    if previous_tag:
-        lines.append(f"对比上一版本 `{previous_tag}` 新增 {len(changes)} 条提交（不含合并记录）：")
-    else:
-        lines.append(f"本版本之前的 {len(changes)} 条提交（不含合并记录）：")
-    lines.append("")
     if not changes:
         lines.append("- 没有新增的功能改动。")
         return lines
@@ -335,13 +329,13 @@ def format_changes(previous_tag, commits):
     return lines
 
 
-def release_notes(metadata, notes, changes):
+def release_notes(metadata, notes, commits):
     details = [f"红果 TV {metadata['versionName']}", ""]
     custom = notes.strip()
     if custom:
         details.extend([custom, ""])
-    if changes:
-        details.extend(format_changes(*changes))
+    if commits is not None:
+        details.extend(format_changes(commits))
         details.append("")
     details.extend([
         "## 构建信息",
@@ -398,17 +392,17 @@ def publish(github, assets, metadata, notes, dry_run=False):
         raise ReleaseError("APK 对应的源码提交尚未同步到 GitHub，请先推送该提交。")
     check_tag(github, tag, metadata["commit"])
     release = find_release(github, tag)
-    # 说明正文会把本次构建的提交与上一个正式版本对比，列出新增提交（不含合并记录）。
+    # 说明正文列出上一个正式版本以来的新增提交（不含合并记录）。
     if release is None or release["draft"]:
         print("读取上一版本以来的提交记录……", flush=True)
-        changes = commit_changes(github, tag, metadata["commit"])
+        commits = commit_changes(github, tag, metadata["commit"])
     else:
-        changes = None
+        commits = None
     fields = {
         "tag_name": tag,
         "target_commitish": metadata["commit"],
         "name": f"红果 TV {metadata['versionName']}",
-        "body": release_notes(metadata, notes, changes),
+        "body": release_notes(metadata, notes, commits),
         "draft": True,
         "prerelease": False,
     }
@@ -416,7 +410,7 @@ def publish(github, assets, metadata, notes, dry_run=False):
         old_assets = {
             item["name"]: item for item in list_release_assets(github, release["id"])
         } if release else {}
-        if changes is not None:
+        if commits is not None:
             print("--- 发布说明预览 ---", flush=True)
             print(fields["body"], flush=True)
             print("--- 发布说明预览结束 ---", flush=True)

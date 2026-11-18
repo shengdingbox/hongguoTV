@@ -21,6 +21,8 @@ import urllib.request
 API_URL = "https://api.github.com"
 DEFAULT_TASKS = "/build-data/tasks"
 DEFAULT_REPOSITORY = "superhuluwa/hongguoTV"
+# 发布说明里最多列出的提交条数，避免一次跨越多个版本时正文过长。
+MAX_LISTED_COMMITS = 50
 
 
 class ReleaseError(Exception):
@@ -179,19 +181,29 @@ def prepare_assets(directory, result, output):
     return [apk], metadata
 
 
-def check_tag(github, tag, commit):
+def tag_commit(github, tag):
+    """返回 (标签是否存在, 标签指向的提交哈希或 None)，附注标签会逐层剥开到提交。"""
     reference = "/git/ref/tags/" + urllib.parse.quote(tag, safe="")
     existing = github.request("GET", reference, missing_ok=True)
     if existing is None:
-        # GitHub creates a missing tag from target_commitish when publishing the
-        # Release. Do not leave a standalone tag if creating the draft fails.
-        return
+        return False, None
     target = existing["object"]
     for _ in range(10):
         if target["type"] != "tag":
             break
         target = github.request("GET", "/git/tags/" + target["sha"])["object"]
-    if target["type"] != "commit" or target["sha"] != commit:
+    return True, target["sha"] if target["type"] == "commit" else None
+
+
+def check_tag(github, tag, commit):
+    exists, existing_commit = tag_commit(github, tag)
+    if not exists:
+        # GitHub creates a missing tag from target_commitish when publishing the
+        # Release. Do not leave a standalone tag if creating the draft fails.
+        return
+    if existing_commit is None:
+        raise ReleaseError(f"标签 {tag} 不是提交标签，已停止发布。")
+    if existing_commit != commit:
         raise ReleaseError(f"标签 {tag} 已指向其他提交，已停止发布。")
 
 
@@ -214,22 +226,136 @@ def find_release(github, tag):
         page += 1
 
 
-def release_notes(metadata, notes):
-    details = [
-        f"红果 TV {metadata['versionName']}",
-        "",
-        notes.strip() or metadata.get("commitSubject", "打包服务器签名构建。"),
+def list_releases(github):
+    releases = []
+    page = 1
+    while True:
+        batch = github.request("GET", f"/releases?per_page=100&page={page}")
+        releases.extend(batch)
+        if len(batch) < 100:
+            return releases
+        page += 1
+
+
+def is_merge_commit(commit):
+    """合并提交一律不计入更新列表。"""
+    if len((commit.get("parents") or [])) > 1:
+        return True
+    message = (commit.get("commit") or {}).get("message", "")
+    return message.startswith("Merge ")
+
+
+def commit_changes(github, tag, commit):
+    """找出上一个正式发布的提交，列出两个版本之间新增的提交。
+
+    返回 (上一版本标签, 提交列表)；上一版本不存在时标签为 None，
+    退化为列出该提交之前的提交历史。
+    """
+    previous_tag = None
+    base_commit = None
+    commits = []
+    comparison = None
+    # /releases 按创建时间倒序返回，取第一个仍是本次提交祖先的正式 Release，
+    # 这样补发旧构建时不会拿比它更新的版本当作对比基准。
+    for release in list_releases(github):
+        if release.get("draft") or release.get("prerelease"):
+            continue
+        if release.get("tag_name") == tag:
+            continue
+        exists, candidate = tag_commit(github, release["tag_name"])
+        if not exists or not candidate or candidate == commit:
+            continue
+        span = urllib.parse.quote(f"{candidate}...{commit}", safe="")
+        compared = github.request("GET", f"/compare/{span}?per_page=100", missing_ok=True)
+        # status 为 ahead 表示上一版本的提交是本次提交的祖先，可直接对比。
+        if not compared or compared.get("status") != "ahead":
+            continue
+        previous_tag, base_commit, comparison = release["tag_name"], candidate, compared
+        commits = compared.get("commits") or []
+        break
+
+    if previous_tag is None:
+        # 没有可对比的版本，退化为列出该提交之前的提交历史。
+        page = 1
+        while page <= 10:
+            batch = github.request(
+                "GET", f"/commits?sha={urllib.parse.quote(commit)}&per_page=100&page={page}")
+            commits.extend(batch)
+            if len(batch) < 100 or sum(
+                    1 for item in commits if not is_merge_commit(item)) >= MAX_LISTED_COMMITS:
+                break
+            page += 1
+        return None, commits
+
+    # compare 单页最多 100 条，按页补齐直到够用。
+    span = urllib.parse.quote(f"{base_commit}...{commit}", safe="")
+    page = 2
+    while page <= 10:
+        if len(commits) >= (comparison.get("total_commits") or 0):
+            break
+        if sum(1 for item in commits if not is_merge_commit(item)) >= MAX_LISTED_COMMITS:
+            break
+        batch = github.request("GET", f"/compare/{span}?per_page=100&page={page}") \
+            .get("commits") or []
+        if not batch:
+            break
+        commits.extend(batch)
+        page += 1
+    return previous_tag, commits
+
+
+def format_changes(previous_tag, commits):
+    # 去掉合并记录并按提交时间倒序，最新的改动排在最前。
+    seen = set()
+    changes = []
+    for commit in reversed(commits):
+        sha = commit.get("sha") or ""
+        if sha in seen or is_merge_commit(commit):
+            continue
+        seen.add(sha)
+        changes.append(commit)
+    lines = ["## 本次更新", ""]
+    if previous_tag:
+        lines.append(f"对比上一版本 `{previous_tag}` 新增 {len(changes)} 条提交（不含合并记录）：")
+    else:
+        lines.append(f"本版本之前的 {len(changes)} 条提交（不含合并记录）：")
+    lines.append("")
+    if not changes:
+        lines.append("- 没有新增的功能改动。")
+        return lines
+    for commit in changes[:MAX_LISTED_COMMITS]:
+        sha = (commit.get("sha") or "")[:7]
+        subject = (commit.get("commit") or {}).get("message", "").splitlines()
+        title = subject[0].strip() if subject else ""
+        lines.append(f"- `{sha}` {title}")
+    hidden = len(changes) - MAX_LISTED_COMMITS
+    if hidden > 0:
+        lines.append("")
+        lines.append(f"另有 {hidden} 条提交未列出。")
+    return lines
+
+
+def release_notes(metadata, notes, changes):
+    details = [f"红果 TV {metadata['versionName']}", ""]
+    custom = notes.strip()
+    if custom:
+        details.extend([custom, ""])
+    if changes:
+        details.extend(format_changes(*changes))
+        details.append("")
+    details.extend([
+        "## 构建信息",
         "",
         f"- 构建任务：{metadata['taskId']}",
         f"- 版本代码：{metadata['versionCode']}",
-        f"- 源码提交：{metadata['commit']}",
+        f"- 源码提交：{metadata['commit']}（{metadata.get('commitSubject', '未记录提交说明')}）",
         f"- 构建完成时间：{metadata.get('completedAt', '未记录')}",
         f"- 最低系统：Android API {metadata['minSdk']}",
         f"- APK SHA-256：`{metadata['sha256']}`",
         "",
         "请在本 Release 的 Assets 中下载 APK。",
         "APK 来自打包服务器已成功完成的签名构建。",
-    ]
+    ])
     return "\n".join(details)
 
 
@@ -272,11 +398,17 @@ def publish(github, assets, metadata, notes, dry_run=False):
         raise ReleaseError("APK 对应的源码提交尚未同步到 GitHub，请先推送该提交。")
     check_tag(github, tag, metadata["commit"])
     release = find_release(github, tag)
+    # 说明正文会把本次构建的提交与上一个正式版本对比，列出新增提交（不含合并记录）。
+    if release is None or release["draft"]:
+        print("读取上一版本以来的提交记录……", flush=True)
+        changes = commit_changes(github, tag, metadata["commit"])
+    else:
+        changes = None
     fields = {
         "tag_name": tag,
         "target_commitish": metadata["commit"],
         "name": f"红果 TV {metadata['versionName']}",
-        "body": release_notes(metadata, notes),
+        "body": release_notes(metadata, notes, changes),
         "draft": True,
         "prerelease": False,
     }
@@ -284,6 +416,10 @@ def publish(github, assets, metadata, notes, dry_run=False):
         old_assets = {
             item["name"]: item for item in list_release_assets(github, release["id"])
         } if release else {}
+        if changes is not None:
+            print("--- 发布说明预览 ---", flush=True)
+            print(fields["body"], flush=True)
+            print("--- 发布说明预览结束 ---", flush=True)
         print("检查 GitHub 附件上传主机连接……", flush=True)
         github.request("HEAD", "https://uploads.github.com/", missing_ok=True)
         if release and not release["draft"]:
@@ -360,7 +496,8 @@ def main():
     parser.add_argument("--tasks-dir", type=Path, default=Path(os.environ.get("HONGGUOTV_BUILD_TASKS_DIR", DEFAULT_TASKS)))
     parser.add_argument("--task-id", default=os.environ.get("RELEASE_TASK_ID", ""))
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", DEFAULT_REPOSITORY))
-    parser.add_argument("--notes", default=os.environ.get("RELEASE_NOTES", ""))
+    parser.add_argument("--notes", default=os.environ.get("RELEASE_NOTES", ""),
+                        help="补充说明，放在发布说明开头；更新列表由脚本自动生成")
     parser.add_argument("--dry-run", action="store_true",
                         help="读取并校验真实 APK，查询 GitHub；不创建标签、上传附件或发布 Release")
     args = parser.parse_args()

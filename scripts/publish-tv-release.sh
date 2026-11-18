@@ -22,7 +22,7 @@ GitHub 认证复用本机 GH_TOKEN / GITHUB_TOKEN 或已保存的 GitHub Git 凭
   --dry-run         模拟执行：读取并校验真实 APK 和 GitHub 连接，不写入 GitHub
   --task-id ID      指定成功的构建任务；不填则选择最新成功的 APK
   --repo OWNER/REPO 指定 GitHub 仓库；默认 superhuluwa/hongguoTV
-  --notes TEXT      自定义发布说明
+  --notes TEXT      补充发布说明（放在正文开头）；更新列表自动生成
   --tasks-dir PATH  指定打包机上的构建任务目录
   -h, --help        显示此帮助
 

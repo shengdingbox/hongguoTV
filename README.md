@@ -24,6 +24,7 @@
 - [问题反馈](#问题反馈)
 - [免责声明与开源协议](#免责声明与开源协议)
 - [来源与第三方声明](#来源与第三方声明)
+- [界面参考](#界面参考)
 
 ## 下载与安装
 
@@ -269,3 +270,8 @@ Release 构建启用 R8 代码压缩和资源裁剪，播放器只保留普通 M
 | JUnit（仅测试） | EPL-1.0 |
 
 应用图标和 TV banner 使用本仓库素材。
+
+## 界面参考
+
+- **手机版**：参考 [kadaliao/kaixinguo-ios](https://github.com/kadaliao/kaixinguo-ios) 的竖屏页面组织与播放页交互。
+- **TV 版**：参考 [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV) 的电视端导航、首页大卡片轮播、找剧分栏、排行榜海报网格与左右分栏设置；该项目以 GPL-3.0-only 授权，与本仓库许可一致。

@@ -5,6 +5,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -77,7 +78,8 @@ class UnidbgSignerTest {
     @Test fun `sends the token only when configured`() {
         server.enqueue(signatureResponse())
         FixtureSigner(server.url("/").toString().trimEnd('/')).sign("https://a.example/x", emptyMap(), null)
-        assertEquals("", server.takeRequest().getHeader("X-Signer-Token"))
+        // 未配置 token 时请求里不出现这个头，getHeader 对不存在的头返回 null。
+        assertNull(server.takeRequest().getHeader("X-Signer-Token"))
 
         server.enqueue(signatureResponse())
         FixtureSigner(server.url("/").toString().trimEnd('/'), token = "s3cret").sign("https://a.example/x", emptyMap(), null)

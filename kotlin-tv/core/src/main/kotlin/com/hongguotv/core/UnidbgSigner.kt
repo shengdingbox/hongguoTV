@@ -25,7 +25,7 @@ import org.json.JSONObject
  * 请求 `{"url": "...", "body_hex": "..."}`，返回 `{"headers": {...}}`。
  * 服务在 `SIGNER_TOKEN` 非空时要求 `X-Signer-Token` 头。
  */
-class UnidbgSigner(
+open class UnidbgSigner(
     endpoint: String = DEFAULT_ENDPOINT,
     /** 与服务端 `SIGNER_TOKEN` 一致；留空表示服务未开启鉴权。 */
     private val token: String = DEFAULT_TOKEN,

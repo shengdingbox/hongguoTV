@@ -2,10 +2,12 @@
 
 更新日期：2026-11-16。
 
-红果TV 默认使用本地算法。在「设置 → 算法模式」中可打开选择弹框，选择本地算法或远程算法，
-设置页与弹框只展示算法名称。选择会保存，切换后立即生效。
-本文说明本地算法模式：注册、普通接口签名和播放 V5 签名均在本机完成；远程算法模式
-使用 Android 签名服务的设备档案及 `video_tab` 请求。
+红果TV 默认使用本地算法。在「设置 → 算法模式」中可打开选择弹框，选择本地计算、远程计算-unidbg
+或远程计算-frida，设置页与弹框只展示算法名称。选择会保存，切换后立即生效。
+本文说明本地算法模式：注册、普通接口签名和播放 V5 签名均在本机完成；远程计算-frida 模式
+使用 Android 签名服务的设备档案及 `video_tab` 请求；远程计算-unidbg 模式把签名交给
+openhongguo-signer（unidbg 内运行 `libmetasec_ml.so`），设备档案仍由本机注册。
+两种远程模式都跳过本机 V5 播放取址路由（`usesLocalPlaybackAlgorithm = false`）。
 
 ## 组件
 
@@ -20,6 +22,7 @@
 | `AesV3.kt` | 普通接口 Medusa 的旧 AES-V3 载波 |
 | `DeviceRegister.kt` | 匿名设备注册（GZIP + ttEncrypt），注册版本 7.4.3.32 |
 | `RemoteSigner.kt` | 共用匿名设备档案与普通接口签名 |
+| `UnidbgSigner.kt` | 远程计算-unidbg：把 URL 与请求体交给 openhongguo-signer 签名 |
 | `SharedPrefsSignerStore.kt`（app） | 本机匿名设备档案持久化 |
 
 V5 代码移植自 GPL-3.0-only 授权的开源实现，摘要与密钥处理保持原样。其他签名算法来源与

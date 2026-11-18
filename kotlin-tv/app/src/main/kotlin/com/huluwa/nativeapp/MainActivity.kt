@@ -7142,18 +7142,19 @@ class MainActivity: Activity() {
     fun phoneSigningModePicker() = showSigningModePicker(pickerAnchor)
 
     private fun showSigningModePicker(anchor: View?) {
-        val selected=if(SigningSettings.nativeAlgorithms) 0 else 1
-        val labels=SigningSettings.algorithmLabels.mapIndexed { index,label ->
-            label+if(index==selected) "   ·   当前" else ""
+        val modes=SigningSettings.modes
+        val selected=modes.indexOf(SigningSettings.mode).coerceAtLeast(0)
+        val labels=modes.mapIndexed { index, mode ->
+            mode.label+if(index==selected) "   ·   当前" else ""
         }
         tvTools.choose("算法模式",labels,anchor,{ choice ->
-            setNativeSigningMode(choice==0)
+            modes.getOrNull(choice)?.let(::setSigningMode)
         },focusIndex=selected)
     }
 
-    private fun setNativeSigningMode(enabled: Boolean) {
-        if(enabled==SigningSettings.nativeAlgorithms) return
-        SigningSettings.nativeAlgorithms=enabled
+    private fun setSigningMode(mode: SigningSettings.Mode) {
+        if(mode==SigningSettings.mode) return
+        SigningSettings.mode=mode
         // Activity 重建使内容、弹幕、云账号共用新签名器，并淘汰旧身份的内存取址缓存。
         if(screen=="settings") PageRestore.phoneSettings=true
         recreateKeepingPage("算法模式")

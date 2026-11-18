@@ -1242,7 +1242,9 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             // 合集分集在该路径上固定回 ILLEGAL_ACCESS（110）；带上错误码交给上层按合集语义重取。
             throw ServiceException(single.code)
         }
-        val mobile = mobilePlaybackModel(id, group)
+        // V5 单集取址用的是本机算法专属的查询串模板与 V5 签名口径，
+        // 远程签名服务（frida / unidbg）不适用，直接跳过这一路由。
+        val mobile = if (signer.usesLocalPlaybackAlgorithm) mobilePlaybackModel(id, group) else Sweep(null, null, false, null)
         mobile.model?.let { return it }
         val primaryPayload = """{"video_id":"$id","biz_param":{"video_id_type":$idType,"need_all_video_definition":true,"video_platform":3}}""".toByteArray(Charsets.UTF_8)
         val primary = try {
@@ -1281,7 +1283,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // 非空体（有明确错误码）重扫没有意义，直接快速失败，避免界面上长时间停在「正在获取播放地址」。
         if (!allBlank) throw mobile.failure ?: first.failure ?: primary.failure ?: IOException("播放信息为空")
         signer.recover()
-        val healedMobile = mobilePlaybackModel(id, group)
+        val healedMobile = if (signer.usesLocalPlaybackAlgorithm) mobilePlaybackModel(id, group) else Sweep(null, null, false, null)
         healedMobile.model?.let { return it }
         val healed = sweepRoutes(listOf(PLAYER_PATH to primaryPayload) + ordered)
         healed.model?.let { model -> goodRoute = healed.path; return model }

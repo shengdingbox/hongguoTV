@@ -38,6 +38,7 @@ class FridaSigner(
     private var profileAt = 0L
     @Volatile private var supportsBodySigning = false
     override val prefersVideoTab get() = true
+    override val usesLocalPlaybackAlgorithm get() = false
 
     @Synchronized
     override fun profile(): SignerProfile {
@@ -144,11 +145,11 @@ class FridaSigner(
             }
         } catch (problem: InterruptedIOException) {
             if (Thread.currentThread().isInterrupted || RequestScope.current()?.isCancelled == true) throw problem
-            throw SignatureException("远程计算连接超时，可在设置中选择本地计算", problem)
+            throw SignatureException("远程计算-frida 连接超时，可在设置中改用其他算法", problem)
         } catch (problem: SignatureException) {
             throw problem
         } catch (problem: IOException) {
-            throw SignatureException("无法连接远程计算服务，可在设置中选择本地计算", problem)
+            throw SignatureException("无法连接远程计算-frida 服务，可在设置中改用其他算法", problem)
         }
     }
 }

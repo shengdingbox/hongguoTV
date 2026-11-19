@@ -90,7 +90,7 @@ object AboutProjectDialog {
                 setOnClickListener { open(activity, link) }
             }
         }
-        row.addView(PhoneUi.text(activity, label, color = PortraitStyle.text),
+        row.addView(PhoneUi.text(activity, label, 16f, PortraitStyle.text),
             LinearLayout.LayoutParams(0, -2).apply { weight = 1f })
         row.addView(PhoneUi.text(activity, value, 15f,
             if (link != null) PortraitStyle.navigationSelected else PortraitStyle.secondaryText).apply {

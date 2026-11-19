@@ -23,6 +23,8 @@ class OfflineDownloads private constructor(context: Context) {
         val series: Series, val episodeIds: List<String>, val selected: Set<String>,
         val downloaded: List<Episode> = emptyList(), val running: Boolean = false,
         val transfers: List<Transfer> = emptyList(), val message: String = "",
+        /** 最后一次开始缓存或收到下载进度的时刻，列表按它倒序，新下载的排在最前。 */
+        val updatedAt: Long = System.currentTimeMillis(),
     ) {
         val size get() = downloaded.sumOf { it.size }
         val pending get() = selected - downloaded.map { it.id }.toSet()
@@ -73,7 +75,8 @@ class OfflineDownloads private constructor(context: Context) {
     fun observe(listener: () -> Unit) { listeners += listener }
     fun unobserve(listener: () -> Unit) { listeners -= listener }
     private fun publish() {
-        items = records.values.toList()
+        // 最后下载的排在最前；时间相同（同一毫秒内批量创建）时按剧集 id 保证顺序稳定。
+        items = records.values.sortedWith(compareByDescending<Item> { it.updatedAt }.thenBy { it.series.id })
         main.post { listeners.forEach { it() } }
     }
     private fun file(seriesId: String, episodeId: String) = File(File(root, seriesId), "$episodeId.mp4")
@@ -110,14 +113,21 @@ class OfflineDownloads private constructor(context: Context) {
         // 同一剧继续缓存保留最初的分集顺序和在途任务，只追加新目标。
         val ids = (old?.episodeIds.orEmpty() + detail.episodes).distinct()
         val targets = old?.selected.orEmpty() + selected.filter { it in ids }
-        records[id] = old?.copy(series = detail.series, episodeIds = ids, selected = targets)
+        // 刷新时间，让刚发起缓存的剧排到列表最前。
+        records[id] = old?.copy(series = detail.series, episodeIds = ids, selected = targets,
+            updatedAt = System.currentTimeMillis())
             ?: Item(detail.series, ids, targets)
         if (persist()) launch(id) else {
             stop(id, "离线记录保存失败，请重试")
             schedule(); publish()
         }
     }
-    fun resume(id: String) = control.execute { if (loaded && persist()) launch(id) }
+    fun resume(id: String) = control.execute {
+        if (!loaded) return@execute
+        // 继续下载同样算一次「最近下载」，刷新时间后重新排到前面。
+        records[id]?.let { records[id] = it.copy(updatedAt = System.currentTimeMillis()) }
+        if (persist()) launch(id)
+    }
     fun pause(id: String) = control.execute {
         waitingStarts.remove(id)
         stop(id, "已暂停，可继续下载")
@@ -303,7 +313,8 @@ class OfflineDownloads private constructor(context: Context) {
                 val downloaded = JSONArray()
                 item.downloaded.forEach { e -> downloaded.put(JSONObject().put("id", e.id).put("number", e.number).put("size", e.size).put("quality", e.quality)) }
                 rows.put(JSONObject().put("series", item.series.toJson()).put("episodes", JSONArray(item.episodeIds))
-                    .put("selected", JSONArray(item.selected.toList())).put("downloaded", downloaded))
+                    .put("selected", JSONArray(item.selected.toList())).put("downloaded", downloaded)
+                    .put("updatedAt", item.updatedAt))
             }
             val temporary = File(root, "library.tmp")
             temporary.writeText(rows.toString())
@@ -331,7 +342,11 @@ class OfflineDownloads private constructor(context: Context) {
                     if (id !in episodes || episodes.indexOf(id) + 1 != number || size <= 0 || !file(series.id, id).isFile || file(series.id, id).length() != size) null
                     else Episode(id, number, size, e.optString("quality"))
                 }
-                records[series.id] = Item(series, episodes, ids("selected").filter { it in episodes }.toSet(), downloaded)
+                // 旧版本索引没有 updatedAt：按原下标给一个递增的兜底值，
+                // 既保持旧的相对顺序，又排在后续新下载的条目之后。
+                val updatedAt = if (o.has("updatedAt")) o.optLong("updatedAt", 0L) else i.toLong()
+                records[series.id] = Item(series, episodes, ids("selected").filter { it in episodes }.toSet(), downloaded,
+                    updatedAt = updatedAt)
             }
             loaded = true
         } catch (problem: Exception) {

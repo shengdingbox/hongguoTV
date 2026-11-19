@@ -373,11 +373,15 @@ class PortraitPages(
         body.addView(recent, lp())
         val retainedCards = mutableMapOf<String, RecentWatchCard>()
 
-        val tabHost = column().apply { setPadding(edge, dp(20), edge, dp(4)) }
+        // 底部留出 16dp：指示条只有 4dp 高，列表内容若紧贴会显得挤在一起。
+        val tabHost = column().apply { setPadding(edge, dp(20), edge, dp(16)) }
         // v2 改为下划线标签：比黑底胶囊轻，和下面的列表更协调。
         // 下划线用一条独立细线叠在标签底部，选中项换成强调色。
         val tabRow = row()
-        val indicator = View(activity).apply { setBackgroundColor(PortraitStyle.accent) }
+        // 指示条用圆角形状：高度 4dp、半径 2dp，恰好是半高，呈现胶囊形。
+        val indicator = View(activity).apply {
+            background = PortraitStyle.shape(activity, PortraitStyle.accent, radius = 2)
+        }
         val indicatorHost = FrameLayout(activity)
         val tabButtons = listOf("收藏", "离线缓存").mapIndexed { index, label ->
             text(label, 15f).apply {
@@ -392,10 +396,10 @@ class PortraitPages(
         // 底部发丝线贯穿整行，选中项的下划线压在它上面。
         indicatorHost.addView(View(activity).apply { setBackgroundColor(PortraitStyle.outline) },
             FrameLayout.LayoutParams(-1, dp(1), Gravity.BOTTOM))
-        indicatorHost.addView(indicator, FrameLayout.LayoutParams(0, dp(3), Gravity.BOTTOM))
+        indicatorHost.addView(indicator, FrameLayout.LayoutParams(0, dp(4), Gravity.BOTTOM))
         val tabColumn = column()
         tabColumn.addView(tabRow, lp())
-        tabColumn.addView(indicatorHost, lp(-1, dp(3)))
+        tabColumn.addView(indicatorHost, lp(-1, dp(4)))
         tabHost.addView(tabColumn, lp())
         body.addView(tabHost, lp())
         val emptyFavorites = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
@@ -445,13 +449,31 @@ class PortraitPages(
             val target = selectedButton?.let { "${it.left}:${it.width}" } ?: "0:0"
             if (indicator.tag != target) {
                 indicator.tag = target
-                // 首帧按钮还没测量，等布局完成再定位一次，避免下划线宽度为 0。
+                // 首帧按钮还没测量（宽度为 0）时不立即定位，等按钮布局完成后再来一次，
+                // 否则会把 0 当成最终结果，之后尺寸就绪也不会再更新。
                 indicator.post {
-                    val params = indicator.layoutParams as FrameLayout.LayoutParams
-                    params.leftMargin = selectedButton?.left ?: 0
-                    params.width = selectedButton?.width ?: 0
-                    indicator.layoutParams = params
-                    indicator.tag = selectedButton?.let { "${it.left}:${it.width}" } ?: "0:0"
+                    val button = selectedButton ?: return@post
+                    if (button.width > 0) {
+                        val params = indicator.layoutParams as FrameLayout.LayoutParams
+                        params.leftMargin = button.left
+                        params.width = button.width
+                        indicator.layoutParams = params
+                        return@post
+                    }
+                    button.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+                        override fun onLayoutChange(
+                            view: View, left: Int, top: Int, right: Int, bottom: Int,
+                            oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int,
+                        ) {
+                            if (view.width <= 0) return
+                            view.removeOnLayoutChangeListener(this)
+                            val params = indicator.layoutParams as FrameLayout.LayoutParams
+                            params.leftMargin = view.left
+                            params.width = view.width
+                            indicator.layoutParams = params
+                            indicator.tag = "${view.left}:${view.width}"
+                        }
+                    })
                 }
             }
             offline.update(offlineSelected)

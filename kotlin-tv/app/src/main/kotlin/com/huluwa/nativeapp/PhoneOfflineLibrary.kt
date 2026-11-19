@@ -29,8 +29,8 @@ class PhoneOfflineLibrary(
     private fun lp(w: Int = -1, h: Int = -2) = LinearLayout.LayoutParams(w, h)
     // 列表外层已有缩进，卡片和提示区仅补足到页面统一的 16dp 边距。
     private val horizontalPadding = dp(16) - page.horizontalContentPadding
-    // 标签与第一条缓存之间留 14dp，和设计稿的 .list 上边距一致。
-    val header = PortraitUi.column(activity).apply { setPadding(horizontalPadding, 0, horizontalPadding, dp(14)) }
+    // 标签栏已经统一留出 16dp 间距，这里不再重复叠加。
+    val header = PortraitUi.column(activity).apply { setPadding(horizontalPadding, 0, horizontalPadding, 0) }
     private val expandedSeries = mutableSetOf<String>()
     private val warning = text("", 13f, PortraitStyle.secondaryText).apply {
         setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -198,14 +198,15 @@ class PhoneOfflineLibrary(
             addView(toggleIcon)
             setOnClickListener { toggleTransfers() }
         }
-        private val more = ImageView(activity).apply {
-            setImageResource(R.drawable.ic_more)
+        /** 底部最右侧的删除入口：点击直接弹确认框，不再进二级菜单。 */
+        private val remove = ImageView(activity).apply {
+            setImageResource(R.drawable.ic_delete)
             setColorFilter(PortraitStyle.muted)
             setPadding(dp(12), dp(12), dp(12), dp(12))
             background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 22)
             isFocusable = true
             isClickable = true
-            setOnClickListener { manage() }
+            setOnClickListener { confirmRemove() }
         }
 
         init {
@@ -249,7 +250,7 @@ class PhoneOfflineLibrary(
                 addView(secondary)
                 addView(toggle)
                 addView(View(activity), lp(0, -2).apply { weight = 1f })
-                addView(more, lp(dp(40), dp(40)).apply { topMargin = dp(3); bottomMargin = dp(3) })
+                addView(remove, lp(dp(40), dp(40)).apply { topMargin = dp(3); bottomMargin = dp(3) })
                 setPadding(dp(7), 0, dp(3), 0)
                 minimumHeight = dp(46)
             }
@@ -273,36 +274,20 @@ class PhoneOfflineLibrary(
             bind(item)
         }
 
-        private fun manage() {
+        /** 删除确认：底栏删除入口和二级菜单共用同一段提示。 */
+        private fun confirmRemove() {
             val current = item
-            val choices = mutableListOf("选择缓存分集")
-            val progressChoice = if (current.transfers.isNotEmpty()) {
-                choices += if (current.series.id in expandedSeries) "收起各集进度" else "展开各集进度"
-                choices.lastIndex
-            } else -1
-            choices += "删除离线缓存"
-            PhoneDialog.choose(activity, "管理离线缓存", choices, { choice ->
-                when (choice) {
-                    0 -> pick(activity, current.series)
-                    progressChoice -> {
-                        if (!expandedSeries.add(current.series.id)) expandedSeries.remove(current.series.id)
-                        if (item.series.id == current.series.id) bind(item)
-                    }
-                    else -> {
-                        lateinit var confirmation: AlertDialog
-                        val buttons = PortraitUi.column(activity)
-                        buttons.addView(PhoneDialog.button(activity, "删除缓存", destructive = true) {
-                            confirmation.dismiss()
-                            expandedSeries.remove(current.series.id)
-                            downloads.remove(current.series.id)
-                        }, lp())
-                        buttons.addView(PhoneDialog.button(activity, "取消") { confirmation.dismiss() }, lp().apply { topMargin = dp(10) })
-                        confirmation = PhoneDialog.sheet(activity, "删除离线缓存",
-                            "将删除《${current.series.title}》的全部缓存和未完成文件，已缓存内容占用 ${bytes(current.size)}。", buttons)
-                        confirmation.show()
-                    }
-                }
-            }).show()
+            lateinit var confirmation: AlertDialog
+            val buttons = PortraitUi.column(activity)
+            buttons.addView(PhoneDialog.button(activity, "删除缓存", destructive = true) {
+                confirmation.dismiss()
+                expandedSeries.remove(current.series.id)
+                downloads.remove(current.series.id)
+            }, lp())
+            buttons.addView(PhoneDialog.button(activity, "取消") { confirmation.dismiss() }, lp().apply { topMargin = dp(10) })
+            confirmation = PhoneDialog.sheet(activity, "删除离线缓存",
+                "将删除《${current.series.title}》的全部缓存和未完成文件，已缓存内容占用 ${bytes(current.size)}。", buttons)
+            confirmation.show()
         }
 
         fun bind(value: OfflineDownloads.Item) {
@@ -409,7 +394,7 @@ class PhoneOfflineLibrary(
             secondary.contentDescription = "${value.series.title}，${secondaryLabel.text}"
             // 无缓存、未在下载也没暂停时，选集已由主操作承担，次操作隐藏。
             secondary.visibility = if (!hasVideo && !value.running && !pending) View.GONE else View.VISIBLE
-            more.contentDescription = "管理《${value.series.title}》的离线缓存"
+            remove.contentDescription = "删除《${value.series.title}》的离线缓存"
             cover.contentDescription = "${value.series.title}，选择离线分集播放"
         }
     }

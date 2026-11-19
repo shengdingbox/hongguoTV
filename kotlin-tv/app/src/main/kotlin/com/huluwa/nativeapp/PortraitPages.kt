@@ -5,10 +5,11 @@ import android.app.AlertDialog
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.InsetDrawable
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
+import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.KeyEvent
@@ -307,28 +308,113 @@ class PortraitPages(
         }, lp())
     }
 
-    /** 最近观看按剧集复用卡片，进度和收藏变化只更新各自的内容。 */
+    /**
+     * 「我的」页：账号与观看概览、最近观看、收藏/离线缓存三段。
+     *
+     * 最近观看按剧集复用卡片，进度和收藏变化只更新各自的内容。
+     */
     fun mine(page: PortraitListPage): (Boolean) -> Unit {
         val body=column(); page.addBlock(body)
+        // 列表外层已有缩进，页内元素补足到统一的 16dp 边距。
+        val edge = dp(16) - page.horizontalContentPadding
         val head = row()
-        val title = listPageTitle(page, "我的")
+        val title = listPageTitle(page, "我的").apply {
+            setPadding(paddingLeft, paddingTop, paddingRight, dp(6))
+        }
         val startPadding = title.paddingLeft
         head.addView(title, lp(0, -2).apply { weight = 1f })
         head.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_more)
             setColorFilter(PortraitStyle.text)
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            background = PortraitStyle.selectable(activity, Color.TRANSPARENT)
+            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 24)
             contentDescription = "设置"
+            isFocusable = true
             setOnClickListener { activity.showPhoneSettings() }
-        }, lp(dp(44), dp(44)).apply { gravity = Gravity.BOTTOM; rightMargin = dp(10) })
+        }, lp(dp(44), dp(44)).apply { gravity = Gravity.BOTTOM; rightMargin = title.paddingRight })
         body.addView(head, lp())
-        val recent = column()
-        val recentHeading = row().apply { setPadding(startPadding, 0, dp(8), 0) }
-        recentHeading.addView(text("最近观看", 20f).apply {
+
+        // 账号卡：登录状态、云端记录数与三项本机统计合成一张概览，避免页头只有孤零零的标题。
+        // 账号状态变化不走整页重建，因此这里保留文字控件，在 update 里刷新。
+        val account = activity.phoneAccount
+        val accountCard = column().apply {
+            setPadding(dp(14), dp(14), dp(12), dp(12))
+            background = PortraitStyle.selectable(activity, PortraitStyle.surface, radius = 18)
+            isFocusable = true
+            isClickable = true
+            setOnClickListener { account.showPhoneAccountDialog(activity) }
+        }
+        val accountRow = row()
+        val avatar = text("果", 18f, PortraitStyle.onAccent).apply {
+            gravity = Gravity.CENTER
             setTypeface(null, Typeface.BOLD)
-            setPadding(0, dp(16), 0, dp(10))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL }
+        }
+        accountRow.addView(avatar, lp(dp(46), dp(46)).apply { rightMargin = dp(12) })
+        val accountName = text("", 16f).apply {
+            setTypeface(null, Typeface.BOLD)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        val accountSubtitle = text("", 12f, PortraitStyle.muted).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        accountRow.addView(column().apply {
+            addView(accountName, lp())
+            addView(accountSubtitle, lp().apply { topMargin = dp(3) })
         }, lp(0, -2).apply { weight = 1f })
+        val accountAction = text("", 12f, PortraitStyle.onAccent).apply {
+            gravity = Gravity.CENTER
+            setTypeface(null, Typeface.BOLD)
+            setPadding(dp(13), dp(6), dp(13), dp(6))
+            // 实心强调色胶囊：整张卡都可点，这里只做明确的行动提示。
+            background = PortraitStyle.shape(activity, PortraitStyle.accent, radius = 15)
+        }
+        accountRow.addView(accountAction, lp(-2, -2).apply { leftMargin = dp(8) })
+        accountCard.addView(accountRow, lp())
+        // 统计只汇总现有数据，不额外存储，也不产生网络请求。
+        val stats = row().apply { setPadding(0, dp(14), 0, 0) }
+        val statValues = listOf("收藏", "缓存", "看过").map { label ->
+            val value = text("0", 17f).apply { setTypeface(null, Typeface.BOLD) }
+            stats.addView(column().apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                addView(value, lp(-2, -2))
+                addView(text(label, 11f, PortraitStyle.muted), lp(-2, -2).apply { topMargin = dp(2) })
+            }, lp(0, -2).apply { weight = 1f })
+            value
+        }
+        accountCard.addView(stats, lp())
+        body.addView(accountCard, lp().apply { leftMargin = edge; rightMargin = edge; topMargin = dp(4) })
+        // 头像底色随登录态变化；未登录时用中性色，避免空头像看起来像加载失败。
+        fun paintAccount() {
+            val signedIn = account.signedIn
+            avatar.text = if (signedIn) account.displayName.take(1).ifBlank { "果" } else "果"
+            avatar.setTextColor(if (signedIn) PortraitStyle.onAccent else PortraitStyle.secondaryText)
+            (avatar.background as? GradientDrawable)?.setColor(
+                if (signedIn) PortraitStyle.accent else PortraitStyle.subtleButton)
+            accountName.text = if (signedIn) account.displayName else "登录红果账号"
+            accountSubtitle.text = when {
+                signedIn -> "云端 ${account.cloudCount} 部观看记录"
+                account.cardStatus == "连接中" -> "正在验证账号状态…"
+                else -> "登录后观看进度可跨设备接着看"
+            }
+            accountAction.text = if (signedIn) "管理" else "登录"
+            accountCard.contentDescription = "红果账号，${account.cardStatus}，点按管理"
+        }
+        paintAccount()
+
+        val recent = column()
+        val recentHeading = row().apply { setPadding(startPadding, 0, startPadding, 0) }
+        recentHeading.addView(text("最近观看", 17f).apply {
+            setTypeface(null, Typeface.BOLD)
+            setPadding(0, dp(22), 0, dp(10))
+        }, lp(0, -2).apply { weight = 1f })
+        val recentCount = text("", 12f, PortraitStyle.muted).apply {
+            setPadding(0, dp(22), dp(4), dp(10))
+        }
+        recentHeading.addView(recentCount, lp(-2, -2))
         recentHeading.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_delete)
             setColorFilter(PortraitStyle.muted)
@@ -352,7 +438,7 @@ class PortraitPages(
         recent.addView(recentHeading, lp())
         val restoreRecentScrollX = recentWatchScrollX
         val strip = HorizontalScrollView(activity).apply { isHorizontalScrollBarEnabled = false }
-        val cards = row().apply { gravity = Gravity.TOP; setPadding(startPadding, 0, dp(16), 0) }
+        val cards = row().apply { gravity = Gravity.TOP; setPadding(startPadding, 0, startPadding, 0) }
         strip.addView(cards)
         // 详情返回会重建列表，先恢复横向位置，让共享封面动画找到原来的卡片。
         strip.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
@@ -371,25 +457,30 @@ class PortraitPages(
         body.addView(recent, lp())
         val retainedCards = mutableMapOf<String, RecentWatchCard>()
 
-        val tabHost = column().apply { setPadding(startPadding, dp(10), dp(16), dp(8)) }
-        // 底板与选中块向内收紧，点击区域仍保留至少 44dp，并随字体大小伸展。
-        val tabs = FrameLayout(activity).apply {
-            background = InsetDrawable(PortraitStyle.shape(activity, PortraitStyle.raised, radius = 12), 0, dp(4), 0, dp(4))
-            setPadding(0, 0, 0, 0)
-        }
-        val tabRow = row().apply { setPadding(dp(3), 0, dp(3), 0) }
+        val tabHost = column().apply { setPadding(edge, dp(20), edge, dp(4)) }
+        // v2 改为下划线标签：比黑底胶囊轻，和下面的列表更协调。
+        // 下划线用一条独立细线叠在标签底部，选中项换成强调色。
+        val tabRow = row()
+        val indicator = View(activity).apply { setBackgroundColor(PortraitStyle.accent) }
+        val indicatorHost = FrameLayout(activity)
         val tabButtons = listOf("收藏", "离线缓存").mapIndexed { index, label ->
-            text(label, 14f).apply {
+            text(label, 15f).apply {
                 gravity = Gravity.CENTER
                 minHeight = dp(44)
-                setPadding(dp(14), dp(8), dp(14), dp(8))
+                setPadding(dp(2), dp(10), dp(2), dp(11))
                 isFocusable = true
                 setOnClickListener { activity.selectMineOfflineTab(index == 1) }
-                tabRow.addView(this, lp(-2, -2))
+                tabRow.addView(this, lp(-2, -2).apply { if (index > 0) leftMargin = dp(22) })
             }
         }
-        tabs.addView(tabRow, FrameLayout.LayoutParams(-2, -2))
-        tabHost.addView(tabs, lp(-2, -2))
+        // 底部发丝线贯穿整行，选中项的下划线压在它上面。
+        indicatorHost.addView(View(activity).apply { setBackgroundColor(PortraitStyle.outline) },
+            FrameLayout.LayoutParams(-1, dp(1), Gravity.BOTTOM))
+        indicatorHost.addView(indicator, FrameLayout.LayoutParams(0, dp(3), Gravity.BOTTOM))
+        val tabColumn = column()
+        tabColumn.addView(tabRow, lp())
+        tabColumn.addView(indicatorHost, lp(-1, dp(3)))
+        tabHost.addView(tabColumn, lp())
         body.addView(tabHost, lp())
         val emptyFavorites = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
         body.addView(emptyFavorites, lp())
@@ -400,7 +491,10 @@ class PortraitPages(
         page.addRows(offline.adapter)
         var shownHistory: List<WatchProgress>? = null
         var shownFavorites: List<Series>? = null
+        var shownStats: List<Int>? = null
         return { _ ->
+            // 账号卡不在整页重建时刷新：登录、退出和校验完成都只更新这里。
+            paintAccount()
             val history = activity.phoneLibrary.history().take(30)
             if (shownHistory != history) {
                 val ids = history.map { it.series.id }.toSet()
@@ -414,12 +508,23 @@ class PortraitPages(
                     val entry = retainedCards.getOrPut(watch.series.id) { recentWatchCard(watch) }
                     if (cards.indexOfChild(entry.card) != index) {
                         cards.removeView(entry.card)
-                        cards.addView(entry.card, index, lp(dp(96), -2).apply { rightMargin = dp(12) })
+                        cards.addView(entry.card, index, lp(dp(106), -2).apply { rightMargin = dp(12) })
                     }
                     updateRecentWatchCard(entry, watch)
                 }
                 recent.visibility = if (history.isEmpty()) View.GONE else View.VISIBLE
+                recentCount.text = if (history.isEmpty()) "" else "${history.size} 部"
                 shownHistory = history
+            }
+            // 统计与缓存数量都取自本机已有数据，变化时只重写数字。
+            val statsValues = listOf(
+                activity.phoneLibrary.favorites().size,
+                activity.offlineDownloads.items.sumOf { it.downloaded.size },
+                activity.phoneLibrary.history().size,
+            )
+            if (shownStats != statsValues) {
+                statValues.forEachIndexed { index, view -> view.text = statsValues[index].toString() }
+                shownStats = statsValues
             }
             val offlineSelected = activity.mineOfflineSelected
             tabButtons.forEachIndexed { index, button ->
@@ -427,13 +532,25 @@ class PortraitPages(
                 button.isSelected = selected
                 if (button.tag != selected) {
                     button.tag = selected
-                    button.setTextColor(if (selected) PortraitStyle.onChipSelected else PortraitStyle.secondaryText)
-                    button.background = InsetDrawable(PortraitStyle.selectable(activity,
-                        if (selected) PortraitStyle.chipSelected else Color.TRANSPARENT, radius = 9), 0, dp(6), 0, dp(6))
-                    button.setPadding(dp(14), dp(8), dp(14), dp(8))
+                    // 下划线标签：选中项用正文色 + 加粗，未选中用弱化灰，不再有胶囊底色。
+                    button.setTextColor(if (selected) PortraitStyle.text else PortraitStyle.muted)
                     button.setTypeface(null, if (selected) Typeface.BOLD else Typeface.NORMAL)
                 }
                 button.contentDescription = "${button.text}，${if (selected) "已选中" else "未选中"}"
+            }
+            // 下划线跟随选中项的实际位置与文字宽度。
+            val selectedButton = tabButtons.getOrNull(if (offlineSelected) 1 else 0)
+            val target = selectedButton?.let { "${it.left}:${it.width}" } ?: "0:0"
+            if (indicator.tag != target) {
+                indicator.tag = target
+                // 首帧按钮还没测量，等布局完成再定位一次，避免下划线宽度为 0。
+                indicator.post {
+                    val params = indicator.layoutParams as FrameLayout.LayoutParams
+                    params.leftMargin = selectedButton?.left ?: 0
+                    params.width = selectedButton?.width ?: 0
+                    indicator.layoutParams = params
+                    indicator.tag = selectedButton?.let { "${it.left}:${it.width}" } ?: "0:0"
+                }
             }
             offline.update(offlineSelected)
             val favorites = if (offlineSelected) emptyList() else activity.phoneLibrary.favorites()
@@ -445,22 +562,52 @@ class PortraitPages(
         }
     }
 
-    private class RecentWatchCard(val card: PortraitUi.PosterCard, val progress: ProgressBar, var watch: WatchProgress)
+    /**
+     * 最近观看卡片：比网格海报略大，封面左下角叠加圆形播放键，底部叠进度条。
+     * 标题下方用「第 N 集 · 已看 42%」替换原来的单行角标，扫一眼就知道看到哪。
+     */
+    private class RecentWatchCard(
+        val card: PortraitUi.PosterCard,
+        val progress: ProgressBar,
+        val scrim: View,
+        var watch: WatchProgress,
+    )
 
     private fun recentWatchCard(watch: WatchProgress): RecentWatchCard {
         val card = PortraitUi.PosterCard(activity)
         card.title.textSize = 13f
         card.badge.textSize = 11f
+        // 封面底部的渐隐遮罩，让进度条和播放键在浅色封面上也看得清。
+        val scrim = View(activity).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
+                intArrayOf(Color.argb(120, 0, 0, 0), Color.TRANSPARENT))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        card.poster.addView(scrim, FrameLayout.LayoutParams(-1, dp(46), Gravity.BOTTOM))
+        // 播放键自带半透明圆底，浅色封面上也始终可见，不需要依赖遮罩。
+        val play = ImageView(activity).apply {
+            setImageResource(R.drawable.ic_play_circle)
+            setColorFilter(PortraitStyle.onAccent)
+            setPadding(dp(5), dp(5), dp(5), dp(5))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.argb(150, 0, 0, 0))
+            }
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        card.poster.addView(play, FrameLayout.LayoutParams(dp(30), dp(30), Gravity.BOTTOM or Gravity.START).apply {
+            leftMargin = dp(8); bottomMargin = dp(12)
+        })
         val progress = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000
             progressTintList = ColorStateList.valueOf(PortraitStyle.accent)
-            progressBackgroundTintList = ColorStateList.valueOf(Color.argb(100, 255, 255, 255))
-            visibility = View.GONE
+            progressBackgroundTintList = ColorStateList.valueOf(Color.argb(90, 255, 255, 255))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
         card.poster.addView(progress, FrameLayout.LayoutParams(-1, dp(3), Gravity.BOTTOM).apply {
             leftMargin = dp(8); rightMargin = dp(8); bottomMargin = dp(7)
         })
-        val entry = RecentWatchCard(card, progress, watch)
+        val entry = RecentWatchCard(card, progress, scrim, watch)
         card.setOnClickListener { activity.openDetailPhone(entry.watch.series, cover = card.image) }
         card.setOnLongClickListener {
             val current = entry.watch
@@ -484,11 +631,17 @@ class PortraitPages(
         val card = entry.card
         card.image.transitionName = PosterSharedTransition.posterName(watch.series.id, source = "recent")
         card.title.text = watch.series.title
-        card.badge.text = if (watch.completed) "看完第 ${watch.episodeIndex + 1} 集" else "看到第 ${watch.episodeIndex + 1} 集"
+        val episode = if (watch.completed) "看完第 ${watch.episodeIndex + 1} 集" else "看到第 ${watch.episodeIndex + 1} 集"
+        val percent = if (!watch.completed && watch.duration > 0)
+            (watch.position * 100 / watch.duration).toInt().coerceIn(0, 100) else 0
+        card.badge.text = if (!watch.completed && watch.duration > 0) "$episode · 已看 $percent%" else episode
         card.contentDescription = "${watch.series.title}，${card.badge.text}"
         if (card.image.drawable == null) loadCover(card.image, watch.series.cover)
         else if (previous.series.cover != watch.series.cover) activity.updatePhoneCover(card.image, watch.series.cover)
-        entry.progress.visibility = if (!watch.completed && watch.duration > 0) View.VISIBLE else View.GONE
+        // 已看完或没有时长信息时不画进度条，遮罩也一并收起，避免封面被压暗。
+        val showProgress = !watch.completed && watch.duration > 0
+        entry.progress.visibility = if (showProgress) View.VISIBLE else View.GONE
+        entry.scrim.visibility = entry.progress.visibility
         entry.progress.progress = if (watch.duration > 0) (watch.position * 1000 / watch.duration).toInt().coerceIn(0, 1000) else 0
     }
 

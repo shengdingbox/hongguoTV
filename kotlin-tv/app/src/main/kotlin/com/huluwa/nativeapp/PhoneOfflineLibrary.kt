@@ -29,12 +29,13 @@ class PhoneOfflineLibrary(
     private fun lp(w: Int = -1, h: Int = -2) = LinearLayout.LayoutParams(w, h)
     // 列表外层已有缩进，卡片和提示区仅补足到页面统一的 16dp 边距。
     private val horizontalPadding = dp(16) - page.horizontalContentPadding
-    val header = PortraitUi.column(activity).apply { setPadding(horizontalPadding, 0, horizontalPadding, 0) }
+    // 标签与第一条缓存之间留 14dp，和设计稿的 .list 上边距一致。
+    val header = PortraitUi.column(activity).apply { setPadding(horizontalPadding, 0, horizontalPadding, dp(14)) }
     private val expandedSeries = mutableSetOf<String>()
     private val warning = text("", 13f, PortraitStyle.secondaryText).apply {
         setPadding(dp(14), dp(12), dp(14), dp(12))
         setLineSpacing(dp(3).toFloat(), 1f)
-        background = PortraitStyle.shape(activity, PortraitStyle.surface, radius = 14)
+        background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 14)
     }
     private val empty = PortraitUi.emptyState(activity, R.drawable.ic_download, "还没有离线缓存",
         "在剧集详情页点右上角缓存按钮\n选好分集，好剧随时看")
@@ -84,48 +85,68 @@ class PhoneOfflineLibrary(
         private val card = PortraitUi.column(activity)
         private val cover = ImageView(activity).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 8)
+            background = PortraitStyle.shape(activity, PortraitStyle.raised, radius = 9)
             clipToOutline = true
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        private val title = text("", 16f).apply {
+        private val title = text("", 15.5f).apply {
             setTypeface(null, Typeface.BOLD)
             maxLines = 2; ellipsize = TextUtils.TruncateAt.END
+            setLineSpacing(dp(2).toFloat(), 1f)
         }
         private val metadata = text("", 12f, PortraitStyle.muted)
-        private val status = text("", 12f, PortraitStyle.accent).apply {
-            setPadding(0, dp(4), dp(6), dp(4))
-            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 6)
-            setOnClickListener { toggleTransfers() }
+        /**
+         * 状态标签：v2 设计稿用「圆点 + 文字」代替色块胶囊。
+         * 圆点和文字分别着色，失败态用 danger 色，其余用强调色 / 中性灰。
+         */
+        private val statusDot = View(activity).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            layoutParams = lp(dp(6), dp(6)).apply { rightMargin = dp(5) }
         }
-        private val percent = text("", 11f, PortraitStyle.muted)
+        private val status = text("", 12f, PortraitStyle.accent).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setTypeface(null, Typeface.BOLD)
+            setPadding(0, dp(4), 0, dp(4))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        private val statusRow = PortraitUi.row(activity).apply {
+            addView(statusDot)
+            addView(status, lp(-2, -2))
+        }
+        private val percent = text("", 11f, PortraitStyle.muted).apply { gravity = Gravity.END }
         private val total = progress()
         private val transferHost = PortraitUi.column(activity)
         private val transferViews = linkedMapOf<String, Triple<LinearLayout, TextView, ProgressBar>>()
-        private val problem = text("", 12f, PortraitStyle.secondaryText).apply {
+        private val problem = text("", 12f, PortraitStyle.danger).apply {
             maxLines = 2; ellipsize = TextUtils.TruncateAt.END
             setLineSpacing(dp(2).toFloat(), 1f)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = PortraitStyle.shape(activity, PortraitStyle.dangerSurface, radius = 10)
             setOnClickListener { PhoneDialog.info(activity, "下载遇到问题", item.message).show() }
         }
-        private val actions = PortraitUi.row(activity)
         private lateinit var item: OfflineDownloads.Item
         private var boundSeries = ""
         private var boundCover = ""
-        private val primaryLabel = text("", 13f, PortraitStyle.onAccent).apply {
+        private val primaryLabel = text("", 13f).apply {
             gravity = Gravity.CENTER
             setTypeface(null, Typeface.BOLD)
         }
         private val primaryIcon = ImageView(activity).apply {
-            setColorFilter(PortraitStyle.onAccent)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            layoutParams = lp(dp(16), dp(16)).apply { rightMargin = dp(6) }
         }
+        /**
+         * 主操作：只有强调色文字与图标，没有任何底色色块。
+         * 触控高度靠最小 44dp 保证，宽度由内容决定，不再等分整行。
+         */
         private val primary = PortraitUi.row(activity).apply {
             gravity = Gravity.CENTER
             minimumHeight = dp(44)
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-            background = PortraitStyle.selectable(activity, PortraitStyle.accent, radius = 22)
+            setPadding(dp(9), dp(10), dp(9), dp(10))
+            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 10)
             isFocusable = true
-            addView(primaryIcon, lp(dp(16), dp(16)).apply { rightMargin = dp(4) })
+            isClickable = true
+            addView(primaryIcon)
             addView(primaryLabel, lp(-2, -2))
             setOnClickListener {
                 when {
@@ -136,17 +157,46 @@ class PhoneOfflineLibrary(
                 }
             }
         }
-        private val secondary = text("", 13f, PortraitStyle.accent).apply {
+        private val secondaryLabel = text("", 13f, PortraitStyle.muted).apply { setTypeface(null, Typeface.NORMAL) }
+        private val secondaryIcon = ImageView(activity).apply {
+            setColorFilter(PortraitStyle.muted)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            layoutParams = lp(dp(16), dp(16)).apply { rightMargin = dp(6) }
+        }
+        /** 次操作：中性灰文字，视觉上明确弱于主操作。 */
+        private val secondary = PortraitUi.row(activity).apply {
             gravity = Gravity.CENTER
-            minHeight = dp(44)
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-            background = PortraitStyle.selectable(activity, PortraitStyle.raised, radius = 22)
+            minimumHeight = dp(44)
+            setPadding(dp(9), dp(10), dp(9), dp(10))
+            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 10)
             isFocusable = true
+            isClickable = true
+            addView(secondaryIcon)
+            addView(secondaryLabel, lp(-2, -2))
             setOnClickListener {
                 if (item.downloaded.isNotEmpty() && (item.running || item.pending.isNotEmpty())) {
                     if (item.running) downloads.pause(item.series.id) else downloads.resume(item.series.id)
                 } else pick(activity, item.series)
             }
+        }
+        private val toggleLabel = text("", 13f, PortraitStyle.muted).apply { setTypeface(null, Typeface.NORMAL) }
+        private val toggleIcon = ImageView(activity).apply {
+            setImageResource(R.drawable.ic_keyboard_arrow_up)
+            setColorFilter(PortraitStyle.muted)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            layoutParams = lp(dp(16), dp(16)).apply { leftMargin = dp(2) }
+        }
+        /** 各集进度的展开 / 收起，独立成一个轻量按钮。 */
+        private val toggle = PortraitUi.row(activity).apply {
+            gravity = Gravity.CENTER
+            minimumHeight = dp(44)
+            setPadding(dp(9), dp(10), dp(9), dp(10))
+            background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 10)
+            isFocusable = true
+            isClickable = true
+            addView(toggleLabel, lp(-2, -2))
+            addView(toggleIcon)
+            setOnClickListener { toggleTransfers() }
         }
         private val more = ImageView(activity).apply {
             setImageResource(R.drawable.ic_more)
@@ -154,37 +204,56 @@ class PhoneOfflineLibrary(
             setPadding(dp(12), dp(12), dp(12), dp(12))
             background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 22)
             isFocusable = true
+            isClickable = true
             setOnClickListener { manage() }
         }
 
         init {
             itemView.layoutParams = RecyclerView.LayoutParams(-1, -2)
             (itemView as FrameLayout).apply {
-                setPadding(horizontalPadding, 0, horizontalPadding, dp(8))
+                setPadding(horizontalPadding, 0, horizontalPadding, dp(10))
                 addView(card, FrameLayout.LayoutParams(-1, -2))
             }
             card.apply {
-                setPadding(dp(12), dp(12), dp(12), dp(10))
-                background = PortraitStyle.shape(activity, PortraitStyle.surface, radius = 16)
+                setPadding(0, 0, 0, 0)
+                background = PortraitStyle.shape(activity, PortraitStyle.surface, radius = 18)
             }
-            val heading = PortraitUi.row(activity).apply { gravity = Gravity.TOP }
-            heading.addView(cover, lp(dp(54), dp(72)).apply { rightMargin = dp(10) })
+            val heading = PortraitUi.row(activity).apply {
+                gravity = Gravity.TOP
+                setPadding(dp(13), dp(13), dp(13), dp(10))
+            }
+            heading.addView(cover, lp(dp(62), dp(83)).apply { rightMargin = dp(12) })
             heading.addView(PortraitUi.column(activity).apply {
                 addView(title, lp())
                 addView(metadata, lp().apply { topMargin = dp(4) })
+                addView(statusRow, lp().apply { topMargin = dp(3) })
+                // 进度条与百分比同一行，百分比固定在右侧不抖动。
                 val line = PortraitUi.row(activity)
-                line.addView(status, lp(0, -2).apply { weight = 1f })
-                line.addView(percent, lp(-2, -2).apply { leftMargin = dp(6) })
-                addView(line, lp().apply { topMargin = dp(2) })
-                addView(total, lp(-1, dp(3)).apply { topMargin = dp(1) })
+                line.addView(total, lp(0, dp(3)).apply { weight = 1f })
+                line.addView(percent, lp(dp(38), -2).apply { leftMargin = dp(8) })
+                addView(line, lp().apply { topMargin = dp(7) })
             }, lp(0, -2).apply { weight = 1f })
-            heading.addView(more, lp(dp(44), dp(44)).apply { leftMargin = dp(4) })
             card.addView(heading, lp())
-            card.addView(transferHost, lp())
-            card.addView(problem, lp().apply { topMargin = dp(6) })
-            actions.addView(primary, lp(0, -2).apply { weight = 1f })
-            actions.addView(secondary, lp(0, -2).apply { weight = 1f; leftMargin = dp(8) })
-            card.addView(actions, lp().apply { topMargin = dp(8) })
+            // 各集进度和错误提示属于内容区，放在分隔线之上，操作栏始终在卡片最底部。
+            card.addView(transferHost, lp().apply {
+                leftMargin = dp(13); rightMargin = dp(13); bottomMargin = dp(8)
+            })
+            card.addView(problem, lp().apply {
+                leftMargin = dp(13); rightMargin = dp(13); bottomMargin = dp(10)
+            })
+            // 操作栏与内容之间用一条发丝分隔线分层，替代原来的实心按钮块。
+            card.addView(View(activity).apply { setBackgroundColor(PortraitStyle.outline) },
+                lp(-1, dp(1)))
+            val foot = PortraitUi.row(activity).apply {
+                addView(primary)
+                addView(secondary)
+                addView(toggle)
+                addView(View(activity), lp(0, -2).apply { weight = 1f })
+                addView(more, lp(dp(40), dp(40)).apply { topMargin = dp(3); bottomMargin = dp(3) })
+                setPadding(dp(7), 0, dp(3), 0)
+                minimumHeight = dp(46)
+            }
+            card.addView(foot, lp())
             cover.setOnClickListener { chooseEpisode(activity, item) }
             title.setOnClickListener { chooseEpisode(activity, item) }
         }
@@ -257,12 +326,23 @@ class PhoneOfflineLibrary(
                 pending -> "已暂停"
                 else -> "缓存完成"
             }
-            status.text = state + if (value.transfers.isNotEmpty()) if (expanded) " ▴" else " ▾" else ""
-            status.isEnabled = value.transfers.isNotEmpty()
-            status.isFocusable = status.isEnabled
-            status.contentDescription = state + if (value.transfers.isNotEmpty())
-                if (expanded) "，点击收起各集进度" else "，点击展开各集进度" else ""
-            status.setTextColor(if (failed) PortraitStyle.secondaryText else PortraitStyle.accent)
+            status.text = state
+            // 「圆点 + 文字」状态：圆点单独着色，文字用强调色 / 中性灰，失败改 danger。
+            val statusTone = when {
+                failed -> PortraitStyle.danger
+                pending -> PortraitStyle.muted
+                else -> PortraitStyle.accent
+            }
+            status.setTextColor(statusTone)
+            statusDot.background = PortraitStyle.shape(activity, statusTone, radius = 3)
+            // 状态只做展示，展开各集进度的操作交给底栏的 toggle 按钮。
+            toggle.visibility = if (value.transfers.isNotEmpty()) View.VISIBLE else View.GONE
+            toggleLabel.text = if (expanded) "收起各集" else "各集进度"
+            toggle.contentDescription = if (value.transfers.isNotEmpty())
+                if (expanded) "收起各集进度" else "展开各集进度" else ""
+            // 图标本身朝上：收起时朝上（可展开），展开时翻转朝下（可收起）。
+            toggleIcon.rotation = if (expanded) 180f else 0f
+            statusRow.contentDescription = state
             val showProgress = value.running || pending
             percent.visibility = if (showProgress) View.VISIBLE else View.GONE
             total.visibility = percent.visibility
@@ -296,11 +376,13 @@ class PhoneOfflineLibrary(
             transferHost.visibility = if (active.isEmpty()) View.GONE else View.VISIBLE
             problem.text = value.message
             problem.visibility = if (failed) View.VISIBLE else View.GONE
-            val retryLabel = if (failed) "重试下载" else "继续下载"
+            val retryLabel = if (failed) "重试" else "继续"
             val hasVideo = value.downloaded.isNotEmpty()
+            // 措辞压到两字：缓存页里「缓存」二字是冗余的。
+            // 已有缓存时主操作永远是「播放」，下载控制退到次操作，避免两个按钮同名。
             primaryLabel.text = when {
-                hasVideo -> "播放缓存"
-                value.running -> "暂停下载"
+                hasVideo -> "播放"
+                value.running -> "暂停"
                 pending -> retryLabel
                 else -> "选集缓存"
             }
@@ -309,10 +391,23 @@ class PhoneOfflineLibrary(
                 value.running -> R.drawable.ic_pause
                 else -> R.drawable.ic_download
             })
+            // 主操作只有强调色文字 + 图标，无底色；失败态主操作改为 danger 色。
+            primaryLabel.setTextColor(if (failed) PortraitStyle.danger else PortraitStyle.accent)
+            primaryIcon.setColorFilter(if (failed) PortraitStyle.danger else PortraitStyle.accent)
             primary.contentDescription = "${value.series.title}，${primaryLabel.text}"
-            secondary.text = if (hasVideo && (value.running || pending))
-                if (value.running) "暂停下载" else retryLabel else "选集缓存"
-            secondary.contentDescription = "${value.series.title}，${secondary.text}"
+            // 次操作：有缓存在下载时给「暂停 / 继续」，否则给「选集」。
+            val secondaryPause = hasVideo && (value.running || pending)
+            secondaryLabel.text = when {
+                secondaryPause -> if (value.running) "暂停" else retryLabel
+                else -> "选集"
+            }
+            secondaryIcon.setImageResource(when {
+                !secondaryPause -> R.drawable.ic_episodes
+                value.running -> R.drawable.ic_pause
+                else -> R.drawable.ic_download
+            })
+            secondary.contentDescription = "${value.series.title}，${secondaryLabel.text}"
+            // 无缓存、未在下载也没暂停时，选集已由主操作承担，次操作隐藏。
             secondary.visibility = if (!hasVideo && !value.running && !pending) View.GONE else View.VISIBLE
             more.contentDescription = "管理《${value.series.title}》的离线缓存"
             cover.contentDescription = "${value.series.title}，选择离线分集播放"

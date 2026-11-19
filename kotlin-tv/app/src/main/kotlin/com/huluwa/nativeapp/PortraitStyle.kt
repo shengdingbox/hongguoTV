@@ -71,6 +71,9 @@ object PortraitStyle {
     val chipSelected get() = if (isDark) Color.rgb(231, 231, 235) else Color.BLACK
     val onChipSelected get() = if (isDark) Color.rgb(20, 20, 22) else Color.WHITE
     val subtleButton get() = if (isDark) Color.rgb(59, 59, 63) else Color.rgb(215, 215, 215)
+    /** 下载失败等需要提示但不刺眼的场景；深色下降低饱和度，避免在暗底上过曝。 */
+    val danger get() = if (isDark) Color.rgb(224, 133, 110) else Color.rgb(181, 86, 63)
+    val dangerSurface get() = if (isDark) Color.argb(38, 224, 133, 110) else Color.argb(20, 181, 86, 63)
     val translucentSurface get() = if (isDark) Color.argb(185, 34, 34, 37) else Color.argb(145, 255, 255, 255)
     val ripple get() = if (isDark) Color.argb(35, 255, 255, 255) else Color.argb(28, 0, 0, 0)
     const val POSTER_ASPECT = .75f

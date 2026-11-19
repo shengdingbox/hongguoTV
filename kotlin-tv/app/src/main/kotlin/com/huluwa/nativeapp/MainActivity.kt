@@ -2505,6 +2505,8 @@ class MainActivity: Activity() {
                 main.post { if(!isDestroyed) { if(records.isEmpty()) Toast.makeText(this,"应用启动以来未发生崩溃",Toast.LENGTH_SHORT).show() else CrashDialog.showList(this@MainActivity,records) } }
             }
         }
+        lateinit var aboutProject: TextView
+        aboutProject=setting(about,"关于本项目  ·  作者与 GitHub") { AboutProjectDialog.show(this@MainActivity, aboutProject) }
         // 页脚固定在滚动区之外（屏幕底部居中）：始终可见，因此不再需要抢焦点
         val settingsFooter=text("红果  /  ${BuildConfig.VERSION_NAME}    ·    收藏与本机记录保存在设备 · 登录后可同步到红果账号",12f,muted).apply {
             id=View.generateViewId(); isFocusable=false; gravity=Gravity.CENTER; maxLines=2

@@ -30,6 +30,12 @@ object PhoneDialog {
     private val groupColor get() = if (PortraitStyle.isDark) Color.rgb(44, 44, 46) else Color.WHITE
     private val destructiveColor get() = if (PortraitStyle.isDark) Color.rgb(255, 105, 97) else Color.rgb(220, 49, 46)
 
+    /** 弹框内的分组底色：外部拼自定义内容时复用，保证与设置页卡片一致。 */
+    internal fun groupBackground(activity: Activity): Int {
+        PortraitStyle.refresh(activity)
+        return groupColor
+    }
+
     fun close(dialog: Dialog) = dialog.dismiss()
 
     /** 足够大的触摸按钮，不使用 TV 的焦点描边或横排胶囊。 */

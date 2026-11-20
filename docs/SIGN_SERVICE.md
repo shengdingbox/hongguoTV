@@ -36,7 +36,7 @@ V5 代码移植自 GPL-3.0-only 授权的开源实现，摘要与密钥处理保
    `RemoteSigner`，V5 请求也从这份档案读取身份。
 2. **普通接口签名**：内容、搜索、弹幕、账号继续走各自现有签名路径。
 3. **V5 播放取址**：原生模式优先请求
-   `POST https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1`。
+   `POST https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/v1/`。
    请求只包含当前集，使用 `mixed_video_id_map["1004"]`、`dr_scene=player`、
    `video_platform=1024`、`device_level=1`。查询串使用上游手机端模板
    `74332 / 7.4.3.32 / vivo_8662_64 / PGT-AN10 / Android 12`；UA 沿用该协议模板原值。

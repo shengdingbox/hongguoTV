@@ -296,7 +296,7 @@ open class RemoteSigner(
     open val prefersVideoTab get() = false
 
     /**
-     * 播放取址能否使用本机 V5 单集路由（`/novel/player/multi_video_model/player/v1`）。
+     * 播放取址能否使用本机 V5 单集路由（`/novel/player/multi_video_model/v1/`）。
      *
      * 这条路由的查询串模板和 V5 签名口径都是本机算法专属的，
      * 换成远程签名服务（frida / unidbg）后必须跳过，否则签名与查询串不匹配。

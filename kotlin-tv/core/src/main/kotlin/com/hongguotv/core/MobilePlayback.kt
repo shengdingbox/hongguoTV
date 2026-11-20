@@ -18,7 +18,10 @@ import org.json.JSONObject
 /** 原生算法的 V5 取址通道；使用共用匿名身份，签名覆盖实际发送的 gzip 字节。 */
 internal object MobilePlayback {
     const val MODEL_BASE = "https://api5-normal-sinfonlinea.fqnovel.com"
-    const val MODEL_PATH = "/novel/player/multi_video_model/player/v1"
+    // 2026-11-20 起服务端把 dr_scene 从路径段移进请求体，模板为
+    // POST /novel/player/multi_video_model/:dr_scene/v1/。旧路径仍返回 HTTP 200 空体，
+    // 不能据此判断路由不可用，所以本地算法直接使用新路径。
+    const val MODEL_PATH = "/novel/player/multi_video_model/v1/"
     const val GROUP_SHORT = "1004"
     const val GROUP_PUGC = "1001"
     // 沿用新协议的原始 UA；查询串中的版本按手机端模板使用 74332。

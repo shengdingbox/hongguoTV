@@ -720,34 +720,48 @@ class MainActivity: Activity() {
         mediaSession=TvMediaSession(this,{ if(foreground && screen=="player") requestPlayback(true) },{ if(foreground && screen=="player") requestPlayback(false) },{ position -> if(foreground && screen=="player") seekTo(position) },{ direction -> skipEpisode(direction) },{ if(foreground && screen=="player") returnToDetail() })
         activityInitialized=true
         if(phoneLayout()) phoneLibraryLoading() else showTvStartupHome()
-        // 更新检查已在 Application 中立即发起；首个原生页面就绪后尽快消费结果。
-        main.post { if(PendingAppUpdate.hasPending()) consumePendingUpdate(manual = false) }
+        // 更新检查已在 Application 中立即发起。发布即弹：结果一落地就尝试消费，
+        // 页面未就绪时结果保留在中转站，由 markPageShown()/showCatalog() 等就绪点补弹。
+        PendingAppUpdate.setListener { main.post { drainPendingUpdate() } }
+        if(PendingAppUpdate.hasPending()) main.post { drainPendingUpdate() }
         loadLibrary()
     }
 
     /**
      * 在线更新检查。冷启动失败静默；设置页手动检查失败给出提示。
-     * 所有 UI 回调都回到主线程，并确认 Activity 仍可展示弹框。
+     * 结果统一走 PendingAppUpdate 发布即弹：监听器回调到主线程消费，
+     * 手动检查附带锚点（关闭弹框后焦点还给「检查更新」按钮）。
      */
     private fun checkAppUpdate(manual: Boolean, anchor: View?) {
+        if(manual) pendingManualAnchor=anchor
         io.execute {
             val result=runCatching { AppUpdateChecker().check(BuildConfig.VERSION_CODE) }
             if(manual) result.onSuccess { PendingAppUpdate.publishManual(it) }
                 .onFailure { PendingAppUpdate.publishManualError(it.message ?: "网络不可用") }
-            main.post {
-                if(PendingAppUpdate.peekManual()) consumePendingUpdate(manual = true, anchor)
-            }
         }
+    }
+
+    /** 手动检查更新时记录锚点，消费完（弹框或 Toast）后清空。 */
+    private var pendingManualAnchor: View?=null
+
+    /** 发布即弹的回调入口：只看页面是否就绪，不就绪则保留结果等下一个就绪点。 */
+    private fun drainPendingUpdate() {
+        if(!activityInitialized || !foreground || isDestroyed || isFinishing) return
+        // 过渡页（正在读取本机记录）上不盖更新弹框，等首个真实页面就绪。
+        if(initialCatalogPending && !library.isLoaded) return
+        consumePendingUpdate(manual = PendingAppUpdate.peekManual())
     }
 
     /** 消费进程级静默检查结果；没有结果时什么也不做，避免影响启动。 */
     private fun consumePendingUpdate(manual: Boolean, anchor: View?=null) {
         if(isDestroyed || isFinishing) return
         val pending=PendingAppUpdate.consume(manual) ?: return
+        val focusAnchor=anchor ?: pendingManualAnchor
+        pendingManualAnchor=null
         when {
             pending.error!=null -> Toast.makeText(this,
                 "检查更新失败：${pending.error}",Toast.LENGTH_LONG).show()
-            pending.update!=null -> AppUpdateDialog.show(this, pending.update, anchor)
+            pending.update!=null -> AppUpdateDialog.show(this, pending.update, focusAnchor)
             pending.manual -> Toast.makeText(this,"当前已经是最新版本",Toast.LENGTH_SHORT).show()
         }
     }
@@ -836,7 +850,7 @@ class MainActivity: Activity() {
                 else if(phoneLayout()) { showInitialPhonePage(); favoriteMonitor.check() }
                 else { showInitialTvPage(); favoriteMonitor.check() }
                 maybePromptCrash()
-                main.post { consumePendingUpdate(manual = PendingAppUpdate.peekManual()) }
+                main.post { drainPendingUpdate() }
             }
         }
     }
@@ -1111,11 +1125,8 @@ class MainActivity: Activity() {
         invalidatePage(); screen="catalog"; releaseCatalogViews(); val container=base()
         retainedTheme=TvStyle.theme; retainedWidthDp=widthDp().toInt()
         if(foreground && library.isLoaded && !favoriteMonitor.running) main.post { if(foreground && screen=="catalog") favoriteMonitor.check() }
-        if(root.isAttachedToWindow && foreground) main.post { consumePendingUpdate(manual = PendingAppUpdate.peekManual()) }
-        // 冷启动结果可能恰好在首屏绘制期间返回，补一次轻量轮询，避免要等用户操作。
-        if(foreground && !PendingAppUpdate.hasPending()) {
-            main.postDelayed({ if(foreground && root.isAttachedToWindow && PendingAppUpdate.hasPending()) consumePendingUpdate(manual = false) }, 250)
-        }
+        // 页面就绪点：若更新检查结果先于首屏到达，在这里补弹（平时由发布即弹直接触发）。
+        if(root.isAttachedToWindow && foreground) main.post { drainPendingUpdate() }
         // TV 与手机竖屏使用独立容器；这里只调整 TV 页面的间距和背景。
         val compact=widthDp()<800
         val horizontal=dp(if(compact) 16 else 24)
@@ -5731,9 +5742,9 @@ class MainActivity: Activity() {
      */
     private fun markPageShown() {
         initialCatalogPending=false
-        // 首页已经可见，避免更新弹框盖在“正在读取本机记录”的过渡页上。
-        if(foreground && !isDestroyed && !isFinishing && !PendingAppUpdate.peekManual()) {
-            main.post { consumePendingUpdate(manual = false) }
+        // 页面就绪点：补弹先到的更新检查结果；结果晚于首屏时由发布即弹直接触发。
+        if(foreground && !isDestroyed && !isFinishing) {
+            main.post { drainPendingUpdate() }
         }
     }
 
@@ -7561,7 +7572,13 @@ class MainActivity: Activity() {
         } else libraryLoadError?.let(::showLibraryError)
         // Glide 随 Activity 生命周期恢复弹框和列表中尚未完成的图片请求。
         maybePromptCrash()
-        if(PendingAppUpdate.peekManual()) consumePendingUpdate(manual = true)
+        // 后台期间到达的更新结果（发布即弹时不在前台被跳过），回前台时页面已就绪，补弹。
+        main.post { drainPendingUpdate() }
+        // 升级弹框跳「允许安装未知应用」设置页后返回：已授权则直接续装，
+        // 并把弹框从「正在安装…」恢复成「升级」（用户取消安装时可再点，APK 已落盘复用）。
+        main.post {
+            if(!isDestroyed && AppUpdateInstaller.resumePendingInstall(this)) AppUpdateDialog.notifyInstallResumed()
+        }
         homePlayback?.setActive(foreground && hasWindowFocus() && screen=="catalog" && tab==0 && !phoneLayout())
     }
     /**
@@ -7605,9 +7622,9 @@ class MainActivity: Activity() {
         // 手机设置页的取值都改在独立弹窗里：弹窗关闭、窗口重新拿到焦点时刷新一遍右侧文案，
         // 比在每个弹窗回调里各挂一次可靠（弹窗是别的窗口，不会重建主窗口）
         if(hasFocus && screen=="settings") phoneRefreshSettingsValues()
-        // 冷启动检查由 Application 异步发起，结果可能晚于首屏；拿到窗口焦点时统一消费。
-        if(hasFocus && foreground && !isDestroyed && !PendingAppUpdate.peekManual()) {
-            consumePendingUpdate(manual = false)
+        // 拿到窗口焦点时补弹：发布即弹若发生在窗口无焦点期间，弹框可能无法展示。
+        if(hasFocus && foreground && !isDestroyed) {
+            drainPendingUpdate()
         }
     }
     override fun onPause() {
@@ -7656,6 +7673,7 @@ class MainActivity: Activity() {
         }
     }
     override fun onDestroy() {
+        PendingAppUpdate.setListener(null)
         if(!activityInitialized) {
             main.removeCallbacksAndMessages(null)
             suggestIo.shutdownNow(); pageIo.shutdownNow(); io.shutdownNow()

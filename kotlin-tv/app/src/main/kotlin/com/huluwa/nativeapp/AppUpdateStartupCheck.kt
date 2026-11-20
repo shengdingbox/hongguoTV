@@ -30,16 +30,28 @@ object AppUpdateStartupCheck {
     }
 }
 
-/** 进程内的更新检查结果中转站；消费一次后清空，避免 Activity 重建重复弹框。 */
+/**
+ * 进程内的更新检查结果中转站；消费一次后清空，避免 Activity 重建重复弹框。
+ *
+ * 发布即弹：结果一落地就回调 listener（在哪个线程发布就在哪个线程回调，
+ * 由 Activity 负责切主线程）。Activity 判断页面未就绪时不消费，结果保留在
+ * 这里，等页面就绪后由 Activity 主动 drain。
+ */
 object PendingAppUpdate {
     @Volatile
     private var value: Pending?=null
 
+    @Volatile
+    private var listener: (()->Unit)?=null
+
     private class Pending(val update: AppUpdateInfo?, val manual: Boolean, val error: String?=null)
 
-    fun publish(update: AppUpdateInfo?) { value=Pending(update, false) }
-    fun publishManual(update: AppUpdateInfo?) { value=Pending(update, true) }
-    fun publishManualError(message: String) { value=Pending(null, true, message) }
+    /** Activity 在 onCreate 注册、onDestroy 注销，回调在发布线程上执行。 */
+    fun setListener(callback: (()->Unit)?) { listener=callback }
+
+    fun publish(update: AppUpdateInfo?) { value=Pending(update, false); listener?.invoke() }
+    fun publishManual(update: AppUpdateInfo?) { value=Pending(update, true); listener?.invoke() }
+    fun publishManualError(message: String) { value=Pending(null, true, message); listener?.invoke() }
 
     fun consume(manual: Boolean): PendingResult? {
         val current=value ?: return null

@@ -25,6 +25,10 @@ object AppUpdateInstaller {
         .callTimeout(10,TimeUnit.MINUTES)
         .build()
 
+    /** 等待授权后安装的 APK；授权设置页返回后由 Activity onResume 续装。 */
+    @Volatile
+    private var pendingApk: File?=null
+
     fun download(
         activity: Activity,
         update: AppUpdateInfo,
@@ -38,6 +42,12 @@ object AppUpdateInstaller {
                     .apply { mkdirs() }
                 val target=File(directory,"hongguotv-${update.latestVersionCode}.apk")
                 val temp=File(directory,"${target.name}.part")
+                // 同版本已完整下载并校验过：授权回来重试、取消安装后重试都直接复用，不重下。
+                if(target.exists() && verified(target,update)) {
+                    activity.runOnUiThread { onProgress(100,target.length(),target.length()) }
+                    activity.runOnUiThread { onDone(target) }
+                    return@execute
+                }
                 val call=Request.Builder().url(update.apkUrl).get().build()
                 http.newCall(call).execute().use { response ->
                     if(!response.isSuccessful) error("下载失败：HTTP ${response.code}")
@@ -74,13 +84,39 @@ object AppUpdateInstaller {
         }
     }
 
+    /** 本地文件与服务器声明的大小、哈希一致才算可复用。 */
+    private fun verified(file: File, update: AppUpdateInfo): Boolean {
+        if(update.apkSize>0 && file.length()!=update.apkSize) return false
+        if(update.apkSha256.isBlank()) return file.length()>0
+        return sha256(file).equals(update.apkSha256,ignoreCase=true)
+    }
+
     fun install(activity: Activity, file: File) {
         if(Build.VERSION.SDK_INT>=26 && !activity.packageManager.canRequestPackageInstalls()) {
+            // 记下待安装文件：从授权设置页返回后由 resumePendingInstall() 自动续装，
+            // 不让弹框一直停在「正在安装…」。
+            pendingApk=file
             val intent=Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                 Uri.parse("package:${activity.packageName}"))
-            toastOrFallback(activity,intent,"请先允许红果安装未知应用，然后重新点击升级")
+            toastOrFallback(activity,intent,"请先允许红果安装未知应用，返回后自动继续安装")
             return
         }
+        launchInstaller(activity,file)
+    }
+
+    /**
+     * 授权未知应用安装后回到本应用时续装。返回 true 表示已拉起系统安装器
+     * （pending 已消费）；未授权、无 pending 或拉起失败返回 false，pending 保留。
+     */
+    fun resumePendingInstall(activity: Activity): Boolean {
+        val file=pendingApk ?: return false
+        if(Build.VERSION.SDK_INT>=26 && !activity.packageManager.canRequestPackageInstalls()) return false
+        if(!file.exists()) { pendingApk=null; return false }
+        pendingApk=null
+        return runCatching { launchInstaller(activity,file) }.isSuccess
+    }
+
+    private fun launchInstaller(activity: Activity, file: File) {
         val uri=FileProvider.getUriForFile(activity,"${activity.packageName}.fileprovider",file)
         val intent=Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri,"application/vnd.android.package-archive")

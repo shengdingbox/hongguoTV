@@ -14,6 +14,25 @@ import com.hongguotv.core.AppUpdateInfo
 /** 冷启动检查和设置页手动检查共用的升级弹框。 */
 object AppUpdateDialog {
 
+    /** 当前展示的弹框；授权设置页 / 系统安装器返回时恢复按钮状态用。 */
+    private var active: Handle?=null
+
+    /** 授权回来已拉起系统安装器时把「下载中/正在安装…」恢复成「升级」。 */
+    fun notifyInstallResumed() { active?.resetInstallState() }
+
+    private class Handle(
+        val button: TextView,
+        val progress: ProgressBar,
+        val status: TextView,
+    ) {
+        fun resetInstallState() {
+            button.isEnabled=true
+            button.text="升级"
+            progress.visibility=View.GONE
+            status.visibility=View.GONE
+        }
+    }
+
     fun show(activity: Activity, update: AppUpdateInfo, anchor: View? = null) {
         if (PhoneDialog.shouldUse(activity)) {
             showPhone(activity, update)
@@ -68,6 +87,9 @@ object AppUpdateDialog {
         content.addView(PhoneDialog.button(activity, "稍后") { dialog.dismiss() },
             PhoneUi.lp().apply { topMargin = PhoneUi.dp(activity, 10) })
         dialog = PhoneDialog.sheet(activity, "发现新版本", content = content)
+        val handle=Handle(upgrade,progress,status)
+        active=handle
+        dialog.setOnDismissListener { if(active===handle) active=null }
         dialog.show()
     }
 
@@ -106,7 +128,12 @@ object AppUpdateDialog {
         }
         later.setOnClickListener { dialog.dismiss() }
         TvDialog.styleWindow(activity, dialog, widthDp = 420) { upgrade.requestFocus() }
-        dialog.setOnDismissListener { anchor?.takeIf { it.isAttachedToWindow }?.requestFocus() }
+        val handle=Handle(upgrade,progress,status)
+        active=handle
+        dialog.setOnDismissListener {
+            if(active===handle) active=null
+            anchor?.takeIf { it.isAttachedToWindow }?.requestFocus()
+        }
         dialog.show()
     }
 }

@@ -41,7 +41,7 @@ class DeviceHeartbeatTest {
         val client=DeviceHeartbeatClient("https://stats.example.com", rejected)
         assertFalse(client.heartbeat("abcdef0123456789", "1.2.1", 1201))
 
-        val offline=DeviceHeartbeatClient("https://stats.example.com") {
+        val offline=DeviceHeartbeatClient("https://stats.example.com") { _, _ ->
             throw java.io.IOException("offline")
         }
         assertFalse(offline.heartbeat("abcdef0123456789", "1.2.1", 1201))

@@ -18,6 +18,9 @@ object DeviceId {
 
     @Volatile
     private var cached: String? = null
+    /** 是否已经合并过旧版保存在 install_stats 中且格式有效的安装 ID。 */
+    @Volatile
+    private var legacyMigrated: Boolean = false
 
     /** 返回当前设备 ID；缓存命中时不访问 SharedPreferences。 */
     @Synchronized
@@ -25,9 +28,16 @@ object DeviceId {
         cached?.let { return it }
         val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val stored = prefs.getString(KEY_ID, null)?.takeIf(::valid)
-        val value = stored ?: generate().also {
+        // 从旧版升级时复用原来的安装 ID，避免设备被误算成一次新安装。
+        val legacy = if(!legacyMigrated && stored==null) {
+            context.applicationContext.getSharedPreferences("install_stats", Context.MODE_PRIVATE)
+                .getString("install_id", null)?.takeIf(::valid)
+        } else null
+        legacyMigrated=true
+        val value = stored ?: legacy ?: generate().also {
             prefs.edit().putString(KEY_ID, it).commit()
         }
+        if(stored==null && legacy!=null) prefs.edit().putString(KEY_ID, legacy).commit()
         cached = value
         return value
     }

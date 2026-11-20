@@ -88,6 +88,15 @@ class MainActivity: Activity() {
     private val focusReloadTagKey = 0x7f0e0001
     // 页面请求独占线程，不排在随机推荐补池、云同步等后台任务之后。
     private val pageIo=Executors.newFixedThreadPool(1)
+    /** 前台心跳：首次立即发送，之后每 60 秒一次；onPause 停止。 */
+    private val heartbeatIntervalMs=60_000L
+    private val heartbeatRunnable=object: Runnable {
+        override fun run() {
+            if(!foreground || isFinishing || isDestroyed) return
+            InstallStatsPing.heartbeat(applicationContext)
+            main.postDelayed(this, heartbeatIntervalMs)
+        }
+    }
     // 联想独立于云同步等后台任务；新输入会取消旧请求并清掉队列。
     private val suggestIo=Executors.newFixedThreadPool(1)
     private var suggestJob: java.util.concurrent.Future<*>?=null
@@ -7510,6 +7519,8 @@ class MainActivity: Activity() {
     override fun onResume() {
         if(!activityInitialized) { super.onResume(); return }
         super.onResume(); foreground=true; main.removeCallbacks(tick); main.post(tick)
+        main.removeCallbacks(heartbeatRunnable)
+        main.post(heartbeatRunnable)
         if(PortraitStyle.refresh(this)) redrawPhoneTheme()
         phoneConfiguration=android.content.res.Configuration(resources.configuration)
         if(library.isLoaded) {
@@ -7596,6 +7607,7 @@ class MainActivity: Activity() {
         if(!activityInitialized) { super.onPause(); return }
         tvVideoFrameWaitStartedAt=0L
         homePlayback?.setActive(false)
+        main.removeCallbacks(heartbeatRunnable)
         foreground=false; main.removeCallbacks(tick); cancelRecovery(); cancelPrefetch(); mediaSession.deactivate()
         sleepTimer.cancel(); favoriteMonitor.stop(); detailAutoplay=false; requestedAutoplay=false; pausedForLifecycle=true
         player?.pause(); saveProgress(); library.flush()

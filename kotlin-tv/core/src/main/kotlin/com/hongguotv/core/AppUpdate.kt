@@ -29,6 +29,8 @@ data class AppUpdateInfo(
     val latestVersionName: String,
     val latestVersionCode: Long,
     val apkUrl: String,
+    val apkSize: Long = 0,
+    val apkSha256: String = "",
 )
 
 /** 可注入的更新传输，便于测试而不依赖真实网络。 */
@@ -88,6 +90,8 @@ class AppUpdateChecker(
             latestVersionName = latest.optString("version_name"),
             latestVersionCode = latestCode,
             apkUrl = apkUrl,
+            apkSize = latest.optLong("apk_size", 0),
+            apkSha256 = latest.optString("sha256", ""),
         )
     }
 }

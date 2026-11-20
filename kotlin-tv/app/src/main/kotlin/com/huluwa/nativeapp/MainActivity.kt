@@ -720,6 +720,8 @@ class MainActivity: Activity() {
         mediaSession=TvMediaSession(this,{ if(foreground && screen=="player") requestPlayback(true) },{ if(foreground && screen=="player") requestPlayback(false) },{ position -> if(foreground && screen=="player") seekTo(position) },{ direction -> skipEpisode(direction) },{ if(foreground && screen=="player") returnToDetail() })
         activityInitialized=true
         if(phoneLayout()) phoneLibraryLoading() else showTvStartupHome()
+        // 更新检查已在 Application 中立即发起；首个原生页面就绪后尽快消费结果。
+        main.post { if(PendingAppUpdate.hasPending()) consumePendingUpdate(manual = false) }
         loadLibrary()
     }
 
@@ -1110,6 +1112,10 @@ class MainActivity: Activity() {
         retainedTheme=TvStyle.theme; retainedWidthDp=widthDp().toInt()
         if(foreground && library.isLoaded && !favoriteMonitor.running) main.post { if(foreground && screen=="catalog") favoriteMonitor.check() }
         if(root.isAttachedToWindow && foreground) main.post { consumePendingUpdate(manual = PendingAppUpdate.peekManual()) }
+        // 冷启动结果可能恰好在首屏绘制期间返回，补一次轻量轮询，避免要等用户操作。
+        if(foreground && !PendingAppUpdate.hasPending()) {
+            main.postDelayed({ if(foreground && root.isAttachedToWindow && PendingAppUpdate.hasPending()) consumePendingUpdate(manual = false) }, 250)
+        }
         // TV 与手机竖屏使用独立容器；这里只调整 TV 页面的间距和背景。
         val compact=widthDp()<800
         val horizontal=dp(if(compact) 16 else 24)

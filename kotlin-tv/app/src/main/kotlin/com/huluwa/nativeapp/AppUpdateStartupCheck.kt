@@ -49,6 +49,7 @@ object PendingAppUpdate {
     }
 
     fun peekManual(): Boolean = value?.manual==true
+    fun hasPending(): Boolean = value!=null
 }
 
 data class PendingResult(

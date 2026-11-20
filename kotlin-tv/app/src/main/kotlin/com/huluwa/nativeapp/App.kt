@@ -15,5 +15,8 @@ class App: Application() {
         CrashReporter.install(base)
         // 运行日志第一行就有版本与机型：用户反馈「日志是空的」时能立刻判断 App 是否重启过
         RuntimeLog.appStart(base)
+        // 冷启动静默检查属于进程生命周期，Activity 重建不会重复请求或弹框。
+        AppUpdateStartupCheck.startOnce(base)
+        InstallStatsPing.startOnce(base)
     }
 }

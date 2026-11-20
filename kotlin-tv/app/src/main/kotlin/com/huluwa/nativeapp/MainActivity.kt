@@ -698,7 +698,6 @@ class MainActivity: Activity() {
             // 手机设置页里登录/退出：昵称与云端数量就是行标题，整页重画一次
             if(library.isLoaded && screen=="settings") refreshPhoneSettings()
         }
-        InstallStatsPing.startOnce(applicationContext)
         backdropView=ImageView(this).apply { scaleType=ImageView.ScaleType.FIT_XY; importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO }
         loadBackdrop()
         connectivity=getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -713,6 +712,33 @@ class MainActivity: Activity() {
         activityInitialized=true
         if(phoneLayout()) phoneLibraryLoading() else showTvStartupHome()
         loadLibrary()
+    }
+
+    /**
+     * 在线更新检查。冷启动失败静默；设置页手动检查失败给出提示。
+     * 所有 UI 回调都回到主线程，并确认 Activity 仍可展示弹框。
+     */
+    private fun checkAppUpdate(manual: Boolean, anchor: View?) {
+        io.execute {
+            val result=runCatching { AppUpdateChecker().check(BuildConfig.VERSION_CODE) }
+            if(manual) result.onSuccess { PendingAppUpdate.publishManual(it) }
+                .onFailure { PendingAppUpdate.publishManualError(it.message ?: "网络不可用") }
+            main.post {
+                if(PendingAppUpdate.peekManual()) consumePendingUpdate(manual = true, anchor)
+            }
+        }
+    }
+
+    /** 消费进程级静默检查结果；没有结果时什么也不做，避免影响启动。 */
+    private fun consumePendingUpdate(manual: Boolean, anchor: View?=null) {
+        if(isDestroyed || isFinishing) return
+        val pending=PendingAppUpdate.consume(manual) ?: return
+        when {
+            pending.error!=null -> Toast.makeText(this,
+                "检查更新失败：${pending.error}",Toast.LENGTH_LONG).show()
+            pending.update!=null -> AppUpdateDialog.show(this, pending.update, anchor)
+            pending.manual -> Toast.makeText(this,"当前已经是最新版本",Toast.LENGTH_SHORT).show()
+        }
     }
     /** 手机端读取本机记录的过渡页：配色跟随手机外观，重建（如切换算法模式）时不再闪过深夜影院黑屏。 */
     private fun phoneLibraryLoading() {
@@ -799,6 +825,7 @@ class MainActivity: Activity() {
                 else if(phoneLayout()) { showInitialPhonePage(); favoriteMonitor.check() }
                 else { showInitialTvPage(); favoriteMonitor.check() }
                 maybePromptCrash()
+                main.post { consumePendingUpdate(manual = PendingAppUpdate.peekManual()) }
             }
         }
     }
@@ -1073,6 +1100,7 @@ class MainActivity: Activity() {
         invalidatePage(); screen="catalog"; releaseCatalogViews(); val container=base()
         retainedTheme=TvStyle.theme; retainedWidthDp=widthDp().toInt()
         if(foreground && library.isLoaded && !favoriteMonitor.running) main.post { if(foreground && screen=="catalog") favoriteMonitor.check() }
+        if(isAttachedToWindow && foreground) main.post { consumePendingUpdate(manual = PendingAppUpdate.peekManual()) }
         // TV 与手机竖屏使用独立容器；这里只调整 TV 页面的间距和背景。
         val compact=widthDp()<800
         val horizontal=dp(if(compact) 16 else 24)
@@ -2507,6 +2535,10 @@ class MainActivity: Activity() {
         }
         lateinit var aboutProject: TextView
         aboutProject=setting(about,"关于本项目  ·  作者与 GitHub") { AboutProjectDialog.show(this@MainActivity, aboutProject) }
+        lateinit var checkUpdate: TextView
+        checkUpdate=setting(about,"检查更新  ·  ${BuildConfig.VERSION_NAME}") {
+            checkAppUpdate(manual = true, anchor = checkUpdate)
+        }
         // 页脚固定在滚动区之外（屏幕底部居中）：始终可见，因此不再需要抢焦点
         val settingsFooter=text("红果  /  ${BuildConfig.VERSION_NAME}    ·    收藏与本机记录保存在设备 · 登录后可同步到红果账号",12f,muted).apply {
             id=View.generateViewId(); isFocusable=false; gravity=Gravity.CENTER; maxLines=2
@@ -5684,6 +5716,10 @@ class MainActivity: Activity() {
      */
     private fun markPageShown() {
         initialCatalogPending=false
+        // 首页已经可见，避免更新弹框盖在“正在读取本机记录”的过渡页上。
+        if(foreground && !isDestroyed && !isFinishing && !PendingAppUpdate.peekManual()) {
+            main.post { consumePendingUpdate(manual = false) }
+        }
     }
 
     /** 冷启动只消费一次现场；切后台回来继续走原有的内存恢复流程。 */
@@ -7169,6 +7205,7 @@ class MainActivity: Activity() {
     fun phoneWatchStats() = showWatchStats(pickerAnchor)
     fun phoneInterfaceCheck() = showInterfaceCheck(pickerAnchor)
     fun phoneRuntimeLogs() = RuntimeLogDialog.show(this, ::runtimeLogSummary)
+    fun phoneCheckUpdate() = checkAppUpdate(manual = true, anchor = pickerAnchor)
 
     /** 复制到日志里的现场状态：排查「三条进度条全灰」时不依赖日志有没有打到。 */
     private fun runtimeLogSummary(): String = buildString {
@@ -7506,6 +7543,7 @@ class MainActivity: Activity() {
         } else libraryLoadError?.let(::showLibraryError)
         // Glide 随 Activity 生命周期恢复弹框和列表中尚未完成的图片请求。
         maybePromptCrash()
+        if(PendingAppUpdate.peekManual()) consumePendingUpdate(manual = true)
         homePlayback?.setActive(foreground && hasWindowFocus() && screen=="catalog" && tab==0 && !phoneLayout())
     }
     /**
@@ -7549,6 +7587,10 @@ class MainActivity: Activity() {
         // 手机设置页的取值都改在独立弹窗里：弹窗关闭、窗口重新拿到焦点时刷新一遍右侧文案，
         // 比在每个弹窗回调里各挂一次可靠（弹窗是别的窗口，不会重建主窗口）
         if(hasFocus && screen=="settings") phoneRefreshSettingsValues()
+        // 冷启动检查由 Application 异步发起，结果可能晚于首屏；拿到窗口焦点时统一消费。
+        if(hasFocus && foreground && !isDestroyed && !PendingAppUpdate.peekManual()) {
+            consumePendingUpdate(manual = false)
+        }
     }
     override fun onPause() {
         if(!activityInitialized) { super.onPause(); return }

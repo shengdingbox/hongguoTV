@@ -322,6 +322,7 @@ class PhoneSettings(private val activity: MainActivity) {
             addRow(group, row("接口自检") { activity.phoneInterfaceCheck() })
             addRow(group, row("运行日志") { activity.phoneRuntimeLogs() })
             addRow(group, row("异常日志", "${CrashReporter.count(activity)} 份", { "${CrashReporter.count(activity)} 份" }) { activity.phoneCrashLogs() })
+            addRow(group, row("检查更新", null) { activity.phoneCheckUpdate() })
             addRow(group, row("关于本项目", "作者 · GitHub") { AboutProjectDialog.show(activity, null) })
         }
         parent.addView(text("红果 ${BuildConfig.VERSION_NAME}", 12f, PortraitStyle.muted).apply {

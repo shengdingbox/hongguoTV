@@ -41,7 +41,7 @@ object AppUpdateDialog {
             setPadding(0, PhoneUi.dp(activity, 16), 0, 0)
         })
         content.addView(PhoneUi.text(activity,
-            "升级会打开 APK 下载地址，下载完成后由系统安装器完成覆盖安装。",
+            "点击升级将在应用内下载 APK，校验完成后自动打开系统安装器。",
             14f, PortraitStyle.secondaryText).apply {
             setLineSpacing(PhoneUi.dp(activity, 4).toFloat(), 1f)
             setPadding(0, PhoneUi.dp(activity, 16), 0, 0)
@@ -53,7 +53,7 @@ object AppUpdateDialog {
         content.addView(progress, PhoneUi.lp().apply { topMargin=PhoneUi.dp(activity,16) })
         content.addView(status, PhoneUi.lp().apply { topMargin=PhoneUi.dp(activity,8) })
         lateinit var dialog: AlertDialog
-        lateinit var upgrade: android.widget.Button
+        lateinit var upgrade: TextView
         upgrade=PhoneDialog.button(activity, "升级", primary = true) {
             upgrade.isEnabled=false
             progress.visibility=View.VISIBLE

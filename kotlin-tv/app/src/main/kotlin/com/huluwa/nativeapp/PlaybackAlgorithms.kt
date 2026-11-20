@@ -7,13 +7,12 @@ import android.os.Looper
 import com.hongguotv.core.PlaybackAlgorithmChange
 import com.hongguotv.core.PlaybackAlgorithm
 import com.hongguotv.core.PlaybackAlgorithmPolicy
-import com.hongguotv.core.InMemorySignerProfileStore
 import com.hongguotv.core.SignerProfileStore
 
 /**
  * 应用内唯一的播放算法策略。
  *
- * 播放页、首页预览与离线下载共用同一个实例，所以“连续两次取址失败”不会因页面不同被拆开；
+ * 播放页、首页预览与离线下载共用同一个实例，所以“连续三次取址失败”不会因页面不同被拆开；
  * 自动切换写回 SigningSettings，下一次冷启动继续沿用。
  */
 object PlaybackAlgorithms {
@@ -28,13 +27,6 @@ object PlaybackAlgorithms {
         return PlaybackAlgorithmPolicy(
             initial = SigningSettings.toPlaybackAlgorithm(SigningSettings.mode),
             localFactory = { localSigner },
-            localProbeFactory = {
-                // 每次探测使用全新内存档案副本；失败不会残留坏身份，也不会改写正式档案。
-                val probeStore = InMemorySignerProfileStore()
-                val current = runCatching { localSigner.profile() }.getOrNull()
-                if (current?.available == true) probeStore.save(current)
-                SigningSettings.createSigner(SigningSettings.Mode.LOCAL, probeStore)
-            },
             unidbgFactory = { SigningSettings.createSigner(SigningSettings.Mode.UNIDBG, store) },
             fridaFactory = { SigningSettings.createSigner(SigningSettings.Mode.FRIDA, store) },
             onChange = { change -> main.post { persist(change) } },

@@ -7520,7 +7520,8 @@ class MainActivity: Activity() {
         if(!activityInitialized) { super.onResume(); return }
         super.onResume(); foreground=true; main.removeCallbacks(tick); main.post(tick)
         main.removeCallbacks(heartbeatRunnable)
-        main.post(heartbeatRunnable)
+        // 冷启动只先调更新接口（同时计启动）；心跳至少等待一分钟再开始。
+        main.postDelayed(heartbeatRunnable, heartbeatIntervalMs)
         if(PortraitStyle.refresh(this)) redrawPhoneTheme()
         phoneConfiguration=android.content.res.Configuration(resources.configuration)
         if(library.isLoaded) {

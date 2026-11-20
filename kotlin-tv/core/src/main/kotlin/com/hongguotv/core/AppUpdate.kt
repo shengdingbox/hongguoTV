@@ -11,10 +11,13 @@ import java.util.concurrent.TimeUnit
 object AppUpdate {
     const val ENDPOINT = "http://taihe.678120.cn:8008"
 
-    fun checkUrl(versionCode: Int): String = ENDPOINT.toHttpUrl().newBuilder()
+    fun checkUrl(versionCode: Int, deviceId: String? = null, versionName: String = ""): String = ENDPOINT.toHttpUrl().newBuilder()
         .addPathSegments("api/v1/update")
         .addQueryParameter("versionCode", versionCode.toString())
         .addQueryParameter("platform", "android")
+        .addQueryParameter("source", if (deviceId == null) "manual" else "cold_start")
+        .apply { deviceId?.let { addQueryParameter("install_id", it) } }
+        .addQueryParameter("version_name", versionName)
         .build()
         .toString()
 }
@@ -55,15 +58,18 @@ class AppUpdateChecker(
     private val endpoint: String = AppUpdate.ENDPOINT,
     private val transport: AppUpdateTransport = OkHttpAppUpdateTransport(),
 ) {
-    fun check(versionCode: Int): AppUpdateInfo? {
+    fun check(versionCode: Int, deviceId: String? = null, versionName: String = ""): AppUpdateInfo? {
         if (versionCode <= 0) return null
         val url = if (endpoint == AppUpdate.ENDPOINT) {
-            AppUpdate.checkUrl(versionCode)
+            AppUpdate.checkUrl(versionCode, deviceId, versionName)
         } else {
             endpoint.toHttpUrl().newBuilder()
                 .addPathSegments("api/v1/update")
                 .addQueryParameter("versionCode", versionCode.toString())
                 .addQueryParameter("platform", "android")
+                .addQueryParameter("source", if (deviceId == null) "manual" else "cold_start")
+                .apply { deviceId?.let { addQueryParameter("install_id", it) } }
+                .addQueryParameter("version_name", versionName)
                 .build()
                 .toString()
         }

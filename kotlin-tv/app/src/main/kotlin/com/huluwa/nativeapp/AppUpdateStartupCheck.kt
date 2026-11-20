@@ -17,7 +17,13 @@ object AppUpdateStartupCheck {
         if(started) return
         started=true
         worker.execute {
-            runCatching { AppUpdateChecker().check(BuildConfig.VERSION_CODE) }
+            runCatching {
+                AppUpdateChecker().check(
+                    BuildConfig.VERSION_CODE,
+                    DeviceId.get(context),
+                    BuildConfig.VERSION_NAME,
+                )
+            }
                 .onSuccess { PendingAppUpdate.publish(it) }
                 .onFailure { PendingAppUpdate.publish(null) }
         }

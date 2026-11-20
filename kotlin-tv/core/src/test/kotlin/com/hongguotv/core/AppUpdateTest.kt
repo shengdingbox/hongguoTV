@@ -9,7 +9,7 @@ class AppUpdateTest {
     @Test
     fun newerVersionRequiresApkUrl() {
         val checker = AppUpdateChecker("https://update.example.com") { url ->
-            assertEquals("https://update.example.com/api/v1/update?versionCode=1198&platform=android", url)
+            assertEquals("https://update.example.com/api/v1/update?versionCode=1198&platform=android&source=manual&version_name=", url)
             """{"available":true,"current":{"version_name":"1.2.1","version_code":1201},"latest":{"version_name":"1.2.1","version_code":1201,"apk_url":"https://update.example.com/api/v1/releases/1201/apk"}}"""
         }
         val update = checker.check(1198)!!

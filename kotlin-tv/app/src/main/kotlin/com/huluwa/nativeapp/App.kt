@@ -17,6 +17,5 @@ class App: Application() {
         RuntimeLog.appStart(base)
         // 冷启动静默检查属于进程生命周期，Activity 重建不会重复请求或弹框。
         AppUpdateStartupCheck.startOnce(base)
-        InstallStatsPing.startOnce(base)
     }
 }

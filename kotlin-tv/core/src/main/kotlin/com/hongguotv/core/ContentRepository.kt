@@ -1245,7 +1245,10 @@ open class ContentRepository(
             return model
         } catch (problem: IOException) {
             probe?.cancel(false)
-            if (policy?.addressFailed(playback,attempt)==true) {
+            // 空体/错误码是签名口径失效的确定性信号，换算法才有意义；
+            // 连接失败/超时换算法无济于事（取址请求始终由本机发出），不触发切换。
+            val algorithmic = problem is ServiceException || problem is EmptyPlaybackResponseException
+            if (policy?.addressFailed(attempt, network = !algorithmic)==true) {
                 // 切到 unidbg 后立即用新 signer 重试当前集，用户不需要手动重播。
                 val retry = policy.beginAddress()
                 val model = fetchVideoModel(id,level,preferAlt,albumEpisode)
@@ -1253,10 +1256,28 @@ open class ContentRepository(
                 modelCache.put(id,model.put(LEVEL_KEY,level),clock())
                 return model
             }
+            // 正式播放遇到本地算法类失败：不等切换阈值，先用 unidbg 救当前这一次取址。
+            // 只救本次请求、不改全局选择，本地失败计数照常累积，该切换时仍会切换。
+            if (playback && algorithmic) {
+                policy?.playbackFallbackSigner()?.let { fallback ->
+                    val rescued = try {
+                        ContentRepository(http, clock, fallback, PlaybackModelCache(), null)
+                            .fetchVideoModel(id,level,preferAlt,albumEpisode)
+                    } catch(cancel: java.io.InterruptedIOException) {
+                        throw cancel
+                    } catch(_: Exception) {
+                        null
+                    }
+                    if (rescued!=null) {
+                        modelCache.put(id,rescued.put(LEVEL_KEY,level),clock())
+                        return rescued
+                    }
+                }
+            }
             throw problem
         }
     }
-    /** 远程模式取址期间并行探测本地；探测成功只影响下一次取址。 */
+    /** 远程模式取址期间并行探测本地（实时嗅探）；连续两次成功才切回，只影响下一次取址。 */
     private fun startLocalProbe(id: String, level: Int, preferAlt: Boolean, albumEpisode: Boolean, policy: PlaybackAlgorithmPolicy): java.util.concurrent.Future<*>? =
         localProbeExecutor.submit {
             if (!Thread.currentThread().isInterrupted) {

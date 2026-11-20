@@ -7,60 +7,47 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaybackAlgorithmPolicyTest {
-    @Test fun localSwitchesOnlyAfterThreeConsecutiveAddressFailures() {
+    @Test fun localSwitchesOnlyAfterTwoConsecutiveAddressFailures() {
         val changes = mutableListOf<PlaybackAlgorithmChange>()
         val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL, onChange = { changes += it })
-        val first = policy.beginAddress()
-        val second = policy.beginAddress()
-        val third = policy.beginAddress()
-        assertFalse(policy.addressFailed(first))
+        assertFalse(policy.addressFailed())
         assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
-        assertFalse(policy.addressFailed(second))
-        assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
-        assertTrue(policy.addressFailed(third))
+        assertTrue(policy.addressFailed())
         assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
         assertEquals(1, changes.size)
     }
 
     @Test fun successfulAddressResetsConsecutiveFailureCount() {
         val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL)
-        assertFalse(policy.addressFailed(policy.beginAddress()))
-        policy.addressSucceeded(policy.beginAddress())
-        assertFalse(policy.addressFailed(policy.beginAddress()))
-        assertFalse(policy.addressFailed(policy.beginAddress()))
+        assertFalse(policy.addressFailed())
+        policy.addressSucceeded()
+        assertFalse(policy.addressFailed())
         assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
-        assertTrue(policy.addressFailed(policy.beginAddress()))
+        assertTrue(policy.addressFailed())
         assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
     }
 
-    @Test fun remoteSwitchesToLocalOnlyAfterThreeConsecutiveFailures() {
+    @Test fun successfulRemoteAddressAndLocalProbeSwitchesBackToLocal() {
         val changes = mutableListOf<PlaybackAlgorithmChange>()
         val policy = PlaybackAlgorithmPolicy(
             PlaybackAlgorithm.UNIDBG,
+            localProbeFactory = { object : RemoteSigner() {} },
             onChange = { changes += it },
         )
-        assertFalse(policy.addressFailed(policy.beginAddress()))
-        assertFalse(policy.addressFailed(policy.beginAddress()))
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
-        assertTrue(policy.addressFailed(policy.beginAddress()))
+        assertTrue(policy.needsLocalProbe())
+        assertTrue(policy.probeLocal { true })
+        policy.localProbeSucceeded()
         assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
         assertEquals(1, changes.size)
+        assertFalse(policy.needsLocalProbe())
     }
 
-    @Test fun successfulAddressDoesNotSwitchAlgorithm() {
+    @Test fun failedProbeNeverSwitchesAlgorithm() {
         val policy = PlaybackAlgorithmPolicy(
-            PlaybackAlgorithm.UNIDBG
+            PlaybackAlgorithm.UNIDBG,
+            localProbeFactory = { object : RemoteSigner() {} },
         )
-        policy.addressSucceeded(policy.beginAddress())
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
-    }
-
-    @Test fun oldAttemptAfterSwitchDoesNotAffectNewAlgorithm() {
-        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL)
-        val old = policy.beginAddress()
-        repeat(3) { assertFalse(policy.addressFailed(policy.beginAddress())) }
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
-        assertFalse(policy.addressFailed(old))
+        assertFalse(policy.probeLocal { false })
         assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
     }
 }

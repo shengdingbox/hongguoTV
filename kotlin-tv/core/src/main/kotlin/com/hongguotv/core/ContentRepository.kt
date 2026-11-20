@@ -1229,33 +1229,48 @@ open class ContentRepository(
     }
     /** 播放取址入口：缓存命中不算一次取址；真实失败交给算法策略计数和自动切换。 */
     private fun addressModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false): JSONObject {
-        val policy = playbackAlgorithms
         modelCache.get(id,clock())?.let {
-            // 缓存命中没有发起新取址，不计入算法的连续失败次数。
+            // 缓存命中不发起新的算法探测；只有真实播放取址才检查远程/本地可用性。
+            playbackAlgorithms?.addressSucceeded()
             return it
         }
-        val attempt = policy?.beginAddress()
+        val policy = playbackAlgorithms
+        val probe = if (policy?.needsLocalProbe()==true) startLocalProbe(id,level,preferAlt,albumEpisode,policy) else null
         try {
             val model = fetchVideoModel(id,level,preferAlt,albumEpisode)
-            if (policy != null && attempt != null) policy.addressSucceeded(attempt)
+            policy?.addressSucceeded()
             modelCache.put(id,model.put(LEVEL_KEY,level),clock())
+            probe
             return model
         } catch (problem: IOException) {
-            if (policy != null && attempt != null && policy.addressFailed(attempt)) {
-                // 切换后立即用新算法重试当前集，用户不需要手动重播。
-                val retry = policy.beginAddress()
-                try {
-                    val model = fetchVideoModel(id,level,preferAlt,albumEpisode)
-                    policy.addressSucceeded(retry)
-                    modelCache.put(id,model.put(LEVEL_KEY,level),clock())
-                    return model
-                } catch (problem: IOException) {
-                    policy.addressFailed(retry)
-                    throw problem
-                }
+            probe?.cancel(false)
+            if (policy?.addressFailed()==true) {
+                // 切到 unidbg 后立即用新 signer 重试当前集，用户不需要手动重播。
+                val model = fetchVideoModel(id,level,preferAlt,albumEpisode)
+                policy.addressSucceeded()
+                modelCache.put(id,model.put(LEVEL_KEY,level),clock())
+                return model
             }
             throw problem
         }
+    }
+    /** 远程模式取址期间并行探测本地；探测成功只影响下一次取址。 */
+    private fun startLocalProbe(id: String, level: Int, preferAlt: Boolean, albumEpisode: Boolean, policy: PlaybackAlgorithmPolicy): java.util.concurrent.Future<*>? =
+        localProbeExecutor.submit {
+            if (!Thread.currentThread().isInterrupted) {
+                runCatching {
+                    policy.probeLocal { localSigner ->
+                        val localRepo = ContentRepository(http, clock, localSigner, PlaybackModelCache(), null)
+                        localRepo.fetchVideoModel(id, level, preferAlt, albumEpisode)
+                        policy.localProbeSucceeded()
+                        true
+                    }
+                }
+            }
+        }
+    /** 远程探测并发执行，避免每次播放都要等两套算法串行完成。 */
+    private val localProbeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { action ->
+        Thread(action, "playback-local-probe").apply { isDaemon = true }
     }
     /** 本地算法优先走 V5 gzip POST；Android 签名服务与兼容回退继续共用模型缓存。 */
     private fun videoModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false): JSONObject {

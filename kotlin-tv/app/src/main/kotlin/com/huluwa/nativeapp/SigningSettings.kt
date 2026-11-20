@@ -66,7 +66,7 @@ object SigningSettings {
     }
 
     /** 设置页的 Mode 与 core 的播放算法一一对应。 */
-    fun Mode.toPlaybackAlgorithm(): PlaybackAlgorithm = when (this) {
+    fun toPlaybackAlgorithm(target: Mode): PlaybackAlgorithm = when (target) {
         Mode.LOCAL -> PlaybackAlgorithm.LOCAL
         Mode.UNIDBG -> PlaybackAlgorithm.UNIDBG
         Mode.FRIDA -> PlaybackAlgorithm.FRIDA

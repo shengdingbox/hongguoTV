@@ -26,7 +26,7 @@ object PlaybackAlgorithms {
         val app = context.applicationContext
         val localSigner = SigningSettings.createSigner(SigningSettings.Mode.LOCAL, store)
         return PlaybackAlgorithmPolicy(
-            initial = SigningSettings.mode.toPlaybackAlgorithm(),
+            initial = SigningSettings.toPlaybackAlgorithm(SigningSettings.mode),
             localFactory = { localSigner },
             localProbeFactory = {
                 // 每次探测使用全新内存档案副本；失败不会残留坏身份，也不会改写正式档案。

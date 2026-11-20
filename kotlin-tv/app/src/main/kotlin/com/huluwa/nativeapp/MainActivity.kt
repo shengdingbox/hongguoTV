@@ -7236,7 +7236,7 @@ class MainActivity: Activity() {
         if(mode==SigningSettings.mode) return
         SigningSettings.mode=mode
         // 当前 Activity 立即换用新签名器；重建让内容、弹幕、云账号也同步到新身份。
-        runCatching { playbackAlgorithms.select(mode.toPlaybackAlgorithm()) }
+        runCatching { playbackAlgorithms.select(SigningSettings.toPlaybackAlgorithm(mode)) }
         rebuildPlaybackCacheForAlgorithm()
         if(screen=="settings") PageRestore.phoneSettings=true
         recreateKeepingPage("算法模式")

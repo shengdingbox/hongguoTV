@@ -3,12 +3,12 @@ package com.huluwa.nativeapp
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
-import android.widget.Toast
 import com.hongguotv.core.AppUpdateInfo
 
 /** 冷启动检查和设置页手动检查共用的升级弹框。 */
@@ -44,39 +44,39 @@ object AppUpdateDialog {
         showTv(activity, update, anchor)
     }
 
-    private fun message(update: AppUpdateInfo): String = buildString {
-        appendLine("发现新版本 ${update.latestVersionName}（${update.latestVersionCode}）")
-        appendLine("当前版本 ${update.currentVersionName}（${update.currentVersionCode}）")
-        appendLine()
-        append("点击“升级”将在应用内下载 APK，校验完成后自动打开系统安装器。")
-    }
+    /**
+     * 排版原则：最新版本号是第一视觉（大字号 + accent 主题色），
+     * 更新说明是内容主体（正常文字色 + 独立底衬卡片），
+     * 当前版本与下载提示降级为底部辅助小字。
+     */
 
     private fun showPhone(activity: Activity, update: AppUpdateInfo) {
         val content = PhoneUi.column(activity)
-        content.addView(PhoneUi.text(activity, "红果 ${update.latestVersionName}", 24f, PortraitStyle.text).apply {
+        // 顶部直接大版本号（accent 色突出），「发现新版本」由 sheet 标题承担，不重复。
+        content.addView(PhoneUi.text(activity, update.latestVersionName, 34f, PortraitStyle.accent).apply {
             setTypeface(null, android.graphics.Typeface.BOLD)
         })
-        content.addView(PhoneUi.text(activity, "versionCode ${update.latestVersionCode}", 13f,
-            PortraitStyle.muted).apply { setPadding(0, PhoneUi.dp(activity, 6), 0, 0) })
-        content.addView(PhoneUi.text(activity, "当前版本 ${update.currentVersionName}（${update.currentVersionCode}）",
-            14f, PortraitStyle.secondaryText).apply {
-            setPadding(0, PhoneUi.dp(activity, 16), 0, 0)
-        })
-        content.addView(PhoneUi.text(activity,
-            "点击升级将在应用内下载 APK，校验完成后自动打开系统安装器。",
-            14f, PortraitStyle.secondaryText).apply {
-            setLineSpacing(PhoneUi.dp(activity, 4).toFloat(), 1f)
-            setPadding(0, PhoneUi.dp(activity, 16), 0, 0)
-        })
+        content.addView(PhoneUi.text(activity, "versionCode ${update.latestVersionCode}", 12f,
+            PortraitStyle.muted).apply { setPadding(0, PhoneUi.dp(activity, 2), 0, 0) })
+        // 主体：更新说明卡片，有说明时是弹框的内容重心
         if(update.notes.isNotBlank()) {
-            content.addView(PhoneUi.text(activity,"更新说明",16f,PortraitStyle.text).apply {
+            val card=PhoneUi.column(activity).apply {
+                background=GradientDrawable().apply {
+                    setColor(PortraitStyle.surface)
+                    cornerRadius=PhoneUi.dp(activity,14).toFloat()
+                    setStroke(PhoneUi.dp(activity,1),PortraitStyle.outline)
+                }
+                setPadding(PhoneUi.dp(activity,16),PhoneUi.dp(activity,14),
+                    PhoneUi.dp(activity,16),PhoneUi.dp(activity,14))
+            }
+            card.addView(PhoneUi.text(activity,"更新说明",15f,PortraitStyle.accent).apply {
                 setTypeface(null, android.graphics.Typeface.BOLD)
-                setPadding(0, PhoneUi.dp(activity, 18), 0, 0)
             })
-            content.addView(PhoneUi.text(activity,update.notes,14f,PortraitStyle.secondaryText).apply {
-                setLineSpacing(PhoneUi.dp(activity, 5).toFloat(), 1f)
-                setPadding(0, PhoneUi.dp(activity, 8), 0, 0)
+            card.addView(PhoneUi.text(activity,update.notes,15f,PortraitStyle.text).apply {
+                setLineSpacing(PhoneUi.dp(activity,7).toFloat(),1f)
+                setPadding(0,PhoneUi.dp(activity,8),0,0)
             })
+            content.addView(card,PhoneUi.lp().apply { topMargin=PhoneUi.dp(activity,18) })
         }
         val progress=ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             max=100; visibility=View.GONE
@@ -99,6 +99,17 @@ object AppUpdateDialog {
         content.addView(upgrade, PhoneUi.lp().apply { topMargin = PhoneUi.dp(activity, 20) })
         content.addView(PhoneDialog.button(activity, "稍后") { dialog.dismiss() },
             PhoneUi.lp().apply { topMargin = PhoneUi.dp(activity, 10) })
+        // 底部辅助信息：当前版本 + 下载提示，全部小字弱化
+        content.addView(PhoneUi.text(activity,
+            "当前版本 ${update.currentVersionName}（${update.currentVersionCode}）",
+            12f, PortraitStyle.muted).apply { setPadding(0, PhoneUi.dp(activity, 16), 0, 0) })
+        content.addView(PhoneUi.text(activity,
+            "点击升级将在应用内下载 APK，校验完成后自动打开系统安装器。",
+            12f, PortraitStyle.muted).apply {
+            setLineSpacing(PhoneUi.dp(activity, 3).toFloat(), 1f)
+            setPadding(0, PhoneUi.dp(activity, 4), 0, 0)
+        })
+        // sheet 标题保留「发现新版本」，版本号展示在内容区，标题与内容不重复。
         dialog = PhoneDialog.sheet(activity, "发现新版本", content = content)
         val handle=Handle(upgrade,progress,status)
         active=handle
@@ -110,17 +121,42 @@ object AppUpdateDialog {
         val density = activity.resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
         val content = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        content.addView(TvDialog.title(activity, "发现新版本"))
-        content.addView(TvDialog.body(activity, message(update)))
+        // 顶部：大版本号（accent 色）独占一行，标签与 versionCode 收进辅助行
+        content.addView(TextView(activity).apply {
+            text="发现新版本"; textSize=15f; setTextColor(TvStyle.muted)
+        })
+        content.addView(TextView(activity).apply {
+            text=update.latestVersionName; textSize=40f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(TvStyle.accent)
+            setPadding(0,dp(2),0,0)
+        })
+        content.addView(TextView(activity).apply {
+            text="versionCode ${update.latestVersionCode}　·　当前版本 ${update.currentVersionName}（${update.currentVersionCode}）"
+            textSize=12f; setTextColor(TvStyle.muted)
+            setPadding(0,dp(4),0,dp(12))
+        })
+        // 主体：更新说明卡片，正常文字色 + 行距，突出可读性
         if(update.notes.isNotBlank()) {
-            content.addView(TvDialog.body(activity,"更新说明").apply {
+            val card=LinearLayout(activity).apply {
+                orientation=LinearLayout.VERTICAL
+                background=GradientDrawable().apply {
+                    setColor(TvStyle.surface)
+                    cornerRadius=dp(14).toFloat()
+                    setStroke(dp(1),TvStyle.outline)
+                }
+                setPadding(dp(18),dp(14),dp(18),dp(14))
+            }
+            card.addView(TextView(activity).apply {
+                text="更新说明"; textSize=15f
                 setTypeface(null, android.graphics.Typeface.BOLD)
-                setTextColor(TvStyle.text)
-                setPadding(0,0,0,dp(4))
+                setTextColor(TvStyle.accent)
+                setPadding(0,0,0,dp(8))
             })
-            // 说明过长时限高并滚动，不把升级按钮顶出屏幕。
-            val notesView=TvDialog.body(activity,update.notes).apply {
-                setPadding(0,0,0,0)
+            val notesView=TextView(activity).apply {
+                text=update.notes; textSize=16f
+                setTextColor(TvStyle.text)
+                setLineSpacing(dp(6).toFloat(),1.2f)
             }
             val scroll=android.widget.ScrollView(activity).apply {
                 isVerticalScrollBarEnabled=true
@@ -128,9 +164,10 @@ object AppUpdateDialog {
                 scrollBarStyle=View.SCROLLBARS_INSIDE_INSET
                 addView(notesView)
             }
-            content.addView(scroll,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(10) })
-            // 内容矮于上限时按内容高度，超过时固定上限。
-            val maxHeight=dp(160)
+            card.addView(scroll,LinearLayout.LayoutParams(-1,-2))
+            content.addView(card,LinearLayout.LayoutParams(-1,-2))
+            // 说明超过上限时限高滚动，不把升级按钮顶出屏幕
+            val maxHeight=dp(180)
             notesView.post {
                 if(notesView.height>maxHeight) {
                     scroll.layoutParams=scroll.layoutParams.apply { height=maxHeight }
@@ -142,18 +179,25 @@ object AppUpdateDialog {
             max=100; visibility=View.GONE
         }
         val status=TvDialog.body(activity,"").apply { visibility=View.GONE }
-        content.addView(progress, LinearLayout.LayoutParams(-1, dp(8)).apply { topMargin=dp(10) })
+        content.addView(progress, LinearLayout.LayoutParams(-1, dp(8)).apply { topMargin=dp(12) })
         content.addView(status)
         val upgrade = TvDialog.capsuleButton(activity, "升级") { }
         val later = TvDialog.capsuleButton(activity, "稍后") { }
         val buttons = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END
-            setPadding(0, dp(12), 0, 0)
+            setPadding(0, dp(14), 0, 0)
             addView(later, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(10) })
             addView(upgrade, LinearLayout.LayoutParams(-2, -2))
         }
         content.addView(buttons)
+        // 底部辅助信息：下载提示，小字弱化
+        content.addView(TextView(activity).apply {
+            text="点击升级将在应用内下载 APK，校验完成后自动打开系统安装器。"
+            textSize=12f; setTextColor(TvStyle.muted)
+            setLineSpacing(0f,1.2f)
+            setPadding(0,dp(10),0,0)
+        })
         val dialog = AlertDialog.Builder(activity).setView(TvDialog.card(activity, content)).create()
         upgrade.setOnClickListener {
             upgrade.isEnabled=false
@@ -166,7 +210,7 @@ object AppUpdateDialog {
                 onError={ message -> upgrade.isEnabled=true; upgrade.text="重试下载"; progress.visibility=View.GONE; status.visibility=View.VISIBLE; status.text=message })
         }
         later.setOnClickListener { dialog.dismiss() }
-        TvDialog.styleWindow(activity, dialog, widthDp = 420) { upgrade.requestFocus() }
+        TvDialog.styleWindow(activity, dialog, widthDp = 460) { upgrade.requestFocus() }
         val handle=Handle(upgrade,progress,status)
         active=handle
         // 更新说明超高时，遥控器上下键先滚说明；焦点停在升级/稍后按钮上也能翻页。

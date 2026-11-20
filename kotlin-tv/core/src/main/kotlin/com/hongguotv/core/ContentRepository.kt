@@ -1257,13 +1257,14 @@ open class ContentRepository(
     /** 远程模式取址期间并行探测本地；探测成功只影响下一次取址。 */
     private fun startLocalProbe(id: String, level: Int, preferAlt: Boolean, albumEpisode: Boolean, policy: PlaybackAlgorithmPolicy): java.util.concurrent.Future<*>? =
         localProbeExecutor.submit {
-            if (Thread.currentThread().isInterrupted) return
-            runCatching {
-                policy.probeLocal { localSigner ->
-                    val localRepo = ContentRepository(http, clock, localSigner, PlaybackModelCache(), null)
-                    localRepo.fetchVideoModel(id, level, preferAlt, albumEpisode)
-                    policy.localProbeSucceeded()
-                    true
+            if (!Thread.currentThread().isInterrupted) {
+                runCatching {
+                    policy.probeLocal { localSigner ->
+                        val localRepo = ContentRepository(http, clock, localSigner, PlaybackModelCache(), null)
+                        localRepo.fetchVideoModel(id, level, preferAlt, albumEpisode)
+                        policy.localProbeSucceeded()
+                        true
+                    }
                 }
             }
         }

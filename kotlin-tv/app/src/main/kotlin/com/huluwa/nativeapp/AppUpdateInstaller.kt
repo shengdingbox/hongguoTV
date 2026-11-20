@@ -120,7 +120,9 @@ object AppUpdateInstaller {
         val uri=FileProvider.getUriForFile(activity,"${activity.packageName}.fileprovider",file)
         val intent=Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri,"application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            // 覆盖安装会结束当前 App 进程：安装器用独立任务栈，
+            // 装完点「打开」才能拉起新进程，而不是退回桌面（参考葫芦娃 102ccef）。
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         toastOrFallback(activity,intent,"设备没有可用的系统安装器",uri,file)
     }
@@ -133,7 +135,8 @@ object AppUpdateInstaller {
             if(uri!=null && file!=null) {
                 runCatching {
                     activity.startActivity(Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
-                        data=uri; addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        data=uri
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
                     })
                     return
                 }

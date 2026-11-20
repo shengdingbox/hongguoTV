@@ -33,4 +33,20 @@ class AppUpdateTest {
         }
         assertNull(checker.check(1201))
     }
+
+    @Test
+    fun notesAreParsedFromCurrentRelease() {
+        val checker = AppUpdateChecker("https://update.example.com") {
+            """{"available":true,"current":{"version_name":"1.2.1","version_code":1201,"notes":"1. 修复更新弹框\n2. 优化加载"},"latest":{"version_name":"1.2.1","version_code":1201,"apk_url":"https://update.example.com/a.apk"}}"""
+        }
+        assertEquals("1. 修复更新弹框\n2. 优化加载", checker.check(1198)!!.notes)
+    }
+
+    @Test
+    fun missingNotesDefaultToEmpty() {
+        val checker = AppUpdateChecker("https://update.example.com") {
+            """{"available":true,"current":{"version_name":"1.2.1","version_code":1201},"latest":{"version_name":"1.2.1","version_code":1201,"apk_url":"https://update.example.com/a.apk"}}"""
+        }
+        assertEquals("", checker.check(1198)!!.notes)
+    }
 }

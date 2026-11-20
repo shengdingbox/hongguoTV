@@ -31,6 +31,8 @@ data class AppUpdateInfo(
     val apkUrl: String,
     val apkSize: Long = 0,
     val apkSha256: String = "",
+    /** 管理后台配置的更新说明，空串表示不展示。 */
+    val notes: String = "",
 )
 
 /** 可注入的更新传输，便于测试而不依赖真实网络。 */
@@ -92,6 +94,7 @@ class AppUpdateChecker(
             apkUrl = apkUrl,
             apkSize = latest.optLong("apk_size", 0),
             apkSha256 = latest.optString("sha256", ""),
+            notes = current.optString("notes", "").trim(),
         )
     }
 }

@@ -17,6 +17,9 @@ object AppUpdateDialog {
     /** 当前展示的弹框；授权设置页 / 系统安装器返回时恢复按钮状态用。 */
     private var active: Handle?=null
 
+    /** TV 弹框里可滚动的更新说明区；有内容且超高时上下键优先滚说明。 */
+    private var notesScroll: android.widget.ScrollView?=null
+
     /** 授权回来已拉起系统安装器时把「下载中/正在安装…」恢复成「升级」。 */
     fun notifyInstallResumed() { active?.resetInstallState() }
 
@@ -65,6 +68,16 @@ object AppUpdateDialog {
             setLineSpacing(PhoneUi.dp(activity, 4).toFloat(), 1f)
             setPadding(0, PhoneUi.dp(activity, 16), 0, 0)
         })
+        if(update.notes.isNotBlank()) {
+            content.addView(PhoneUi.text(activity,"更新说明",16f,PortraitStyle.text).apply {
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setPadding(0, PhoneUi.dp(activity, 18), 0, 0)
+            })
+            content.addView(PhoneUi.text(activity,update.notes,14f,PortraitStyle.secondaryText).apply {
+                setLineSpacing(PhoneUi.dp(activity, 5).toFloat(), 1f)
+                setPadding(0, PhoneUi.dp(activity, 8), 0, 0)
+            })
+        }
         val progress=ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             max=100; visibility=View.GONE
         }
@@ -99,6 +112,32 @@ object AppUpdateDialog {
         val content = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         content.addView(TvDialog.title(activity, "发现新版本"))
         content.addView(TvDialog.body(activity, message(update)))
+        if(update.notes.isNotBlank()) {
+            content.addView(TvDialog.body(activity,"更新说明").apply {
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setTextColor(TvStyle.text)
+                setPadding(0,0,0,dp(4))
+            })
+            // 说明过长时限高并滚动，不把升级按钮顶出屏幕。
+            val notesView=TvDialog.body(activity,update.notes).apply {
+                setPadding(0,0,0,0)
+            }
+            val scroll=android.widget.ScrollView(activity).apply {
+                isVerticalScrollBarEnabled=true
+                isScrollbarFadingEnabled=false
+                scrollBarStyle=View.SCROLLBARS_INSIDE_INSET
+                addView(notesView)
+            }
+            content.addView(scroll,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(10) })
+            // 内容矮于上限时按内容高度，超过时固定上限。
+            val maxHeight=dp(160)
+            notesView.post {
+                if(notesView.height>maxHeight) {
+                    scroll.layoutParams=scroll.layoutParams.apply { height=maxHeight }
+                }
+            }
+            notesScroll=scroll
+        }
         val progress=ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             max=100; visibility=View.GONE
         }
@@ -130,8 +169,25 @@ object AppUpdateDialog {
         TvDialog.styleWindow(activity, dialog, widthDp = 420) { upgrade.requestFocus() }
         val handle=Handle(upgrade,progress,status)
         active=handle
+        // 更新说明超高时，遥控器上下键先滚说明；焦点停在升级/稍后按钮上也能翻页。
+        // 只有滚到顶/底之后才把按键还给焦点导航，左右键始终正常切换按钮。
+        dialog.setOnKeyListener { _, keyCode, event ->
+            val scroll=notesScroll
+            if(scroll==null || event.action!=android.view.KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+            val page=(scroll.height*2/3).coerceAtLeast(1)
+            when(keyCode) {
+                android.view.KeyEvent.KEYCODE_DPAD_UP -> {
+                    if(scroll.canScrollVertically(-1)) { scroll.scrollBy(0,-page); true } else false
+                }
+                android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if(scroll.canScrollVertically(1)) { scroll.scrollBy(0,page); true } else false
+                }
+                else -> false
+            }
+        }
         dialog.setOnDismissListener {
             if(active===handle) active=null
+            notesScroll=null
             anchor?.takeIf { it.isAttachedToWindow }?.requestFocus()
         }
         dialog.show()

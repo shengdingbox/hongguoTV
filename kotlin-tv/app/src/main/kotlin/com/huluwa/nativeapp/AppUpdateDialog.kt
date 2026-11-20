@@ -3,7 +3,6 @@ package com.huluwa.nativeapp
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
@@ -58,25 +57,16 @@ object AppUpdateDialog {
         })
         content.addView(PhoneUi.text(activity, "versionCode ${update.latestVersionCode}", 12f,
             PortraitStyle.muted).apply { setPadding(0, PhoneUi.dp(activity, 2), 0, 0) })
-        // 主体：更新说明卡片，有说明时是弹框的内容重心
+        // 主体：更新说明，纯文字排版，accent 标题引导
         if(update.notes.isNotBlank()) {
-            val card=PhoneUi.column(activity).apply {
-                background=GradientDrawable().apply {
-                    setColor(PortraitStyle.surface)
-                    cornerRadius=PhoneUi.dp(activity,14).toFloat()
-                    setStroke(PhoneUi.dp(activity,1),PortraitStyle.outline)
-                }
-                setPadding(PhoneUi.dp(activity,16),PhoneUi.dp(activity,14),
-                    PhoneUi.dp(activity,16),PhoneUi.dp(activity,14))
-            }
-            card.addView(PhoneUi.text(activity,"更新说明",15f,PortraitStyle.accent).apply {
+            content.addView(PhoneUi.text(activity,"更新说明",15f,PortraitStyle.accent).apply {
                 setTypeface(null, android.graphics.Typeface.BOLD)
+                setPadding(0, PhoneUi.dp(activity, 20), 0, 0)
             })
-            card.addView(PhoneUi.text(activity,update.notes,15f,PortraitStyle.text).apply {
+            content.addView(PhoneUi.text(activity,update.notes,15f,PortraitStyle.text).apply {
                 setLineSpacing(PhoneUi.dp(activity,7).toFloat(),1f)
                 setPadding(0,PhoneUi.dp(activity,8),0,0)
             })
-            content.addView(card,PhoneUi.lp().apply { topMargin=PhoneUi.dp(activity,18) })
         }
         val progress=ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             max=100; visibility=View.GONE
@@ -132,22 +122,13 @@ object AppUpdateDialog {
             setPadding(0,dp(2),0,0)
         })
         content.addView(TextView(activity).apply {
-            text="versionCode ${update.latestVersionCode}　·　当前版本 ${update.currentVersionName}（${update.currentVersionCode}）"
+            text="versionCode ${update.latestVersionCode}"
             textSize=12f; setTextColor(TvStyle.muted)
             setPadding(0,dp(4),0,dp(12))
         })
-        // 主体：更新说明卡片，正常文字色 + 行距，突出可读性
+        // 主体：更新说明，纯文字排版，accent 标题引导，正常文字色 + 行距
         if(update.notes.isNotBlank()) {
-            val card=LinearLayout(activity).apply {
-                orientation=LinearLayout.VERTICAL
-                background=GradientDrawable().apply {
-                    setColor(TvStyle.surface)
-                    cornerRadius=dp(14).toFloat()
-                    setStroke(dp(1),TvStyle.outline)
-                }
-                setPadding(dp(18),dp(14),dp(18),dp(14))
-            }
-            card.addView(TextView(activity).apply {
+            content.addView(TextView(activity).apply {
                 text="更新说明"; textSize=15f
                 setTypeface(null, android.graphics.Typeface.BOLD)
                 setTextColor(TvStyle.accent)
@@ -164,8 +145,7 @@ object AppUpdateDialog {
                 scrollBarStyle=View.SCROLLBARS_INSIDE_INSET
                 addView(notesView)
             }
-            card.addView(scroll,LinearLayout.LayoutParams(-1,-2))
-            content.addView(card,LinearLayout.LayoutParams(-1,-2))
+            content.addView(scroll,LinearLayout.LayoutParams(-1,-2))
             // 说明超过上限时限高滚动，不把升级按钮顶出屏幕
             val maxHeight=dp(180)
             notesView.post {

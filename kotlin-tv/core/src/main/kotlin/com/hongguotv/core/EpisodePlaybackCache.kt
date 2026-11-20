@@ -43,11 +43,11 @@ class EpisodePlaybackCache(
     /** 算法切换后只换取址仓库；已播放和已缓冲的 RemoteVideo 不受影响。 */
     @Synchronized fun rebind(next: ContentRepository) { repository = next }
 
-    /** 整集落盘缓存的地址解析：与相邻集预取走同一条链路（模型缓存、降级重试、即将过期重取）。 */
-    fun resolveStream(id: String, quality: Int): StreamInfo =
-        repository.stream(id, quality).let { info ->
+    /** 整集取址复用模型缓存、降级重试和即将过期重取；仅正式播放使用三次失败阈值。 */
+    fun resolveStream(id: String, quality: Int, playback: Boolean = false): StreamInfo =
+        repository.stream(id, quality, playback = playback).let { info ->
             if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L)
-                repository.stream(id, quality, refreshModel = true) else info
+                repository.stream(id, quality, refreshModel = true, playback = playback) else info
         }
 
     private fun fresh(prepared: PreparedEpisode): Boolean {
@@ -77,10 +77,10 @@ class EpisodePlaybackCache(
         }
     }
 
-    /** 预取和正式播放等待同一个任务；取消等待者不取消仍在窗口内的取址和索引请求。 */
+    /** 正式播放等待当前集任务；取消等待者不取消仍在窗口内的取址和索引请求。 */
     fun load(id: String, quality: Int): PreparedEpisode {
         if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
-        val task = checkNotNull(request(Key(id, quality), speculative = false))
+        val task = checkNotNull(request(Key(id, quality), speculative = false, playback = true))
         try {
             return task.get()
         } catch (error: InterruptedException) {
@@ -100,7 +100,7 @@ class EpisodePlaybackCache(
     @Synchronized fun isLoading(id: String, quality: Int): Boolean =
         entries[Key(id, quality)]?.task?.isDone == false
 
-    @Synchronized private fun request(key: Key, speculative: Boolean, warmStart: Boolean = false): FutureTask<PreparedEpisode>? {
+    @Synchronized private fun request(key: Key, speculative: Boolean, warmStart: Boolean = false, playback: Boolean = false): FutureTask<PreparedEpisode>? {
         if (key !in retained) {
             if (speculative) return null
             throw InterruptedIOException("播放请求已取消")
@@ -139,7 +139,7 @@ class EpisodePlaybackCache(
                         diskMeta = restored.diskMeta
                         restored.video
                     } else {
-                        val info = resolveStream(key.id, key.quality).copy(idHint = key.id, qualityNumber = key.quality)
+                        val info = resolveStream(key.id, key.quality, playback = playback).copy(idHint = key.id, qualityNumber = key.quality)
                         if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
                             throw IOException("播放地址即将过期，请重试")
                         }

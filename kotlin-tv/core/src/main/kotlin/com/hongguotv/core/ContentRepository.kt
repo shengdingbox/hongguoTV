@@ -978,12 +978,12 @@ open class ContentRepository(
      *  播放接口只答注册过的匿名设备：设备档案与签名头统一取自 [RemoteSigner]，本机不再注册身份。
      *  [refreshModel] 为 true 时先丢弃缓存的播放模型再重取（地址即将过期时用）；
      *  默认复用缓存，否则详情页/相邻集的预热会全部白做。 */
-    fun stream(id: String, maxQuality: Int = 1080, refreshModel: Boolean = false): StreamInfo {
+    fun stream(id: String, maxQuality: Int = 1080, refreshModel: Boolean = false, playback: Boolean = false): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
         if(refreshModel) modelCache.evict(id)
         val albumEpisode=isAlbumEpisode(id)
         try {
-            return streamFromModel(addressModel(id, albumEpisode = albumEpisode),maxQuality)
+            return streamFromModel(addressModel(id, albumEpisode = albumEpisode, playback = playback),maxQuality)
         } catch (unplayable: UnplayableVideoException) {
             // 站方对同一集会间歇性下发降级模型（2026-11-08 路由标记诊断证实：来自 video_tab 主接口，
             // video_list 全部清晰度都是 bytevc2 加密 blob，旧 POST 路由已全空、无路由可跳，换身份也不影响下发）。
@@ -997,7 +997,7 @@ open class ContentRepository(
                 if(round>1) Thread.sleep(RETRY_BACKOFF_MS*(round-1))
                 try {
                     val (level,preferAlt)=RETRY_PLANS[round-1]
-                    return streamFromModel(addressModel(id,level,preferAlt,albumEpisode),maxQuality)
+                    return streamFromModel(addressModel(id,level,preferAlt,albumEpisode,playback = playback),maxQuality)
                 } catch(next: UnplayableVideoException) {
                     failure=next
                 }
@@ -1228,26 +1228,28 @@ open class ContentRepository(
         return null
     }
     /** 播放取址入口：缓存命中不算一次取址；真实失败交给算法策略计数和自动切换。 */
-    private fun addressModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false): JSONObject {
+    private fun addressModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false, playback: Boolean = false): JSONObject {
+        val policy = playbackAlgorithms
+        val attempt = policy?.beginAddress()
         modelCache.get(id,clock())?.let {
             // 缓存命中不发起新的算法探测；只有真实播放取址才检查远程/本地可用性。
-            playbackAlgorithms?.addressSucceeded()
+            policy?.addressSucceeded(attempt)
             return it
         }
-        val policy = playbackAlgorithms
         val probe = if (policy?.needsLocalProbe()==true) startLocalProbe(id,level,preferAlt,albumEpisode,policy) else null
         try {
             val model = fetchVideoModel(id,level,preferAlt,albumEpisode)
-            policy?.addressSucceeded()
+            policy?.addressSucceeded(attempt)
             modelCache.put(id,model.put(LEVEL_KEY,level),clock())
             probe
             return model
         } catch (problem: IOException) {
             probe?.cancel(false)
-            if (policy?.addressFailed()==true) {
+            if (policy?.addressFailed(playback,attempt)==true) {
                 // 切到 unidbg 后立即用新 signer 重试当前集，用户不需要手动重播。
+                val retry = policy.beginAddress()
                 val model = fetchVideoModel(id,level,preferAlt,albumEpisode)
-                policy.addressSucceeded()
+                policy.addressSucceeded(retry)
                 modelCache.put(id,model.put(LEVEL_KEY,level),clock())
                 return model
             }

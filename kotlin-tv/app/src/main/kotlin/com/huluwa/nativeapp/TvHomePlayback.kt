@@ -182,9 +182,9 @@ internal class TvHomePlayback(
                     val position = explicit?.second ?: if (savedIndex == index && remembered?.completed != true) remembered?.position ?: 0L else 0L
                     val id = data.episodes[index]
                     val activeRepo = repository()
-                    val first = activeRepo.stream(id, maxQuality)
+                    val first = activeRepo.stream(id, maxQuality, playback = true)
                     val fresh = if (first.expiresAt > 0 && first.expiresAt <= System.currentTimeMillis() + 60_000)
-                        activeRepo.stream(id, maxQuality, refreshModel = true) else first
+                        activeRepo.stream(id, maxQuality, refreshModel = true, playback = true) else first
                     val info = fresh.copy(idHint = id, qualityNumber = maxQuality)
                     val remote = RemoteVideo(activeRepo.http, info, chunkBytes = 256 * 1024, aheadBytes = 2 * 1024 * 1024L)
                     prepared = remote

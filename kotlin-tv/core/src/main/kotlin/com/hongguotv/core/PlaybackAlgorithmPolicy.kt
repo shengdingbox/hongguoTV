@@ -15,10 +15,16 @@ data class PlaybackAlgorithmChange(
     val reason: String,
 )
 
+/** 一次取址开始时绑定的算法版本；切换前发出的旧请求不能把结果记到新算法上。 */
+data class PlaybackAlgorithmAttempt internal constructor(
+    internal val revision: Long,
+)
+
 /**
  * 播放取址算法策略。
  *
- * - 本地连续两次取址失败时切到 unidbg；
+ * - 本地连续两次取址失败时切到 unidbg，正式播放使用三次阈值；
+ * - 远程连续两次取址失败时切回本地，正式播放使用三次阈值；
  * - 使用远程算法时并行探测本地，本地成功即切回；
  * - 探测使用独立设备档案副本，失败时的重新注册不会污染正在使用的身份。
  */
@@ -38,10 +44,17 @@ class PlaybackAlgorithmPolicy(
     private var selected = initial
     private var current = create(initial)
     private var failureCount = 0
+    private var playbackFailureCount = 0
+    private var revision = 0L
 
     /** 当前实际用于播放取址的签名器。 */
     val signer: RemoteSigner get() = synchronized(lock) { current }
     val algorithm: PlaybackAlgorithm? get() = synchronized(lock) { selected }
+
+    /** 在真正发起取址前记录当前选择版本。 */
+    fun beginAddress(): PlaybackAlgorithmAttempt = synchronized(lock) {
+        PlaybackAlgorithmAttempt(revision)
+    }
 
     /** 只在远程模式需要并行探测本地。 */
     fun needsLocalProbe(): Boolean = synchronized(lock) {
@@ -57,29 +70,43 @@ class PlaybackAlgorithmPolicy(
         switchTo(PlaybackAlgorithm.LOCAL, reason)
     }
 
-    /** 记录一次实际取址失败；返回本次是否自动切换到了 unidbg。 */
-    fun addressFailed(): Boolean {
+    /**
+     * 记录一次实际取址失败；返回本次是否自动切换到了备用算法。
+     *
+     * [playback] 只标记没有命中预取结果的正式播放加载。其他取址场景继续使用原来的两次阈值。
+     */
+    fun addressFailed(playback: Boolean = false, attempt: PlaybackAlgorithmAttempt? = null): Boolean {
         val changed = synchronized(lock) {
-            if (selected != PlaybackAlgorithm.LOCAL) return false
-            failureCount++
-            if (failureCount < LOCAL_FAILURE_LIMIT) return false
+            if (attempt != null && attempt.revision != revision) return false
+            val from = selected ?: return false
+            val fallback = if (from == PlaybackAlgorithm.LOCAL) PlaybackAlgorithm.UNIDBG else PlaybackAlgorithm.LOCAL
+            val limit = if (playback) PLAYBACK_FAILURE_LIMIT else LOCAL_FAILURE_LIMIT
+            if (playback) playbackFailureCount++ else failureCount++
+            val count = if (playback) playbackFailureCount else failureCount
+            if (count < limit) return false
             failureCount = 0
-            selected = PlaybackAlgorithm.UNIDBG
-            current = create(PlaybackAlgorithm.UNIDBG)
-            true
+            playbackFailureCount = 0
+            selected = fallback
+            current = create(fallback)
+            revision++
+            from to fallback
         }
-        if (changed) {
+        if (changed != null) {
             notify(PlaybackAlgorithmChange(
-                PlaybackAlgorithm.LOCAL,
-                PlaybackAlgorithm.UNIDBG,
-                "本地算法连续 $LOCAL_FAILURE_LIMIT 次取址失败",
+                changed.first,
+                changed.second,
+                "${if (changed.first == PlaybackAlgorithm.LOCAL) "本地算法" else "远程算法"}连续 ${if (playback) PLAYBACK_FAILURE_LIMIT else LOCAL_FAILURE_LIMIT} 次取址失败",
             ))
         }
-        return changed
+        return changed != null
     }
 
-    fun addressSucceeded() {
-        synchronized(lock) { failureCount = 0 }
+    fun addressSucceeded(attempt: PlaybackAlgorithmAttempt? = null) {
+        synchronized(lock) {
+            if (attempt != null && attempt.revision != revision) return
+            failureCount = 0
+            playbackFailureCount = 0
+        }
     }
 
     /** 设置页显式切换；相同算法不重复创建签名器。 */
@@ -90,6 +117,8 @@ class PlaybackAlgorithmPolicy(
             selected = next
             current = create(next)
             failureCount = 0
+            playbackFailureCount = 0
+            revision++
             old
         }
         notify(PlaybackAlgorithmChange(from, next, "用户选择"))
@@ -102,6 +131,8 @@ class PlaybackAlgorithmPolicy(
             selected = next
             current = create(next)
             failureCount = 0
+            playbackFailureCount = 0
+            revision++
             old
         }
         notify(PlaybackAlgorithmChange(from, next, reason))
@@ -123,5 +154,6 @@ class PlaybackAlgorithmPolicy(
 
     private companion object {
         const val LOCAL_FAILURE_LIMIT = 2
+        const val PLAYBACK_FAILURE_LIMIT = 3
     }
 }

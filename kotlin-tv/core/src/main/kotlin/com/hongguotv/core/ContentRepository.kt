@@ -87,9 +87,25 @@ class MemoryCookies : okhttp3.CookieJar {
     }
 }
 
-open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).cookieJar(MemoryCookies()).build(), private val clock: () -> Long = System::currentTimeMillis, val signer: RemoteSigner = RemoteSigner(), private val modelCache: PlaybackModelCache = PlaybackModelCache()) {
+open class ContentRepository(
+    val http: OkHttpClient = OkHttpClient.Builder().connectTimeout(15,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(45,TimeUnit.SECONDS).cookieJar(MemoryCookies()).build(),
+    private val clock: () -> Long = System::currentTimeMillis,
+    val signer: RemoteSigner = RemoteSigner(),
+    private val modelCache: PlaybackModelCache = PlaybackModelCache(),
+    /** 播放算法热切换策略；为空时只使用传入的 [signer]，兼容纯内容请求和旧测试。 */
+    private val playbackAlgorithms: PlaybackAlgorithmPolicy? = null,
+) {
+    /** 自动切换后的当前签名器；普通内容接口与播放取址共用。 */
+    val activeSigner: RemoteSigner get() = playbackAlgorithms?.signer ?: signer
     /** 同一份取址缓存、另一套传输：预取需要更短的超时，但必须和正式播放看到同一个缓存。 */
-    fun childTransport(http: OkHttpClient) = ContentRepository(http, clock, signer, modelCache)
+    fun childTransport(http: OkHttpClient) = ContentRepository(http, clock, signer, modelCache, playbackAlgorithms)
+    /** 设置页在当前 Activity 内显式切换，不必等待 Activity 重建。 */
+    fun selectPlaybackAlgorithm(algorithm: PlaybackAlgorithm) { playbackAlgorithms?.select(algorithm) }
+    /** 播放缓存重建时替换 repository；新缓存会自动绑定最新算法。 */
+    fun rebind(signer: RemoteSigner, algorithms: PlaybackAlgorithmPolicy?): ContentRepository =
+        ContentRepository(http, clock, signer, modelCache, algorithms)
+    /** 当前播放算法；纯内容请求为空。 */
+    val playbackAlgorithm: PlaybackAlgorithm? get() = playbackAlgorithms?.algorithm
     private val site = "https://hongguoduanju.com"
     /** 红果官方 App 的 JSON 网关；签名与设备身份由 [RemoteSigner] 统一补齐。 */
     private val API = "https://api5-normal-sinfonlinea.fqnovel.com"
@@ -123,7 +139,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     /** [signed] 非空时用本机签名给出的地址与请求头；为空时按普通网页请求处理。 */
     private fun text(url: String, signed: SignedRequest?, transport: OkHttpClient = http): String {
         val request = Request.Builder().url(signed?.url ?: url).header("Accept-Language","zh-CN,zh;q=0.9")
-        request.header("User-Agent", if (signed != null) signer.profile().userAgent else VendorConstants.VIDEO_UA)
+        request.header("User-Agent", if (signed != null) activeSigner.profile().userAgent else VendorConstants.VIDEO_UA)
         signed?.headers?.forEach { (k,v) -> request.header(k,v) }
         signed?.body?.let { request.post(it.toRequestBody("application/json; charset=utf-8".toMediaType())) }
         return RequestScope.execute(transport.newCall(request.build())) { response ->
@@ -281,7 +297,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     }
 
     private fun catalogJson(url: String, values: Map<String, String>): JSONObject {
-        val signed = signer.signCatalog(url, values)
+        val signed = activeSigner.signCatalog(url, values)
         val raw = text(signed.url, signed)
         val root = runCatching { JSONObject(raw) }.getOrElse { throw IOException("内容接口数据格式异常", it) }
         val code = root.str("code")
@@ -469,7 +485,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     fun filteredDiscovery(selection: DiscoverySelection, cursor: DiscoveryCursor? = null): FilteredDiscoveryPage {
         // 客户端版本号由本机设备档案统一提供，这里只传业务参数。
         val body=selection.request(cursor)
-        val signed=signer.sign("https://api5-normal-sinfonlineb.fqnovel.com/reading/distribution/category/landpage/v/",emptyMap(),body.toByteArray(Charsets.UTF_8))
+        val signed=activeSigner.sign("https://api5-normal-sinfonlineb.fqnovel.com/reading/distribution/category/landpage/v/",emptyMap(),body.toByteArray(Charsets.UTF_8))
         // 该接口与搜索接口同源，偶发空体或 5xx 时重试一次再判定失败
         val raw=runCatching { text(signed.url, signed) }.getOrElse { first ->
             Thread.sleep(300)
@@ -571,7 +587,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         synchronized(suggestCache) { suggestCache[query]?.takeIf { clock()-it.first in 0..(if(it.second.isEmpty()) 10_000L else 300_000L) }?.let { return it.second } }
         val result=runCatching { searchBudget(2_000) {
             val values=linkedMapOf("query" to query,"count" to "10","search_source" to "1","user_is_login" to "0")
-            val signed=signer.signCatalog("$API/reading/bookapi/search/suggest/v1/",values)
+            val signed=activeSigner.signCatalog("$API/reading/bookapi/search/suggest/v1/",values)
             SearchResults.suggestions(JSONObject(text(signed.url,signed,suggestHttp)))
         } }.getOrElse { emptyList() }
         if(Thread.currentThread().isInterrupted || RequestScope.current()?.isCancelled==true) return emptyList()
@@ -591,7 +607,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
             if(it.searchId.isNotBlank()) values["search_id"]=it.searchId
             if(it.passback.isNotBlank()) values["passback"]=it.passback
         }
-        val signed=signer.signCatalog("$API/reading/bookapi/search/tab/v",values)
+        val signed=activeSigner.signCatalog("$API/reading/bookapi/search/tab/v",values)
         return SearchResults.parse(JSONObject(text(signed.url,signed,searchHttp)),route)
     }
 
@@ -612,7 +628,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
                     .put("biz_param",JSONObject().put("detail_page_version",0).put("need_all_video_definition",false)
                         .put("need_mp4_align",false).put("source",7).put("use_os_player",false).put("use_server_dns",false))
                     .toString().toByteArray(Charsets.UTF_8)
-                val signed=signer.signCatalog("$API/novel/player/multi_video_detail/player/v1",emptyMap(),body)
+                val signed=activeSigner.signCatalog("$API/novel/player/multi_video_detail/player/v1",emptyMap(),body)
                 JSONObject(text(signed.url,signed,searchHttp)).optJSONObject("data")
             } catch(_: IOException) { break } ?: continue
             for(id in ids) {
@@ -818,7 +834,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
 
     /** 签名 JSON 请求，统一处理 code != 0 与空响应。 */
     private fun signedJson(url: String, values: Map<String, String>, body: ByteArray?, transport: OkHttpClient = http): JSONObject {
-        val signed = signer.sign(url, values, body)
+        val signed = activeSigner.sign(url, values, body)
         val raw = text(signed.url, signed, transport)
         val data = runCatching { JSONObject(raw) }.getOrElse { throw IOException("接口数据格式异常") }
         val code = data.optString("code", "0")
@@ -967,7 +983,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         if(refreshModel) modelCache.evict(id)
         val albumEpisode=isAlbumEpisode(id)
         try {
-            return streamFromModel(videoModel(id, albumEpisode = albumEpisode),maxQuality)
+            return streamFromModel(addressModel(id, albumEpisode = albumEpisode),maxQuality)
         } catch (unplayable: UnplayableVideoException) {
             // 站方对同一集会间歇性下发降级模型（2026-11-08 路由标记诊断证实：来自 video_tab 主接口，
             // video_list 全部清晰度都是 bytevc2 加密 blob，旧 POST 路由已全空、无路由可跳，换身份也不影响下发）。
@@ -981,7 +997,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
                 if(round>1) Thread.sleep(RETRY_BACKOFF_MS*(round-1))
                 try {
                     val (level,preferAlt)=RETRY_PLANS[round-1]
-                    return streamFromModel(videoModel(id,level,preferAlt,albumEpisode),maxQuality)
+                    return streamFromModel(addressModel(id,level,preferAlt,albumEpisode),maxQuality)
                 } catch(next: UnplayableVideoException) {
                     failure=next
                 }
@@ -1112,11 +1128,11 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
     /** 播放请求：签名头由本机播放算法生成，UA 与本机设备档案一致。 */
     private fun signedBuilder(signed: SignedRequest): Request.Builder =
         Request.Builder().url(signed.url).apply {
-            header("User-Agent", signer.profile().userAgent)
+            header("User-Agent", activeSigner.profile().userAgent)
             signed.headers.forEach { (key,value) -> header(key,value) }
         }
     private fun playerRequest(path: String,payload: ByteArray): Request {
-        val signed=signer.sign("$API$path", linkedMapOf(), payload)
+        val signed=activeSigner.sign("$API$path", linkedMapOf(), payload)
         return signedBuilder(signed)
             .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
@@ -1144,7 +1160,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         var allBlank=true
         var failure=0
         for(base in ordered) {
-            val signed=signer.sign(base,extra,null)
+            val signed=activeSigner.sign(base,extra,null)
             val request=signedBuilder(signed).get().build()
             val body=try {
                 RequestScope.execute(http.newCall(request)) { response ->
@@ -1187,7 +1203,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // preferAlt：重试诊断用，优先探测备用主机（两个主机可能落在不同后端集群）。
         val ordered=if(preferAlt) hosts.reversed() else hosts
         for(base in ordered) {
-            val signed=signer.sign(base,extra,null)
+            val signed=activeSigner.sign(base,extra,null)
             val request=signedBuilder(signed).get().build()
             val body=try {
                 RequestScope.execute(http.newCall(request)) { response ->
@@ -1211,6 +1227,50 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
         return null
     }
+    /** 播放取址入口：缓存命中不算一次取址；真实失败交给算法策略计数和自动切换。 */
+    private fun addressModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false): JSONObject {
+        modelCache.get(id,clock())?.let {
+            // 缓存命中不发起新的算法探测；只有真实播放取址才检查远程/本地可用性。
+            playbackAlgorithms?.addressSucceeded()
+            return it
+        }
+        val policy = playbackAlgorithms
+        val probe = if (policy?.needsLocalProbe()==true) startLocalProbe(id,level,preferAlt,albumEpisode,policy) else null
+        try {
+            val model = fetchVideoModel(id,level,preferAlt,albumEpisode)
+            policy?.addressSucceeded()
+            modelCache.put(id,model.put(LEVEL_KEY,level),clock())
+            probe
+            return model
+        } catch (problem: IOException) {
+            probe?.cancel(false)
+            if (policy?.addressFailed()==true) {
+                // 切到 unidbg 后立即用新 signer 重试当前集，用户不需要手动重播。
+                val model = fetchVideoModel(id,level,preferAlt,albumEpisode)
+                policy.addressSucceeded()
+                modelCache.put(id,model.put(LEVEL_KEY,level),clock())
+                return model
+            }
+            throw problem
+        }
+    }
+    /** 远程模式取址期间并行探测本地；探测成功只影响下一次取址。 */
+    private fun startLocalProbe(id: String, level: Int, preferAlt: Boolean, albumEpisode: Boolean, policy: PlaybackAlgorithmPolicy): java.util.concurrent.Future<*>? =
+        localProbeExecutor.submit {
+            if (Thread.currentThread().isInterrupted) return
+            runCatching {
+                policy.probeLocal { localSigner ->
+                    val localRepo = ContentRepository(http, clock, localSigner, PlaybackModelCache(), null)
+                    localRepo.fetchVideoModel(id, level, preferAlt, albumEpisode)
+                    policy.localProbeSucceeded()
+                    true
+                }
+            }
+        }
+    /** 远程探测并发执行，避免每次播放都要等两套算法串行完成。 */
+    private val localProbeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { action ->
+        Thread(action, "playback-local-probe").apply { isDaemon = true }
+    }
     /** 本地算法优先走 V5 gzip POST；Android 签名服务与兼容回退继续共用模型缓存。 */
     private fun videoModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false): JSONObject {
         modelCache.get(id,clock())?.let { return it }
@@ -1233,7 +1293,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // 普通短剧的 ID 语义相反，传 1 会回 101000，所以两者必须分开。
         val idType = if (albumEpisode) 1 else 0
         val group = if (albumEpisode) MobilePlayback.GROUP_PUGC else MobilePlayback.GROUP_SHORT
-        if (signer.prefersVideoTab && !albumEpisode) {
+        if (activeSigner.prefersVideoTab && !albumEpisode) {
             // 复用 Android 红果已可用的 GET 路径，避免先等待本机算法使用的 POST 路由。
             val single = videoTabSingle(id, preferAlt)
             single.model?.let { return it }
@@ -1244,7 +1304,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         }
         // V5 单集取址用的是本机算法专属的查询串模板与 V5 签名口径，
         // 远程签名服务（frida / unidbg）不适用，直接跳过这一路由。
-        val mobile = if (signer.usesLocalPlaybackAlgorithm) mobilePlaybackModel(id, group) else Sweep(null, null, false, null)
+        val mobile = if (activeSigner.usesLocalPlaybackAlgorithm) mobilePlaybackModel(id, group) else Sweep(null, null, false, null)
         mobile.model?.let { return it }
         val primaryPayload = """{"video_id":"$id","biz_param":{"video_id_type":$idType,"need_all_video_definition":true,"video_platform":3}}""".toByteArray(Charsets.UTF_8)
         val primary = try {
@@ -1282,8 +1342,8 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         // 空体基本都发生在「当前匿名身份已经被站方用尽」之后：只在这种情况下换一台匿名设备再扫一轮。
         // 非空体（有明确错误码）重扫没有意义，直接快速失败，避免界面上长时间停在「正在获取播放地址」。
         if (!allBlank) throw mobile.failure ?: first.failure ?: primary.failure ?: IOException("播放信息为空")
-        signer.recover()
-        val healedMobile = if (signer.usesLocalPlaybackAlgorithm) mobilePlaybackModel(id, group) else Sweep(null, null, false, null)
+        activeSigner.recover()
+        val healedMobile = if (activeSigner.usesLocalPlaybackAlgorithm) mobilePlaybackModel(id, group) else Sweep(null, null, false, null)
         healedMobile.model?.let { return it }
         val healed = sweepRoutes(listOf(PLAYER_PATH to primaryPayload) + ordered)
         healed.model?.let { model -> goodRoute = healed.path; return model }
@@ -1295,7 +1355,7 @@ open class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().con
         for(attempt in 0 until BLANK_RETRIES) {
             if(Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
             try {
-                val profile=signer.profile()
+                val profile=activeSigner.profile()
                 val model=MobilePlayback.model(id,profile,http,clock(),group).put(ROUTE_KEY,MobilePlayback.MODEL_PATH)
                 return Sweep(model,MobilePlayback.MODEL_PATH,false,null)
             } catch(problem: java.io.InterruptedIOException) {

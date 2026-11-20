@@ -30,7 +30,7 @@ import java.util.concurrent.Future
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal class TvHomePlayback(
     private val context: Context,
-    private val repository: ContentRepository,
+    private val repository: () -> ContentRepository,
     private val quality: () -> Int,
     private val speed: () -> Float,
     private val frame: () -> VideoFrameMode,
@@ -122,7 +122,7 @@ internal class TvHomePlayback(
     fun toggle() {
         if (closed || series == null) return
         if (failed) {
-            if (episodeId.isNotBlank()) repository.invalidatePlayback(episodeId)
+            if (episodeId.isNotBlank()) repository().invalidatePlayback(episodeId)
             clearStream(); firstFrame = false
             failed = false; userPaused = false; ended = false
             if (active) schedule(0)
@@ -174,18 +174,19 @@ internal class TvHomePlayback(
             var prepared: RemoteVideo? = null
             try {
                 val result = request.run {
-                    val data = cached ?: repository.seriesDetail(selected.id)
+                    val data = cached ?: repository().seriesDetail(selected.id)
                     if (data.episodes.isEmpty()) throw java.io.IOException("暂无可播放剧集")
                     val savedIndex = remembered?.let { data.episodes.indexOf(it.episodeId) } ?: -1
                     val index = explicit?.first?.coerceIn(0, data.episodes.lastIndex)
                         ?: if (savedIndex >= 0) (savedIndex + if (remembered?.completed == true) 1 else 0).coerceAtMost(data.episodes.lastIndex) else 0
                     val position = explicit?.second ?: if (savedIndex == index && remembered?.completed != true) remembered?.position ?: 0L else 0L
                     val id = data.episodes[index]
-                    val first = repository.stream(id, maxQuality)
+                    val activeRepo = repository()
+                    val first = activeRepo.stream(id, maxQuality)
                     val fresh = if (first.expiresAt > 0 && first.expiresAt <= System.currentTimeMillis() + 60_000)
-                        repository.stream(id, maxQuality, refreshModel = true) else first
+                        activeRepo.stream(id, maxQuality, refreshModel = true) else first
                     val info = fresh.copy(idHint = id, qualityNumber = maxQuality)
-                    val remote = RemoteVideo(repository.http, info, chunkBytes = 256 * 1024, aheadBytes = 2 * 1024 * 1024L)
+                    val remote = RemoteVideo(activeRepo.http, info, chunkBytes = 256 * 1024, aheadBytes = 2 * 1024 * 1024L)
                     prepared = remote
                     remote.setPlaybackActive(false)
                     remote.prepare()

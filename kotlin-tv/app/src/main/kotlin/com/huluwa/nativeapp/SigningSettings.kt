@@ -2,6 +2,7 @@
 package com.huluwa.nativeapp
 
 import com.hongguotv.core.FridaSigner
+import com.hongguotv.core.PlaybackAlgorithm
 import com.hongguotv.core.RemoteSigner
 import com.hongguotv.core.SignerProfileStore
 import com.hongguotv.core.UnidbgSigner
@@ -54,10 +55,27 @@ object SigningSettings {
     val algorithmLabel: String
         get() = mode.label
 
-    fun createSigner(store: SignerProfileStore): RemoteSigner = when (mode) {
+    fun createSigner(store: SignerProfileStore): RemoteSigner = createSigner(mode, store)
+
+    /** 按指定模式创建签名器，自动切换和设置页共用同一套构造规则。 */
+    fun createSigner(target: Mode, store: SignerProfileStore): RemoteSigner = when (target) {
         Mode.LOCAL -> RemoteSigner(store = store)
         // 与本地算法共用同一份匿名设备档案。
         Mode.UNIDBG -> UnidbgSigner(store = store)
         Mode.FRIDA -> FridaSigner()
+    }
+
+    /** 设置页的 Mode 与 core 的播放算法一一对应。 */
+    fun Mode.toPlaybackAlgorithm(): PlaybackAlgorithm = when (this) {
+        Mode.LOCAL -> PlaybackAlgorithm.LOCAL
+        Mode.UNIDBG -> PlaybackAlgorithm.UNIDBG
+        Mode.FRIDA -> PlaybackAlgorithm.FRIDA
+    }
+
+    /** 设置页仍保存模式名；自动切换时同步写回，下次启动沿用。 */
+    fun modeOf(algorithm: PlaybackAlgorithm): Mode = when (algorithm) {
+        PlaybackAlgorithm.LOCAL -> Mode.LOCAL
+        PlaybackAlgorithm.UNIDBG -> Mode.UNIDBG
+        PlaybackAlgorithm.FRIDA -> Mode.FRIDA
     }
 }

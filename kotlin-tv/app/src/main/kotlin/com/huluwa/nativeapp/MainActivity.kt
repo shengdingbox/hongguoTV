@@ -108,7 +108,10 @@ class MainActivity: Activity() {
     // 那时 attachBaseContext 还没跑，this 作为 Context 是空的，
     // 直接 getSharedPreferences 会 NPE 导致启动即闪退。
     private val signerStore by lazy { SharedPrefsSignerStore(this) }
-    private val repository by lazy { ContentRepository(signer=SigningSettings.createSigner(signerStore)) }
+    /** 播放页、首页预览与离线下载共用同一份算法策略与设备档案。 */
+    private val playbackAlgorithms by lazy { PlaybackAlgorithms.shared(this, signerStore) }
+    private val playbackAlgorithmListener: (PlaybackAlgorithmChange) -> Unit = ::applyPlaybackAlgorithm
+    private val repository by lazy { ContentRepository(signer = playbackAlgorithms.signer, playbackAlgorithms = playbackAlgorithms) }
     val offlineDownloads by lazy { OfflineDownloads.get(this) }
     @Volatile private var offlineOnly = false
     val mineOfflineSelected get() = StartupSettings.string("mineContentTab") == "offline"
@@ -128,7 +131,7 @@ class MainActivity: Activity() {
         rememberPhoneCatalogPosition()
         restoringPhoneDetail = null
         favoriteMonitor.stop()
-        invalidatePage(); releaseCatalogViews(); playbackCache.clear()
+        invalidatePage(); releaseCatalogViews(); ensurePlaybackCache().clear()
         offlineOnly = true
         phoneDetailReturn = "mine"
         pendingDetail = item.series
@@ -163,9 +166,11 @@ class MainActivity: Activity() {
      */
     private var navTight=false
     // 复用同一台设备身份：弹幕与内容/播放必须签同一份档案，否则平台会当成两台设备。
-    private val danmakuRepo by lazy { DanmakuRepository(repository.http, signer=repository.signer) }
-    private val playbackCache by lazy {
-        EpisodePlaybackCache(repository,cachedEpisode={ id,q ->
+    private val danmakuRepo by lazy { DanmakuRepository(repository.http, signer=repository.activeSigner) }
+    private var playbackCache: EpisodePlaybackCache? = null
+    private fun ensurePlaybackCache(): EpisodePlaybackCache = playbackCache ?: run {
+        val current = repositoryForPlayback()
+        EpisodePlaybackCache(current,cachedEpisode={ id,q ->
             val cache=episodeDiskCache
             cache?.playbackMeta(id,q) ?: cache?.readableMeta(id,q)?.takeIf {
                 !it.done && (it.expiresAt<=0 || it.expiresAt>System.currentTimeMillis()+60_000L)
@@ -173,8 +178,16 @@ class MainActivity: Activity() {
         },localEpisode={ offlineDownloads.lookup(it) },localOnly={ offlineOnly },onPrepared={ _,_ ->
             // 地址和索引一就绪便交给 Media3，不再等下一次一秒定时刷新。
             main.post { if(!isDestroyed && screen=="player") maybePrefetch() }
-        })
+        }).also { playbackCache = it }
     }
+    /** 切换算法只更新取址仓库；正在播放和已缓冲的视频继续，不会因切换被中断。 */
+    private fun rebuildPlaybackCacheForAlgorithm() {
+        val fresh = repositoryForPlayback()
+        playbackCache?.rebind(fresh)
+    }
+    /** 当前算法对应的播放仓库；缓存命中时也使用同一个 signer。 */
+    private fun repositoryForPlayback(): ContentRepository =
+        repository.rebind(playbackAlgorithms.signer, playbackAlgorithms)
     private var playbackSession: EpisodePlaybackSession?=null
     /** 落盘池始终供播放读取；缓存开关只控制后台下载，关闭时保留已有文件。 */
     @Volatile private var episodeDiskCache: EpisodeDiskCache?=null
@@ -650,7 +663,10 @@ class MainActivity: Activity() {
                 if(tvStartup) showTvStartupHome()
                 else { status?.text="正在读取本机设置…"; status?.setOnClickListener(null) }
                 StartupSettings.loadAsync(this) { result ->
-                    if(!isDestroyed && !isFinishing) result.onSuccess { recreate() }.onFailure { problem ->
+                    if(!isDestroyed && !isFinishing) result.onSuccess {
+                        playbackAlgorithms.addListener(playbackAlgorithmListener)
+                        recreate()
+                    }.onFailure { problem ->
                         if(tvStartup) {
                             android.util.Log.e("HongguoTV","Startup settings failed to load",problem)
                             showTvStartupHome(retry={ loadSettings() })
@@ -695,7 +711,7 @@ class MainActivity: Activity() {
         // 上新区沿用上次选择的时间窗（只在本机记，识别不了的值回落到默认档）
         newReleaseWindow=library.newReleaseWindow.takeIf { id -> NEW_RELEASE_WINDOWS.any { it.first==id } } ?: NEW_RELEASE_WINDOWS[0].first
         setupMouseGestures()
-        accountManager=AccountManager(this,library,repository.signer)
+        accountManager=AccountManager(this,library,repository.activeSigner)
         accountManager.onAccountChanged={
             accountButton?.text=accountManager.accountLabel
             // 账号状态变化后，正在展示的记录页立即重建（登录后拉取云端历史、退出后清空云端区）。
@@ -2235,7 +2251,7 @@ class MainActivity: Activity() {
     /** 首页使用独立的单路播放器；离开首页时先记录进度再释放，全集可接着播放。 */
     private fun startTvHomePlayback(home: HomeScreen) {
         stopTvHomePlayback()
-        val playback=TvHomePlayback(this,repository,
+        val playback=TvHomePlayback(this,{ repository },
             quality={ library.maxQuality },speed={ library.playbackSpeed },frame={ library.frameMode },autoNext={ library.autoNext },
             progress=library::progress,save={ if(library.isLoaded) library.save(it) },
             status={ state -> if(homeScreen===home) home.showPreview(state.seriesId,state.label,state.showCover,state.playing,state.failed) },
@@ -3378,12 +3394,12 @@ class MainActivity: Activity() {
         }.distinct()
         if(ids.isEmpty()) return
         // retain 决定哪些集允许预取；详情页还没有播放页的窗口，这里先自己设一个。
-        playbackCache.retain(ids.toSet(),quality)
+        ensurePlaybackCache().retain(ids.toSet(),quality)
         val progress=library.progress(data.series.id)
         ids.forEach { id ->
             val index=data.episodes.indexOf(id)
             val position=if(progress?.episodeId==id && !progress.completed) progress.position else savedPosition(index)
-            playbackCache.prefetch(id,quality,warmStart=episodeStartPosition(index,position)==0L)
+            ensurePlaybackCache().prefetch(id,quality,warmStart=episodeStartPosition(index,position)==0L)
         }
     }
     /** 「开始观看」按钮实际会播的集号：与 showDetail 里播放按钮的取值口径一致。
@@ -3722,7 +3738,7 @@ class MainActivity: Activity() {
         val selectedIndex=index.coerceIn(0,data.episodes.lastIndex)
         val restarting=screen=="player" && selectedIndex==episodeIndex
         val retrying=recovering || playError
-        val prefetched=if(!retrying) playbackCache.peek(data.episodes[selectedIndex],effectiveQuality()) else null
+        val prefetched=if(!retrying) ensurePlaybackCache().peek(data.episodes[selectedIndex],effectiveQuality()) else null
         saveProgress(); library.flush(); invalidatePage(); favoriteMonitor.stop(); releaseCatalogViews()
         stopDanmaku(preserveActive=reuse && selectedIndex==episodeIndex+1)
         if(reuse) {
@@ -3735,7 +3751,7 @@ class MainActivity: Activity() {
             video?.setPlaybackActive(false); video=null
             main.removeCallbacks(hideHud); main.removeCallbacks(seekRunnable); pendingSeek=null
         } else releasePlayer(preservePlaybackCache=true)
-        if(retrying) playbackCache.invalidate(data.episodes[selectedIndex])
+        if(retrying) ensurePlaybackCache().invalidate(data.episodes[selectedIndex])
         // 播放页不展示海报，但返回详情仍要复用同一张位图；清理解绑即可，位图由内存回调统一回收。
         artwork.clearPage()
         video=null
@@ -4051,7 +4067,7 @@ class MainActivity: Activity() {
         if(prefetched!=null) {
             try { beginPlayback(prefetched) } catch(problem: Exception) { playerFailure(problem) }
         } else {
-            work({ playbackCache.load(requestedId,maxQuality) },beginPlayback,{ problem -> playerFailure(problem) })
+            work({ ensurePlaybackCache().load(requestedId,maxQuality) },beginPlayback,{ problem -> playerFailure(problem) })
             // 取址在后台进行时并行初始化播放器；先让播放外壳进入主线程队列。
             val ticket=generation
             main.post { if(!isDestroyed && foreground && screen=="player" && generation==ticket) preparePlaybackSession() }
@@ -4098,7 +4114,7 @@ class MainActivity: Activity() {
     }
     private fun preparePlaybackSession(): EpisodePlaybackSession {
         val session=playbackSession ?: EpisodePlaybackSession(this,disk={ remote ->
-            episodeDiskCache?.takeIf { playbackCache.canReadDisk(remote.info.idHint,remote.info.qualityNumber) }
+            episodeDiskCache?.takeIf { ensurePlaybackCache().canReadDisk(remote.info.idHint,remote.info.qualityNumber) }
         }).also { playbackSession=it }
         player=session.player
         if(playerView?.player!==session.player) playerView?.player=session.player
@@ -4107,7 +4123,7 @@ class MainActivity: Activity() {
     private fun episodeStartPosition(index: Int,position: Long=savedPosition(index)): Long =
         if(position>0) position else (detail?.series?.id?.let { library.skipMark(it)?.introSeconds } ?: 0)*1000L
     private fun protectPlaybackVideos() {
-        playbackCache.protect(switchingVideos+listOfNotNull(playerVideo,queuedVideo))
+        ensurePlaybackCache().protect(switchingVideos+listOfNotNull(playerVideo,queuedVideo))
     }
     private fun pausePrefetchForMemory(delayMillis: Long) {
         prefetchMemoryPausedUntil=maxOf(prefetchMemoryPausedUntil,android.os.SystemClock.elapsedRealtime()+delayMillis)
@@ -4138,12 +4154,12 @@ class MainActivity: Activity() {
         if(current==null) {
             // 启动阶段网络/内存回调可能早于本机设置加载；空窗口不读取清晰度设置。
             playbackSession?.retain(emptySet(),0)
-            playbackCache.clear()
+            ensurePlaybackCache().clear()
             return
         }
         val ids=setOf(current)
         playbackSession?.retain(ids,effectiveQuality())
-        playbackCache.retain(ids,effectiveQuality())
+        ensurePlaybackCache().retain(ids,effectiveQuality())
     }
     private fun retainPlaybackWindow() {
         val data=detail ?: return
@@ -4152,7 +4168,7 @@ class MainActivity: Activity() {
         val ids=data.episodes.subList(from,to).toSet()
         protectPlaybackVideos()
         playbackSession?.retain(ids,effectiveQuality())
-        playbackCache.retain(ids,effectiveQuality())
+        ensurePlaybackCache().retain(ids,effectiveQuality())
     }
     /** 开关只控制后三集下载；缓存扫描走后台，不阻塞本机记录加载后的首屏。 */
     private fun applyEpisodeCacheSetting(force: Boolean=false) {
@@ -4171,7 +4187,7 @@ class MainActivity: Activity() {
                     EpisodeDiskCache(http,directory,
                         freeBytes={ runCatching { android.os.StatFs(cacheDirectory.absolutePath).availableBytes }.getOrDefault(Long.MAX_VALUE) },
                         lowMemory={ (application.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.let { it.isLowRamDevice || it.memoryClass<=128 } ?: false },
-                        resolver={ id,q -> playbackCache.resolveStream(id,q) },
+                        resolver={ id,q -> ensurePlaybackCache().resolveStream(id,q) },
                         onState={ reason -> RuntimeLog.add(if(reason.isEmpty()) "cache state: 调度正常" else "cache state: 未下载 · $reason") },
                         onLog={ message -> RuntimeLog.add(message) }).also { it.setDownloadParallelism(0) }
                 }
@@ -4190,7 +4206,7 @@ class MainActivity: Activity() {
                         }
                         episodeCacheParallelism=0
                         episodeDiskCache=cache
-                        playbackCache.onInvalidate={ id -> cache.invalidate(id) }
+                        ensurePlaybackCache().onInvalidate={ id -> cache.invalidate(id) }
                         // 扫描期间用户可能已经切过开关，按此刻的偏好重新应用。
                         applyEpisodeCacheSetting(force=true)
                     }.onFailure { failure ->
@@ -4328,7 +4344,7 @@ class MainActivity: Activity() {
         if(effectiveQuality()!=quality) return
         val state=p.playbackState
         if(state==Player.STATE_IDLE || state==Player.STATE_ENDED) return
-        val remote=playbackCache.peek(id,quality)?.video ?: return
+        val remote=ensurePlaybackCache().peek(id,quality)?.video ?: return
         val source=session.mediaSource(EpisodePlaybackSession.Episode(id,episodeIndex+1,quality,remote,0))
         queuedNextId=id; queuedIndex=episodeIndex+1; queuedVideo=remote
         queuedFromIndex=episodeIndex; queuedFromDuration=p.duration.coerceAtLeast(0)
@@ -4361,15 +4377,15 @@ class MainActivity: Activity() {
         val previous=data.episodes.getOrNull(episodeIndex-1)
         // 队列已持有的下一集保持原地址与媒体源，不因十分钟缓存时限到达而重取、关闭。
         // 其他相邻集仍优先下一集，并按真实续播/跳片头位置预加载。
-        if(next!=null && next!=queuedNextId) playbackCache.prefetch(next,quality)
-        if(previous!=null && (next==null || next==queuedNextId || !playbackCache.isLoading(next,quality))) {
-            playbackCache.prefetch(previous,quality)
+        if(next!=null && next!=queuedNextId) ensurePlaybackCache().prefetch(next,quality)
+        if(previous!=null && (next==null || next==queuedNextId || !ensurePlaybackCache().isLoading(next,quality))) {
+            ensurePlaybackCache().prefetch(previous,quality)
         }
         video?.setPlaybackActive(true)
         session.setPreloadingEnabled(true)
         val neighbors=listOf(episodeIndex+1,episodeIndex-1).mapNotNull { index ->
             val id=data.episodes.getOrNull(index) ?: return@mapNotNull null
-            val remote=(if(id==queuedNextId) queuedVideo else playbackCache.peek(id,quality)?.video) ?: return@mapNotNull null
+            val remote=(if(id==queuedNextId) queuedVideo else ensurePlaybackCache().peek(id,quality)?.video) ?: return@mapNotNull null
             EpisodePlaybackSession.Episode(id,index,quality,remote,episodeStartPosition(index))
         }
         session.updatePreloads(neighbors)
@@ -5662,7 +5678,7 @@ class MainActivity: Activity() {
         // returnToDetail 负责复位。
         phonePlayerRenderedFullscreen=false
         video=null
-        if(!preservePlaybackCache) playbackCache.clear()
+        if(!preservePlaybackCache) ensurePlaybackCache().clear()
         // 整集落盘缓存不随播放器一起清：它是磁盘池，进程重启后本来就会重新扫描复用，
         // 离开播放页（进设置、旋转重建、回详情再进来）立刻清空只会让下好的三集白下。
         // 真正的清理只在关闭开关（applyEpisodeCacheSetting）与窗口滑动逐出时发生。
@@ -7219,9 +7235,24 @@ class MainActivity: Activity() {
     private fun setSigningMode(mode: SigningSettings.Mode) {
         if(mode==SigningSettings.mode) return
         SigningSettings.mode=mode
-        // Activity 重建使内容、弹幕、云账号共用新签名器，并淘汰旧身份的内存取址缓存。
+        // 当前 Activity 立即换用新签名器；重建让内容、弹幕、云账号也同步到新身份。
+        runCatching { playbackAlgorithms.select(mode.toPlaybackAlgorithm()) }
+        rebuildPlaybackCacheForAlgorithm()
         if(screen=="settings") PageRestore.phoneSettings=true
         recreateKeepingPage("算法模式")
+    }
+
+    /** 自动切换由播放线程触发；设置、缓存与提示都回主线程。 */
+    private fun applyPlaybackAlgorithm(change: PlaybackAlgorithmChange) {
+        main.post {
+            SigningSettings.mode = SigningSettings.modeOf(change.to)
+            rebuildPlaybackCacheForAlgorithm()
+            if(!isFinishing && !isDestroyed && change.reason != "用户选择") {
+                Toast.makeText(this, "已自动切换到" + SigningSettings.algorithmLabel, Toast.LENGTH_SHORT).show()
+                RuntimeLog.add("算法自动切换 " + (change.from?.name ?: "未知") + " -> " + change.to.name + ": " + change.reason)
+                if(screen=="settings") phoneRefreshSettingsValues()
+            }
+        }
     }
 
     fun phoneOrientationPicker() = showOrientationPicker(pickerAnchor)
@@ -7680,6 +7711,7 @@ class MainActivity: Activity() {
             super.onDestroy(); return
         }
         stopTvHomePlayback()
+        playbackAlgorithms.removeListener(playbackAlgorithmListener)
         generation++; cancelWork(); cancelDetailExtras()
         exitDialog?.dismiss(); exitDialog=null
         phoneExitArtwork?.close(); phoneExitArtwork=null
@@ -7689,7 +7721,7 @@ class MainActivity: Activity() {
         if(networkRegistered) connectivity.unregisterNetworkCallback(networkCallback)
         favoriteMonitor.destroy(); tvTools.destroy(); saveProgress(); releasePlayer(); accountManager.destroy(); library.close()
         artwork.close(); releaseCatalogViews(); mediaSession.release(); main.removeCallbacksAndMessages(null)
-        cancelSearchSuggestions(); suggestIo.shutdownNow(); pageIo.shutdownNow(); io.shutdownNow(); playbackCache.close(); episodeDiskCache?.close(); episodeDiskCache=null
+        cancelSearchSuggestions(); suggestIo.shutdownNow(); pageIo.shutdownNow(); io.shutdownNow(); playbackCache?.close(); playbackCache=null; episodeDiskCache?.close(); episodeDiskCache=null
         Thread({ repository.http.dispatcher.cancelAll(); repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown() },"hongguotv-network-cleanup").start()
         super.onDestroy()
         if(killOnDestroy) android.os.Process.killProcess(android.os.Process.myPid())

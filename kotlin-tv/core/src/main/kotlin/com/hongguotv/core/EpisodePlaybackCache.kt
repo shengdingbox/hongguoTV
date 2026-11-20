@@ -12,7 +12,7 @@ import java.util.concurrent.FutureTask
 
 /** 播放页持有的相邻集缓存；最终地址、解密索引和开头分块随同一个 RemoteVideo 一起复用。 */
 class EpisodePlaybackCache(
-    private val repository: ContentRepository,
+    @Volatile private var repository: ContentRepository,
     private val clock: () -> Long = System::currentTimeMillis,
     private val onPrepared: (String, Int) -> Unit = { _, _ -> },
     private val cachedEpisode: (String, Int) -> EpisodeDiskCache.Meta? = { _, _ -> null },
@@ -39,6 +39,9 @@ class EpisodePlaybackCache(
     private val executor = Executors.newFixedThreadPool(2) { action ->
         Thread(action, "episode-playback").apply { isDaemon = true }
     }
+
+    /** 算法切换后只换取址仓库；已播放和已缓冲的 RemoteVideo 不受影响。 */
+    @Synchronized fun rebind(next: ContentRepository) { repository = next }
 
     /** 整集落盘缓存的地址解析：与相邻集预取走同一条链路（模型缓存、降级重试、即将过期重取）。 */
     fun resolveStream(id: String, quality: Int): StreamInfo =

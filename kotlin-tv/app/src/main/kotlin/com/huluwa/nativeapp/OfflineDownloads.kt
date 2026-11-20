@@ -55,7 +55,11 @@ class OfflineDownloads private constructor(context: Context) {
     private val worker = Executors.newFixedThreadPool(MAX_CONCURRENCY) { Thread(it, "offline-download-${threadCount.incrementAndGet()}") }
     private val metadata = Executors.newSingleThreadExecutor { Thread(it, "offline-details") }
     private val main = Handler(Looper.getMainLooper())
-    private val repository by lazy { ContentRepository(signer = SigningSettings.createSigner(SharedPrefsSignerStore(app))) }
+    private val signerStore by lazy { SharedPrefsSignerStore(app) }
+    private val playbackAlgorithms by lazy { PlaybackAlgorithms.shared(app, signerStore) }
+    private val repository: () -> ContentRepository = {
+        ContentRepository(signer = playbackAlgorithms.signer, playbackAlgorithms = playbackAlgorithms)
+    }
     private val records = linkedMapOf<String, Item>()
     // 以下调度状态只在 control 线程修改；取消中的任务收尾前仍占用槽位和文件。
     private val runs = linkedMapOf<String, Run>()
@@ -86,7 +90,7 @@ class OfflineDownloads private constructor(context: Context) {
 
     fun detail(series: Series, done: (Result<Detail>) -> Unit) {
         metadata.execute {
-            val result = runCatching { repository.seriesDetail(series.id) }
+            val result = runCatching { repository().seriesDetail(series.id) }
             main.post { done(result) }
         }
     }
@@ -251,9 +255,10 @@ class OfflineDownloads private constructor(context: Context) {
             try {
                 return job.scope.run {
                     val resolveStarted = System.nanoTime()
-                    val info = repository.stream(id, 1080, refreshModel = attempt > 0)
+                    val activeRepo = repository()
+                    val info = activeRepo.stream(id, 1080, refreshModel = attempt > 0)
                     RuntimeLog.add("Offline episode=$id sourceMs=${(System.nanoTime() - resolveStarted) / 1_000_000} attempt=${attempt + 1}")
-                    OfflineVideo(repository.http, info, onLog = { RuntimeLog.add("Offline episode=$id $it") }).use { video ->
+                    OfflineVideo(activeRepo.http, info, onLog = { RuntimeLog.add("Offline episode=$id $it") }).use { video ->
                         job.video = video
                         job.scope.ensureActive()
                         video.prepare()

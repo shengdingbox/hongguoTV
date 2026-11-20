@@ -16,7 +16,7 @@ import org.json.JSONObject
  * 档案保存匿名安装标识、设备型号与匿名游客票据，不含账号凭据。
  */
 class SharedPrefsSignerStore(context: Context) : SignerProfileStore {
-    private val prefs = context.getSharedPreferences("native-signer-v1", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences(DEFAULT_PREFS, Context.MODE_PRIVATE)
 
     override fun load(): SignerProfile? {
         val raw = prefs.getString(KEY_PROFILE, null) ?: return null
@@ -48,5 +48,6 @@ class SharedPrefsSignerStore(context: Context) : SignerProfileStore {
 
     private companion object {
         const val KEY_PROFILE = "profile"
+        const val DEFAULT_PREFS = "native-signer-v1"
     }
 }

@@ -1109,7 +1109,7 @@ class MainActivity: Activity() {
         invalidatePage(); screen="catalog"; releaseCatalogViews(); val container=base()
         retainedTheme=TvStyle.theme; retainedWidthDp=widthDp().toInt()
         if(foreground && library.isLoaded && !favoriteMonitor.running) main.post { if(foreground && screen=="catalog") favoriteMonitor.check() }
-        if(isAttachedToWindow && foreground) main.post { consumePendingUpdate(manual = PendingAppUpdate.peekManual()) }
+        if(root.isAttachedToWindow && foreground) main.post { consumePendingUpdate(manual = PendingAppUpdate.peekManual()) }
         // TV 与手机竖屏使用独立容器；这里只调整 TV 页面的间距和背景。
         val compact=widthDp()<800
         val horizontal=dp(if(compact) 16 else 24)

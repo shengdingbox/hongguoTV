@@ -156,12 +156,12 @@ class HomeScreen(
             selectorLine.addView(tab, LayoutParams(0, dp(40), 1f).apply { rightMargin=dp(8) })
         }
         selectorLine.addView(refresh, LayoutParams(dp(140), dp(40)))
-        feedTabs.forEachIndexed { index, tab ->
-            tab.nextFocusLeftId=feedTabs.getOrNull(index-1)?.id ?: tab.id
-            tab.nextFocusRightId=feedTabs.getOrNull(index+1)?.id ?: refresh.id
-            tab.nextFocusDownId=stage.id
+        val selectorViews=feedTabs+refresh
+        selectorViews.forEachIndexed { index, tab ->
+            tab.nextFocusLeftId=selectorViews[if(index==0) selectorViews.lastIndex else index-1].id
+            tab.nextFocusRightId=selectorViews[if(index==selectorViews.lastIndex) 0 else index+1].id
         }
-        refresh.nextFocusLeftId=feedTabs.lastOrNull()?.id ?: refresh.id
+        feedTabs.forEach { it.nextFocusDownId=stage.id }
         refresh.nextFocusRightId=refresh.id
         addView(selectors, LayoutParams(-1, dp(48)))
 

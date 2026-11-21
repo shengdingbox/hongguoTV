@@ -367,6 +367,7 @@ class MainActivity: Activity() {
     private var suixinTrialHints: Map<String,SuixinTrialHint> = emptyMap()
     /** 推荐、漫剧、真人剧各自保留列表和游标，切换不串页。 */
     private var suixinFeedMode="hot"
+    private var suixinHomePage=1
     private val suixinCategoryCursors=mutableMapOf<String,SuixinCategoryCursor?>()
     private val suixinCategoryItems=mutableMapOf<String,List<Series>>()
     private val suixinHotItems=mutableListOf<Series>()
@@ -1014,7 +1015,7 @@ class MainActivity: Activity() {
             tabState.remove(1); tabFocus.remove(1)
         }
         tab=next; val saved=tabState[next]; page=saved?.page ?: 1; catalog=saved?.items ?: emptyList(); hasMore=saved?.hasMore ?: false; ranking=saved?.ranking; catalogFocus=tabFocus[next].orEmpty()
-        if(next==0) { suixinMode=saved?.suixinMode ?: false; suixinFeedMode=saved?.suixinFeed ?: "hot" }
+        if(next==0) { suixinMode=true; suixinFeedMode=saved?.suixinFeed ?: "hot" }
         rankBoard=saved?.board ?: rankBoard; genre=saved?.genre ?: genre
         aiCatalog=saved?.aiCatalog ?: false; aiGenre=saved?.aiGenre
         newRelease=saved?.newRelease ?: false; newReleaseWindow=saved?.newReleaseWindow ?: newReleaseWindow
@@ -1585,7 +1586,7 @@ class MainActivity: Activity() {
         } else if(load && tab==2 && newRelease) {
             loadNewRelease(body)
         } else if(load) {
-            if(tab==0) catalogGrid(body,focusNav,focusType,loading=true)
+            if(tab==0) renderHome(body,focusNav,focusType,loading)
             // 榜单缓存已带内容：直接渲染上次榜单，联网结果回来再提示换新
             else if(tab==2 && catalog.isNotEmpty()) {
                 catalogGrid(body,focusNav,focusType)
@@ -1615,13 +1616,11 @@ class MainActivity: Activity() {
                 }
                 // 榜单第 1 页到手先落缓存，无论界面是否立即换新
                 if(requestTab==2 && requestPage==1 && !requestAi) library.cacheRank(requestBoard,result.items,result.hasMore,result.ranking)
-                if(requestTab==0 && requestPage==1 && requestGenre==null && !requestSuixinMode && (homeFromCache || tvTools.showing)) {
-                    homeScreen?.refresh?.text="查看新推荐"
-                    homeScreen?.refresh?.setOnClickListener { catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; showCatalog() }
-                } else if(requestTab==0 && requestPage==1 && requestGenre==null && requestSuixinMode && suixinFromCache && suixinCacheMode==requestSuixinFeed) {
+                if(requestTab==0 && requestPage==1 && requestGenre==null && requestSuixinFeed==suixinFeedMode) {
                     val position=homeScreen?.capturePosition()
-                    catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; page=1; homeFromCache=false; suixinFromCache=false
+                    catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; page=1; suixinHomePage=1; homeFromCache=false; suixinFromCache=false
                     homeScreen?.let { home ->
+                        home.updateShelves(homeShelves(),requestFocus=false)
                         if(position!=null) home.restorePosition(position,requestFocus=home.hasFocus()) else home.refreshSelection()
                     }
                 } else if(requestTab==2 && requestPage==1 && !requestAi && rankFromCache) {
@@ -2260,10 +2259,11 @@ class MainActivity: Activity() {
             },::quickActions,{ catalogFocus=it })
         homeScreen=home; body.addView(home,lp(-1,0).apply { weight=1f })
         val hot=catalog.filterNot { it.id in library.hidden() }
+        if(suixinMode && catalog.isNotEmpty() && suixinHotItems.isEmpty() && suixinFeedMode=="hot") suixinHotItems.addAll(catalog)
         home.render(homeShelves(),catalogFocus,!focusNav && !focusType,
             if(hasMore) { { page=2; catalogFocus=""; showCatalog(true) } } else null,homePosition)
         startTvHomePlayback(home)
-        home.refresh.text=if(loading) "正在加载随心看…" else "换一批"
+        home.refresh.text=if(loading) "正在加载首页…" else "换一批"
         home.refresh.setOnClickListener {
             if(suixinFeedMode=="hot") {
                 // 参考项目“换一批”：保留当前卡片，重启会话后再追加下一批。
@@ -2396,8 +2396,9 @@ class MainActivity: Activity() {
     /** 首页子菜单：推荐走书城连续流，漫剧/真人剧走分类接口。 */
     private fun changeSuixinFeed(mode: String) {
         if(mode==suixinFeedMode) return
+        suixinMode=true
         suixinFeedMode=mode
-        page=1; catalog=emptyList(); hasMore=true; catalogFocus=""
+        page=1; suixinHomePage=1; catalog=emptyList(); hasMore=true; catalogFocus=""
         homeScreen?.setFeedMode(mode)
         showCatalog(load=true)
     }
@@ -2407,7 +2408,7 @@ class MainActivity: Activity() {
         if(suixinHomeLoading) return
         suixinHomeLoading=true
         val mode=suixinFeedMode
-        val nextPage=page+1
+        val nextPage=suixinHomePage+1
         val ticket=generation
         val scope=RequestScope()
         suixinFeedScope?.cancel()
@@ -2427,9 +2428,8 @@ class MainActivity: Activity() {
                         suixinHomeLoading=false
                     } else {
                         suixinHomeLoading=false
-                        page=nextPage
-                        hasMore=result.hasMore && result.items.isNotEmpty()
-                        catalog=(catalog+result.items).distinctBy { it.id }
+                        if(result.items.isNotEmpty()) suixinHomePage=nextPage
+                        hasMore=result.hasMore
                         if(mode=="hot") appendSuixinHot(result.items)
                         homeScreen?.let { home ->
                             val position=home.capturePosition()
@@ -2466,7 +2466,7 @@ class MainActivity: Activity() {
     private fun showSuixin() {
         suixinMode=true
         tab=0; screen="catalog"; collection=null; collectionReturn=null
-        suixinCursor=null; suixinFailed=false; suixinSource=null; suixinFeedMode="hot"
+        suixinCursor=null; suixinFailed=false; suixinSource=null; suixinFeedMode="hot"; suixinHomePage=1
         suixinCategoryCursors.clear(); suixinCategoryItems.clear(); suixinHotItems.clear()
         page=1; catalog=emptyList(); hasMore=false; catalogFocus=""
         showCatalog(load=true,focusNav=true)

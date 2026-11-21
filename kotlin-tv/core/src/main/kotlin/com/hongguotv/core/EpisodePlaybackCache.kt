@@ -167,7 +167,7 @@ class EpisodePlaybackCache(
             var video: RemoteVideo? = null
             try {
                 var diskMeta: EpisodeDiskCache.Meta? = null
-                val prepared = entry.scope.run {
+                val prepared: RemoteVideo = entry.scope.run<RemoteVideo> {
                     val file = localEpisode(key.id)
                     if (file != null) {
                         return@run RemoteVideo.fromFile(repository.http, file, key.id, key.quality).also { video = it }

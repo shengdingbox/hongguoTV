@@ -64,10 +64,26 @@ class RequestScope(timeoutMillis: Long = 0) {
 
     companion object {
         private val current = ThreadLocal<RequestScope>()
+        private val deadline = ThreadLocal<Long>()
+
+        fun deadlineAtMost(endNanos: Long): Long = minOf(deadline.get() ?: endNanos, endNanos)
+
+        fun <T> withDeadline(endNanos: Long, action: () -> T): T {
+            val previous = deadline.get()
+            deadline.set(deadlineAtMost(endNanos))
+            try { return action() } finally {
+                if (previous == null) deadline.remove() else deadline.set(previous)
+            }
+        }
+
+        fun ensureActive() {
+            val owner = current.get()
+            if (Thread.currentThread().isInterrupted || owner != null && synchronized(owner) { owner.cancelled })
+                throw InterruptedIOException("请求已取消")
+        }
+
         /** 当前取址轮次还剩多少毫秒；没有外层预算时返回 null，普通内容请求保持原超时。 */
-        fun remainingMillis(): Long? = current.get()?.let { scope ->
-            synchronized(scope) { scope.deadlineNanos }
-        }?.takeIf { it != Long.MAX_VALUE }?.let {
+        fun remainingMillis(): Long? = deadline.get()?.takeIf { it != Long.MAX_VALUE }?.let {
             ((it - System.nanoTime()) / 1_000_000L).coerceAtMost(Long.MAX_VALUE)
         }
 
@@ -76,7 +92,13 @@ class RequestScope(timeoutMillis: Long = 0) {
         fun <T> execute(call: Call, consume: (Response) -> T): T {
             val owner = current.get()
             owner?.attach(call)
-            try { return call.execute().use(consume) }
+            try {
+                deadline.get()?.let { end ->
+                    val timeout = call.timeout()
+                    timeout.deadlineNanoTime(if (timeout.hasDeadline()) minOf(timeout.deadlineNanoTime(), end) else end)
+                }
+                return call.execute().use(consume)
+            }
             finally { owner?.detach(call) }
         }
     }

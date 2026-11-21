@@ -912,7 +912,7 @@ class MainActivity: Activity() {
         cancelSearchSuggestions(); main.removeCallbacks(pendingSuggest)
         cancelSearchArtwork()
         phoneRecommendationRetry?.let { main.removeCallbacks(it) }; phoneRecommendationRetry=null
-        phoneHomeLoading=false
+        phoneHomeLoading=false; homeScreen?.refresh?.text="换一批"
         phoneRankLoading=false
         // 取消的热搜刷新回到页面后应继续请求，已有缓存保留展示。
         if(phoneHotLoading) phoneHotAttempted=false
@@ -1586,7 +1586,7 @@ class MainActivity: Activity() {
         } else if(load && tab==2 && newRelease) {
             loadNewRelease(body)
         } else if(load) {
-            if(tab==0) renderHome(body,focusNav,focusType,true)
+            if(tab==0) { renderHome(body,focusNav,focusType,true); homeScreen?.refresh?.text="正在加载首页…" }
             // 榜单缓存已带内容：直接渲染上次榜单，联网结果回来再提示换新
             else if(tab==2 && catalog.isNotEmpty()) {
                 catalogGrid(body,focusNav,focusType)
@@ -1617,6 +1617,7 @@ class MainActivity: Activity() {
                 // 榜单第 1 页到手先落缓存，无论界面是否立即换新
                 if(requestTab==2 && requestPage==1 && !requestAi) library.cacheRank(requestBoard,result.items,result.hasMore,result.ranking)
                 if(requestTab==0 && requestPage==1 && requestGenre==null && requestSuixinFeed==suixinFeedMode) {
+                    homeScreen?.refresh?.text="换一批"
                     val position=homeScreen?.capturePosition()
                     catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; page=1; suixinHomePage=1; homeFromCache=false; suixinFromCache=false
                     homeScreen?.let { home ->
@@ -1662,7 +1663,7 @@ class MainActivity: Activity() {
                 }
             }, { problem ->
                 if(requestTab==0 && requestPage==1 && requestGenre==null) {
-                    homeScreen?.refresh?.text=if(catalog.isNotEmpty()) "更新失败 · 重试" else "加载失败 · 重试"
+                    homeScreen?.refresh?.text="换一批"
                     homeScreen?.refresh?.setOnClickListener { showCatalog(true) }
                     return@work
                 }
@@ -2263,7 +2264,7 @@ class MainActivity: Activity() {
         home.render(homeShelves(),catalogFocus,!focusNav && !focusType,
             if(hasMore) { { page=2; catalogFocus=""; showCatalog(true) } } else null,homePosition)
         startTvHomePlayback(home)
-        home.refresh.text=if(loading) "正在加载首页…" else "换一批"
+        home.refresh.text="换一批"
         home.refresh.setOnClickListener {
             if(suixinFeedMode=="hot") {
                 // 参考项目“换一批”：保留当前卡片，重启会话后再追加下一批。
@@ -2396,6 +2397,7 @@ class MainActivity: Activity() {
     /** 首页子菜单：推荐走书城连续流，漫剧/真人剧走分类接口。 */
     private fun changeSuixinFeed(mode: String) {
         if(mode==suixinFeedMode) return
+        homeScreen?.refresh?.text="正在加载首页…"
         suixinMode=true
         suixinFeedMode=mode
         page=1; suixinHomePage=1; catalog=emptyList(); hasMore=true; catalogFocus=""

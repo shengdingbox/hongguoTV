@@ -142,7 +142,7 @@ class HomeScreen(
     private val help=label("← →  换剧     确定  暂停 / 继续     ↓  操作     ↑  分类",11f,TvStyle.muted).apply {
         gravity=Gravity.CENTER; maxLines=1; ellipsize=TextUtils.TruncateAt.END
     }
-    val refresh=button("换一批","home:refresh") {}.apply { textSize=12f }
+    val refresh=button("换一批","home:refresh") {}.apply { textSize=14f; minHeight=dp(36); setPadding(dp(16),dp(7),dp(16),dp(7)) }
 
     init {
         orientation=VERTICAL
@@ -154,10 +154,9 @@ class HomeScreen(
                 contentDescription=title
             }
             feedTabs+=tab
-            selectorLine.addView(tab, LayoutParams(0, dp(36), 1f).apply { rightMargin=dp(8) })
+            selectorLine.addView(tab, LayoutParams(dp(if(key=="real") 86 else 72), dp(36)).apply { rightMargin=dp(8) })
         }
-        refresh.apply { textSize=14f; minHeight=dp(36); setPadding(dp(14),dp(7),dp(14),dp(7)) }
-        selectorLine.addView(refresh, LayoutParams(dp(140), dp(36)))
+        selectorLine.addView(refresh, LayoutParams(dp(104), dp(36)).apply { leftMargin=dp(4) })
         val selectorViews=feedTabs+refresh
         selectorViews.forEachIndexed { index, tab ->
             tab.nextFocusLeftId=selectorViews[if(index==0) selectorViews.lastIndex else index-1].id

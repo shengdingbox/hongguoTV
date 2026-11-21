@@ -26,7 +26,7 @@ import java.io.Closeable
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
-/** One visible home work owns one decoder and one stream. No offscreen players or video prefetch. */
+/** 当前展示的作品独占一个解码器和一路流；后面几部剧在预取池中提前备好，按右换剧零网络秒切。 */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 internal class TvHomePlayback(
     private val context: Context,
@@ -39,6 +39,8 @@ internal class TvHomePlayback(
     private val save: (WatchProgress) -> Unit,
     private val status: (State) -> Unit,
     private val screenOn: (Boolean) -> Unit,
+    /** 换剧预取候选：当前焦点之后的（剧、首集提示、集数），由首页 feed 提供。 */
+    private val upcoming: () -> List<Triple<Series,String?,Int>> = { emptyList() },
 ) : Closeable {
     data class State(val seriesId: String, val label: String, val showCover: Boolean, val playing: Boolean, val failed: Boolean = false)
     private val main = Handler(Looper.getMainLooper())
@@ -64,6 +66,16 @@ internal class TvHomePlayback(
     private var pendingStart: Runnable? = null
     private var pendingEpisode: Pair<Int, Long>? = null
     private var currentState: State? = null
+    /** 换剧预取池：prepare 完成的下一部剧（流 + 详情），按右命中即零网络切换。 */
+    private class Prepared(val remote: RemoteVideo, val data: Detail, val episodeId: String)
+    private val pool = LinkedHashMap<String, Prepared>()
+    private var prefetchTask: Future<*>? = null
+    private var prefetchScope: RequestScope? = null
+    private var prefetchTarget: String? = null
+    private val attempted = mutableSetOf<String>()
+    private val prefetchFailures = mutableMapOf<String, Int>()
+    /** 当前剧首帧时刻：驱动「0.5 秒备一部、3 秒两部、6 秒三部」的递进预取。 */
+    private var firstFrameAt = 0L
     private val surface = PlayerView(context).apply {
         useController = false; isFocusable = false; isFocusableInTouchMode = false
         descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
@@ -79,19 +91,36 @@ internal class TvHomePlayback(
             main.postDelayed(this, 5_000)
         }
     }
+    /** 剧级预取心跳：轮询驱动递进预取，缓冲、加载中自然让路。 */
+    private val prefetchTick = object : Runnable {
+        override fun run() {
+            if (closed || !active) return
+            ensureUpcoming()
+            main.postDelayed(this, 500)
+        }
+    }
 
     fun select(next: Series, episodeId: String? = null, episodeCount: Int = 0) {
         if (closed || series?.id == next.id && trialEpisodeId == episodeId) return
         checkpoint()
         cancelLoad()
         clearStream()
+        // 正在预取目标剧时不打断，等它完成直接转正接管（快速按右不重复取址）。
+        val inFlight = prefetchTask != null && prefetchTarget == next.id
+        if (!inFlight) cancelPrefetchTask()
         series = next; trialEpisodeId = episodeId?.takeIf { it.matches(Regex("[0-9]{1,30}")) }
         trialEpisodeCount = episodeCount.coerceAtLeast(0)
         detail = null; episodeIndex = 0; this.episodeId = ""
         firstFrame = false; failed = false; userPaused = false; ended = false
         pendingEpisode = null
         publish("正在准备剧集…")
-        if (active) schedule()
+        if (!active) return
+        val hit = if (hasResume(next.id)) null else takePooled(next.id)
+        when {
+            hit != null -> attachPrepared(hit)
+            inFlight -> {} // 预取完成回调里转正挂载，不再发起新请求
+            else -> schedule()
+        }
     }
 
     /** An empty refreshed shelf must also stop the previous work's audio. */
@@ -106,9 +135,10 @@ internal class TvHomePlayback(
         if (closed || active == next) return
         active = next
         main.removeCallbacks(checkpointTick)
+        main.removeCallbacks(prefetchTick)
         if (!next) {
             checkpoint()
-            cancelLoad()
+            cancelLoad(); cancelPrefetchTask()
             player?.pause(); video?.setPlaybackActive(false)
             screenOn(false)
         } else {
@@ -121,6 +151,7 @@ internal class TvHomePlayback(
                 else if (series != null) schedule()
             }
             main.postDelayed(checkpointTick, 5_000)
+            main.postDelayed(prefetchTick, 500)
         }
     }
 
@@ -220,6 +251,116 @@ internal class TvHomePlayback(
         }
     }
 
+    /** 当前剧首帧稳定后递进准备后面的剧：0.5 秒一部、3 秒两部、6 秒三部；缓冲或加载中让路。 */
+    private fun ensureUpcoming() {
+        if (closed || !active || prefetchTask != null || failed || !firstFrame || video == null) return
+        if (task != null || pendingStart != null) return
+        if (player?.playbackState == Player.STATE_BUFFERING) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - firstFrameAt < 500) return
+        trimPool()
+        val depth = when {
+            now - firstFrameAt >= 6000 -> 3
+            now - firstFrameAt >= 3000 -> 2
+            else -> 1
+        }
+        val target = upcoming().take(depth)
+            .firstOrNull { it.first.id !in pool && it.first.id !in attempted && !hasResume(it.first.id) }
+            ?: return
+        val (next, hintEpisode, hintCount) = target
+        attempted += next.id
+        prefetchTarget = next.id
+        val request = RequestScope(12_000)
+        prefetchScope = request
+        val maxQuality = quality()
+        prefetchTask = worker.submit {
+            var prepared: RemoteVideo? = null
+            try {
+                val result = request.run {
+                    val data = hintEpisode?.let { first ->
+                        Detail(next.copy(badge = if (hintCount > 0) "共 $hintCount 集" else next.badge), listOf(first))
+                    } ?: repository().seriesDetail(next.id)
+                    if (data.episodes.isEmpty()) throw java.io.IOException("暂无可播放剧集")
+                    val id = data.episodes.first()
+                    val info = repository().stream(id, maxQuality, playback = true)
+                        .copy(idHint = id, qualityNumber = maxQuality)
+                    val remote = RemoteVideo(repository().http, info, chunkBytes = 256 * 1024, aheadBytes = 2 * 1024 * 1024L)
+                    prepared = remote
+                    remote.setPlaybackActive(false)
+                    remote.prepare()
+                    Prepared(remote, data, id)
+                }
+                main.post { onPrefetchDone(next, result) }
+            } catch (_: Exception) {
+                prepared?.close()
+                if (!request.isCancelled) main.post { onPrefetchDone(next, null) }
+            }
+        }
+    }
+
+    /** 预取收尾：select 正在等这部剧就转正接管，否则入池备按右换剧。 */
+    private fun onPrefetchDone(next: Series, result: Prepared?) {
+        prefetchTask = null; prefetchScope = null; prefetchTarget = null
+        if (closed) { result?.remote?.close(); return }
+        if (result == null) {
+            val failures = (prefetchFailures[next.id] ?: 0) + 1
+            prefetchFailures[next.id] = failures
+            // 失败一次 15 秒后允许再试，连续两次放弃
+            if (failures < 2) main.postDelayed({ if (!closed) attempted.remove(next.id) }, 15_000)
+            // select 正在等这次预取（转正等待）却失败：立即回退正常取址，不能停在占位文案上
+            if (series?.id == next.id && active && !userPaused && episodeId.isBlank() &&
+                task == null && pendingStart == null
+            ) schedule(0)
+            return
+        }
+        if (series?.id == next.id && active && !userPaused && !failed &&
+            episodeId.isBlank() && task == null && pendingStart == null
+        ) attachPrepared(result)
+        else {
+            pool.remove(next.id)?.remote?.close()
+            pool[next.id] = result
+            trimPool()
+        }
+    }
+
+    /** 挂载预取好的流：详情与集号就位后直接起播，零网络请求。 */
+    private fun attachPrepared(hit: Prepared) {
+        detail = hit.data
+        episodeIndex = hit.data.episodes.indexOf(hit.episodeId).coerceAtLeast(0)
+        episodeId = hit.episodeId
+        pendingEpisode = null
+        try { prepare(hit.remote, 0L) }
+        catch (_: Exception) { hit.remote.close(); showFailure() }
+    }
+
+    /** 取出预取好的剧；地址临近过期（60 秒口径，同恢复播放）则弃用走正常取址。 */
+    private fun takePooled(id: String): Prepared? {
+        val hit = pool.remove(id) ?: return null
+        val expires = hit.remote.info.expiresAt
+        if (expires > 0 && expires <= System.currentTimeMillis() + 60_000) { hit.remote.close(); return null }
+        return hit
+    }
+
+    /** 有观看记录的剧换过去会续播或跳到下一集，position=0 的第一集预取用不上，跳过。 */
+    private fun hasResume(id: String) =
+        progress(id)?.let { it.completed || it.episodeIndex > 0 || it.position > 0 } == true
+
+    private fun trimPool() {
+        while (pool.size > 3) {
+            val eldest = pool.entries.iterator().next()
+            pool.remove(eldest.key)
+            eldest.value.remote.close()
+        }
+    }
+
+    /** 取消进行中的剧级预取；因让路或换目标被打断的剧允许稍后重试。 */
+    private fun cancelPrefetchTask() {
+        prefetchTarget?.let { attempted.remove(it) }
+        prefetchTarget = null
+        prefetchScope?.cancel(); prefetchScope = null
+        prefetchTask?.cancel(true); prefetchTask = null
+    }
+
     private fun prepare(remote: RemoteVideo, position: Long) {
         clearStream()
         video = remote; firstFrame = false; failed = false; ended = false
@@ -250,12 +391,13 @@ internal class TvHomePlayback(
                 override fun onRenderedFirstFrame() {
                     if (!owns()) return
                     firstFrame = true
+                    firstFrameAt = android.os.SystemClock.elapsedRealtime()
                     publish(if (userPaused) "播放已暂停 · 确定继续" else episodeLabel())
                 }
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     if (!owns()) return
                     when (playbackState) {
-                        Player.STATE_BUFFERING -> publish("${episodeLabel()} · 正在缓冲…")
+                        Player.STATE_BUFFERING -> { cancelPrefetchTask(); publish("${episodeLabel()} · 正在缓冲…") }
                         Player.STATE_READY -> publish(if (userPaused) "播放已暂停 · 确定继续" else episodeLabel())
                         Player.STATE_ENDED -> finishEpisode()
                     }
@@ -313,6 +455,7 @@ internal class TvHomePlayback(
 
     private fun showFailure() {
         checkpoint()
+        cancelPrefetchTask()
         failed = true
         player?.pause(); video?.setPlaybackActive(false); screenOn(false)
         publish("首页播放暂不可用 · 确定重试")
@@ -336,8 +479,10 @@ internal class TvHomePlayback(
     override fun close() {
         if (closed) return
         checkpoint(); closed = true; active = false
-        cancelLoad(); main.removeCallbacks(checkpointTick)
-        clearStream(); surface.player = null; player?.release(); player = null
+        cancelLoad(); cancelPrefetchTask()
+        main.removeCallbacks(checkpointTick); main.removeCallbacks(prefetchTick)
+        clearStream(); pool.values.forEach { it.remote.close() }; pool.clear()
+        surface.player = null; player?.release(); player = null
         worker.shutdownNow()
     }
 }

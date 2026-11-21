@@ -2299,7 +2299,8 @@ class MainActivity: Activity() {
             quality={ library.maxQuality },speed={ library.playbackSpeed },frame={ library.frameMode },autoNext={ library.autoNext },
             progress=library::progress,save={ if(library.isLoaded) library.save(it) },
             status={ state -> if(homeScreen===home) home.showPreview(state.seriesId,state.label,state.showCover,state.playing,state.failed) },
-            screenOn={ playing -> homePreviewScreenOn=playing && foreground; refreshScreenOn() })
+            screenOn={ playing -> homePreviewScreenOn=playing && foreground; refreshScreenOn() },
+            upcoming={ home.upcomingAfterFocus(3).map { series -> val hint=trialHintFor(series.id); Triple(series,hint?.first,hint?.second ?: 0) } })
         homePlayback=playback
         home.attachPreview(playback.view)
         home.onPreviewSelected={ series ->

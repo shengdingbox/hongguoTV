@@ -284,6 +284,12 @@ class HomeScreen(
         if(entry!=null) onPreviewSelected?.invoke(entry.series) else onPreviewCleared?.invoke()
     }
 
+    /** 换剧预取候选：当前焦点所在行之后的若干部剧，供首页播放器后台提前准备。 */
+    fun upcomingAfterFocus(count: Int): List<Series> {
+        val entries=activeShelf()?.entries ?: return emptyList()
+        return entries.drop(currentIndex()+1).take(count).map { it.series }
+    }
+
     fun showPreview(seriesId: String,label: String,showCover: Boolean,playing: Boolean,failed: Boolean=false) {
         if(current()?.series?.id!=seriesId) return
         previewSeriesId=seriesId; previewVisible=!showCover; previewPlaying=playing; previewFailed=failed

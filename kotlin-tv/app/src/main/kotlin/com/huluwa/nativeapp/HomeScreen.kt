@@ -86,6 +86,8 @@ class HomeScreen(
     var onPreviewCleared: (() -> Unit)?=null
     /** 首页子菜单：推荐、漫剧、真人剧、换一批。 */
     var onFeedMode: ((String) -> Unit)?=null
+    /** 当前列表已到边缘：让上层继续取下一批，而不是在旧列表里循环。 */
+    var onFeedEdge: (() -> Unit)?=null
     private var feedMode = "hot"
     private var previewView: View?=null
     private var previewSeriesId=""
@@ -312,8 +314,13 @@ class HomeScreen(
     private fun continueWatching() { openCurrent() }
     private fun move(delta: Int) {
         val shelf=activeShelf() ?: return
-        if(shelf.entries.size<2) return
-        indices[activeShelfKey]=(currentIndex()+delta+shelf.entries.size)%shelf.entries.size
+        if(shelf.entries.isEmpty()) { onFeedEdge?.invoke(); return }
+        val next=currentIndex()+delta
+        if(next !in shelf.entries.indices) {
+            onFeedEdge?.invoke()
+            return
+        }
+        indices[activeShelfKey]=next
         paintSelection(); rememberCurrent()
     }
     fun setFeedMode(key: String) { feedMode = key; paintFeedTabs() }

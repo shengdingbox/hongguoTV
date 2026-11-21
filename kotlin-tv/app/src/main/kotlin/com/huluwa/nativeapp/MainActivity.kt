@@ -370,6 +370,8 @@ class MainActivity: Activity() {
     private val suixinCategoryCursors=mutableMapOf<String,SuixinCategoryCursor?>()
     private val suixinCategoryItems=mutableMapOf<String,List<Series>>()
     private val suixinHotItems=mutableListOf<Series>()
+    private var suixinHomeLoading=false
+    private var suixinAdvanceAfterLoad=false
     private var suixinSource: String?=null
     private var suixinLoading=false
     private var suixinFailed=false
@@ -2277,6 +2279,7 @@ class MainActivity: Activity() {
         home.onPreviewToggle=playback::toggle
         home.onPreviewActions=playback::pauseForActions
         home.onPreviewCleared=playback::clearSelection
+        home.onFeedEdge={ suixinAdvanceAfterLoad=true; loadMoreSuixinHome() }
         home.onFeedMode={ mode ->
             when(mode) {
                 "comic" -> changeSuixinFeed("comic")
@@ -2318,6 +2321,18 @@ class MainActivity: Activity() {
         return CatalogPage(page.items,page.cursor!=null)
     }
 
+    /** 当前推荐批次耗尽后重建服务端会话；保留已看记录，避免重复三部剧循环。 */
+    private fun suixinNewBatch(requestedPage: Int): CatalogPage {
+        val seen=suixinHotItems.mapTo(hashSetOf()) { it.id }
+        suixinCursor=null
+        val fresh=repository.suixinInitial()
+        suixinCursor=fresh.cursor?.copy(seen=(seen+fresh.items.map { it.id }).toList().takeLast(540).toSet())
+        if(fresh.trialHints.isNotEmpty()) suixinTrialHints=suixinTrialHints+fresh.trialHints
+        val items=fresh.items.filter { it.id !in seen }
+        suixinHotItems.clear(); suixinHotItems.addAll(suixinHotItems+items)
+        return CatalogPage(items,fresh.cursor!=null)
+    }
+
     /** 首页子菜单：推荐走书城连续流，漫剧/真人剧走分类接口。 */
     private fun changeSuixinFeed(mode: String) {
         if(mode==suixinFeedMode) return
@@ -2325,6 +2340,43 @@ class MainActivity: Activity() {
         page=1; catalog=emptyList(); hasMore=true; catalogFocus=""
         homeScreen?.setFeedMode(mode)
         showCatalog(load=true)
+    }
+
+    /** 首页左右切换触边：继续取同一分类的下一批，不重建页面。 */
+    private fun loadMoreSuixinHome() {
+        if(suixinHomeLoading) return
+        suixinHomeLoading=true
+        val mode=suixinFeedMode
+        val nextPage=page+1
+        work({
+            if(mode=="hot") {
+                // 先沿服务端游标续页；空批次时重启会话取下一批，最多三次。
+                val more=suixinPage(nextPage)
+                if(more.items.isNotEmpty()) more else suixinNewBatch(nextPage)
+            } else suixinCategoryPage(true)
+        }, { result ->
+            suixinHomeLoading=false
+            if(mode!=suixinFeedMode) return@work
+            page=nextPage
+            hasMore=result.hasMore && result.items.isNotEmpty()
+            catalog=(catalog+result.items).distinctBy { it.id }
+            if(mode=="hot" && result.items.isNotEmpty()) {
+                suixinHotItems.clear(); suixinHotItems.addAll((suixinHotItems+result.items).distinctBy { it.id })
+            }
+            homeScreen?.let { home ->
+                val position=home.capturePosition()
+                val advance=suixinAdvanceAfterLoad
+                suixinAdvanceAfterLoad=false
+                home.updateShelves(homeShelves(),requestFocus=false)
+                if(advance) {
+                    val shown=homeShelves().firstOrNull()?.entries.orEmpty()
+                    if(shown.isNotEmpty()) home.restorePosition(position.copy(column=shown.lastIndex),requestFocus=true)
+                } else home.restorePosition(position,requestFocus=true)
+            }
+        }, { _ ->
+            suixinHomeLoading=false
+            hasMore=false
+        })
     }
 
     private fun suixinCategoryPage(more: Boolean): CatalogPage {

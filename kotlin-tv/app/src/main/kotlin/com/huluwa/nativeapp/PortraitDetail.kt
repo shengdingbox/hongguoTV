@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.huluwa.nativeapp
 
+import androidx.core.graphics.drawable.DrawableCompat
 import android.graphics.Color
 import android.graphics.RenderEffect
 import android.graphics.Shader
@@ -158,7 +159,7 @@ class PortraitDetail(
         }
         val state = PortraitUi.column(activity).apply { gravity = Gravity.CENTER }
         if (retry == null) state.addView(ProgressBar(activity).apply {
-            indeterminateTintList = android.content.res.ColorStateList.valueOf(PortraitStyle.accent)
+            DrawableCompat.setTint(indeterminateDrawable, PortraitStyle.accent)
         }, lp(dp(30), dp(30)).apply { gravity = Gravity.CENTER_HORIZONTAL })
         state.addView(PortraitUi.messageBlock(activity, label, retry), lp(-2, -2))
         content.addView(state, lp(-1, 0).apply { weight = 1f; bottomMargin = dp(90) })

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.huluwa.nativeapp
 
+import androidx.core.graphics.drawable.DrawableCompat
 import android.annotation.SuppressLint
 import android.graphics.Color
 import android.graphics.RectF
@@ -153,7 +154,7 @@ class PhonePlayer(
         videoHost?.addView(centerPlay, FrameLayout.LayoutParams(dp(64), dp(64), Gravity.CENTER))
 
         buffering = ProgressBar(activity).apply {
-            indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+            DrawableCompat.setTint(indeterminateDrawable, Color.WHITE)
             visibility = View.GONE
         }
         videoHost?.addView(buffering, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER))

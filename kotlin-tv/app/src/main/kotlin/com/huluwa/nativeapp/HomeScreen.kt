@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.huluwa.nativeapp
 
+import androidx.core.graphics.drawable.DrawableCompat
 import android.content.Context
-import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -127,7 +127,7 @@ class HomeScreen(
         importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO
     }
     private val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply {
-        max=100; progressTintList=ColorStateList.valueOf(TvStyle.accent); visibility=GONE
+        max=100; DrawableCompat.setTint(progressDrawable, TvStyle.accent); visibility=GONE
     }
     private val actionLine=LinearLayout(context).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(8),0,0) }
     private val play=button("播放全集","home:play") { openCurrent() }

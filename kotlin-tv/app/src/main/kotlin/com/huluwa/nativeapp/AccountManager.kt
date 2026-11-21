@@ -20,6 +20,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /** Credentials stay in an Android Keystore encrypted partition, outside library exports. */
@@ -59,7 +60,13 @@ private class AccountStore(context: Context) {
         val bytes = Base64.decode(raw, Base64.NO_WRAP)
         require(bytes.size > 12)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
+        val iv = bytes.copyOfRange(0, 12)
+        cipher.init(Cipher.DECRYPT_MODE, key(), if (Build.VERSION.SDK_INT >= 26) {
+            GCMParameterSpec(128, iv)
+        } else {
+            // API 24/25 的 GCM 提供方不保证支持 GCMParameterSpec；这里使用同义 IV 参数。
+            IvParameterSpec(iv)
+        })
         return AccountCredentials.fromJson(
             String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
         )

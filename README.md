@@ -32,9 +32,9 @@
 
 | 安装包 | 系统要求 |
 | --- | --- |
-| `hongguotv-kotlin-<版本号>.apk` | Android 8.0（API 26）及以上，当前默认版本 |
-| 历史版本中以 `-android8.apk` 结尾的文件 | Android 8.0 及以上，与上一行内容一致 |
-| 历史版本中以 `-android5.apk` 结尾的文件 | Android 5.0–7.x 兼容版本，仅部分历史版本提供 |
+| `hongguotv-kotlin-<版本号>.apk` | 当前 `feat/android7-support` 分支为 Android 7.0（API 24）及以上 |
+| 历史版本中以 `-android8.apk` 结尾的文件 | 历史 Android 8.0 及以上版本 |
+| 历史版本中以 `-android5.apk` 结尾的文件 | 历史 Android 5.0–7.x 兼容版本 |
 
 - **不区分 CPU 架构**：项目不含 ARM、x86 等架构专用的 JNI 库，可在 ARM32、ARM64、x86、x86_64 设备上运行，实际视频解码能力取决于设备。
 - **统一包名**：应用包名为 `com.huluwa.nativeapp`；维护者发布的正式包使用同一份签名，可直接覆盖升级。
@@ -161,7 +161,7 @@ adb install -r hongguotv-kotlin-<版本号>.apk
 ./kotlin-tv/gradlew -p kotlin-tv :app:assembleDebug
 ```
 
-输出文件为 `kotlin-tv/app/build/outputs/apk/debug/app-debug.apk`。默认最低系统版本为 Android 8.0；构建 Android 5.0–7.x 兼容包时添加属性：
+输出文件为 `kotlin-tv/app/build/outputs/apk/debug/app-debug.apk`。当前 Android 7 分支默认最低系统版本为 Android 7.0（API 24），`kotlin-tv/gradle.properties` 固定该值；临时覆盖可用：
 
 ```bash
 ./kotlin-tv/gradlew -p kotlin-tv -PHONGGUOTV_MIN_SDK=21 :app:assembleDebug
@@ -214,7 +214,7 @@ Release 构建启用 R8 代码压缩和资源裁剪，播放器只保留普通 M
 | 项目 | 当前配置 |
 | --- | --- |
 | 语言与架构 | Kotlin，Android 原生 View；`app` 负责界面和设备能力，`core` 负责业务与网络协议 |
-| Android | 默认 minSdk 26，可选 minSdk 21；compileSdk / targetSdk 36 |
+| Android | 当前 Android 7 分支默认 minSdk 24；compileSdk / targetSdk 36 |
 | UI | AndroidX RecyclerView、ViewPager2、SwipeRefreshLayout |
 | 播放 | AndroidX Media3 / ExoPlayer 1.8.0 |
 | 网络 | OkHttp 4.12.0 / Okio；Android 使用系统 `org.json` |

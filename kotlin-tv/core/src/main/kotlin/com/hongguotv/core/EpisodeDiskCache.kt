@@ -181,9 +181,7 @@ class EpisodeDiskCache(
     private fun metaFile(key: Key) = File(directory, key.fileName + ".meta")
     private fun dataFile(key: Key) = File(directory, key.fileName + ".mp4")
 
-    /** 便捷位：core 里 base64/hex 助手是 MediaCrypto 的私有实现，这里本地补一份。 */
-    private fun base64(bytes: ByteArray): String = java.util.Base64.getEncoder().encodeToString(bytes)
-    private fun decode64(value: String): ByteArray = java.util.Base64.getDecoder().decode(value)
+    /** 元数据编解码复用 core 的 Android 7 兼容实现。 */
 
     private fun loadRow(file: File): Row? {
         val o = JSONObject(file.readText())

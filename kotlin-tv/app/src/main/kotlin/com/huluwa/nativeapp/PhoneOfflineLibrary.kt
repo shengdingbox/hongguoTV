@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.huluwa.nativeapp
 
+import androidx.core.graphics.drawable.DrawableCompat
 import android.app.AlertDialog
-import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.text.TextUtils
@@ -43,7 +43,7 @@ class PhoneOfflineLibrary(
         gravity = Gravity.CENTER
         setPadding(0, dp(48), 0, dp(48))
         addView(ProgressBar(activity).apply {
-            indeterminateTintList = ColorStateList.valueOf(PortraitStyle.accent)
+            DrawableCompat.setTint(indeterminateDrawable, PortraitStyle.accent)
         }, lp(dp(22), dp(22)).apply { rightMargin = dp(12) })
         addView(text("正在读取离线缓存…", 14f, PortraitStyle.muted), lp(-2, -2))
     }
@@ -261,8 +261,8 @@ class PhoneOfflineLibrary(
 
         private fun progress() = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000
-            progressTintList = ColorStateList.valueOf(PortraitStyle.accent)
-            progressBackgroundTintList = ColorStateList.valueOf(PortraitStyle.outline)
+            DrawableCompat.setTint(progressDrawable, PortraitStyle.accent)
+            DrawableCompat.setTint(progressBackground, PortraitStyle.outline)
         }
 
         fun loadImage() { if (boundSeries.isNotBlank()) loadCover(cover, boundCover) }
@@ -355,7 +355,7 @@ class PhoneOfflineLibrary(
                 label.text = "第 ${transfer.number} 集 · " + if (transfer.totalBytes > 0)
                     "${bytes(transfer.bytes)} / ${bytes(transfer.totalBytes)}" else "正在准备…"
                 bar.isIndeterminate = transfer.totalBytes <= 0
-                bar.indeterminateTintList = ColorStateList.valueOf(PortraitStyle.accent)
+                DrawableCompat.setTint(bar.indeterminateDrawable, ColorStateList.valueOf(PortraitStyle.accent))
                 bar.progress = if (transfer.totalBytes > 0) (transfer.bytes * 1000 / transfer.totalBytes).toInt().coerceIn(0, 1000) else 0
             }
             transferHost.visibility = if (active.isEmpty()) View.GONE else View.VISIBLE
@@ -432,7 +432,7 @@ class PhoneOfflineLibrary(
             val content = PortraitUi.row(activity).apply {
                 setPadding(0, 0, 0, PortraitUi.dp(activity, 16))
                 addView(ProgressBar(activity).apply {
-                    indeterminateTintList = ColorStateList.valueOf(PortraitStyle.accent)
+                    DrawableCompat.setTint(indeterminateDrawable, PortraitStyle.accent)
                 }, PortraitUi.lp(PortraitUi.dp(activity, 24), PortraitUi.dp(activity, 24)).apply { rightMargin = PortraitUi.dp(activity, 12) })
                 addView(PortraitUi.text(activity, "正在加载分集…", 15f, PortraitStyle.muted), PortraitUi.lp(0, -2).apply { weight = 1f })
             }

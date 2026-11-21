@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.huluwa.nativeapp
 
+import androidx.core.graphics.drawable.DrawableCompat
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.AlertDialog
@@ -3426,7 +3427,7 @@ class MainActivity: Activity() {
         root.background=TvVisual.backdrop(this)
         val back=(body.getChildAt(0) as? ViewGroup)?.getChildAt(0) as? TextView
         back?.apply {
-            setTextColor(white); compoundDrawables.forEach { it?.setTint(white) }
+            setTextColor(white); compoundDrawables.forEach { it?.let { icon -> DrawableCompat.setTint(DrawableCompat.wrap(icon).mutate(), white) } }
             setOnFocusChangeListener { _,focused -> background=TvVisual.row(this@MainActivity,focused) }
         }
         val scroll=ScrollView(this).apply { isVerticalScrollBarEnabled=false; clipToPadding=false }
@@ -3810,7 +3811,7 @@ class MainActivity: Activity() {
                 playbackText=text("",13f).apply { visibility=View.GONE }
                 controls=column().apply { visibility=View.GONE }
                 progressBar=PlaybackSeekBar(this).apply { max=1000; visibility=View.GONE }
-                recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { indeterminateTintList=android.content.res.ColorStateList.valueOf(accent); visibility=View.GONE }
+                recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { DrawableCompat.setTint(indeterminateDrawable,accent); visibility=View.GONE }
                 playerScreenOn=true; refreshScreenOn()
             } else {
             root.addView(view,FrameLayout.LayoutParams(-1,-1))
@@ -3891,7 +3892,7 @@ class MainActivity: Activity() {
             controls=column().apply { visibility=View.GONE }
             hud.addView(controls,lp(-1,-2).apply { topMargin=dp(4) })
             // 转圈单独挂在根布局正中央，不占底部 HUD 空间；播放失败自动重试时才可见。
-            recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { indeterminateTintList=android.content.res.ColorStateList.valueOf(accent); visibility=View.GONE }
+            recoverySpinner=ProgressBar(this,null,android.R.attr.progressBarStyle).apply { DrawableCompat.setTint(indeterminateDrawable,accent); visibility=View.GONE }
             root.addView(recoverySpinner,FrameLayout.LayoutParams(dp(56),dp(56),Gravity.CENTER))
             root.addView(ScrollView(this).apply { isVerticalScrollBarEnabled=false; addView(hud) },FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
             // 屏幕最底部缓存状态条：三段对应下 1/2/3 集

@@ -10,9 +10,11 @@ import java.nio.ByteOrder
 internal class PlaybackV5Signer private constructor(
     private val clock: () -> Long = System::currentTimeMillis,
     private val random: () -> Double = Math::random,
-    private val processNonce: String = java.util.Base64.getUrlEncoder()
-        .withoutPadding()
-        .encodeToString(ByteArray(18).also(java.security.SecureRandom()::nextBytes)),
+    private val processNonce: String = ByteArray(18).also(java.security.SecureRandom()::nextBytes)
+        .base64()
+        .replace('+', '-')
+        .replace('/', '_')
+        .trimEnd('='),
 ) {
     private val processStarted = clock()
     private fun rol(value: Int, count: Int) = Integer.rotateLeft(value, count)

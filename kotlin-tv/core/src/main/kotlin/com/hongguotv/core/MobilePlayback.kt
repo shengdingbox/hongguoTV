@@ -29,9 +29,16 @@ internal object MobilePlayback {
     private const val PLAYBACK_UA =
         "com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)"
 
-    /** 取址分组：普通短剧在 1004，合集分集属于 PUGC 的 1001，分组错误会回 101000。 */
-    fun model(id: String, profile: SignerProfile, http: OkHttpClient, now: Long, group: String = GROUP_SHORT): JSONObject {
-        require(id.matches(Regex("[0-9]{1,30}")))
+    /** 取址分组：普通短剧在 1004，合集分集属于 PUGC 的 1001，分组错误会回 101000。
+     *
+     *  [wanted] 首项是当前要播放的集，其余是顺带预取的相邻集（调用方最多再带 2 集）：
+     *  mixed_video_id_map 原生支持多 ID，一次 POST 的响应里每集各有一份模型，
+     *  调用方把顺带集写入模型缓存后，切集即可零请求命中。返回映射至少包含首项；
+     *  顺带集缺失或结构不合格时直接略过，不影响当前集。 */
+    fun models(wanted: List<String>, profile: SignerProfile, http: OkHttpClient, now: Long, group: String = GROUP_SHORT): Map<String, JSONObject> {
+        // 首项是当前集；上限 3 集与参考实现的顺带窗口一致，防止调用方传入整窗拖大请求体。
+        val ids = wanted.filter { it.matches(Regex("[0-9]{1,30}")) }.distinct().take(3)
+        require(ids.isNotEmpty()) { "没有可请求的剧集 ID" }
         if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
         if (!profile.available || profile.params["cdid"].isNullOrBlank()) {
             throw SignatureException("本机匿名设备尚未就绪")
@@ -45,7 +52,7 @@ internal object MobilePlayback {
             "device_id" to profile.deviceId, "_rticket" to now.toString(),
         )
         val payload = JSONObject(
-            """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"$group":["$id"]},"dr_scene":"player"}"""
+            """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"$group":${JSONArray(ids)}},"dr_scene":"player"}"""
         )
         val output = ByteArrayOutputStream()
         GZIPOutputStream(output).use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
@@ -83,29 +90,49 @@ internal object MobilePlayback {
                 if (code != 0) throw ServiceException(code)
                 val data = root.optJSONObject("data") ?: throw IOException("播放信息为空")
                 val entries = data.optJSONObject(group) ?: data
-                val entry = entries.optJSONObject(id) ?: throw IOException("播放信息未包含指定剧集")
-                val model = when (val raw = entry.opt("video_model")) {
-                    is JSONObject -> raw
-                    is String -> JSONObject(raw)
-                    else -> throw IOException("播放信息格式异常")
+                // 当前集必须存在且结构可用；顺带集宽松处理，缺一条不影响本次播放。
+                val current = entries.optJSONObject(ids.first()) ?: throw IOException("播放信息未包含指定剧集")
+                val out = linkedMapOf<String, JSONObject>()
+                parseEntry(current, data, strict = true)?.let { out[ids.first()] = it }
+                for (extra in ids.drop(1)) {
+                    val entry = entries.optJSONObject(extra) ?: continue
+                    runCatching { parseEntry(entry, data, strict = false) }.getOrNull()?.let { out[extra] = it }
                 }
-                val list = model.opt("video_list")
-                val count = when (list) {
-                    is JSONObject -> list.length()
-                    is JSONArray -> list.length()
-                    else -> 0
-                }
-                if (count == 0 && !model.has("fallback_api")) throw IOException("播放信息没有可用资源")
-                for (field in listOf("expire_time", "url_expire")) {
-                    if (!model.has(field)) {
-                        val expiry = entry.optLong(field, data.optLong(field, 0L))
-                        if (expiry > 0L) model.put(field, expiry)
-                    }
-                }
-                model
+                if (out.isEmpty()) throw IOException("播放信息没有可用资源")
+                out
             } catch (problem: JSONException) {
                 throw IOException("播放信息格式异常", problem)
             }
         }
+    }
+
+    /** 解析单集条目：模型提取、可用性检查与过期时间补齐。
+     *  [strict] 为 true（当前集）时结构不合格直接抛；false（顺带集）返回 null 由调用方跳过。 */
+    private fun parseEntry(entry: JSONObject, data: JSONObject, strict: Boolean): JSONObject? {
+        val model = when (val raw = entry.opt("video_model")) {
+            is JSONObject -> raw
+            is String -> runCatching { JSONObject(raw) }.getOrNull()
+            else -> null
+        }
+        if (model == null) {
+            if (strict) throw IOException("播放信息格式异常")
+            return null
+        }
+        val count = when (val list = model.opt("video_list")) {
+            is JSONObject -> list.length()
+            is JSONArray -> list.length()
+            else -> 0
+        }
+        if (count == 0 && !model.has("fallback_api")) {
+            if (strict) throw IOException("播放信息没有可用资源")
+            return null
+        }
+        for (field in listOf("expire_time", "url_expire")) {
+            if (!model.has(field)) {
+                val expiry = entry.optLong(field, data.optLong(field, 0L))
+                if (expiry > 0L) model.put(field, expiry)
+            }
+        }
+        return model
     }
 }

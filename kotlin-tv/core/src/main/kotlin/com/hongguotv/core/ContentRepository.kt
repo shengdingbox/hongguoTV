@@ -1026,6 +1026,7 @@ open class ContentRepository(
         refreshModel: Boolean = false,
         playback: Boolean = false,
         prefetch: Boolean = false,
+        ahead: List<String> = emptyList(),
     ): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
         // 正式播放最多 8 秒，后台相邻集预热最多 2 秒；自检与离线下载沿用原有较宽预算。
@@ -1034,18 +1035,18 @@ open class ContentRepository(
             prefetch -> 2L
             else -> 0L
         }
-        if (timeout == 0L) return streamUnbounded(id, maxQuality, refreshModel, playback = false)
+        if (timeout == 0L) return streamUnbounded(id, maxQuality, refreshModel, playback = false, ahead = ahead)
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeout)
         return RequestScope.withDeadline(deadline) {
-            streamUnbounded(id, maxQuality, refreshModel, playback = playback)
+            streamUnbounded(id, maxQuality, refreshModel, playback = playback, ahead = ahead)
         }
     }
 
-    private fun streamUnbounded(id: String, maxQuality: Int, refreshModel: Boolean, playback: Boolean): StreamInfo {
+    private fun streamUnbounded(id: String, maxQuality: Int, refreshModel: Boolean, playback: Boolean, ahead: List<String> = emptyList()): StreamInfo {
         if(refreshModel) modelCache.evict(id)
         val albumEpisode=isAlbumEpisode(id)
         try {
-            return streamFromModel(addressModel(id, albumEpisode = albumEpisode, playback = playback),maxQuality)
+            return streamFromModel(addressModel(id, albumEpisode = albumEpisode, playback = playback, ahead = ahead),maxQuality)
         } catch (unplayable: UnplayableVideoException) {
             // 站方对同一集会间歇性下发降级模型（2026-11-08 路由标记诊断证实：来自 video_tab 主接口，
             // video_list 全部清晰度都是 bytevc2 加密 blob，旧 POST 路由已全空、无路由可跳，换身份也不影响下发）。
@@ -1060,7 +1061,7 @@ open class ContentRepository(
                 if(round>1) Thread.sleep(RETRY_BACKOFF_MS*(round-1))
                 try {
                     val (level,preferAlt)=RETRY_PLANS[round-1]
-                    return streamFromModel(addressModel(id,level,preferAlt,albumEpisode,playback = playback),maxQuality)
+                    return streamFromModel(addressModel(id,level,preferAlt,albumEpisode,playback = playback, ahead = ahead),maxQuality)
                 } catch(next: UnplayableVideoException) {
                     failure=next
                 }
@@ -1299,8 +1300,9 @@ open class ContentRepository(
         }
         return null
     }
-    /** 播放取址入口：缓存命中不算一次取址；真实失败交给算法策略计数和自动切换。 */
-    private fun addressModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false, playback: Boolean = false): JSONObject {
+    /** 播放取址入口：缓存命中不算一次取址；真实失败交给算法策略计数和自动切换。
+     *  [ahead] 是顺带预取的相邻集：V5 批量请求一次带回，切集时零请求命中模型缓存。 */
+    private fun addressModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false, playback: Boolean = false, ahead: List<String> = emptyList()): JSONObject {
         val policy = playbackAlgorithms
         val attempt = policy?.beginAddress()
         modelCache.get(id,clock())?.let {
@@ -1310,7 +1312,7 @@ open class ContentRepository(
         }
         val probe = if (policy?.needsLocalProbe()==true) startLocalProbe(id,level,preferAlt,albumEpisode,policy) else null
         try {
-            val model = fetchVideoModel(id,level,preferAlt,albumEpisode)
+            val model = fetchVideoModel(id,level,preferAlt,albumEpisode,ahead)
             policy?.addressSucceeded(attempt)
             modelCache.put(id,model.put(LEVEL_KEY,level),clock())
             probe
@@ -1323,7 +1325,7 @@ open class ContentRepository(
             if (policy?.addressFailed(attempt, network = !algorithmic)==true) {
                 // 切到 unidbg 后立即用新 signer 重试当前集，用户不需要手动重播。
                 val retry = policy.beginAddress()
-                val model = fetchVideoModel(id,level,preferAlt,albumEpisode)
+                val model = fetchVideoModel(id,level,preferAlt,albumEpisode,ahead)
                 policy.addressSucceeded(retry)
                 modelCache.put(id,model.put(LEVEL_KEY,level),clock())
                 return model
@@ -1374,17 +1376,17 @@ open class ContentRepository(
         modelCache.put(id,model,clock())
         return model
     }
-    private fun fetchVideoModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false): JSONObject {
+    private fun fetchVideoModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false, ahead: List<String> = emptyList()): JSONObject {
         try {
-            return resolveVideoModel(id, level, preferAlt, albumEpisode)
+            return resolveVideoModel(id, level, preferAlt, albumEpisode, ahead)
         } catch (problem: IOException) {
             // 自检、离线下载与首页预览可能没先打开详情，合集分集此时还没被标记。
             // 普通语义对合集回 101000（明确错误码，不是空体），据此确定性地按合集语义重取一次。
             if (albumEpisode || problem !is ServiceException || problem.code != ALBUM_SERVICE_CODE) throw problem
-            return resolveVideoModel(id, level, preferAlt, true)
+            return resolveVideoModel(id, level, preferAlt, true, ahead)
         }
     }
-    private fun resolveVideoModel(id: String, level: Int, preferAlt: Boolean, albumEpisode: Boolean): JSONObject {
+    private fun resolveVideoModel(id: String, level: Int, preferAlt: Boolean, albumEpisode: Boolean, ahead: List<String> = emptyList()): JSONObject {
         // 合集分集是 PUGC 子作品：video_tab 对它们回 ILLEGAL_ACCESS，取址只能用 video_id_type=1；
         // 普通短剧的 ID 语义相反，传 1 会回 101000，所以两者必须分开。
         val idType = if (albumEpisode) 1 else 0
@@ -1400,7 +1402,7 @@ open class ContentRepository(
         }
         // V5 单集取址用的是本机算法专属的查询串模板与 V5 签名口径，
         // 远程签名服务（frida / unidbg）不适用，直接跳过这一路由。
-        val mobile = if (activeSigner.usesLocalPlaybackAlgorithm) mobilePlaybackModel(id, group) else Sweep(null, null, false, null)
+        val mobile = if (activeSigner.usesLocalPlaybackAlgorithm) mobilePlaybackModel(id, group, ahead) else Sweep(null, null, false, null)
         mobile.model?.let { return it }
         val primaryPayload = """{"video_id":"$id","biz_param":{"video_id_type":$idType,"need_all_video_definition":true,"video_platform":3}}""".toByteArray(Charsets.UTF_8)
         val primary = try {
@@ -1439,20 +1441,27 @@ open class ContentRepository(
         // 非空体（有明确错误码）重扫没有意义，直接快速失败，避免界面上长时间停在「正在获取播放地址」。
         if (!allBlank) throw mobile.failure ?: first.failure ?: primary.failure ?: IOException("播放信息为空")
         activeSigner.recover()
-        val healedMobile = if (activeSigner.usesLocalPlaybackAlgorithm) mobilePlaybackModel(id, group) else Sweep(null, null, false, null)
+        val healedMobile = if (activeSigner.usesLocalPlaybackAlgorithm) mobilePlaybackModel(id, group, ahead) else Sweep(null, null, false, null)
         healedMobile.model?.let { return it }
         val healed = sweepRoutes(listOf(PLAYER_PATH to primaryPayload) + ordered)
         healed.model?.let { model -> goodRoute = healed.path; return model }
         if (healedMobile.allBlank && healed.allBlank) throw EmptyPlaybackResponseException()
         throw healedMobile.failure ?: healed.failure ?: IOException("播放信息为空")
     }
-    /** V5 单集请求；先重读空响应，再交给旧路由及整轮身份恢复。 */
-    private fun mobilePlaybackModel(id: String, group: String = MobilePlayback.GROUP_SHORT): Sweep {
+    /** V5 单集请求；先重读空响应，再交给旧路由及整轮身份恢复。
+     *  [ahead] 里的相邻集随同一次 POST 顺带取回并写入模型缓存，切集时不再取址。 */
+    private fun mobilePlaybackModel(id: String, group: String = MobilePlayback.GROUP_SHORT, ahead: List<String> = emptyList()): Sweep {
         for(attempt in 0 until BLANK_RETRIES) {
             if(Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
             try {
                 val profile=activeSigner.profile()
-                val model=MobilePlayback.model(id,profile,http,clock(),group).put(ROUTE_KEY,MobilePlayback.MODEL_PATH)
+                val wanted=(listOf(id)+ahead).filter { it.matches(Regex("[0-9]{1,30}")) }.distinct().take(3)
+                val results=MobilePlayback.models(wanted,profile,http,clock(),group)
+                // 顺带集先进缓存；当前集由上层 addressModel 统一入缓（带 LEVEL_KEY）。
+                for((episodeId,model) in results) {
+                    if(episodeId!=id) modelCache.put(episodeId,model.put(LEVEL_KEY,1).put(ROUTE_KEY,MobilePlayback.MODEL_PATH),clock())
+                }
+                val model=results.getValue(id).put(ROUTE_KEY,MobilePlayback.MODEL_PATH)
                 return Sweep(model,MobilePlayback.MODEL_PATH,false,null)
             } catch(problem: java.io.InterruptedIOException) {
                 throw problem

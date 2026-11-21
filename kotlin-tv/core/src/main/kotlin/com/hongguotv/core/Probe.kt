@@ -56,14 +56,18 @@ fun main(args: Array<String>) {
     // --warm：验证「一次注册问一整窗」是否可用，以及切集是否真的命中缓存（耗时接近 0ms）。
     if(args.contains("--warm")) {
         val ids=detail.episodes.take(15)
-        val primary=repository.stream(ids.first())
+        // 首集取址顺带后两集模型（搭便车），随后第 2 集应零请求命中缓存。
+        val primary=repository.stream(ids.first(), ahead = ids.drop(1).take(2))
         println("primary quality=${primary.quality}")
+        val startedHit=System.currentTimeMillis()
+        val hit=repository.stream(ids.getOrElse(1) { ids.last() })
+        println("cacheHit quality=${hit.quality} ms=${System.currentTimeMillis()-startedHit}")
         val startedWarm=System.currentTimeMillis()
         val report=repository.warm(ids)
         println("warm requested=${report.requested} cached=${report.cached} batch=${report.batch} route=${report.route} ms=${System.currentTimeMillis()-startedWarm}")
-        val startedHit=System.currentTimeMillis()
-        val hit=repository.stream(ids.getOrElse(5) { ids.last() })
-        println("cacheHit quality=${hit.quality} ms=${System.currentTimeMillis()-startedHit}")
+        val startedHit2=System.currentTimeMillis()
+        val hit2=repository.stream(ids.getOrElse(5) { ids.last() })
+        println("cacheHit2 quality=${hit2.quality} ms=${System.currentTimeMillis()-startedHit2}")
         repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown()
         return
     }

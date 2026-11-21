@@ -55,11 +55,12 @@ class EpisodePlaybackCache(
         recent.clear()
     }
 
-    /** 整集取址复用模型缓存、降级重试和即将过期重取；仅正式播放使用三次失败阈值。 */
-    fun resolveStream(id: String, quality: Int, playback: Boolean = false, prefetch: Boolean = false): StreamInfo =
-        repository.stream(id, quality, playback = playback, prefetch = prefetch).let { info ->
+    /** 整集取址复用模型缓存、降级重试和即将过期重取；仅正式播放使用三次失败阈值。
+     *  [ahead] 是顺带预取的相邻集：随本次 V5 请求一次带回，切集时零请求命中。 */
+    fun resolveStream(id: String, quality: Int, playback: Boolean = false, prefetch: Boolean = false, ahead: List<String> = emptyList()): StreamInfo =
+        repository.stream(id, quality, playback = playback, prefetch = prefetch, ahead = ahead).let { info ->
             if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L)
-                repository.stream(id, quality, refreshModel = true, playback = playback, prefetch = prefetch) else info
+                repository.stream(id, quality, refreshModel = true, playback = playback, prefetch = prefetch, ahead = ahead) else info
         }
 
     private fun fresh(prepared: PreparedEpisode): Boolean {
@@ -121,9 +122,9 @@ class EpisodePlaybackCache(
     }
 
     /** 正式播放等待当前集任务；取消等待者不取消仍在窗口内的取址和索引请求。 */
-    fun load(id: String, quality: Int): PreparedEpisode {
+    fun load(id: String, quality: Int, ahead: List<String> = emptyList()): PreparedEpisode {
         if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
-        val task = checkNotNull(request(Key(id, quality), speculative = false, playback = true))
+        val task = checkNotNull(request(Key(id, quality), speculative = false, playback = true, ahead = ahead))
         try {
             return task.get()
         } catch (error: InterruptedException) {
@@ -136,14 +137,14 @@ class EpisodePlaybackCache(
         }
     }
 
-    fun prefetch(id: String, quality: Int, warmStart: Boolean = false) {
-        request(Key(id, quality), speculative = true, warmStart = warmStart)
+    fun prefetch(id: String, quality: Int, warmStart: Boolean = false, ahead: List<String> = emptyList()) {
+        request(Key(id, quality), speculative = true, warmStart = warmStart, ahead = ahead)
     }
 
     @Synchronized fun isLoading(id: String, quality: Int): Boolean =
         entries[Key(id, quality)]?.task?.isDone == false
 
-    @Synchronized private fun request(key: Key, speculative: Boolean, warmStart: Boolean = false, playback: Boolean = false): FutureTask<PreparedEpisode>? {
+    @Synchronized private fun request(key: Key, speculative: Boolean, warmStart: Boolean = false, playback: Boolean = false, ahead: List<String> = emptyList()): FutureTask<PreparedEpisode>? {
         if (key !in retained) {
             if (speculative) return null
             throw InterruptedIOException("播放请求已取消")
@@ -190,7 +191,7 @@ class EpisodePlaybackCache(
                                 if (entry.warmStart) recent.video.preload()
                                 recent.video
                             } else {
-                                val info = resolveStream(key.id, key.quality, playback = playback, prefetch = speculative).copy(idHint = key.id, qualityNumber = key.quality)
+                                val info = resolveStream(key.id, key.quality, playback = playback, prefetch = speculative, ahead = ahead).copy(idHint = key.id, qualityNumber = key.quality)
                                 if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
                                     throw IOException("播放地址即将过期，请重试")
                                 }

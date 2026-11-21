@@ -3597,7 +3597,7 @@ class MainActivity: Activity() {
         ids.forEach { id ->
             val index=data.episodes.indexOf(id)
             val position=if(progress?.episodeId==id && !progress.completed) progress.position else savedPosition(index)
-            ensurePlaybackCache().prefetch(id,quality,warmStart=episodeStartPosition(index,position)==0L)
+            ensurePlaybackCache().prefetch(id,quality,warmStart=episodeStartPosition(index,position)==0L,ahead=episodesAhead(index))
         }
     }
     /** 「开始观看」按钮实际会播的集号：与 showDetail 里播放按钮的取值口径一致。
@@ -4265,7 +4265,9 @@ class MainActivity: Activity() {
         if(prefetched!=null) {
             try { beginPlayback(prefetched) } catch(problem: Exception) { playerFailure(problem) }
         } else {
-            work({ ensurePlaybackCache().load(requestedId,maxQuality) },beginPlayback,{ problem -> playerFailure(problem) })
+            // 在构造闭包前求值：后台执行时 episodeIndex 可能已被切集改动，顺带集要保持与本集同一窗口。
+            val ahead=episodesAhead(episodeIndex)
+            work({ ensurePlaybackCache().load(requestedId,maxQuality,ahead) },beginPlayback,{ problem -> playerFailure(problem) })
             // 取址在后台进行时并行初始化播放器；先让播放外壳进入主线程队列。
             val ticket=generation
             main.post { if(!isDestroyed && foreground && screen=="player" && generation==ticket) preparePlaybackSession() }
@@ -4368,6 +4370,12 @@ class MainActivity: Activity() {
         playbackSession?.retain(ids,effectiveQuality())
         ensurePlaybackCache().retain(ids,effectiveQuality())
     }
+    /** 播放第 [index] 集时顺带预取的后两集：随同一次 V5 请求带回模型，切集零取址。
+     *  同一详情页的集数类型一致（普通短剧/合集分集），可安全共用一个取址分组。 */
+    private fun episodesAhead(index: Int): List<String> {
+        val data=detail ?: return emptyList()
+        return data.episodes.drop(index+1).take(2)
+    }
     /** 当前集开始播放后再并行准备下一集地址；当前集的媒体样本仍由首帧和缓冲门槛保护。 */
     private fun warmAdjacentEpisode() {
         if (!foreground || screen != "player" || offlineOnly) return
@@ -4376,7 +4384,7 @@ class MainActivity: Activity() {
         if (!library.autoNext || queuedNextId == next || playError) return
         if (!networkAvailable() || !prefetchMemoryReady()) return
         retainPlaybackWindow()
-        ensurePlaybackCache().prefetch(next, effectiveQuality())
+        ensurePlaybackCache().prefetch(next, effectiveQuality(), ahead = episodesAhead(episodeIndex + 1))
     }
     /** 开关只控制后三集下载；缓存扫描走后台，不阻塞本机记录加载后的首屏。 */
     private fun applyEpisodeCacheSetting(force: Boolean=false) {
@@ -4584,8 +4592,8 @@ class MainActivity: Activity() {
         val next=data.episodes.getOrNull(episodeIndex+1)
         val previous=data.episodes.getOrNull(episodeIndex-1)
         // 队列已持有的下一集保持原地址与媒体源，不因十分钟缓存时限到达而重取、关闭。
-        // 其他相邻集仍优先下一集，并按真实续播/跳片头位置预加载。
-        if(next!=null && next!=queuedNextId) ensurePlaybackCache().prefetch(next,quality)
+        // 其他相邻集仍优先下一集，并按真实续播/跳片头位置预加载；下一集顺带后两集模型。
+        if(next!=null && next!=queuedNextId) ensurePlaybackCache().prefetch(next,quality,ahead=episodesAhead(episodeIndex+1))
         if(previous!=null && (next==null || next==queuedNextId || !ensurePlaybackCache().isLoading(next,quality))) {
             ensurePlaybackCache().prefetch(previous,quality)
         }

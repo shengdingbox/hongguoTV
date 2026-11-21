@@ -6369,39 +6369,77 @@ class MainActivity: Activity() {
     private fun loadPhoneRecommendations(more: Boolean=false) {
         if(!phoneLayout() || screen!="catalog" || phoneTab!="home" || phoneHomeLoading || phoneDetailCollection) return
         preparePhoneRecommendations()
-        val ticket=generation
         val previous=phoneRecommendationItems
-        val cursor=suixinCursor
-        if(more && cursor==null) return
-        phoneRecommendationError=""; phoneHomeLoading=true
-        phoneRecommendationFailedMore=more
-        work({
-            if(more) repository.suixinNext(cursor!!) else repository.suixinInitial()
-        }, { page ->
-            if(ticket!=generation || screen!="catalog" || phoneTab!="home" || phoneDetailCollection) return@work
-            suixinCursor=page.cursor
-            suixinTrialHints=suixinTrialHints+page.trialHints
-            val oldIds=previous.mapTo(hashSetOf()) { it.id }
-            val fetched=page.items.filter { it.id !in oldIds }
-            phoneRecommendationItems=(if(more) previous+fetched else fetched+previous).distinctBy { it.id }.take(PortraitUi.PHONE_LIST_LIMIT)
+        val previousCursor=phoneRecommendationCursor
+        val cursor=if(more) previousCursor ?: return else null
+        val keepCursor=!more && phoneRecommendationStarted && phoneRecommendationError.isBlank()
+        val ticket=generation
+        phoneRecommendationError=""; phoneRecommendationFailedMore=more
+        fun applyPage(result: RecommendationPage, finished: Boolean) {
+            if(!phoneLayout() || ticket!=generation || screen!="catalog" || phoneTab!="home" || phoneDetailCollection) return
+            // 已有内容时等刷新批次完整返回，再一次提交差异，避免多批数据反复移动封面。
+            if(!finished && !more && previous.isNotEmpty()) return
+            phoneHomeLoading=!finished
+            // 每个阶段都是本批累计结果，相对加载前的快照合并，追加分页不会重排已显示的海报。
+            val combined=if(more) previous+result.items else result.items+previous
+            phoneRecommendationItems=combined.distinctBy { it.id }.take(PortraitUi.PHONE_LIST_LIMIT)
+            phoneRecommendationCursor=when {
+                phoneRecommendationItems.size>=PortraitUi.PHONE_LIST_LIMIT -> null
+                finished && more && phoneRecommendationItems.size==previous.size -> null
+                keepCursor -> previousCursor
+                else -> result.cursor
+            }
             phoneRecommendationStarted=true
-            phoneRecommendationDiagnostic=(if(more) "cell" else "tab")+" items="+fetched.size+" next="+(page.cursor!=null)
-            phoneHomeLoading=false
+            phoneRecommendationRetries=0
+            phoneRecommendationDiagnostic=result.diagnostic
+            RuntimeLog.add("recommendations ${result.diagnostic} total=${phoneRecommendationItems.size} " +
+                "visible=${phoneRecommendationItems.count { it.id !in library.hidden() }} finished=$finished")
+            // 分批返回和追加分页都写入 SP；离页取消时仍保留已经展示的数据。
             library.cacheRecommendations(phoneRecommendationItems)
             renderPhone()
+            // 首批已合并频道与猜你喜欢两个接口，展示后即可收起刷新圈，后续批量预取继续。
             retainedPhoneCatalogs["home"]?.refreshLayout?.finishRefresh()
+        }
+        work({
+            val scope=RequestScope.current()
+            repository.recommendationBatch(cursor) { partial ->
+                main.post {
+                    if(!isDestroyed && foreground && scope?.isCancelled!=true) applyPage(partial,finished=false)
+                }
+            }
+        }, { result ->
+            applyPage(result,finished=true)
         }, { problem ->
-            if(ticket==generation && screen=="catalog" && phoneTab=="home") {
+            if(phoneLayout() && ticket==generation && screen=="catalog" && phoneTab=="home" && !phoneDetailCollection) {
                 phoneHomeLoading=false
-                phoneRecommendationDiagnostic=problem.javaClass.simpleName
-                phoneRecommendationError=(if(more) "更多随心看加载失败" else "随心看加载失败")+"："+
-                    problem.message.orEmpty().lineSequence().firstOrNull().orEmpty().take(120)
-                if(phoneRecommendationItems.isEmpty()) phoneRecommendationItems=library.cachedRecommendations()
+                phoneRecommendationDiagnostic=if(problem is EmptyRecommendationException) problem.diagnostic
+                    else problem.javaClass.simpleName
+                RuntimeLog.add("recommendations failed ${phoneRecommendationDiagnostic}")
+                val reason=problem.message?.lineSequence()?.firstOrNull { it.isNotBlank() }?.trim()?.take(160)
+                phoneRecommendationError=buildString {
+                    append(if(more) "更多推荐加载失败" else "推荐加载失败")
+                    if(!reason.isNullOrBlank()) append("：").append(reason)
+                    append("\n点此重试")
+                }
                 renderPhone()
+                android.util.Log.w("HongguoTV","Phone recommendations failed",problem)
+                // 与 iOS 空列表退避一致：2/4/8/16 秒各重试一次，离页立即取消。
+                if(phoneRecommendationItems.isEmpty() && problem is EmptyRecommendationException && phoneRecommendationRetries<4) {
+                    val delay=2_000L shl phoneRecommendationRetries
+                    phoneRecommendationRetries++
+                    val retry=Runnable {
+                        phoneRecommendationRetry=null
+                        if(foreground && screen=="catalog" && phoneTab=="home") loadPhoneRecommendations(more=more)
+                    }
+                    phoneRecommendationRetry=retry
+                    main.postDelayed(retry,delay)
+                }
             }
         })
+        // work 先取消旧请求；完成取消后才标记本次加载，防止重渲染重复发起首屏。
+        phoneHomeLoading=true
+        renderPhone()
     }
-
 
     fun retryRecommendationsPhone() {
         phoneRecommendationRetries=0

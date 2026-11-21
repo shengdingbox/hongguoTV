@@ -356,7 +356,7 @@ class PhoneOfflineLibrary(
                 label.text = "第 ${transfer.number} 集 · " + if (transfer.totalBytes > 0)
                     "${bytes(transfer.bytes)} / ${bytes(transfer.totalBytes)}" else "正在准备…"
                 bar.isIndeterminate = transfer.totalBytes <= 0
-                DrawableCompat.setTint(bar.indeterminateDrawable, ColorStateList.valueOf(PortraitStyle.accent))
+                DrawableCompat.setTintList(bar.indeterminateDrawable, ColorStateList.valueOf(PortraitStyle.accent))
                 bar.progress = if (transfer.totalBytes > 0) (transfer.bytes * 1000 / transfer.totalBytes).toInt().coerceIn(0, 1000) else 0
             }
             transferHost.visibility = if (active.isEmpty()) View.GONE else View.VISIBLE

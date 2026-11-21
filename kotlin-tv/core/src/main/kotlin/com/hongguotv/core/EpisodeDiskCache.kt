@@ -227,10 +227,10 @@ class EpisodeDiskCache(
 
     private fun writeMeta(key: Key, m: Meta, ranges: List<LongArray>) {
         val samples = JSONArray()
-        m.samples.forEach { s -> samples.put(JSONObject().put("s", s.start).put("e", s.end).put("iv", base64(s.iv)).also { if (s.encryptedOffset != 0L) it.put("o", s.encryptedOffset) }) }
+        m.samples.forEach { s -> samples.put(JSONObject().put("s", s.start).put("e", s.end).put("iv", s.iv.base64()).also { if (s.encryptedOffset != 0L) it.put("o", s.encryptedOffset) }) }
         val o = JSONObject().put("id", m.id).put("quality", m.quality).put("url", m.url)
-            .put("key", if (m.key != null) base64(m.key) else "").put("qualityLabel", m.qualityLabel)
-            .put("expiresAt", m.expiresAt).put("total", m.total).put("header", base64(m.header))
+            .put("key", if (m.key != null) m.key.base64() else "").put("qualityLabel", m.qualityLabel)
+            .put("expiresAt", m.expiresAt).put("total", m.total).put("header", m.header.base64())
             .put("samples", samples).put("updatedAt", m.updatedAt).put("done", m.done).put("seriesId", m.seriesId)
             .put("ranges", rangesToJson(ranges))
         val tmp = File(directory, key.fileName + ".tmp")

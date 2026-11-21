@@ -87,7 +87,7 @@ internal class TvHomePlayback(
         clearStream()
         series = next; trialEpisodeId = episodeId?.takeIf { it.matches(Regex("[0-9]{1,30}")) }
         trialEpisodeCount = episodeCount.coerceAtLeast(0)
-        detail = null; episodeIndex = 0; episodeId = ""
+        detail = null; episodeIndex = 0; this.episodeId = ""
         firstFrame = false; failed = false; userPaused = false; ended = false
         pendingEpisode = null
         publish("正在准备剧集…")

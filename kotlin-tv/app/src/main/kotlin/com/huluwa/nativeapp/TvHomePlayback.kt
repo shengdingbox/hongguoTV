@@ -90,6 +90,8 @@ internal class TvHomePlayback(
     private var currentSlot = 0
     private var startedAt = 0L
     private var frameFrom = ""
+    /** 预载命中时 READY 即掀封面：画面由上一部定格直接过渡，不等首帧渲染。 */
+    private var coverOff = false
     /** 当前挂载中的媒体项：换剧替换后注销旧注册，避免预载器持有已关闭的流。 */
     private var activeItem: MediaItem? = null
     private val surface = PlayerView(context).apply {
@@ -208,7 +210,7 @@ internal class TvHomePlayback(
 
     fun currentDetail(id: String): Detail? = detail?.takeIf { it.series.id == id || series?.id == id }
 
-    private fun schedule(delay: Long = 240) {
+    private fun schedule(delay: Long = 60) {
         cancelLoad()
         if (closed || !active || userPaused || series == null) return
         publish("正在准备剧集…")
@@ -270,17 +272,17 @@ internal class TvHomePlayback(
         }
     }
 
-    /** 当前剧首帧稳定后递进准备后面的剧：0.5 秒一部、3 秒两部、6 秒三部；缓冲或加载中让路。 */
+    /** 当前剧首帧稳定后递进准备后面的剧：0.15 秒一部、1.2 秒两部、2.5 秒三部；缓冲或加载中让路。 */
     private fun ensureUpcoming() {
         if (closed || !active || prefetchTask != null || failed || !firstFrame || video == null) return
         if (task != null || pendingStart != null) return
         if (player?.playbackState == Player.STATE_BUFFERING) return
         val now = android.os.SystemClock.elapsedRealtime()
-        if (now - firstFrameAt < 500) return
+        if (now - firstFrameAt < 150) return
         trimPool()
         val depth = when {
-            now - firstFrameAt >= 6000 -> 3
-            now - firstFrameAt >= 3000 -> 2
+            now - firstFrameAt >= 2500 -> 3
+            now - firstFrameAt >= 1200 -> 2
             else -> 1
         }
         val target = upcoming().take(depth)
@@ -289,7 +291,7 @@ internal class TvHomePlayback(
         val (next, hintEpisode, hintCount) = target
         attempted += next.id
         prefetchTarget = next.id
-        android.util.Log.i("HongguoTV", "Home preload start series=${next.id}")
+        android.util.Log.i("HongguoTV", "Home preload start series=${next.id} hint=${hintEpisode != null}")
         val request = RequestScope(12_000)
         prefetchScope = request
         val maxQuality = quality()
@@ -408,6 +410,7 @@ internal class TvHomePlayback(
         val previous = video
         video = remote; firstFrame = false; failed = false; ended = false
         frameFrom = if (preloaded != null) "pool" else "load"
+        coverOff = false
         val p = player ?: createPlayer().also { player = it; surface.player = it }
         surface.setKeepContentOnPlayerReset(true)
         surface.resizeMode = when (frame()) {
@@ -499,7 +502,10 @@ internal class TvHomePlayback(
                     if (!owns()) return
                     when (playbackState) {
                         Player.STATE_BUFFERING -> { cancelPrefetchTask(); suspendPreload(); publish("${episodeLabel()} · 正在缓冲…") }
-                        Player.STATE_READY -> publish(if (userPaused) "播放已暂停 · 确定继续" else episodeLabel())
+                        Player.STATE_READY -> {
+                            if (frameFrom == "pool") coverOff = true
+                            publish(if (userPaused) "播放已暂停 · 确定继续" else episodeLabel())
+                        }
                         Player.STATE_ENDED -> finishEpisode()
                     }
                 }
@@ -541,7 +547,7 @@ internal class TvHomePlayback(
     private fun episodeLabel() = "第 ${episodeIndex + 1} 集 / 共 ${detail?.episodes?.size ?: 1} 集"
     private fun publish(label: String) {
         val id = series?.id ?: return
-        val next = State(id, label, !firstFrame || failed, active && player?.isPlaying == true, failed)
+        val next = State(id, label, (!firstFrame && !coverOff) || failed, active && player?.isPlaying == true, failed)
         if (next != currentState) { currentState = next; status(next) }
     }
 

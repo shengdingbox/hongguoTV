@@ -2223,7 +2223,7 @@ class MainActivity: Activity() {
     }
     private fun renderHome(body: LinearLayout,focusNav: Boolean,focusType: Boolean,loading: Boolean) {
         homeUpdateCount=library.updatedFavorites()
-        val top=typeButtons.getValue(library.contentType)
+        val top=typeButtons[library.contentType] ?: nav[TvCatalogHeader.normalize(tab)]
         // 首页改由 Hero 展示当前焦点剧集（图、剧名、进度），不再额外占用一行文字预览
         val home=HomeScreen(this,top,::loadCover,{ _, _-> },
             { item,_ ->

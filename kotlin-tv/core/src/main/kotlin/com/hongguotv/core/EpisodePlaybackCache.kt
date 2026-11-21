@@ -170,33 +170,37 @@ class EpisodePlaybackCache(
                 val prepared: RemoteVideo = entry.scope.run<RemoteVideo> {
                     val file = localEpisode(key.id)
                     if (file != null) {
-                        return@run RemoteVideo.fromFile(repository.http, file, key.id, key.quality).also { video = it }
-                    }
-                    if (localOnly()) throw IOException("该集尚未离线，请先下载")
-                    val local = cachedEpisode(key.id, key.quality)?.takeIf {
-                        synchronized(this) { Key(it.id, it.quality) !in rejectedDiskEntries }
-                    }
-                    val restored = local?.let(::restoreLocal)
-                    if (restored != null) {
-                        video = restored.video
-                        diskMeta = restored.diskMeta
-                        restored.video
+                        val local = RemoteVideo.fromFile(repository.http, file, key.id, key.quality)
+                        video = local
+                        local
                     } else {
-                        val recent = takeRecent(key.id, key.quality)
-                        if (recent != null) {
-                            video = recent.video
-                            if (entry.warmStart) recent.video.preload()
+                        if (localOnly()) throw IOException("该集尚未离线，请先下载")
+                        val local = cachedEpisode(key.id, key.quality)?.takeIf {
+                            synchronized(this) { Key(it.id, it.quality) !in rejectedDiskEntries }
+                        }
+                        val restored = local?.let(::restoreLocal)
+                        if (restored != null) {
+                            video = restored.video
+                            diskMeta = restored.diskMeta
+                            restored.video
                         } else {
-                            val info = resolveStream(key.id, key.quality, playback = playback, prefetch = speculative).copy(idHint = key.id, qualityNumber = key.quality)
-                            if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
-                                throw IOException("播放地址即将过期，请重试")
-                            }
-                            RemoteVideo(repository.http, info, chunkBytes = 256 * 1024).also {
-                                video = it
-                                it.setPlaybackActive(false)
-                                it.prepare()
+                            val recent = takeRecent(key.id, key.quality)
+                            if (recent != null) {
+                                video = recent.video
+                                if (entry.warmStart) recent.video.preload()
+                                recent.video
+                            } else {
+                                val info = resolveStream(key.id, key.quality, playback = playback, prefetch = speculative).copy(idHint = key.id, qualityNumber = key.quality)
+                                if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
+                                    throw IOException("播放地址即将过期，请重试")
+                                }
+                                val created = RemoteVideo(repository.http, info, chunkBytes = 256 * 1024)
+                                video = created
+                                created.setPlaybackActive(false)
+                                created.prepare()
                                 // 详情页只为从头播放的目标多留一个媒体块，不开启持续预读。
-                                if (entry.warmStart) it.preload()
+                                if (entry.warmStart) created.preload()
+                                created
                             }
                         }
                     }

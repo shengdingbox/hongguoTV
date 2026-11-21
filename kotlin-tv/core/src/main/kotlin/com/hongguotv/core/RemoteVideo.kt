@@ -124,8 +124,20 @@ class RemoteVideo(
         readChunk(k)
         return synchronized(lock) { cache[k] } ?: throw IOException("视频缓存块丢失")
     }
-    @Synchronized fun prepare(): RemoteVideo {
+    /** [initialBytes] 小于分块大小时走轻量首读（对齐参考项目 indexPrefix）：一次小 range 取索引前缀，
+     *  容器头更大时再按需续读；默认按整块读并写入分块缓存，供播放器直接复用。 */
+    @Synchronized fun prepare(initialBytes: Int = 256 * 1024): RemoteVideo {
         if(::prepared.isInitialized) return this
+        require(initialBytes in 16 * 1024..256 * 1024)
+        if(initialBytes < chunkBytes) {
+            val head=range(0,(initialBytes-1).toLong())
+            if(total==0L) total=head.total
+            val end=MediaCrypto.headerEnd(head.bytes,total)
+            val header=if(end>head.bytes.size) head.bytes+range(head.bytes.size.toLong(),end-1L).bytes else head.bytes.copyOf(end)
+            prepared=MediaCrypto.prepare(header,info.key)
+            if(prepared.samples.any { it.end>total }) throw IOException("视频样本超出资源大小")
+            return this
+        }
         readChunk(0L)
         val first=chunkOrFetch(0L)
         val end=MediaCrypto.headerEnd(first,total)

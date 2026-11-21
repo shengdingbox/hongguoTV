@@ -198,7 +198,7 @@ class EpisodePlaybackCache(
                                 val created = RemoteVideo(repository.http, info, chunkBytes = 256 * 1024)
                                 video = created
                                 created.setPlaybackActive(false)
-                                created.prepare()
+                                created.prepare(32 * 1024)
                                 // 详情页只为从头播放的目标多留一个媒体块，不开启持续预读。
                                 if (entry.warmStart) created.preload()
                                 created

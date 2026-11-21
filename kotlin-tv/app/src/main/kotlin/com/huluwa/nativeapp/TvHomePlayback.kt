@@ -303,7 +303,7 @@ internal class TvHomePlayback(
                     val remote = RemoteVideo(activeRepo.http, info, chunkBytes = 256 * 1024, aheadBytes = 2 * 1024 * 1024L)
                     prepared = remote
                     remote.setPlaybackActive(false)
-                    remote.prepare()
+                    remote.prepare(32 * 1024)
                     Triple(data, index, position.coerceAtLeast(0))
                 }
                 val remote = checkNotNull(prepared)
@@ -376,7 +376,7 @@ internal class TvHomePlayback(
                     val remote = RemoteVideo(repository().http, info, chunkBytes = 256 * 1024, aheadBytes = 2 * 1024 * 1024L)
                     prepared = remote
                     remote.setPlaybackActive(false)
-                    remote.prepare()
+                    remote.prepare(32 * 1024)
                     Prepared(remote, data, id)
                 }
                 main.post { onPrefetchDone(next, result) }

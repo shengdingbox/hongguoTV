@@ -20,7 +20,9 @@ class Library(context: Context) {
         val retiredWrites = mutableListOf<LatestWriteQueue<String, () -> Any?>>()
         // 独立版本键：旧 home-comic/home-short 存的是网站榜单或分类，不能当作推荐流。
         const val RECOMMENDATION_CACHE_KEY = "phone-recommendation-feed-v1"
+        const val TV_HOME_CACHE_PREFIX = "tv-home-feed-v1-"
         const val PHONE_CACHE_ITEMS = 120
+        const val TV_HOME_CACHE_ITEMS = 40
         const val PHONE_RANK_CACHE_PREFIX = "phone-rank-v1-"
         const val MOBILE_RANK_CACHE_PREFIX = "phone-mobile-rank-v1-"
         const val HOT_SEARCH_CACHE_KEY = "phone-hot-search-v1"
@@ -43,6 +45,8 @@ class Library(context: Context) {
     private val homeSavedAt = mutableMapOf<ContentType, Long>()
     private var recommendationCache: CatalogPage? = null
     private var recommendationSavedAt = 0L
+    private val tvHomes = mutableMapOf<String, CatalogPage>()
+    private val tvHomeSavedAt = mutableMapOf<String, Long>()
     private val phoneRanks = mutableMapOf<RankBoard, CatalogPage>()
     private val phoneRankSavedAt = mutableMapOf<RankBoard, Long>()
     private val newReleaseCaches = mutableMapOf<String, CachedNewReleases>()
@@ -59,6 +63,7 @@ class Library(context: Context) {
         val homes: Map<ContentType, CatalogPage>, val homeStamps: Map<ContentType, Long>,
         val ranks: Map<RankBoard, CatalogPage>, val rankStamps: Map<RankBoard, Long>,
         val recommendations: CatalogPage?, val recommendationStamp: Long,
+        val tvHomes: Map<String, CatalogPage>, val tvHomeStamps: Map<String, Long>,
         val phoneRanks: Map<RankBoard, CatalogPage>, val phoneRankStamps: Map<RankBoard, Long>,
         val newReleases: Map<String, CachedNewReleases>,
         val mobileRanks: Map<String, CachedMobileRank>,
@@ -120,6 +125,18 @@ class Library(context: Context) {
                 }
                 val recommendationRaw = homePrefs.getString(RECOMMENDATION_CACHE_KEY, null).orEmpty()
                 val recommendations = CatalogSnapshot.decode(recommendationRaw, now, maxItems = PHONE_CACHE_ITEMS)
+                val tvHomeCached = mutableMapOf<String, CatalogPage>()
+                val tvHomeStamps = mutableMapOf<String, Long>()
+                homePrefs.all.filterKeys { it.startsWith(TV_HOME_CACHE_PREFIX) }.forEach { (key, value) ->
+                    if (value !is String) return@forEach
+                    CatalogSnapshot.decode(value, now, maxItems = TV_HOME_CACHE_ITEMS)?.let { page ->
+                        val mode = key.removePrefix(TV_HOME_CACHE_PREFIX)
+                        if (mode in setOf("hot", "comic", "real")) {
+                            tvHomeCached[mode] = page
+                            tvHomeStamps[mode] = org.json.JSONObject(value).getLong("savedAt")
+                        }
+                    }
+                }
                 val recommendationStamp = if (recommendations != null) org.json.JSONObject(recommendationRaw).getLong("savedAt") else 0L
                 val phoneRankCached = mutableMapOf<RankBoard, CatalogPage>()
                 val phoneRankStamps = mutableMapOf<RankBoard, Long>()
@@ -174,7 +191,7 @@ class Library(context: Context) {
                     homePrefs.edit().also { edit -> staleRatingKeys.forEach(edit::remove) }.commit()
                 }
                 Pair(loaded, DiskCaches(cached, stamps, rankCached, rankStamps, recommendations, recommendationStamp,
-                    phoneRankCached, phoneRankStamps, newReleases, mobileRanks, hotSearch, seasons, ratings))
+                    tvHomeCached, tvHomeStamps, phoneRankCached, phoneRankStamps, newReleases, mobileRanks, hotSearch, seasons, ratings))
             }
             main.post {
                 loading = false
@@ -186,6 +203,7 @@ class Library(context: Context) {
                     homes.putAll(boot.homes); homeSavedAt.putAll(boot.homeStamps)
                     ranks.putAll(boot.ranks); rankSavedAt.putAll(boot.rankStamps)
                     recommendationCache = boot.recommendations; recommendationSavedAt = boot.recommendationStamp
+                    tvHomes.putAll(boot.tvHomes); tvHomeSavedAt.putAll(boot.tvHomeStamps)
                     phoneRanks.putAll(boot.phoneRanks); phoneRankSavedAt.putAll(boot.phoneRankStamps)
                     newReleaseCaches.putAll(boot.newReleases)
                     mobileRankCaches.putAll(boot.mobileRanks)
@@ -284,6 +302,30 @@ class Library(context: Context) {
 
     private fun phoneCacheItems(items: List<Series>) = items.distinctBy { it.id }.take(PHONE_CACHE_ITEMS)
         .map { it.copy(description = it.description.take(500)) }
+
+    /** TV 首页推荐、漫剧、真人剧各存一份展示快照；分页游标每次冷启动重新建立。 */
+    fun cachedTvHome(mode: String): CatalogPage? {
+        state()
+        if (!validTvHomeMode(mode)) return null
+        val age = System.currentTimeMillis() - (tvHomeSavedAt[mode] ?: return null)
+        return tvHomes[mode]?.takeIf { age in 0..7 * 24 * 60 * 60 * 1000L }
+    }
+
+    fun cacheTvHome(mode: String, items: List<Series>, hasMore: Boolean) {
+        state()
+        if (!validTvHomeMode(mode) || items.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val retained = items.distinctBy { it.id }.take(TV_HOME_CACHE_ITEMS)
+            .map { it.copy(description = it.description.take(1500)) }
+        if (retained.isEmpty()) return
+        tvHomes[mode] = CatalogPage(retained, hasMore)
+        tvHomeSavedAt[mode] = now
+        homeWrites.submit(mapOf(TV_HOME_CACHE_PREFIX + mode to {
+            CatalogSnapshot.encode(retained, hasMore, now, maxItems = TV_HOME_CACHE_ITEMS)
+        }))
+    }
+
+    private fun validTvHomeMode(mode: String) = mode in setOf("hot", "comic", "real")
 
     /** 手机榜单独立保存多页快照；升级时仍可读取原有首屏缓存。 */
     fun cachedPhoneRank(board: RankBoard): CatalogPage? {

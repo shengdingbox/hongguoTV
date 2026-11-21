@@ -377,6 +377,9 @@ class MainActivity: Activity() {
     private var suixinSource: String?=null
     private var suixinLoading=false
     private var suixinFailed=false
+    /** TV 首页是否正在展示 SP 快照；联网成功后直接替换，并保留缓存作为失败兜底。 */
+    private var suixinFromCache=false
+    private var suixinCacheMode=""
 
     /** 手机设置与播放弹窗共用的焦点锚点，不挂载到页面。 */
     private val pickerAnchor by lazy { TextView(this).apply { id=View.generateViewId() } }
@@ -1143,8 +1146,9 @@ class MainActivity: Activity() {
                 else -> null
             }
             catalog=cached?.items ?: emptyList(); hasMore=cached?.hasMore ?: false; ranking=cached?.ranking
-            homeFromCache=tab==0 && cached!=null
+            homeFromCache=tab==0 && (cached!=null || (suixinMode && library.isLoaded && library.cachedTvHome(suixinFeedMode)!=null))
             rankFromCache=tab==2 && cached!=null
+            if(tab==0 && suixinMode && library.isLoaded) restoreSuixinCache()
         }
         invalidatePage(); screen="catalog"; releaseCatalogViews(); val container=base()
         retainedTheme=TvStyle.theme; retainedWidthDp=widthDp().toInt()
@@ -1592,20 +1596,34 @@ class MainActivity: Activity() {
             val requestTab=tab; val requestPage=page; val requestQuery=query; val requestType=library.contentType
             val requestBoard=rankBoard; val requestGenre=if(requestTab==0) genre else null
             val requestAi=if(requestTab==2) aiCatalog else false; val requestAiGenre=if(requestAi) aiGenre else null
+            val requestSuixinMode=suixinMode; val requestSuixinFeed=suixinFeedMode
             work({
                 val result=when(requestTab) {
-                    0 -> if(suixinMode) { if(suixinFeedMode=="hot") suixinPage(requestPage) else suixinCategoryPage(requestPage>1 && suixinCategoryCursors[suixinFeedMode]!=null) } else repository.home(requestPage,requestType,requestGenre)
+                    0 -> if(requestSuixinMode) { if(requestSuixinFeed=="hot") suixinPage(requestPage) else suixinCategoryPage(requestPage>1 && suixinCategoryCursors[requestSuixinFeed]!=null) } else repository.home(requestPage,requestType,requestGenre)
                     2 -> if(requestAi) repository.home(requestPage,ContentType.AI,requestAiGenre) else repository.ranking(requestBoard,requestPage,rankSession)
                     else -> repository.search(requestQuery,requestPage,requestType)
                 }
                 result
             }, { result ->
-                if(requestTab==0 && requestPage==1 && requestGenre==null) library.cacheHome(requestType,result.items,result.hasMore)
+                if(requestTab==0 && !requestSuixinMode && requestPage==1 && requestGenre==null) library.cacheHome(requestType,result.items,result.hasMore)
+                if(requestTab==0 && requestSuixinMode && requestPage==1 && requestGenre==null && library.isLoaded) persistSuixinCache(requestSuixinFeed,result.items,result.hasMore)
+                if(requestTab==0 && requestSuixinMode && requestPage==1 && requestGenre==null && result.items.isNotEmpty()) {
+                    when(requestSuixinFeed) {
+                        "comic", "real" -> suixinCategoryItems[requestSuixinFeed]=result.items
+                        else -> { suixinHotItems.clear(); suixinHotItems.addAll(result.items) }
+                    }
+                }
                 // 榜单第 1 页到手先落缓存，无论界面是否立即换新
                 if(requestTab==2 && requestPage==1 && !requestAi) library.cacheRank(requestBoard,result.items,result.hasMore,result.ranking)
-                if(requestTab==0 && requestPage==1 && requestGenre==null && (homeFromCache || tvTools.showing)) {
+                if(requestTab==0 && requestPage==1 && requestGenre==null && !requestSuixinMode && (homeFromCache || tvTools.showing)) {
                     homeScreen?.refresh?.text="查看新推荐"
                     homeScreen?.refresh?.setOnClickListener { catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; showCatalog() }
+                } else if(requestTab==0 && requestPage==1 && requestGenre==null && requestSuixinMode && suixinFromCache && suixinCacheMode==requestSuixinFeed) {
+                    val position=homeScreen?.capturePosition()
+                    catalog=result.items; hasMore=result.hasMore; ranking=result.ranking; page=1; homeFromCache=false; suixinFromCache=false
+                    homeScreen?.let { home ->
+                        if(position!=null) home.restorePosition(position,requestFocus=home.hasFocus()) else home.refreshSelection()
+                    }
                 } else if(requestTab==2 && requestPage==1 && !requestAi && rankFromCache) {
                     // 缓存刷新保留正在看的旧榜；手动换新时走差异更新，不重建网格和图片控件。
                     (rankRefresh as? TextView)?.text="榜单已更新 · 按确认查看"
@@ -1983,11 +2001,12 @@ class MainActivity: Activity() {
         if(capped) { hasMore=false; rememberCatalogFocus(); adapter.updateFooter(FOOTER_END); restoreCatalogFocus(); return }
         val requestTab=tab; val requestPage=page+1; val requestQuery=query; val requestType=library.contentType
         val requestBoard=rankBoard; val requestGenre=if(requestTab==0) genre else null
+        val requestSuixinMode=suixinMode; val requestSuixinFeed=suixinFeedMode
         val requestAi=if(requestTab==2) aiCatalog else false; val requestAiGenre=if(requestAi) aiGenre else null
         loadingMore=true; rememberCatalogFocus(); adapter.updateFooter(FOOTER_LOADING); restoreCatalogFocus()
         work({
             when(requestTab) {
-                0 -> if(suixinMode) { if(suixinFeedMode=="hot") suixinPage(requestPage) else suixinCategoryPage(requestPage>1 && suixinCategoryCursors[suixinFeedMode]!=null) } else repository.home(requestPage,requestType,requestGenre)
+                0 -> if(requestSuixinMode) { if(requestSuixinFeed=="hot") suixinPage(requestPage) else suixinCategoryPage(requestPage>1 && suixinCategoryCursors[requestSuixinFeed]!=null) } else repository.home(requestPage,requestType,requestGenre)
                 2 -> if(requestAi) repository.home(requestPage,ContentType.AI,requestAiGenre) else repository.ranking(requestBoard,requestPage,rankSession)
                 else -> repository.search(requestQuery,requestPage,requestType)
             }
@@ -2001,8 +2020,8 @@ class MainActivity: Activity() {
             val fresh=result.items.filter { it.id !in known }
             // 续页只追加新条目：与服务端 filter_ids 去重口径一致，也保证 catalog 与 displayed 同步。
             catalog=catalog+fresh
-            if(suixinMode && suixinFeedMode!="hot" && suixinFeedMode!="fallback") {
-                suixinCategoryItems[suixinFeedMode]=(suixinCategoryItems[suixinFeedMode].orEmpty()+fresh).distinctBy { it.id }
+            if(requestSuixinMode && requestTab==0 && requestSuixinFeed in setOf("comic","real") && requestSuixinFeed==suixinFeedMode) {
+                suixinCategoryItems[requestSuixinFeed]=(suixinCategoryItems[requestSuixinFeed].orEmpty()+fresh).distinctBy { it.id }
             }
             val current=catalogAdapter
             if(current!=null) {
@@ -2014,6 +2033,10 @@ class MainActivity: Activity() {
                     else page<waterfallMaxPages && catalog.size<waterfallMaxPages*20
                 current.updateFooter(if(hasMore && canContinue) FOOTER_NONE else FOOTER_END)
                 restoreCatalogFocus()
+            }
+            if(requestSuixinMode && requestTab==0 && requestSuixinFeed.isNotBlank() && requestSuixinFeed==suixinFeedMode) {
+                val shown=(catalog+library.cachedTvHome(requestSuixinFeed)?.items.orEmpty()).distinctBy { it.id }
+                persistSuixinCache(requestSuixinFeed,shown,hasMore)
             }
             if(requestTab==1) loadSearchArtwork()
         }, { problem ->
@@ -2347,6 +2370,29 @@ class MainActivity: Activity() {
         return CatalogPage(items,fresh.cursor!=null)
     }
 
+    /** 冷启动先恢复当前子栏的展示快照，联网请求随后在后台刷新。 */
+    private fun restoreSuixinCache() {
+        suixinFromCache=false; suixinCacheMode=""
+        if(page!=1 || genre!=null || collection!=null) return
+        val mode=suixinFeedMode
+        val cached=library.cachedTvHome(mode) ?: return
+        val items=cached.items.filterNot { it.id in library.hidden() }
+        if(items.isEmpty()) return
+        when(mode) {
+            "comic" -> suixinCategoryItems[mode]=items
+            "real" -> suixinCategoryItems[mode]=items
+            else -> { suixinHotItems.clear(); suixinHotItems.addAll(items) }
+        }
+        catalog=items
+        hasMore=cached.hasMore
+        suixinFromCache=true; suixinCacheMode=mode
+    }
+
+    /** 只在联网首屏成功后更新当前子栏；空结果不覆盖上次可用快照。 */
+    private fun persistSuixinCache(mode: String,items: List<Series>,hasMore: Boolean) {
+        if(items.isEmpty()) return
+        library.cacheTvHome(mode,items,hasMore)
+    }
     /** 首页子菜单：推荐走书城连续流，漫剧/真人剧走分类接口。 */
     private fun changeSuixinFeed(mode: String) {
         if(mode==suixinFeedMode) return

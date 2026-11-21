@@ -19,10 +19,9 @@ import org.json.JSONObject
 /** 原生算法的 V5 取址通道；使用共用匿名身份，签名覆盖实际发送的 gzip 字节。 */
 internal object MobilePlayback {
     const val MODEL_BASE = "https://api5-normal-sinfonlinea.fqnovel.com"
-    // 2026-11-20 起服务端把 dr_scene 从路径段移进请求体，模板为
-    // POST /novel/player/multi_video_model/:dr_scene/v1/。旧路径仍返回 HTTP 200 空体，
-    // 不能据此判断路由不可用，所以本地算法直接使用新路径。
-    const val MODEL_PATH = "/novel/player/multi_video_model/v1/"
+    // 与参考实现一致：dr_scene 保留在路径段（player/v1），请求体里同时携带；
+    // 服务端对两种形态都兼容，但参考实测的路径段形态响应更快更稳。
+    const val MODEL_PATH = "/novel/player/multi_video_model/player/v1"
     const val GROUP_SHORT = "1004"
     const val GROUP_PUGC = "1001"
     // 沿用新协议的原始 UA；查询串中的版本按手机端模板使用 74332。
@@ -62,6 +61,9 @@ internal object MobilePlayback {
             .header("User-Agent", PLAYBACK_UA)
             .header("Accept", "application/json")
             .header("Content-Encoding", "gzip")
+            // 与参考实现一致：网关用 gzip 字节的 MD5 校验请求体完整性。
+            .header("x-ss-stub", java.security.MessageDigest.getInstance("MD5").digest(body)
+                .joinToString("") { "%02X".format(it) })
             .apply { signed.headers.forEach { (key, value) -> header(key, value) } }
             .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()

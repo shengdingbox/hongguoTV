@@ -1549,7 +1549,8 @@ open class ContentRepository(
         // （2026-10-13 用站点自带的漫剧热播榜与短剧分类列表逐条核对确认）。
         // 首条路由的空响应重发次数与退避：网关抖动时先原地重试，再换下一条路由。
         private const val BLANK_RETRIES=2
-        private const val BLANK_BACKOFF_MS=400L
+        /** 空体原地重试不再等待：参考项目同场景零等待快扫，400ms 退避会在失败链上累计出约 2 秒纯等待。 */
+        private const val BLANK_BACKOFF_MS=0L
         // 预热上限：单集接口一次一集，取 8 集足够覆盖相邻窗口，又不会把请求量放大。
         private const val WARM_LIMIT=8
         // 诊断专用：随模型进缓存的路由标记，streamFromModel 抛不兼容异常时写进 diagnostic。

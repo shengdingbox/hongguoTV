@@ -99,6 +99,8 @@ internal class TvHomePlayback(
     private var currentSlot = 0
     private var startedAt = 0L
     private var frameFrom = ""
+    /** 本次换剧选中时刻：与首帧相减得到「按右到出画」全链路耗时。 */
+    private var selectedAt = 0L
     /** 预载命中时 READY 即掀封面：画面由上一部定格直接过渡，不等首帧渲染。 */
     private var coverOff = false
     /** 当前挂载中的媒体项：换剧替换后注销旧注册，避免预载器持有已关闭的流。 */
@@ -132,6 +134,7 @@ internal class TvHomePlayback(
 
     fun select(next: Series, episodeId: String? = null, episodeCount: Int = 0) {
         if (closed || series?.id == next.id && trialEpisodeId == episodeId) return
+        selectedAt = android.os.SystemClock.elapsedRealtime()
         checkpoint()
         stashCurrent()
         dropNextEpisode()
@@ -613,7 +616,7 @@ internal class TvHomePlayback(
                     if (!owns()) return
                     firstFrame = true
                     firstFrameAt = android.os.SystemClock.elapsedRealtime()
-                    android.util.Log.i("HongguoTV", "Home first-frame elapsedMs=${firstFrameAt - startedAt} from=$frameFrom")
+                    android.util.Log.i("HongguoTV", "Home first-frame elapsedMs=${firstFrameAt - startedAt} totalMs=${firstFrameAt - selectedAt} from=$frameFrom")
                     publish(if (userPaused) "播放已暂停 · 确定继续" else episodeLabel())
                 }
                 override fun onPlaybackStateChanged(playbackState: Int) {

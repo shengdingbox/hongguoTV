@@ -3,8 +3,10 @@ package com.hongguotv.core
 
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -186,8 +188,12 @@ class SuixinFeedClient(
             .header("Accept", "application/json")
             .header("X-XS-From-Web", "0")
             .header("Sdk-Version", "2")
-            .apply { signed.headers.forEach { (key, value) -> header(key, value) } }
-            .get().build()
+            .apply {
+                signed.headers.forEach { (key, value) -> header(key, value) }
+                val payload = signed.body
+                if (payload == null) get() else post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            }
+            .build()
         return RequestScope.execute(http.newCall(request)) { response ->
             if (!response.isSuccessful) throw IOException("随心看请求失败（HTTP ${response.code}）")
             val body = response.body ?: throw IOException("随心看接口返回空响应")
@@ -211,8 +217,11 @@ class SuixinFeedClient(
 
     private fun host() = HOSTS[attempt.getAndIncrement().mod(HOSTS.size)]
 
-    private fun request(url: String, values: Map<String, String>, body: ByteArray? = null): JSONObject =
-        JSONObject(text(signer.signCatalog(url, values, body)))
+    private fun request(url: String, values: Map<String, String>, body: ByteArray? = null): JSONObject {
+        // 分类接口是 POST；书城 tab/cell 接口继续使用游客票据签名。
+        val signed = if (body == null) signer.signCatalog(url, values) else signer.sign(url, values, body)
+        return JSONObject(text(signed))
+    }
 
     fun initial(offset: Int = 0): SuixinPage {
         val values = linkedMapOf(

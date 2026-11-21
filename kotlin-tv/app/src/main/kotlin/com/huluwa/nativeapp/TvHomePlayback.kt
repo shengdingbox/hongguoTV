@@ -239,8 +239,9 @@ internal class TvHomePlayback(
 
     private fun createPlayer() = ExoPlayer.Builder(context, Mp4MediaSources.factory())
         .setRenderersFactory(PlaybackRenderersFactory(context))
-        .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(1_500, 8_000, 250, 750)
-            .setTargetBufferBytes(6 * 1024 * 1024).setPrioritizeTimeOverSizeThresholds(false).build())
+        // 高码率片源可能先达到字节上限；电视端优先生成最短播放时长，减少起播后的缓冲等待。
+        .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(2_500, 10_000, 500, 1_000)
+            .setTargetBufferBytes(6 * 1024 * 1024).setPrioritizeTimeOverSizeThresholds(true).build())
         .build().apply {
             setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true)
             setHandleAudioBecomingNoisy(true)

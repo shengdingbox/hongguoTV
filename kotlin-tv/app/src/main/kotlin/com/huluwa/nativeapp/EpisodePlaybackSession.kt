@@ -53,9 +53,9 @@ internal class EpisodePlaybackSession(context: Context, private val disk: (Remot
     }.setMediaSourceFactory(mediaSourceFactory)
         .setRenderersFactory(PlaybackRenderersFactory(context))
         .setLoadControl(DefaultLoadControl.Builder()
-            .setBufferDurationsMs(if (tvPlayback) 1_500 else 10_000, if (tvPlayback) 8_000 else 25_000, 250, 750)
+            .setBufferDurationsMs(if (tvPlayback) 2_500 else 10_000, if (tvPlayback) 10_000 else 25_000, 500, 1_000)
             .setTargetBufferBytes(targetBufferBytes)
-            .setPrioritizeTimeOverSizeThresholds(!tvPlayback)
+            .setPrioritizeTimeOverSizeThresholds(true)
             .build())
     private val preloadManager = builder.build()
     val player = builder.buildExoPlayer(ExoPlayer.Builder(context, mediaSourceFactory)).apply {

@@ -16,7 +16,10 @@ internal object Mp4MediaSources {
     private val extractors = ExtractorsFactory {
         // 每次建源都创建独立提取器，保留 Media3 默认的分片 MP4 探测顺序和字幕处理。
         val subtitles = DefaultSubtitleParserFactory()
-        arrayOf<Extractor>(FragmentedMp4Extractor(subtitles), Mp4Extractor(subtitles))
+        val flags = Mp4Extractor.FLAG_READ_WITHIN_GOP_SAMPLE_DEPENDENCIES or
+            Mp4Extractor.FLAG_READ_WITHIN_GOP_SAMPLE_DEPENDENCIES_H265
+        // 让提取器标记 GOP 内可丢弃的样本，B 帧片源起播和追帧时无需等待全部依赖样本。
+        arrayOf<Extractor>(FragmentedMp4Extractor(subtitles), Mp4Extractor(subtitles, flags))
     }
 
     // 播放器和预加载器始终接收已经绑定 VideoDataSource 的 MediaSource；

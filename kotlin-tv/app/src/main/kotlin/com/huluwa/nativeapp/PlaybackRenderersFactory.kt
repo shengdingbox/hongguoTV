@@ -20,6 +20,8 @@ internal class PlaybackRenderersFactory(context: Context) : DefaultRenderersFact
 
     init {
         setEnableDecoderFallback(true)
+        // 视频落后音频时钟超过 50ms 时允许跳过解码器输入，避免低性能电视持续追帧。
+        experimentalSetLateThresholdToDropDecoderInputUs(50_000)
     }
 
     override fun buildVideoRenderers(
@@ -45,6 +47,7 @@ internal class PlaybackRenderersFactory(context: Context) : DefaultRenderersFact
             .setEventHandler(eventHandler)
             .setEventListener(eventListener)
             .setMaxDroppedFramesToNotify(MAX_DROPPED_VIDEO_FRAME_COUNT_TO_NOTIFY)
+            .experimentalSetLateThresholdToDropDecoderInputUs(50_000)
         out.add(object : MediaCodecVideoRenderer(builder) {
             // 同时阻止解码器先绑定占位窗口；真实窗口变化时由 Media3 释放并重建解码器。
             override fun codecNeedsSetOutputSurfaceWorkaround(name: String): Boolean =

@@ -10,41 +10,38 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 
-/** 电视顶部导航：与随心看客户端保持同一组入口，按屏幕宽度等比例分配。 */
+/** 电视顶部导航：沿用原版六入口，页面内部后续新增的内容不改变顶部结构。 */
 internal class TvCatalogHeader(
     context: Context,
     selected: Int,
     private val selectTab: (Int) -> Unit,
 ) : LinearLayout(context) {
     companion object {
-        /** 显示顺序和页面索引是两套编号；随心看索引 8，经典搜索页仍是索引 1。 */
+        /** 设置页沿用当前内部的 6，其余入口与原版页面编号保持一致。 */
         val DESTINATIONS = listOf(
             0 to "首页",
-            8 to "随心看",
             1 to "找剧",
-            1 to "搜索",
             2 to "排行榜",
-            3 to "我的",
+            3 to "收藏",
+            4 to "观看历史",
             6 to "设置",
         )
 
-        /** 页面编号到顶部按钮下标的映射；没有独立按钮的旧页面归到相邻入口。 */
+        /** 页面编号到顶部按钮下标的映射；随心看仍由首页入口承载。 */
         fun normalize(index: Int) = when (index) {
-            8 -> 1
-            1 -> 2
-            2 -> 4
-            in 3..5 -> 5
-            6 -> 6
+            0 -> 0
+            1 -> 1
+            2 -> 2
+            3 -> 3
+            4 -> 4
+            5 -> 4
+            6 -> 5
+            8 -> 0
             else -> 0
         }
 
-        /** 顶部按钮下标到实际页面；首页和随心看共用 tab=0，靠 suixinMode 区分。 */
-        fun tabForIndex(index: Int): Int = when (index) {
-            1 -> 8
-            in 3..5 -> 3
-            6 -> 6
-            else -> index
-        }
+        /** 顶部按钮下标到实际页面。 */
+        fun tabForIndex(index: Int) = DESTINATIONS.getOrNull(index)?.first ?: 0
     }
 
     val navigation = mutableListOf<TextView>()

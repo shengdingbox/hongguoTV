@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.huluwa.nativeapp
 
+import android.content.res.ColorStateList
 import androidx.core.graphics.drawable.DrawableCompat
 import android.app.AlertDialog
 import android.graphics.Color
@@ -261,8 +262,8 @@ class PhoneOfflineLibrary(
 
         private fun progress() = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000
-            DrawableCompat.setTint(progressDrawable, PortraitStyle.accent)
-            DrawableCompat.setTint(progressBackground, PortraitStyle.outline)
+            progressTintList = ColorStateList.valueOf(PortraitStyle.accent)
+            progressBackgroundTintList = ColorStateList.valueOf(PortraitStyle.outline)
         }
 
         fun loadImage() { if (boundSeries.isNotBlank()) loadCover(cover, boundCover) }

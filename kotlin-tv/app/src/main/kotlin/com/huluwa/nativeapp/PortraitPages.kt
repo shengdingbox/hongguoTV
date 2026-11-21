@@ -2,6 +2,7 @@
 package com.huluwa.nativeapp
 
 import androidx.core.graphics.drawable.DrawableCompat
+import android.content.res.ColorStateList
 import android.app.AlertDialog
 import android.graphics.Color
 import android.graphics.Typeface
@@ -494,8 +495,8 @@ class PortraitPages(
         card.badge.textSize = 11f
         val progress = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 1000
-            DrawableCompat.setTint(progressDrawable, PortraitStyle.accent)
-            DrawableCompat.setTint(progressBackground, Color.argb(100, 255, 255, 255))
+            progressTintList = ColorStateList.valueOf(PortraitStyle.accent)
+            progressBackgroundTintList = ColorStateList.valueOf(Color.argb(100, 255, 255, 255))
             visibility = View.GONE
         }
         card.poster.addView(progress, FrameLayout.LayoutParams(-1, dp(3), Gravity.BOTTOM).apply {

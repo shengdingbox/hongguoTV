@@ -437,7 +437,10 @@ internal class TvHomePlayback(
         previous?.setPlaybackActive(false)
         previous?.pauseReadAhead(cancelReads = true)
         // 不 stop 播放器：直接替换媒体源，KeepContent 保留上一帧，画面无黑场过渡。
-        p.setMediaSource(manager?.getMediaSource(item) ?: source, position)
+        val ready: MediaSource = manager?.getMediaSource(item)
+            ?: source
+            ?: Mp4MediaSources.factory { VideoDataSource(remote) }.createMediaSource(item)
+        p.setMediaSource(ready, position)
         p.prepare(); p.playWhenReady = active && !userPaused
         previous?.close()
         val stale = activeItem

@@ -231,7 +231,7 @@ open class ContentRepository(
     fun suixinNext(cursor: SuixinCursor): SuixinPage {
         if (cursor.readyToContinue && cursor.cellId.isNotBlank()) {
             val page = SuixinFeedClient(http, activeSigner).next(cursor)
-            val seen = (cursor.seen + page.items.map { it.id }).takeLast(540).toSet()
+            val seen = (cursor.seen + page.items.map { it.id }).toList().takeLast(540).toSet()
             val next = page.cursor?.copy(seen = seen)
             return page.copy(cursor = next, items = page.items.filter { it.id !in cursor.seen })
         }
@@ -245,7 +245,7 @@ open class ContentRepository(
         )
         if (cursor.sessionId.isNotBlank()) values["session_id"] = cursor.sessionId
         val page = SuixinFeedParser.initial(catalogJson("$API/reading/bookapi/bookmall/tab/v1/", values))
-        val seen = (cursor.seen + page.items.map { it.id }).takeLast(540).toSet()
+        val seen = (cursor.seen + page.items.map { it.id }).toList().takeLast(540).toSet()
         val pageCursor = page.cursor?.copy(offset = cursor.offset + maxOf(1, page.items.size), seen = seen)
         return page.copy(cursor = pageCursor, items = page.items.filter { it.id !in cursor.seen })
     }

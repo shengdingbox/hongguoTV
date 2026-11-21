@@ -251,7 +251,8 @@ open class ContentRepository(
     }
 
     /** 分类随心看；漫剧与真人短剧使用同一分类接口的不同 req_scene。 */
-    fun suixinCategory(comic: Boolean): SuixinPage = SuixinFeedClient(http, activeSigner).category(comic)
+    fun suixinCategory(comic: Boolean, cursor: SuixinCategoryCursor? = null): SuixinPage =
+        SuixinFeedClient(http, activeSigner).category(comic, cursor)
 
     /** 应用按服务端试播集提示直接打开单集，失败时由上层回退详情首集。 */
     fun suixinTrial(hint: SuixinTrialHint, maxQuality: Int = 1080): Pair<Detail, StreamInfo> {

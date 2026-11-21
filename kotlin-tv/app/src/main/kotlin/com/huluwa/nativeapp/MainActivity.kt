@@ -365,6 +365,11 @@ class MainActivity: Activity() {
     private var suixinMode=false
     private var suixinCursor: SuixinCursor?=null
     private var suixinTrialHints: Map<String,SuixinTrialHint> = emptyMap()
+    /** 推荐、漫剧、真人剧各自保留列表和游标，切换不串页。 */
+    private var suixinFeedMode="hot"
+    private val suixinCategoryCursors=mutableMapOf<String,SuixinCategoryCursor?>()
+    private val suixinCategoryItems=mutableMapOf<String,List<Series>>()
+    private val suixinHotItems=mutableListOf<Series>()
     private var suixinSource: String?=null
     private var suixinLoading=false
     private var suixinFailed=false
@@ -409,7 +414,7 @@ class MainActivity: Activity() {
     // 条件变更后重建页面时，把焦点送回刚刚操作的那个条件
     private var pendingFilterFocus: Pair<String,String>?=null
     // cursor/discovery 一并缓存：分类接口的续页靠服务器 session，切走再回来若沿用别的页签的条件就会拉到错内容
-    private data class CatalogState(val page: Int,val items: List<Series>,val hasMore: Boolean,val ranking: ComicRanking?,val board: RankBoard?=null,val genre: Genre?=null,val aiCatalog: Boolean=false,val aiGenre: Genre?=null,val newRelease: Boolean=false,val newReleaseWindow: String?=null,val cursor: DiscoveryCursor?=null,val discovery: DiscoverySelection?=null)
+    private data class CatalogState(val page: Int,val items: List<Series>,val hasMore: Boolean,val ranking: ComicRanking?,val board: RankBoard?=null,val genre: Genre?=null,val aiCatalog: Boolean=false,val aiGenre: Genre?=null,val newRelease: Boolean=false,val newReleaseWindow: String?=null,val cursor: DiscoveryCursor?=null,val discovery: DiscoverySelection?=null,val suixinMode: Boolean=false,val suixinFeed: String="hot")
     private var ranking: ComicRanking?=null
     private var rankBoard=RankBoard.COMIC
     // 榜单按枚举顺序循环切换，新增榜单只需在 RankBoard 里加一项
@@ -994,7 +999,7 @@ class MainActivity: Activity() {
         if(retainableCatalog() && canReuseCatalogs() && restoreRetainedCatalog(next)) return
         // 离开首页/排行互切场景后，旧视图不再保留，后续一律按原流程重建。
         retainedCatalogs.clear()
-        tabState[tab]=CatalogState(page,catalog,hasMore,ranking,rankBoard,genre,aiCatalog,aiGenre,newRelease,newReleaseWindow,discoveryCursor,discoverySelection); tabFocus[tab]=catalogFocus
+        tabState[tab]=CatalogState(page,catalog,hasMore,ranking,rankBoard,genre,aiCatalog,aiGenre,newRelease,newReleaseWindow,discoveryCursor,discoverySelection,suixinMode,suixinFeedMode); tabFocus[tab]=catalogFocus
         // 从其他模块切回搜索页时重置为全新搜索状态，不保留上次的搜索词与结果
         if(next==1) {
             query=""; lastSuggestWords=emptyList<String>(); lastSuggestKey=""; suggestFocusIndex=-1; keyboardLastLabel=null
@@ -1002,6 +1007,7 @@ class MainActivity: Activity() {
             tabState.remove(1); tabFocus.remove(1)
         }
         tab=next; val saved=tabState[next]; page=saved?.page ?: 1; catalog=saved?.items ?: emptyList(); hasMore=saved?.hasMore ?: false; ranking=saved?.ranking; catalogFocus=tabFocus[next].orEmpty()
+        if(next==0) { suixinMode=saved?.suixinMode ?: true; suixinFeedMode=saved?.suixinFeed ?: "hot" }
         rankBoard=saved?.board ?: rankBoard; genre=saved?.genre ?: genre
         aiCatalog=saved?.aiCatalog ?: false; aiGenre=saved?.aiGenre
         newRelease=saved?.newRelease ?: false; newReleaseWindow=saved?.newReleaseWindow ?: newReleaseWindow
@@ -1049,7 +1055,7 @@ class MainActivity: Activity() {
             retainedCatalogs.clear()
             return false
         }
-        tabState[tab]=CatalogState(page,catalog,hasMore,ranking,rankBoard,genre,aiCatalog,aiGenre,newRelease,newReleaseWindow,discoveryCursor,discoverySelection)
+        tabState[tab]=CatalogState(page,catalog,hasMore,ranking,rankBoard,genre,aiCatalog,aiGenre,newRelease,newReleaseWindow,discoveryCursor,discoverySelection,suixinMode,suixinFeedMode)
         tabFocus[tab]=catalogFocus
         // 已展示的页签保留视图；未完成的目录请求取消，回调不得重建隐藏页。
         stopTvHomePlayback()
@@ -1060,6 +1066,7 @@ class MainActivity: Activity() {
         val saved=tabState[next]
         if(saved==null) { retainedCatalogs.clear(); return false }
         tab=next; page=saved.page; catalog=saved.items; hasMore=saved.hasMore; ranking=saved.ranking; catalogFocus=tabFocus[next].orEmpty()
+        if(next==0) { suixinMode=saved.suixinMode; suixinFeedMode=saved.suixinFeed }
         rankBoard=saved.board ?: rankBoard; genre=saved.genre
         aiCatalog=saved.aiCatalog; aiGenre=saved.aiGenre; newRelease=saved.newRelease; newReleaseWindow=saved.newReleaseWindow ?: newReleaseWindow
         discoveryCursor=saved.cursor; discoverySelection=saved.discovery ?: discoverySelection
@@ -1583,7 +1590,7 @@ class MainActivity: Activity() {
             val requestAi=if(requestTab==2) aiCatalog else false; val requestAiGenre=if(requestAi) aiGenre else null
             work({
                 val result=when(requestTab) {
-                    0 -> if(suixinMode) suixinPage(requestPage) else repository.home(requestPage,requestType,requestGenre)
+                    0 -> if(suixinMode) { if(suixinFeedMode=="hot") suixinPage(requestPage) else suixinCategoryPage(requestPage>1) } else repository.home(requestPage,requestType,requestGenre)
                     2 -> if(requestAi) repository.home(requestPage,ContentType.AI,requestAiGenre) else repository.ranking(requestBoard,requestPage,rankSession)
                     else -> repository.search(requestQuery,requestPage,requestType)
                 }
@@ -1976,7 +1983,7 @@ class MainActivity: Activity() {
         loadingMore=true; rememberCatalogFocus(); adapter.updateFooter(FOOTER_LOADING); restoreCatalogFocus()
         work({
             when(requestTab) {
-                0 -> if(suixinMode) suixinPage(requestPage) else repository.home(requestPage,requestType,requestGenre)
+                0 -> if(suixinMode) { if(suixinFeedMode=="hot") suixinPage(requestPage) else suixinCategoryPage(requestPage>1) } else repository.home(requestPage,requestType,requestGenre)
                 2 -> if(requestAi) repository.home(requestPage,ContentType.AI,requestAiGenre) else repository.ranking(requestBoard,requestPage,rankSession)
                 else -> repository.search(requestQuery,requestPage,requestType)
             }
@@ -1990,6 +1997,9 @@ class MainActivity: Activity() {
             val fresh=result.items.filter { it.id !in known }
             // 续页只追加新条目：与服务端 filter_ids 去重口径一致，也保证 catalog 与 displayed 同步。
             catalog=catalog+fresh
+            if(suixinMode && suixinFeedMode!="hot" && suixinFeedMode!="fallback") {
+                suixinCategoryItems[suixinFeedMode]=(suixinCategoryItems[suixinFeedMode].orEmpty()+fresh).distinctBy { it.id }
+            }
             val current=catalogAdapter
             if(current!=null) {
                 val visible=fresh.filter { tab!=0 || it.id !in library.hidden() }
@@ -2227,7 +2237,12 @@ class MainActivity: Activity() {
             if(hasMore) { { page=2; catalogFocus=""; showCatalog(true) } } else null,homePosition)
         startTvHomePlayback(home)
         home.refresh.text=if(loading) "正在加载随心看…" else "换一批"
-        home.refresh.setOnClickListener { suixinCursor=null; page=1; showCatalog(true) }
+        home.refresh.setOnClickListener {
+            if(suixinFeedMode=="hot") suixinCursor=null else {
+                suixinCategoryItems.remove(suixinFeedMode); suixinCategoryCursors.remove(suixinFeedMode)
+            }
+            page=1; showCatalog(true)
+        }
         val categories=typeButtons.values.firstOrNull()?.parent as? LinearLayout
         val controls=categories?.let { parent -> (0 until parent.childCount).mapNotNull { parent.getChildAt(it) as? TextView } }.orEmpty()
         controls.forEachIndexed { index,view ->
@@ -2262,6 +2277,13 @@ class MainActivity: Activity() {
         home.onPreviewToggle=playback::toggle
         home.onPreviewActions=playback::pauseForActions
         home.onPreviewCleared=playback::clearSelection
+        home.onFeedMode={ mode ->
+            when(mode) {
+                "comic" -> changeSuixinFeed("comic")
+                "real" -> changeSuixinFeed("real")
+                else -> { suixinFeedMode="hot"; showCatalog(load=false) }
+            }
+        }
         playback.setActive(foreground && hasWindowFocus())
         home.selectPreview()
     }
@@ -2279,6 +2301,7 @@ class MainActivity: Activity() {
             }
             suixinCursor=page.cursor
             suixinTrialHints=page.trialHints
+            suixinHotItems.clear(); suixinHotItems.addAll(page.items)
             suixinSource=if(page.cursor?.readyToContinue==true) "tab+cell" else "tab"
             suixinLoading=false; suixinFailed=false
             return CatalogPage(page.items,page.cursor!=null)
@@ -2290,14 +2313,37 @@ class MainActivity: Activity() {
         }
         suixinCursor=page.cursor
         if(page.trialHints.isNotEmpty()) suixinTrialHints=suixinTrialHints+page.trialHints
+        suixinHotItems.clear(); suixinHotItems.addAll(suixinHotItems+page.items)
         return CatalogPage(page.items,page.cursor!=null)
+    }
+
+    /** 首页子菜单：推荐走书城连续流，漫剧/真人剧走分类接口。 */
+    private fun changeSuixinFeed(mode: String) {
+        if(mode==suixinFeedMode) return
+        suixinFeedMode=mode
+        page=1; catalog=emptyList(); hasMore=true; catalogFocus=""
+        showCatalog(load=true)
+    }
+
+    private fun suixinCategoryPage(more: Boolean): CatalogPage {
+        val comic=suixinFeedMode=="comic"
+        val cursor=if(more) suixinCategoryCursors[suixinFeedMode] else null
+        if(more && cursor==null) return CatalogPage(emptyList(),false)
+        val page=repository.suixinCategory(comic,cursor)
+        suixinCategoryCursors[suixinFeedMode]=page.categoryCursor
+        if(page.trialHints.isNotEmpty()) suixinTrialHints=suixinTrialHints+page.trialHints
+        val seen=suixinCategoryItems[suixinFeedMode].orEmpty().mapTo(hashSetOf()) { it.id }
+        val items=page.items.filter { it.id !in seen }
+        suixinCategoryItems[suixinFeedMode]=suixinCategoryItems[suixinFeedMode].orEmpty()+items
+        return CatalogPage(items,page.categoryCursor!=null)
     }
 
     /** 随心看入口：复用首页容器，但不从“热门发现/接着看”生成内容。 */
     private fun showSuixin() {
         suixinMode=true
         tab=0; screen="catalog"; collection=null; collectionReturn=null
-        suixinCursor=null; suixinFailed=false; suixinSource=null
+        suixinCursor=null; suixinFailed=false; suixinSource=null; suixinFeedMode="hot"
+        suixinCategoryCursors.clear(); suixinCategoryItems.clear()
         page=1; catalog=emptyList(); hasMore=false; catalogFocus=""
         showCatalog(load=true,focusNav=true)
     }
@@ -2306,8 +2352,12 @@ class MainActivity: Activity() {
     private fun trialHintFor(id: String): Pair<String?,Int>? = suixinTrialHints[id]?.let { it.episodeId to it.episodeCount }
 
     private fun homeShelves(): List<HomeScreen.Shelf> {
-        val hot=catalog.filterNot { it.id in library.hidden() }
-        return listOf(HomeScreen.Shelf("hot","随心看",hot.take(20).map { HomeScreen.Entry(it,it.badge.ifBlank { "随心看 · 为你推荐" }) }))
+        val shown=when(suixinFeedMode) {
+            "comic" -> suixinCategoryItems["comic"].orEmpty()
+            "real" -> suixinCategoryItems["real"].orEmpty()
+            else -> suixinHotItems.toList()
+        }.filterNot { it.id in library.hidden() }
+        return listOf(HomeScreen.Shelf("hot","随心看",shown.take(20).map { HomeScreen.Entry(it,it.badge.ifBlank { "随心看 · 为你推荐" }) }))
     }
     private fun refreshLibraryCards(changedId: String,removed: Boolean=false) {
         if(screen!="catalog") return

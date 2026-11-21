@@ -21,11 +21,14 @@ data class SuixinCursor(
 
 data class SuixinTrialHint(val episodeId: String, val episodeCount: Int)
 
+data class SuixinCategoryCursor(val sessionId: String = "", val offset: Int = 0)
+
 data class SuixinPage(
     val items: List<Series>,
     val cursor: SuixinCursor?,
     val trialHints: Map<String, SuixinTrialHint> = emptyMap(),
     val diagnostic: String = "",
+    val categoryCursor: SuixinCategoryCursor? = null,
 )
 
 /** 随心看接口的纯解析部分，便于单测和另端复用。 */
@@ -146,17 +149,19 @@ object SuixinFeedParser {
     }
 
     /** 解析分类随心看 landpage 响应为同一卡片结构。 */
-    fun category(root: JSONObject): SuixinPage {
+    fun category(root: JSONObject, previous: SuixinCategoryCursor? = null): SuixinPage {
         if (root.optInt("code", -1) != 0) throw IOException("分类随心看暂不可用（错误码 ${root.optInt("code", -1)}）")
         val data = root.optJSONObject("data") ?: throw IOException("分类随心看数据格式已变化")
         val values = rows(data.opt("video_data"))
         val items = values.mapNotNull { series(it) }.distinctBy { it.id }
         val nextOffset = data.optInt("next_offset", -1)
-        val session = str(data, "session_id")
-        val cursor = if (nextOffset >= 0 && data.optBoolean("has_more", true)) {
-            SuixinCursor(session, nextOffset, readyToContinue = true)
-        } else null
-        return SuixinPage(items, cursor, hints(values, items), "category items=${items.size}")
+        val session = str(data, "session_id").ifBlank { previous?.sessionId.orEmpty() }
+        val offset = nextOffset.takeIf { it >= 0 } ?: (previous?.offset ?: 0)
+        val categoryCursor = if (data.optBoolean("has_more", true)) SuixinCategoryCursor(session, offset) else null
+        // 分类接口与推荐接口一样带 first_vid / video_list，试播提示继续沿用同一套解析。
+        // 分类与书城流共用卡片字段；分类游标单独保存，不能混用 tab 会话。
+        val pageCursor = SuixinCursor(sessionId = session, offset = offset, planId = "category")
+        return SuixinPage(items, pageCursor, hints(values, items), "category items=${items.size}", categoryCursor)
     }
 }
 
@@ -242,18 +247,19 @@ class SuixinFeedClient(
         )
     }
 
-    fun category(comic: Boolean): SuixinPage {
+    fun category(comic: Boolean, cursor: SuixinCategoryCursor? = null): SuixinPage {
         val genre = if (comic) "comic_series" else "short_play"
         val scene = if (comic) "comic_series" else "default"
         val selector = JSONObject().put("genre", JSONArray().put(genre))
         listOf("sort", "gender", "category_dim_theme", "category_dim_role", "category_dim_epoch", "online_time", "creation_status")
             .forEach { selector.put(it, JSONArray()) }
-        val body = JSONObject().put("req_scene", scene).put("offset", 0).put("limit", 24)
+        val body = JSONObject().put("req_scene", scene).put("offset", cursor?.offset ?: 0).put("limit", 24)
             .put("req_type", "only_content").put("need_selector_panel", false)
-            .put("client_req_type", 3).put("session_id", "").put("filter_ids", "")
+            .put("client_req_type", if (cursor == null) 3 else 2).put("session_id", cursor?.sessionId.orEmpty()).put("filter_ids", "")
             .put("select_items", selector).toString().toByteArray(Charsets.UTF_8)
         return SuixinFeedParser.category(
             request("${host()}/reading/distribution/category/landpage/v/", emptyMap(), body),
+            cursor,
         )
     }
 }

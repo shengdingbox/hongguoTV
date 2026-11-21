@@ -84,6 +84,9 @@ class HomeScreen(
     var onPreviewToggle: (() -> Unit)?=null
     var onPreviewActions: (() -> Unit)?=null
     var onPreviewCleared: (() -> Unit)?=null
+    /** 首页子菜单：推荐、漫剧、真人剧、换一批。 */
+    var onFeedMode: ((String) -> Unit)?=null
+    private var feedMode = "recommend"
     private var previewView: View?=null
     private var previewSeriesId=""
     private var previewVisible=false
@@ -300,9 +303,14 @@ class HomeScreen(
         paintSelection(); rememberCurrent()
     }
     private fun selectShelf(key: String) {
+        feedMode = key
         if(activeShelfKey!=key) { activeShelfKey=key; paintSelection(); rememberCurrent() }
+        onFeedMode?.invoke(key)
         stage.requestFocus()
     }
+
+    fun setFeedMode(key: String) { feedMode = key; paintSelection() }
+
 
     fun capturePosition(): Position {
         val row=shelves.indexOfFirst { it.key==activeShelfKey }.coerceAtLeast(0)
@@ -339,7 +347,7 @@ class HomeScreen(
         restoreSelection(focus,previous)
         selectorLine.removeAllViews(); selectorButtons.clear()
         shelves.filter { it.entries.isNotEmpty() }.sortedBy { if(it.key=="hot") 0 else 1 }.forEach { shelf ->
-            val title=when(shelf.key) { "hot" -> "随心看"; "comic" -> "漫剧"; "real" -> "真人短剧"; else -> shelf.title }
+            val title=when(shelf.key) { "hot" -> "推荐"; "comic" -> "漫剧"; "real" -> "真人剧"; else -> shelf.title }
             val control=button(title,"home:shelf:${shelf.key}") { selectShelf(shelf.key) }
             control.nextFocusUpId=top.id; control.nextFocusDownId=stage.id
             selectorLine.addView(control,LayoutParams(-2,dp(36)).apply { rightMargin=dp(6) })

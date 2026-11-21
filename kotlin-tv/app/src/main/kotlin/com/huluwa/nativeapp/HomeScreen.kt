@@ -86,15 +86,15 @@ class HomeScreen(
     var onPreviewCleared: (() -> Unit)?=null
     /** 首页子菜单：推荐、漫剧、真人剧、换一批。 */
     var onFeedMode: ((String) -> Unit)?=null
-    private var feedMode = "recommend"
+    private var feedMode = "hot"
     private var previewView: View?=null
     private var previewSeriesId=""
     private var previewVisible=false
     private var previewPlaying=false
     private var previewFailed=false
-    private val selectorButtons=mutableListOf<TextView>()
     private val selectorLine=LinearLayout(context).apply { gravity=Gravity.CENTER_VERTICAL }
     private val selectors=HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled=false; addView(selectorLine) }
+    private val feedTabs=mutableListOf<TextView>()
     private val carousel=FrameLayout(context).apply { clipChildren=false; clipToPadding=false }
     private val hero=LinearLayout(context).apply {
         orientation=VERTICAL; setPadding(dp(8),dp(8),dp(8),dp(8))
@@ -144,10 +144,24 @@ class HomeScreen(
 
     init {
         orientation=VERTICAL
-        val header=LinearLayout(context).apply { gravity=Gravity.CENTER_VERTICAL }
-        header.addView(selectors,LayoutParams(0,dp(36),1f))
-        header.addView(refresh,LayoutParams(dp(166),dp(36)).apply { leftMargin=dp(8) })
-        addView(header,LayoutParams(-1,dp(42)))
+        // 固定分类 Tab：推荐 / 真人剧 / 漫剧 / 换一批，保持参考项目的布局。
+        listOf("hot" to "推荐", "real" to "真人剧", "comic" to "漫剧").forEach { (key, title) ->
+            val tab=button(title, "home:feed:$key") { selectFeed(key) }.apply {
+                textSize=14f; minHeight=dp(40); gravity=Gravity.CENTER
+                contentDescription=title
+            }
+            feedTabs+=tab
+            selectorLine.addView(tab, LayoutParams(0, dp(40), 1f).apply { rightMargin=dp(8) })
+        }
+        selectorLine.addView(refresh, LayoutParams(dp(140), dp(40)))
+        feedTabs.forEachIndexed { index, tab ->
+            tab.nextFocusLeftId=feedTabs.getOrNull(index-1)?.id ?: tab.id
+            tab.nextFocusRightId=feedTabs.getOrNull(index+1)?.id ?: refresh.id
+            tab.nextFocusDownId=stage.id
+        }
+        refresh.nextFocusLeftId=feedTabs.lastOrNull()?.id ?: refresh.id
+        refresh.nextFocusRightId=refresh.id
+        addView(selectors, LayoutParams(-1, dp(48)))
 
         carousel.addView(previousCard,FrameLayout.LayoutParams(dp(112),-1,Gravity.START).apply { topMargin=dp(16); bottomMargin=dp(16) })
         carousel.addView(nextCard,FrameLayout.LayoutParams(dp(112),-1,Gravity.END).apply { topMargin=dp(16); bottomMargin=dp(16) })
@@ -302,14 +316,24 @@ class HomeScreen(
         indices[activeShelfKey]=(currentIndex()+delta+shelf.entries.size)%shelf.entries.size
         paintSelection(); rememberCurrent()
     }
-    private fun selectShelf(key: String) {
-        feedMode = key
-        if(activeShelfKey!=key) { activeShelfKey=key; paintSelection(); rememberCurrent() }
+    fun setFeedMode(key: String) { feedMode = key; paintFeedTabs() }
+
+    private fun selectFeed(key: String) {
+        feedMode=key
         onFeedMode?.invoke(key)
+        paintFeedTabs()
         stage.requestFocus()
     }
 
-    fun setFeedMode(key: String) { feedMode = key; paintSelection() }
+    private fun paintFeedTabs() {
+        feedTabs.forEach { tab ->
+            val selected=tab.tag=="home:feed:$feedMode"
+            tab.isSelected=selected
+            tab.background=TvVisual.tab(context,tab.hasFocus(),selected)
+            tab.setTextColor(if(selected) TvStyle.accent else if(tab.hasFocus()) TvStyle.text else TvStyle.muted)
+            tab.setTypeface(null,if(selected || tab.hasFocus()) Typeface.BOLD else Typeface.NORMAL)
+        }
+    }
 
 
     fun capturePosition(): Position {
@@ -345,20 +369,7 @@ class HomeScreen(
         val previous=position ?: if(this.shelves.isNotEmpty()) capturePosition() else null
         this.shelves=shelves; footerMore=more; revision++
         restoreSelection(focus,previous)
-        selectorLine.removeAllViews(); selectorButtons.clear()
-        shelves.filter { it.entries.isNotEmpty() }.sortedBy { if(it.key=="hot") 0 else 1 }.forEach { shelf ->
-            val title=when(shelf.key) { "hot" -> "推荐"; "comic" -> "漫剧"; "real" -> "真人剧"; else -> shelf.title }
-            val control=button(title,"home:shelf:${shelf.key}") { selectShelf(shelf.key) }
-            control.nextFocusUpId=top.id; control.nextFocusDownId=stage.id
-            selectorLine.addView(control,LayoutParams(-2,dp(36)).apply { rightMargin=dp(6) })
-            selectorButtons+=control
-        }
-        selectorButtons.forEachIndexed { index,view ->
-            view.nextFocusLeftId=selectorButtons.getOrNull(index-1)?.id ?: view.id
-            view.nextFocusRightId=selectorButtons.getOrNull(index+1)?.id ?: refresh.id
-        }
-        refresh.nextFocusLeftId=selectorButtons.lastOrNull()?.id ?: refresh.id
-        refresh.nextFocusRightId=refresh.id
+        paintFeedTabs()
         top.nextFocusDownId=firstId()
         paintSelection()
         if(requestFocus) focusTarget(focus.ifBlank { previous?.focus.orEmpty() }).requestFocus()
@@ -391,7 +402,7 @@ class HomeScreen(
         "home:play" -> play
         "home:actions" -> manage
         "home:resume" -> resume
-        else -> selectorButtons.firstOrNull { it.tag==key } ?: if(current()!=null) stage else refresh
+        else -> feedTabs.firstOrNull { it.tag==key } ?: if(current()!=null) stage else refresh
     }
     private fun paintSelection() {
         val shelf=activeShelf(); val entry=current(); val entries=shelf?.entries.orEmpty(); val index=currentIndex()
@@ -425,13 +436,7 @@ class HomeScreen(
         previousCard.contentDescription="上一部，${previousTitle.text}"; nextCard.contentDescription="下一部，${nextTitle.text}"
         positionLabel.text=if(entry!=null) "${index+1} / ${entries.size}  ·  ${shelf?.title.orEmpty()}" else "好故事，即将开始"
         describeStage()
-        stage.nextFocusUpId=selectorButtons.firstOrNull { it.tag=="home:shelf:$activeShelfKey" }?.id ?: top.id
-        selectorButtons.forEach { button ->
-            button.isSelected=button.tag=="home:shelf:$activeShelfKey"
-            button.background=TvVisual.row(context,button.hasFocus(),button.isSelected)
-            button.setTextColor(if(button.isSelected) TvStyle.accent else TvStyle.text)
-            button.setTypeface(null,if(button.isSelected) Typeface.BOLD else Typeface.NORMAL)
-        }
+        stage.nextFocusUpId=feedTabs.firstOrNull { it.tag=="home:feed:$feedMode" }?.id ?: top.id
         applyPreviewInfo()
         loadArtwork()
         selectPreview()
@@ -461,5 +466,5 @@ class HomeScreen(
         help.visibility=if(h<dp(240)) GONE else VISIBLE
         post { loadArtwork() }
     }
-    fun firstId()=if(current()!=null) stage.id else refresh.id
+    fun firstId()=if(current()!=null) stage.id else feedTabs.firstOrNull()?.id ?: refresh.id
 }

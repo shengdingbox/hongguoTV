@@ -1590,7 +1590,7 @@ class MainActivity: Activity() {
             val requestAi=if(requestTab==2) aiCatalog else false; val requestAiGenre=if(requestAi) aiGenre else null
             work({
                 val result=when(requestTab) {
-                    0 -> if(suixinMode) { if(suixinFeedMode=="hot") suixinPage(requestPage) else suixinCategoryPage(requestPage>1) } else repository.home(requestPage,requestType,requestGenre)
+                    0 -> if(suixinMode) { if(suixinFeedMode=="hot") suixinPage(requestPage) else suixinCategoryPage(requestPage>1 && suixinCategoryCursors[suixinFeedMode]!=null) } else repository.home(requestPage,requestType,requestGenre)
                     2 -> if(requestAi) repository.home(requestPage,ContentType.AI,requestAiGenre) else repository.ranking(requestBoard,requestPage,rankSession)
                     else -> repository.search(requestQuery,requestPage,requestType)
                 }
@@ -1983,7 +1983,7 @@ class MainActivity: Activity() {
         loadingMore=true; rememberCatalogFocus(); adapter.updateFooter(FOOTER_LOADING); restoreCatalogFocus()
         work({
             when(requestTab) {
-                0 -> if(suixinMode) { if(suixinFeedMode=="hot") suixinPage(requestPage) else suixinCategoryPage(requestPage>1) } else repository.home(requestPage,requestType,requestGenre)
+                0 -> if(suixinMode) { if(suixinFeedMode=="hot") suixinPage(requestPage) else suixinCategoryPage(requestPage>1 && suixinCategoryCursors[suixinFeedMode]!=null) } else repository.home(requestPage,requestType,requestGenre)
                 2 -> if(requestAi) repository.home(requestPage,ContentType.AI,requestAiGenre) else repository.ranking(requestBoard,requestPage,rankSession)
                 else -> repository.search(requestQuery,requestPage,requestType)
             }
@@ -2281,9 +2281,10 @@ class MainActivity: Activity() {
             when(mode) {
                 "comic" -> changeSuixinFeed("comic")
                 "real" -> changeSuixinFeed("real")
-                else -> { suixinFeedMode="hot"; showCatalog(load=false) }
+                else -> changeSuixinFeed("hot")
             }
         }
+        home.setFeedMode(suixinFeedMode)
         playback.setActive(foreground && hasWindowFocus())
         home.selectPreview()
     }
@@ -2322,6 +2323,7 @@ class MainActivity: Activity() {
         if(mode==suixinFeedMode) return
         suixinFeedMode=mode
         page=1; catalog=emptyList(); hasMore=true; catalogFocus=""
+        homeScreen?.setFeedMode(mode)
         showCatalog(load=true)
     }
 
@@ -2343,7 +2345,7 @@ class MainActivity: Activity() {
         suixinMode=true
         tab=0; screen="catalog"; collection=null; collectionReturn=null
         suixinCursor=null; suixinFailed=false; suixinSource=null; suixinFeedMode="hot"
-        suixinCategoryCursors.clear(); suixinCategoryItems.clear()
+        suixinCategoryCursors.clear(); suixinCategoryItems.clear(); suixinHotItems.clear()
         page=1; catalog=emptyList(); hasMore=false; catalogFocus=""
         showCatalog(load=true,focusNav=true)
     }

@@ -372,6 +372,8 @@ class MainActivity: Activity() {
     private val suixinHotItems=mutableListOf<Series>()
     private var suixinHomeLoading=false
     private var suixinAdvanceAfterLoad=false
+    private var suixinFeedScope: RequestScope?=null
+    private var suixinFeedJob: java.util.concurrent.Future<*>?=null
     private var suixinSource: String?=null
     private var suixinLoading=false
     private var suixinFailed=false
@@ -2240,10 +2242,14 @@ class MainActivity: Activity() {
         startTvHomePlayback(home)
         home.refresh.text=if(loading) "正在加载随心看…" else "换一批"
         home.refresh.setOnClickListener {
-            if(suixinFeedMode=="hot") suixinCursor=null else {
+            if(suixinFeedMode=="hot") {
+                // 参考项目“换一批”：保留当前卡片，重启会话后再追加下一批。
+                suixinAdvanceAfterLoad=true
+                loadMoreSuixinHome(newSession=true)
+            } else {
                 suixinCategoryItems.remove(suixinFeedMode); suixinCategoryCursors.remove(suixinFeedMode)
+                page=1; showCatalog(true)
             }
-            page=1; showCatalog(true)
         }
         val categories=typeButtons.values.firstOrNull()?.parent as? LinearLayout
         val controls=categories?.let { parent -> (0 until parent.childCount).mapNotNull { parent.getChildAt(it) as? TextView } }.orEmpty()
@@ -2305,9 +2311,11 @@ class MainActivity: Activity() {
             }
             suixinCursor=page.cursor
             suixinTrialHints=page.trialHints
-            suixinHotItems.clear(); suixinHotItems.addAll(page.items)
+            appendSuixinHot(page.items)
             suixinSource=if(page.cursor?.readyToContinue==true) "tab+cell" else "tab"
             suixinLoading=false; suixinFailed=false
+            // 首批通常只有少量卡片；立即预取下一批，左右切换时直接取得后续内容。
+            main.post { if(!suixinHomeLoading) loadMoreSuixinHome() }
             return CatalogPage(page.items,page.cursor!=null)
         }
         val cursor=suixinCursor ?: return CatalogPage(emptyList(),false)
@@ -2317,8 +2325,14 @@ class MainActivity: Activity() {
         }
         suixinCursor=page.cursor
         if(page.trialHints.isNotEmpty()) suixinTrialHints=suixinTrialHints+page.trialHints
-        suixinHotItems.clear(); suixinHotItems.addAll(suixinHotItems+page.items)
+        appendSuixinHot(page.items)
         return CatalogPage(page.items,page.cursor!=null)
+    }
+
+    private fun appendSuixinHot(items: List<Series>) {
+        if(items.isEmpty()) return
+        val seen=suixinHotItems.mapTo(hashSetOf()) { it.id }
+        suixinHotItems.addAll(items.filter { it.id !in seen })
     }
 
     /** 当前推荐批次耗尽后重建服务端会话；保留已看记录，避免重复三部剧循环。 */
@@ -2329,7 +2343,7 @@ class MainActivity: Activity() {
         suixinCursor=fresh.cursor?.copy(seen=(seen+fresh.items.map { it.id }).toList().takeLast(540).toSet())
         if(fresh.trialHints.isNotEmpty()) suixinTrialHints=suixinTrialHints+fresh.trialHints
         val items=fresh.items.filter { it.id !in seen }
-        suixinHotItems.clear(); suixinHotItems.addAll(suixinHotItems+items)
+        appendSuixinHot(items)
         return CatalogPage(items,fresh.cursor!=null)
     }
 
@@ -2343,40 +2357,50 @@ class MainActivity: Activity() {
     }
 
     /** 首页左右切换触边：继续取同一分类的下一批，不重建页面。 */
-    private fun loadMoreSuixinHome() {
+    private fun loadMoreSuixinHome(newSession: Boolean = false) {
         if(suixinHomeLoading) return
         suixinHomeLoading=true
         val mode=suixinFeedMode
         val nextPage=page+1
-        work({
-            if(mode=="hot") {
-                // 先沿服务端游标续页；空批次时重启会话取下一批，最多三次。
-                val more=suixinPage(nextPage)
-                if(more.items.isNotEmpty()) more else suixinNewBatch(nextPage)
-            } else suixinCategoryPage(true)
-        }, { result ->
-            suixinHomeLoading=false
-            if(mode!=suixinFeedMode) return@work
-            page=nextPage
-            hasMore=result.hasMore && result.items.isNotEmpty()
-            catalog=(catalog+result.items).distinctBy { it.id }
-            if(mode=="hot" && result.items.isNotEmpty()) {
-                suixinHotItems.clear(); suixinHotItems.addAll((suixinHotItems+result.items).distinctBy { it.id })
+        val ticket=generation
+        val scope=RequestScope()
+        suixinFeedScope?.cancel()
+        suixinFeedScope=scope
+        suixinFeedJob=io.submit {
+            try {
+                val result=scope.run {
+                    if(mode=="hot") {
+                        if(newSession) suixinNewBatch(nextPage) else {
+                            val more=suixinPage(nextPage)
+                            if(more.items.isNotEmpty()) more else suixinNewBatch(nextPage)
+                        }
+                    } else suixinCategoryPage(true)
+                }
+                main.post {
+                    if(isDestroyed || generation!=ticket || scope.isCancelled || mode!=suixinFeedMode) {
+                        suixinHomeLoading=false
+                    } else {
+                        suixinHomeLoading=false
+                        page=nextPage
+                        hasMore=result.hasMore && result.items.isNotEmpty()
+                        catalog=(catalog+result.items).distinctBy { it.id }
+                        if(mode=="hot") appendSuixinHot(result.items)
+                        homeScreen?.let { home ->
+                            val position=home.capturePosition()
+                            val advance=suixinAdvanceAfterLoad
+                            suixinAdvanceAfterLoad=false
+                            home.updateShelves(homeShelves(),requestFocus=false)
+                            if(advance) {
+                                val shown=homeShelves().firstOrNull()?.entries.orEmpty()
+                                if(shown.isNotEmpty()) home.restorePosition(position.copy(column=shown.lastIndex),requestFocus=true)
+                            } else home.restorePosition(position,requestFocus=true)
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                main.post { suixinHomeLoading=false; hasMore=false }
             }
-            homeScreen?.let { home ->
-                val position=home.capturePosition()
-                val advance=suixinAdvanceAfterLoad
-                suixinAdvanceAfterLoad=false
-                home.updateShelves(homeShelves(),requestFocus=false)
-                if(advance) {
-                    val shown=homeShelves().firstOrNull()?.entries.orEmpty()
-                    if(shown.isNotEmpty()) home.restorePosition(position.copy(column=shown.lastIndex),requestFocus=true)
-                } else home.restorePosition(position,requestFocus=true)
-            }
-        }, { _ ->
-            suixinHomeLoading=false
-            hasMore=false
-        })
+        }
     }
 
     private fun suixinCategoryPage(more: Boolean): CatalogPage {

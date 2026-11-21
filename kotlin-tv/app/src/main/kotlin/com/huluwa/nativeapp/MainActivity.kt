@@ -1586,7 +1586,7 @@ class MainActivity: Activity() {
         } else if(load && tab==2 && newRelease) {
             loadNewRelease(body)
         } else if(load) {
-            if(tab==0) renderHome(body,focusNav,focusType,loading)
+            if(tab==0) renderHome(body,focusNav,focusType,true)
             // 榜单缓存已带内容：直接渲染上次榜单，联网结果回来再提示换新
             else if(tab==2 && catalog.isNotEmpty()) {
                 catalogGrid(body,focusNav,focusType)

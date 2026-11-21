@@ -263,7 +263,20 @@ internal class TvHomePlayback(
         publish("播放已暂停 · 确定继续")
     }
 
-    fun currentDetail(id: String): Detail? = detail?.takeIf { it.series.id == id || series?.id == id }
+    /** 点击卡片时移交的试播流：只携带集 ID、流实例与清晰度，详情数据一律由全量接口重新获取。 */
+    internal class TrialHandoff(val episodeId: String, val video: RemoteVideo, val qualityNumber: Int, val capturedAt: Long)
+
+    /** 对齐参考项目 currentPlayback：仅正在实际播放（未失败/未暂停/未播完/有进度）时才移交流，
+     *  供点击进详情后把已备好的流预置给播放页，详情与分集仍走全量请求。 */
+    fun currentPlayback(id: String): TrialHandoff? {
+        val p = player ?: return null
+        if (closed || failed || userPaused || ended || !firstFrame) return null
+        if (p.playbackState == Player.STATE_BUFFERING) return null
+        if (p.currentPosition() <= 0) return null
+        if (episodeId.isBlank() || detail?.series?.id != id) return null
+        val current = video ?: return null
+        return TrialHandoff(episodeId, current, quality(), android.os.SystemClock.elapsedRealtime())
+    }
 
     private fun schedule(delay: Long = 60) {
         cancelLoad()

@@ -2258,8 +2258,7 @@ class MainActivity: Activity() {
         val home=HomeScreen(this,top,::loadCover,{ _, _-> },
             { item,_ ->
                 homePlayback?.checkpoint()
-                val loaded=homePlayback?.currentDetail(item.id)
-                openDetail(item,true,preloaded=loaded)
+                openDetail(item,true,trial=homePlayback?.currentPlayback(item.id))
             },::quickActions,{ catalogFocus=it })
         homeScreen=home; body.addView(home,lp(-1,0).apply { weight=1f })
         val hot=catalog.filterNot { it.id in library.hidden() }
@@ -3516,7 +3515,7 @@ class MainActivity: Activity() {
     /**
      * @param preloaded 已经取到的详情，在进入详情页时复用，避免重复请求。
      */
-    private fun openDetail(series: Series,resume: Boolean=false,autoplay: Boolean=true,cloud: CloudProgress?=null,preloaded: Detail?=null) {
+    private fun openDetail(series: Series,resume: Boolean=false,autoplay: Boolean=true,cloud: CloudProgress?=null,preloaded: Detail?=null,trial: TvHomePlayback.TrialHandoff?=null) {
         offlineOnly = false
         favoriteMonitor.stop()
         pendingDetail=series; detailAutoplay=autoplay; pendingCloudResume=cloud
@@ -3542,7 +3541,16 @@ class MainActivity: Activity() {
                 ResumePlayback.target(result.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true)
             }
             episodeIndex=target.index; group=episodeIndex/20
-            if(resume) playEpisode(target.index,target.position,autoplay=detailAutoplay)
+            if(resume) {
+                // 对齐参考项目：试播流只在目标集、清晰度一致且足够新鲜（15 秒内）时预置给播放页，
+                // 详情与分集永远来自全量接口，选集列表不再被首页试播的单集详情覆盖。
+                val targetEpisodeId=result.episodes.getOrNull(target.index)
+                if(trial!=null && targetEpisodeId!=null && targetEpisodeId==trial.episodeId &&
+                    trial.qualityNumber==effectiveQuality() &&
+                    android.os.SystemClock.elapsedRealtime()-trial.capturedAt in 0..15_000)
+                    ensurePlaybackCache().adopt(trial.video,trial.qualityNumber)
+                playEpisode(target.index,target.position,autoplay=detailAutoplay)
+            }
             else {
                 showDetail(false)
                 // 详情页停留期间就把「开始观看」要播的那一集及其下一集预热好：

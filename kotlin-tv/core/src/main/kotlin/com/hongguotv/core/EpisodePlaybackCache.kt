@@ -141,6 +141,24 @@ class EpisodePlaybackCache(
         request(Key(id, quality), speculative = true, warmStart = warmStart, ahead = ahead)
     }
 
+    /** 首页试播流移交（对齐参考项目 preparedNext 预置）：用快照重建一个独立流实例放入缓存，
+     *  正式播放 peek 直接命中，跳过取址与首包等待；原实例仍归试播播放器持有，随其关闭互不影响。 */
+    @Synchronized fun adopt(video: RemoteVideo, quality: Int) {
+        val id = video.info.idHint
+        if (id.isNullOrBlank()) return
+        val key = Key(id, quality)
+        // 接管前清掉同集的在途任务或旧结果：既避免完成时反过来覆盖造成泄漏，也保证 peek 一定拿到移交流。
+        entries.remove(key)?.let(::cancel)
+        val clone = RemoteVideo.fromPrepared(repository.http, video.info, video.total, video.preparedSnapshot())
+        val handoff = PreparedEpisode(clone, clock())
+        val entry = Entry().apply {
+            prepared = handoff
+            // task 补一个已完成值，load/isLoading 等按 task 观察的路径不会踩到未初始化状态。
+            task = FutureTask { handoff }.apply { run() }
+        }
+        entries[key] = entry
+    }
+
     @Synchronized fun isLoading(id: String, quality: Int): Boolean =
         entries[Key(id, quality)]?.task?.isDone == false
 

@@ -173,6 +173,14 @@ object SuixinFeedParser {
         }.toMap()
     }
 
+    /** 递归收集试播提示可用的原始行（video_data 及详情子列表），与 collectCell 的遍历深度一致。 */
+    private fun collectFeedRows(cell: JSONObject, out: MutableList<JSONObject>, depth: Int = 0) {
+        if (depth > 12) return
+        rows(cell.opt("video_data")).forEach { out += it }
+        rows(cell.optJSONObject("video_detail")?.opt("video_detail_list")).forEach { out += it }
+        rows(cell.opt("cell_data")).forEach { collectFeedRows(it, out, depth + 1) }
+    }
+
     private fun tab(root: JSONObject): JSONObject {
         if (root.optInt("code", -1) != 0) throw SuixinFeedException(root.optInt("code", -1), "随心看暂不可用（错误码 ${root.optInt("code", -1)}）")
         return root.optJSONObject("data")?.optJSONArray("tab_item")?.let { list ->
@@ -204,9 +212,9 @@ object SuixinFeedParser {
             readyToContinue = session.isNotBlank() && cellId.isNotBlank() &&
                 planId.isNotBlank() && version.length <= 4096,
         )
-        val rows = cells.flatMap { it.optJSONArray("cell_data")?.let(::rows).orEmpty() }
-            .flatMap { it.optJSONArray("video_data")?.let(::rows).orEmpty() }
-        return SuixinPage(unique, cursor, hints(rows, unique), "tab=16 cells=${cells.size} items=${unique.size} continue=${cursor.readyToContinue}")
+        val feedRows = mutableListOf<JSONObject>()
+        cells.forEach { collectFeedRows(it, feedRows) }
+        return SuixinPage(unique, cursor, hints(feedRows, unique), "tab=16 cells=${cells.size} items=${unique.size} continue=${cursor.readyToContinue}")
     }
 
     /** 解析 bookmall/cell/change/v1/ 的续刷响应。 */
@@ -217,12 +225,15 @@ object SuixinFeedParser {
         val items = mutableListOf<Series>()
         collectCell(view, items)
         val unique = items.distinctBy { it.id }
+        // 续刷页是 feed 的主要来源：与首屏一致产出试播提示，预取与换剧免发整套详情请求。
+        val feedRows = mutableListOf<JSONObject>()
+        collectFeedRows(view, feedRows)
         val nextOffset = data.optInt("next_offset", -1)
         val nextSession = str(data, "session_id").ifBlank { previous.sessionId }
         val cursor = if (nextOffset > previous.offset) {
             previous.copy(offset = nextOffset, sessionId = nextSession)
         } else null
-        return SuixinPage(unique, cursor, diagnostic = "cell=1 items=${unique.size} offset=${previous.offset} next=$nextOffset hasMore=${data.optBoolean("has_more", false)}")
+        return SuixinPage(unique, cursor, hints(feedRows, unique), "cell=1 items=${unique.size} offset=${previous.offset} next=$nextOffset hasMore=${data.optBoolean("has_more", false)}")
     }
 
     /** 解析分类随心看 landpage 响应为同一卡片结构。 */

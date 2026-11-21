@@ -14,9 +14,9 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.preload.DefaultPreloadManager
-import androidx.media3.exoplayer.preload.TargetPreloadStatusControl
 import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.source.preload.DefaultPreloadManager
+import androidx.media3.exoplayer.source.preload.TargetPreloadStatusControl
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.hongguotv.core.ContentRepository
@@ -419,9 +419,11 @@ internal class TvHomePlayback(
         val item = preloaded?.mediaItem ?: MediaItem.Builder().setMediaId(episodeId)
             .setUri("hongguotv://home/$episodeId").setMimeType(MimeTypes.VIDEO_MP4).build()
         val manager = preloadManager
-        var source: MediaSource? = preloaded?.source
-        if (source != null) currentSlot = preloaded.slot
-        else if (manager != null) {
+        var source: MediaSource? = null
+        if (preloaded != null && preloaded.source != null) {
+            currentSlot = preloaded.slot
+            source = preloaded.source
+        } else if (manager != null) {
             slotCounter += 1; currentSlot = slotCounter
             source = Mp4MediaSources.factory { VideoDataSource(remote) }.createMediaSource(item)
             manager.add(source, currentSlot)

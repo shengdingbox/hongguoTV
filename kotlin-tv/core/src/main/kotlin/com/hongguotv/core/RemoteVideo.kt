@@ -124,12 +124,11 @@ class RemoteVideo(
         readChunk(k)
         return synchronized(lock) { cache[k] } ?: throw IOException("视频缓存块丢失")
     }
-    /** [initialBytes] 小于分块大小时走轻量首读（对齐参考项目 indexPrefix）：一次小 range 取索引前缀，
-     *  容器头更大时再按需续读；默认按整块读并写入分块缓存，供播放器直接复用。 */
-    @Synchronized fun prepare(initialBytes: Int = 256 * 1024): RemoteVideo {
+    /** [initialBytes] 传 16KB 到分块大小之间的小值时走轻量首读（对齐参考项目 indexPrefix）：
+     *  一次小 range 取索引前缀，容器头更大时再按需续读；默认 0 保持整块读并写入分块缓存。 */
+    @Synchronized fun prepare(initialBytes: Int = 0): RemoteVideo {
         if(::prepared.isInitialized) return this
-        require(initialBytes in 16 * 1024..256 * 1024)
-        if(initialBytes < chunkBytes) {
+        if(initialBytes in 16 * 1024 until chunkBytes) {
             val head=range(0,(initialBytes-1).toLong())
             if(total==0L) total=head.total
             val end=MediaCrypto.headerEnd(head.bytes,total)

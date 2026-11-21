@@ -115,7 +115,7 @@ class HomeScreen(
     private val metadata=label("",12f,TvStyle.accent).apply { maxLines=1; ellipsize=TextUtils.TruncateAt.END }
     private val intro=label("热门短剧，随心发现",13f,TvStyle.muted).apply { maxLines=2; ellipsize=TextUtils.TruncateAt.END }
     private val info=LinearLayout(context).apply { orientation=VERTICAL; setPadding(dp(12),dp(10),dp(12),dp(10)) }
-    private val badge=label("热门发现",11f,TvStyle.accent).apply {
+    private val badge=label("随心看",11f,TvStyle.accent).apply {
         maxLines=1; setPadding(dp(10),dp(6),dp(10),dp(6)); background=TvVisual.row(context,false,true)
     }
     private val empty=label("正在发现好剧…",15f,TvStyle.muted).apply { gravity=Gravity.CENTER; maxLines=3 }
@@ -132,7 +132,7 @@ class HomeScreen(
     private val actionLine=LinearLayout(context).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(8),0,0) }
     private val play=button("播放全集","home:play") { openCurrent() }
     private val manage=button("收藏 / 更多","home:actions") { openActions(manageAnchor()) }
-    private val resume=button("接着看","home:resume") { continueWatching() }
+    private val resume=button("查看详情","home:detail") { openCurrent() }
     private val positionLabel=label("",12f,TvStyle.accent).apply { gravity=Gravity.CENTER }
     private val help=label("← →  换剧     确定  暂停 / 继续     ↓  操作     ↑  分类",11f,TvStyle.muted).apply {
         gravity=Gravity.CENTER; maxLines=1; ellipsize=TextUtils.TruncateAt.END
@@ -232,7 +232,7 @@ class HomeScreen(
             lastFocus=currentKey(); remember(lastFocus); selected(entry.series,entry.label)
         }
     }
-    private fun openCurrent() { current()?.let { rememberCurrent(); open(it.series,it.resume) } }
+    private fun openCurrent() { current()?.let { rememberCurrent(); open(it.series,false) } }
     private fun togglePreview() {
         if(current()==null) return
         rememberCurrent()
@@ -292,18 +292,7 @@ class HomeScreen(
             "${it.series.title}，${it.label}，${previewStatus.text}，左右换剧，$action，长按打开片单操作"
         } ?: "暂无剧集，请刷新"
     }
-    private fun continueWatching() {
-        val more=activeShelf()?.more ?: footerMore?.takeIf { activeShelfKey=="hot" }
-        if(more!=null) { rememberCurrent(); more(); return }
-        val recent=shelves.firstOrNull { it.key=="resume" && it.entries.isNotEmpty() }
-        if(recent!=null) {
-            val entry=recent.entries.first()
-            activeShelfKey=recent.key; indices[recent.key]=0; paintSelection(); rememberCurrent(); open(entry.series,true)
-        } else {
-            val next=activeShelf()?.more ?: footerMore
-            if(next!=null) next() else openCurrent()
-        }
-    }
+    private fun continueWatching() { openCurrent() }
     private fun move(delta: Int) {
         val shelf=activeShelf() ?: return
         if(shelf.entries.size<2) return
@@ -350,7 +339,7 @@ class HomeScreen(
         restoreSelection(focus,previous)
         selectorLine.removeAllViews(); selectorButtons.clear()
         shelves.filter { it.entries.isNotEmpty() }.sortedBy { if(it.key=="hot") 0 else 1 }.forEach { shelf ->
-            val title=when(shelf.key) { "hot" -> "热门发现"; "resume" -> "接着看"; "updates" -> "收藏更新"; else -> shelf.title }
+            val title=when(shelf.key) { "hot" -> "随心看"; "comic" -> "漫剧"; "real" -> "真人短剧"; else -> shelf.title }
             val control=button(title,"home:shelf:${shelf.key}") { selectShelf(shelf.key) }
             control.nextFocusUpId=top.id; control.nextFocusDownId=stage.id
             selectorLine.addView(control,LayoutParams(-2,dp(36)).apply { rightMargin=dp(6) })
@@ -408,18 +397,17 @@ class HomeScreen(
         title.text=entry?.series?.title ?: "发现下一部好剧"
         metadata.text=entry?.let { listOf(it.label,it.series.tags).filter(String::isNotBlank).distinct().joinToString("  ·  ") }.orEmpty()
         intro.text=entry?.series?.description?.takeIf(String::isNotBlank) ?: "左右换剧，挑选喜欢的故事"
-        badge.text=if(shelf?.key=="hot") "热门发现" else shelf?.title ?: "热门发现"
+        badge.text=if(shelf?.key=="hot") "随心看" else shelf?.title ?: "随心看"
         info.visibility=if(entry==null) GONE else VISIBLE
         badge.visibility=if(entry==null) GONE else VISIBLE
         empty.visibility=if(entry==null) VISIBLE else GONE
         empty.text="还没有可展示的剧集\n按右上方刷新发现更多好剧"
-        play.text=if(entry?.resume==true) "继续观看" else "播放全集"
+        play.text="播放随心看"
         play.isEnabled=entry!=null; manage.isEnabled=entry!=null
         play.alpha=if(entry==null) .4f else 1f; manage.alpha=play.alpha
-        val recent=shelves.firstOrNull { it.key=="resume" && it.entries.isNotEmpty() }
-        val more=shelf?.more ?: footerMore?.takeIf { activeShelfKey=="hot" }
-        resume.text=if(more!=null) "查看全部" else if(recent!=null) "接着看" else "查看详情"
-        resume.isEnabled=recent!=null || entry!=null || shelf?.more!=null || footerMore!=null
+        val more=shelf?.more
+        resume.text=if(more!=null) "换一批" else "查看详情"
+        resume.isEnabled=entry!=null || more!=null
         resume.alpha=if(resume.isEnabled) 1f else .4f
         progress.progress=entry?.progress ?: 0; progress.visibility=if(entry?.progress==null) GONE else VISIBLE
         previousTitle.text=if(entries.size>1) entries[(index-1+entries.size)%entries.size].series.title else ""

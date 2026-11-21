@@ -220,6 +220,47 @@ open class ContentRepository(
     /** 未显式传会话时的默认会话，供只取单页的调用方使用。 */
     private val rankDefaultSessions = mutableMapOf<RankBoard, RankSession>()
 
+    /** 随心看首屏：书城推荐接口，返回卡片、试播集提示和服务端游标。 */
+    fun suixinInitial(): SuixinPage {
+        val page = SuixinFeedClient(http, activeSigner).initial()
+        val cursor = page.cursor?.copy(seen = page.items.mapTo(hashSetOf()) { it.id })
+        return page.copy(cursor = cursor, items = page.items, trialHints = page.trialHints)
+    }
+
+    /** 随心看续刷：优先走单列 cell/change，服务端没有单列上下文时回退 tab/v1 的按条 offset。 */
+    fun suixinNext(cursor: SuixinCursor): SuixinPage {
+        if (cursor.readyToContinue && cursor.cellId.isNotBlank()) {
+            val page = SuixinFeedClient(http, activeSigner).next(cursor)
+            val seen = (cursor.seen + page.items.map { it.id }).takeLast(540).toSet()
+            val next = page.cursor?.copy(seen = seen)
+            return page.copy(cursor = next, items = page.items.filter { it.id !in cursor.seen })
+        }
+        val values = linkedMapOf(
+            "tab_type" to "16",
+            "bottom_tab_type" to "7",
+            "landing_bottom_tab_type" to "7",
+            "offset" to cursor.offset.toString(),
+            "client_req_type" to "2",
+            "_rticket" to clock().toString(),
+        )
+        if (cursor.sessionId.isNotBlank()) values["session_id"] = cursor.sessionId
+        val page = SuixinFeedParser.initial(catalogJson("$API/reading/bookapi/bookmall/tab/v1/", values))
+        val seen = (cursor.seen + page.items.map { it.id }).takeLast(540).toSet()
+        val pageCursor = page.cursor?.copy(offset = cursor.offset + maxOf(1, page.items.size), seen = seen)
+        return page.copy(cursor = pageCursor, items = page.items.filter { it.id !in cursor.seen })
+    }
+
+    /** 分类随心看；漫剧与真人短剧使用同一分类接口的不同 req_scene。 */
+    fun suixinCategory(comic: Boolean): SuixinPage = SuixinFeedClient(http, activeSigner).category(comic)
+
+    /** 应用按服务端试播集提示直接打开单集，失败时由上层回退详情首集。 */
+    fun suixinTrial(hint: SuixinTrialHint, maxQuality: Int = 1080): Pair<Detail, StreamInfo> {
+        // 播放模型只接受集 ID，详情仅用于首个正式播放页的描述，不能把集 ID 当成作品 ID。
+        return Detail(Series(hint.episodeId, "随心看"), listOf(hint.episodeId)) to
+            stream(hint.episodeId, maxQuality, playback = true)
+    }
+
+
     /** 与第三方参考 iOS 客户端的 Discover 对齐：首屏合并频道预加载和首批猜你喜欢，之后沿游标加载。 */
     open fun recommendations(cursor: RecommendationCursor? = null): RecommendationPage {
         require(cursor == null || (cursor.cellId.isNotBlank() && cursor.sessionId.isNotBlank() &&

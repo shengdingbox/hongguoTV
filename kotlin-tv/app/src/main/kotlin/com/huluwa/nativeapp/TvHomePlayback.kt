@@ -50,6 +50,9 @@ internal class TvHomePlayback(
     private var active = false
     private var userPaused = false
     private var series: Series? = null
+    /** 随心看下发的首集 ID；命中后无需再请求整套详情。 */
+    private var trialEpisodeId: String? = null
+    private var trialEpisodeCount = 0
     private var detail: Detail? = null
     private var episodeIndex = 0
     private var episodeId = ""
@@ -77,12 +80,14 @@ internal class TvHomePlayback(
         }
     }
 
-    fun select(next: Series) {
-        if (closed || series?.id == next.id) return
+    fun select(next: Series, episodeId: String? = null, episodeCount: Int = 0) {
+        if (closed || series?.id == next.id && trialEpisodeId == episodeId) return
         checkpoint()
         cancelLoad()
         clearStream()
-        series = next; detail = null; episodeIndex = 0; episodeId = ""
+        series = next; trialEpisodeId = episodeId?.takeIf { it.matches(Regex("[0-9]{1,30}")) }
+        trialEpisodeCount = episodeCount.coerceAtLeast(0)
+        detail = null; episodeIndex = 0; episodeId = ""
         firstFrame = false; failed = false; userPaused = false; ended = false
         pendingEpisode = null
         publish("正在准备剧集…")
@@ -93,7 +98,7 @@ internal class TvHomePlayback(
     fun clearSelection() {
         if (closed) return
         checkpoint(); cancelLoad(); clearStream()
-        series = null; detail = null; episodeId = ""; pendingEpisode = null
+        series = null; trialEpisodeId = null; trialEpisodeCount = 0; detail = null; episodeId = ""; pendingEpisode = null
         firstFrame = false; failed = false; ended = false; currentState = null
     }
 
@@ -174,7 +179,9 @@ internal class TvHomePlayback(
             var prepared: RemoteVideo? = null
             try {
                 val result = request.run {
-                    val data = cached ?: repository().seriesDetail(selected.id)
+                    val data = cached ?: trialEpisodeId?.let { first ->
+                        Detail(selected.copy(badge = if (trialEpisodeCount > 0) "共 $trialEpisodeCount 集" else selected.badge), listOf(first))
+                    } ?: repository().seriesDetail(selected.id)
                     if (data.episodes.isEmpty()) throw java.io.IOException("暂无可播放剧集")
                     val savedIndex = remembered?.let { data.episodes.indexOf(it.episodeId) } ?: -1
                     val index = explicit?.first?.coerceIn(0, data.episodes.lastIndex)

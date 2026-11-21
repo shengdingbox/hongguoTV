@@ -52,7 +52,7 @@ class PortraitPages(
     fun home(page: PortraitListPage): (Boolean) -> Unit {
         val body=column(); page.addBlock(body)
         val header = row()
-        header.addView(listPageTitle(page, "推荐"), lp(0, -2).apply { weight = 1f })
+        header.addView(listPageTitle(page, "随心看"), lp(0, -2).apply { weight = 1f })
         header.addView(ImageView(activity).apply {
             setImageResource(R.drawable.ic_search)
             setColorFilter(PortraitStyle.text)
@@ -60,7 +60,7 @@ class PortraitPages(
             background = PortraitStyle.selectable(activity, Color.TRANSPARENT, radius = 24)
             contentDescription = "搜索"
             isFocusable = true
-            setOnClickListener { activity.switchPhoneTab("search") }
+            setOnClickListener { activity.switchPhoneTab("new") }
         }, lp(dp(48), dp(48)).apply { rightMargin = dp(4) })
         body.addView(header, lp())
         val empty = PortraitUi.emptyHint(activity, "正在加载推荐…")

@@ -53,11 +53,11 @@ object PortraitUi {
     fun text(activity: Activity, value: String, size: Float, color: Int = PortraitStyle.text): TextView =
         TextView(activity).apply { text = value; textSize = size; setTextColor(color); includeFontPadding = false }
 
-    /** 手机四项导航，新剧使用红果公开上新日历；搜索从推荐页标题进入。 */
+    /** 手机四项导航：随心看首页、排行榜、搜索与我的；搜索仍复用原 new 页签的搜索入口。 */
     val TABS = listOf(
-        Tab("home", "推荐", R.drawable.ic_phone_home),
+        Tab("home", "随心看", R.drawable.ic_phone_home),
         Tab("rank", "排行榜", R.drawable.ic_phone_rank),
-        Tab("new", "新剧", R.drawable.ic_phone_grid),
+        Tab("new", "搜索", R.drawable.ic_phone_grid),
         Tab("mine", "我的", R.drawable.ic_phone_star),
     )
 

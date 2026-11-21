@@ -5,6 +5,7 @@ package com.hongguotv.core
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InterruptedIOException
+import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPOutputStream
 import okhttp3.CookieJar
 import okhttp3.MediaType.Companion.toMediaType
@@ -57,7 +58,15 @@ internal object MobilePlayback {
             .apply { signed.headers.forEach { (key, value) -> header(key, value) } }
             .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
-        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+        val remaining = RequestScope.remainingMillis()
+        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).apply {
+            if (remaining != null) {
+                val budget = remaining.coerceAtLeast(1L)
+                connectTimeout(budget.coerceAtMost(4_000L), TimeUnit.MILLISECONDS)
+                readTimeout(budget.coerceAtMost(4_000L), TimeUnit.MILLISECONDS)
+                callTimeout(budget, TimeUnit.MILLISECONDS)
+            }
+        }.build()
         return RequestScope.execute(transport.newCall(request)) { response ->
             if (!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
             val responseBody = response.body ?: throw IOException("播放信息格式异常")

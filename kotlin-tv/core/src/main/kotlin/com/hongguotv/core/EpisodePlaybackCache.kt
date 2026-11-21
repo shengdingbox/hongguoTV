@@ -29,8 +29,16 @@ class EpisodePlaybackCache(
         @Volatile var warmStart = false
     }
     private data class Attempts(val count: Int, val lastAt: Long)
+    private data class Recent(
+        val info: StreamInfo,
+        val total: Long,
+        val index: MediaCrypto.Prepared,
+        val at: Long,
+    )
     private val entries = mutableMapOf<Key, Entry>()
     private val attempts = mutableMapOf<Key, Attempts>()
+    // 近期已解析的地址与 MP4 索引可直接复用，不持有仍由播放器使用的数据源。
+    private val recent = linkedMapOf<Key, Recent>()
     // 本次播放失败的本地文件暂时绕过，保留文件供下次会话复用，重试可回落在线。
     private val rejectedDiskEntries = mutableSetOf<Key>()
     private var retained = emptySet<Key>()
@@ -41,13 +49,17 @@ class EpisodePlaybackCache(
     }
 
     /** 算法切换后只换取址仓库；已播放和已缓冲的 RemoteVideo 不受影响。 */
-    @Synchronized fun rebind(next: ContentRepository) { repository = next }
+    @Synchronized fun rebind(next: ContentRepository) {
+        repository = next
+        // 旧身份的地址不能提供给切换后的签名器；已播放的缓冲仍由调用方保护。
+        recent.clear()
+    }
 
     /** 整集取址复用模型缓存、降级重试和即将过期重取；仅正式播放使用三次失败阈值。 */
-    fun resolveStream(id: String, quality: Int, playback: Boolean = false): StreamInfo =
-        repository.stream(id, quality, playback = playback).let { info ->
+    fun resolveStream(id: String, quality: Int, playback: Boolean = false, prefetch: Boolean = false): StreamInfo =
+        repository.stream(id, quality, playback = playback, prefetch = prefetch).let { info ->
             if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L)
-                repository.stream(id, quality, refreshModel = true, playback = playback) else info
+                repository.stream(id, quality, refreshModel = true, playback = playback, prefetch = prefetch) else info
         }
 
     private fun fresh(prepared: PreparedEpisode): Boolean {
@@ -55,7 +67,8 @@ class EpisodePlaybackCache(
         if (localOnly()) return false
         prepared.diskMeta?.let { meta ->
             val current = cachedEpisode(meta.id, meta.quality)
-            return Key(meta.id, meta.quality) !in rejectedDiskEntries && current != null && current.header === meta.header
+            return Key(meta.id, meta.quality) !in rejectedDiskEntries && current != null &&
+                current.header.contentEquals(meta.header) && current.total == meta.total
         }
         val now = clock()
         if (now - prepared.createdAt !in 0..600_000L) return false
@@ -67,6 +80,23 @@ class EpisodePlaybackCache(
     @Synchronized fun peek(id: String, quality: Int): PreparedEpisode? =
         entries[Key(id, quality)]?.prepared?.takeIf(::fresh)
 
+    /** 最多复用最近 5 分钟、仍在有效期内的完整地址与索引，避免重复模型请求和首包校验。 */
+    @Synchronized fun takeRecent(id: String, quality: Int): PreparedEpisode? {
+        val key = Key(id, quality)
+        val entry = recent[key] ?: return null
+        val now = clock()
+        if (now - entry.at !in 0..5 * 60_000L || !addressFresh(entry.info, now)) {
+            recent.remove(key)
+            return null
+        }
+        return try {
+            PreparedEpisode(RemoteVideo.fromPrepared(repository.http, entry.info, entry.total, entry.index), now)
+        } catch (_: IOException) {
+            recent.remove(key)
+            null
+        }
+    }
+
     private fun restoreLocal(meta: EpisodeDiskCache.Meta): PreparedEpisode? {
         val info = StreamInfo(meta.url, meta.key, meta.qualityLabel, meta.expiresAt, meta.id, meta.quality)
         return try {
@@ -74,6 +104,19 @@ class EpisodePlaybackCache(
         } catch (_: IOException) {
             onInvalidate(meta.id)
             null // 本地索引不可用时走在线准备。
+        }
+    }
+
+    private fun addressFresh(info: StreamInfo, now: Long): Boolean {
+        val expires = info.expiresAt
+        return expires <= 0 || expires > now + 60_000L
+    }
+
+    private fun rememberRecent(key: Key, video: RemoteVideo) {
+        synchronized(this) {
+            val index = video.preparedSnapshot()
+            recent[key] = Recent(video.info, video.total, index, clock())
+            while (recent.size > 2) recent.remove(recent.keys.first())
         }
     }
 
@@ -139,20 +182,27 @@ class EpisodePlaybackCache(
                         diskMeta = restored.diskMeta
                         restored.video
                     } else {
-                        val info = resolveStream(key.id, key.quality, playback = playback).copy(idHint = key.id, qualityNumber = key.quality)
-                        if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
-                            throw IOException("播放地址即将过期，请重试")
-                        }
-                        RemoteVideo(repository.http, info, chunkBytes = 256 * 1024).also {
-                            video = it
-                            it.setPlaybackActive(false)
-                            it.prepare()
-                            // 详情页只为从头播放的目标多留一个媒体块，不开启持续预读。
-                            if (entry.warmStart) it.preload()
+                        val recent = takeRecent(key.id, key.quality)
+                        if (recent != null) {
+                            video = recent.video
+                            if (entry.warmStart) recent.video.preload()
+                        } else {
+                            val info = resolveStream(key.id, key.quality, playback = playback, prefetch = speculative).copy(idHint = key.id, qualityNumber = key.quality)
+                            if (info.expiresAt > 0 && info.expiresAt <= clock() + 60_000L) {
+                                throw IOException("播放地址即将过期，请重试")
+                            }
+                            RemoteVideo(repository.http, info, chunkBytes = 256 * 1024).also {
+                                video = it
+                                it.setPlaybackActive(false)
+                                it.prepare()
+                                // 详情页只为从头播放的目标多留一个媒体块，不开启持续预读。
+                                if (entry.warmStart) it.preload()
+                            }
                         }
                     }
                 }
                 val result = PreparedEpisode(prepared, clock(), diskMeta)
+                if (diskMeta == null && !prepared.isLocal) rememberRecent(key, prepared)
                 synchronized(this) {
                     if (entries[key] !== entry || entry.scope.isCancelled) throw InterruptedIOException("播放请求已取消")
                     entry.prepared = result
@@ -187,6 +237,7 @@ class EpisodePlaybackCache(
             }
         }
         attempts.keys.removeAll { it.id == id }
+        recent.keys.removeAll { it.id == id }
         repository.invalidatePlayback(id)
     }
 

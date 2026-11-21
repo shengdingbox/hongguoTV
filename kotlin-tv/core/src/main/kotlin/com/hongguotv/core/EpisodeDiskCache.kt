@@ -295,7 +295,14 @@ class EpisodeDiskCache(
         val key = Key(id, quality)
         val snapshot = synchronized(lock) {
             val entry = entries[key] ?: return 0
-            if (expected != null && expected.header !== entry.meta.header) return 0
+            if (expected != null && (
+                    !expected.header.contentEquals(entry.meta.header) ||
+                        expected.samples.size != entry.meta.samples.size ||
+                        expected.samples.asSequence().zip(entry.meta.samples.asSequence()).any { (a, b) ->
+                            a.start != b.start || a.end != b.end || a.encryptedOffset != b.encryptedOffset ||
+                                !a.iv.contentEquals(b.iv)
+                        }
+                    )) return 0
             val start = offset.coerceIn(0, entry.meta.total)
             val end = (start + length).coerceAtMost(entry.meta.total)
             if (!covered(entry.ranges, start, end - start)) return 0

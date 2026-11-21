@@ -64,6 +64,13 @@ class RequestScope(timeoutMillis: Long = 0) {
 
     companion object {
         private val current = ThreadLocal<RequestScope>()
+        /** 当前取址轮次还剩多少毫秒；没有外层预算时返回 null，普通内容请求保持原超时。 */
+        fun remainingMillis(): Long? = current.get()?.let { scope ->
+            synchronized(scope) { scope.deadlineNanos }
+        }?.takeIf { it != Long.MAX_VALUE }?.let {
+            ((it - System.nanoTime()) / 1_000_000L).coerceAtMost(Long.MAX_VALUE)
+        }
+
         /** 子线程需要显式继承取消作用域，页面离开后才能停掉辅助请求。 */
         fun current(): RequestScope? = current.get()
         fun <T> execute(call: Call, consume: (Response) -> T): T {

@@ -4239,7 +4239,7 @@ class MainActivity: Activity() {
                         refreshTvPauseButton()
                     }
                 }
-                override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(playing) maybePrefetch(); if(hud.visibility==View.VISIBLE) showHud(); syncMediaSession() } }
+                override fun onIsPlayingChanged(playing: Boolean) { if(active()) { if(playing) { warmAdjacentEpisode(); maybePrefetch() }; if(hud.visibility==View.VISIBLE) showHud(); syncMediaSession() } }
                 override fun onPlaybackParametersChanged(parameters: PlaybackParameters) { if(active()) syncMediaSession() }
                 override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo,newPosition: Player.PositionInfo,reason: Int) {
                     if(!active()) return
@@ -4367,6 +4367,16 @@ class MainActivity: Activity() {
         protectPlaybackVideos()
         playbackSession?.retain(ids,effectiveQuality())
         ensurePlaybackCache().retain(ids,effectiveQuality())
+    }
+    /** 当前集开始播放后再并行准备下一集地址；当前集的媒体样本仍由首帧和缓冲门槛保护。 */
+    private fun warmAdjacentEpisode() {
+        if (!foreground || screen != "player" || offlineOnly) return
+        val data = detail ?: return
+        val next = data.episodes.getOrNull(episodeIndex + 1) ?: return
+        if (!library.autoNext || queuedNextId == next || playError) return
+        if (!networkAvailable() || !prefetchMemoryReady()) return
+        retainPlaybackWindow()
+        ensurePlaybackCache().prefetch(next, effectiveQuality())
     }
     /** 开关只控制后三集下载；缓存扫描走后台，不阻塞本机记录加载后的首屏。 */
     private fun applyEpisodeCacheSetting(force: Boolean=false) {

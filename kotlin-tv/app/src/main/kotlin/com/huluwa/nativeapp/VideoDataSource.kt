@@ -37,7 +37,8 @@ class VideoDataSource(private val video: RemoteVideo, private val disk: () -> Ep
         if(cache!=null && !diskUnavailable) {
             val snapshot=meta ?: cache.readableMeta(video.info.idHint,video.info.qualityNumber)
                 ?.takeIf { it.total==video.total && it.key.contentEquals(video.info.key) &&
-                    it.header.contentEquals(video.preparedSnapshot().header) }?.also { meta=it }
+                    it.header.contentEquals(video.preparedSnapshot().header) &&
+                    it.samples.size==video.preparedSnapshot().samples.size }?.also { meta=it }
             if(snapshot!=null) {
                 val count=cache.read(video.info.idHint,video.info.qualityNumber,position,target,targetOffset,want,snapshot)
                 if(count>0) {

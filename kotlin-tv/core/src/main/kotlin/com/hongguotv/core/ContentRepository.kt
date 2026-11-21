@@ -1020,8 +1020,28 @@ open class ContentRepository(
      *  播放接口只答注册过的匿名设备：设备档案与签名头统一取自 [RemoteSigner]，本机不再注册身份。
      *  [refreshModel] 为 true 时先丢弃缓存的播放模型再重取（地址即将过期时用）；
      *  默认复用缓存，否则详情页/相邻集的预热会全部白做。 */
-    fun stream(id: String, maxQuality: Int = 1080, refreshModel: Boolean = false, playback: Boolean = false): StreamInfo {
+    fun stream(
+        id: String,
+        maxQuality: Int = 1080,
+        refreshModel: Boolean = false,
+        playback: Boolean = false,
+        prefetch: Boolean = false,
+    ): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
+        // 正式播放最多 8 秒，后台相邻集预热最多 2 秒；自检与离线下载沿用原有较宽预算。
+        val timeout = when {
+            playback -> 8L
+            prefetch -> 2L
+            else -> 0L
+        }
+        if (timeout == 0L) return streamUnbounded(id, maxQuality, refreshModel, playback = false)
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeout)
+        return RequestScope.withDeadline(deadline) {
+            streamUnbounded(id, maxQuality, refreshModel, playback = playback)
+        }
+    }
+
+    private fun streamUnbounded(id: String, maxQuality: Int, refreshModel: Boolean, playback: Boolean): StreamInfo {
         if(refreshModel) modelCache.evict(id)
         val albumEpisode=isAlbumEpisode(id)
         try {
@@ -1035,6 +1055,7 @@ open class ContentRepository(
             var failure=unplayable
             for(round in 1 until PLAYBACK_RETRY_ROUNDS) {
                 if(Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
+                RequestScope.ensureActive()
                 modelCache.evict(id)
                 if(round>1) Thread.sleep(RETRY_BACKOFF_MS*(round-1))
                 try {
@@ -1168,6 +1189,15 @@ open class ContentRepository(
         return WarmReport(ids.size,cached+filled,filled,route)
     }
     /** 播放请求：签名头由本机播放算法生成，UA 与本机设备档案一致。 */
+    private fun playbackTransport(): OkHttpClient {
+        val remaining = RequestScope.remainingMillis() ?: return http
+        val budget = remaining.coerceAtLeast(1L)
+        return http.newBuilder()
+            .connectTimeout(minOf(budget, 4_000L), TimeUnit.MILLISECONDS)
+            .readTimeout(minOf(budget, 4_000L), TimeUnit.MILLISECONDS)
+            .callTimeout(budget, TimeUnit.MILLISECONDS)
+            .build()
+    }
     private fun signedBuilder(signed: SignedRequest): Request.Builder =
         Request.Builder().url(signed.url).apply {
             header("User-Agent", activeSigner.profile().userAgent)
@@ -1205,7 +1235,7 @@ open class ContentRepository(
             val signed=activeSigner.sign(base,extra,null)
             val request=signedBuilder(signed).get().build()
             val body=try {
-                RequestScope.execute(http.newCall(request)) { response ->
+                RequestScope.execute(playbackTransport().newCall(request)) { response ->
                     if(!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
                     response.body?.string().orEmpty()
                 }
@@ -1248,7 +1278,7 @@ open class ContentRepository(
             val signed=activeSigner.sign(base,extra,null)
             val request=signedBuilder(signed).get().build()
             val body=try {
-                RequestScope.execute(http.newCall(request)) { response ->
+                RequestScope.execute(playbackTransport().newCall(request)) { response ->
                     if(!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
                     response.body?.string().orEmpty()
                 }
@@ -1444,7 +1474,7 @@ open class ContentRepository(
             val attempts=if(index==0) BLANK_RETRIES else 1
             for(attempt in 0 until attempts) {
                 if(Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
-                val body=RequestScope.execute(http.newCall(playerRequest(path,payload))) { response ->
+                val body=RequestScope.execute(playbackTransport().newCall(playerRequest(path,payload))) { response ->
                     if(!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
                     response.body?.string().orEmpty()
                 }

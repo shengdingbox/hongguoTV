@@ -2,13 +2,16 @@
 package com.hongguotv.core
 
 import java.io.IOException
-import java.util.concurrent.atomic.AtomicInteger
+import java.io.InterruptedIOException
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+
+/** 随心看接口错误：携带服务端错误码，110 一类校验失败由上层重启会话或降级游客口径。 */
+class SuixinFeedException(val code: Int, message: String) : IOException(message)
 
 /** 随心看游标：服务端会话和 offset 都由接口下发，不使用本地页码。 */
 data class SuixinCursor(
@@ -19,11 +22,83 @@ data class SuixinCursor(
     val planId: String = "",
     val versionTag: String = "",
     val readyToContinue: Boolean = false,
-)
+    /** 账号签名口径被服务端拒绝（110）后降级为游客口径，不再反复签名重试。 */
+    val unsignedFallback: Boolean = false,
+) {
+    /** 冷启动续刷用的最小快照：分页会话、offset 与最近去重，不含任何凭据（对齐参考项目）。 */
+    fun snapshot(): String =
+        JSONObject()
+            .put("schema", 1)
+            .put("session", sessionId)
+            .put("offset", offset)
+            .put("seen", JSONArray(seen.toList()))
+            .put("cellId", cellId)
+            .put("planId", planId)
+            .put("versionTag", versionTag)
+            .put("readyToContinue", readyToContinue)
+            .put("unsignedFallback", unsignedFallback)
+            .toString()
+
+    /** 丢弃服务端会话从头拉取，保留去重记录（对齐参考 restartServer）。 */
+    fun restarted(seenLimit: Int = 540) = copy(
+        sessionId = "", offset = 0, cellId = "", planId = "", versionTag = "",
+        readyToContinue = false,
+        seen = seen.toList().takeLast(seenLimit).toSet(),
+    )
+
+    companion object {
+        /** 恢复快照；格式不合法或数值越界返回 null，调用方按新会话处理。 */
+        fun restore(value: String): SuixinCursor? {
+            val saved = runCatching { JSONObject(value) }.getOrNull() ?: return null
+            val session = saved.optString("session")
+            val offset = saved.optInt("offset", 0)
+            val cellId = saved.optString("cellId")
+            val planId = saved.optString("planId")
+            val versionTag = saved.optString("versionTag")
+            if (session.length > 4096 || offset !in 0..1_000_000 ||
+                session.any { it == '\r' || it == '\n' || it == '\u0000' }) return null
+            if ((!cellId.matches(Regex("[1-9][0-9]{0,29}")) && cellId.isNotEmpty()) ||
+                (!planId.matches(Regex("[1-9][0-9]{0,29}")) && planId.isNotEmpty()) ||
+                versionTag.length > 4096 || versionTag.any { it == '\r' || it == '\n' || it == '\u0000' }) return null
+            val seen = saved.optJSONArray("seen")?.let { rows ->
+                (0 until minOf(rows.length(), 540)).mapNotNull { rows.optString(it).takeIf(String::isNotBlank) }
+            }.orEmpty()
+            return SuixinCursor(
+                sessionId = session, offset = offset, seen = seen.toSet(),
+                cellId = cellId, planId = planId, versionTag = versionTag,
+                readyToContinue = saved.optBoolean("readyToContinue", false),
+                unsignedFallback = saved.optBoolean("unsignedFallback", false),
+            )
+        }
+    }
+}
 
 data class SuixinTrialHint(val episodeId: String, val episodeCount: Int)
 
-data class SuixinCategoryCursor(val sessionId: String = "", val offset: Int = 0)
+data class SuixinCategoryCursor(
+    val sessionId: String = "",
+    val offset: Int = 0,
+    /** 已看去重集合：随请求带给服务端（filter_ids），避免分类流重复推荐。 */
+    val seen: Set<String> = emptySet(),
+) {
+    fun snapshot(): String =
+        JSONObject().put("session", sessionId).put("offset", offset)
+            .put("seen", JSONArray(seen.toList())).toString()
+
+    companion object {
+        fun restore(value: String): SuixinCategoryCursor? {
+            val saved = runCatching { JSONObject(value) }.getOrNull() ?: return null
+            val session = saved.optString("session")
+            val offset = saved.optInt("offset", 0)
+            if (session.length > 4096 || offset !in 0..1_000_000 ||
+                session.any { it == '\r' || it == '\n' || it == '\u0000' }) return null
+            val seen = saved.optJSONArray("seen")?.let { rows ->
+                (0 until minOf(rows.length(), 540)).mapNotNull { rows.optString(it).takeIf(String::isNotBlank) }
+            }.orEmpty()
+            return SuixinCategoryCursor(session, offset, seen.toSet())
+        }
+    }
+}
 
 data class SuixinPage(
     val items: List<Series>,
@@ -99,7 +174,7 @@ object SuixinFeedParser {
     }
 
     private fun tab(root: JSONObject): JSONObject {
-        if (root.optInt("code", -1) != 0) throw IOException("随心看暂不可用（错误码 ${root.optInt("code", -1)}）")
+        if (root.optInt("code", -1) != 0) throw SuixinFeedException(root.optInt("code", -1), "随心看暂不可用（错误码 ${root.optInt("code", -1)}）")
         return root.optJSONObject("data")?.optJSONArray("tab_item")?.let { list ->
             (0 until list.length()).mapNotNull(list::optJSONObject).firstOrNull { it.optInt("tab_type") == 16 }
         } ?: throw IOException("随心看数据格式已变化")
@@ -136,7 +211,7 @@ object SuixinFeedParser {
 
     /** 解析 bookmall/cell/change/v1/ 的续刷响应。 */
     fun next(root: JSONObject, previous: SuixinCursor): SuixinPage {
-        if (root.optInt("code", -1) != 0) throw IOException("随心看续刷暂不可用（错误码 ${root.optInt("code", -1)}）")
+        if (root.optInt("code", -1) != 0) throw SuixinFeedException(root.optInt("code", -1), "随心看续刷暂不可用（错误码 ${root.optInt("code", -1)}）")
         val data = root.optJSONObject("data") ?: throw IOException("随心看续刷数据格式已变化")
         val view = data.optJSONObject("cell_view") ?: throw IOException("随心看续刷单元缺失")
         val items = mutableListOf<Series>()
@@ -152,7 +227,7 @@ object SuixinFeedParser {
 
     /** 解析分类随心看 landpage 响应为同一卡片结构。 */
     fun category(root: JSONObject, previous: SuixinCategoryCursor? = null): SuixinPage {
-        if (root.optInt("code", -1) != 0) throw IOException("分类随心看暂不可用（错误码 ${root.optInt("code", -1)}）")
+        if (root.optInt("code", -1) != 0) throw SuixinFeedException(root.optInt("code", -1), "分类随心看暂不可用（错误码 ${root.optInt("code", -1)}）")
         val data = root.optJSONObject("data") ?: throw IOException("分类随心看数据格式已变化")
         val values = rows(data.opt("video_data"))
         val items = values.mapNotNull { series(it) }.distinctBy { it.id }
@@ -167,10 +242,12 @@ object SuixinFeedParser {
     }
 }
 
-/** 旧版目录接口暂不可用时的随心看请求通道：书城推荐使用设备档案签名和游客票据。 */
+/** 旧版目录接口暂不可用时的随心看请求通道：书城推荐使用设备档案签名和游客票据，登录后走账号个性化口径。 */
 class SuixinFeedClient(
     private val http: OkHttpClient,
     private val signer: RemoteSigner,
+    /** 登录后推荐走账号个性化口径（74332 签名 + Cookie）；为空保持游客票据。 */
+    private val account: AccountCredentials? = null,
 ) {
     private companion object {
         val HOSTS = listOf(
@@ -179,17 +256,35 @@ class SuixinFeedClient(
             "https://api5-normal-lf.fqnovel.com",
         )
         const val LIMIT = 16 * 1024 * 1024
+        const val SIGNED_VERSION_CODE = "74332"
+        const val SIGNED_VERSION_NAME = "7.4.3.32"
+        const val SIGNED_USER_AGENT =
+            "com.phoenix.read/74332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
     }
 
-    private val attempt = AtomicInteger(0)
+    /** 同族主机按失败轮换（对齐参考项目）：首选节点起步，IOException 才换下一台。 */
+    private fun <T> withHosts(path: String, block: (url: String) -> T): T {
+        var last: IOException? = null
+        for (host in HOSTS) {
+            try {
+                return block("$host$path")
+            } catch (problem: IOException) {
+                if (problem is InterruptedIOException || problem is SuixinFeedException) throw problem
+                last = problem
+            }
+        }
+        throw last ?: IOException("随心看请求失败")
+    }
 
-    private fun text(signed: SignedRequest): String {
+    private fun text(signed: SignedRequest, cookie: String? = null, userAgent: String? = null): String {
         val request = Request.Builder().url(signed.url)
             .header("Accept", "application/json")
             .header("X-XS-From-Web", "0")
             .header("Sdk-Version", "2")
             .apply {
                 signed.headers.forEach { (key, value) -> header(key, value) }
+                cookie?.takeIf(String::isNotBlank)?.let { header("Cookie", it) }
+                userAgent?.takeIf(String::isNotBlank)?.let { header("User-Agent", it) }
                 val payload = signed.body
                 if (payload == null) get() else post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
             }
@@ -215,15 +310,35 @@ class SuixinFeedClient(
         }
     }
 
-    private fun host() = HOSTS[attempt.getAndIncrement().mod(HOSTS.size)]
-
-    private fun request(url: String, values: Map<String, String>, body: ByteArray? = null): JSONObject {
-        // 分类接口是 POST；书城 tab/cell 接口继续使用游客票据签名。
-        val signed = if (body == null) signer.signCatalog(url, values) else signer.sign(url, values, body)
-        return JSONObject(text(signed))
+    /** 账号签名口径：设备档案值打底、业务参数覆盖、74332 版本收口，一次成型。 */
+    private fun signedRequest(url: String, values: Map<String, String>, unsignedFallback: Boolean): SignedRequest? {
+        if (account == null || unsignedFallback) return null
+        val profile = signer.profile()
+        val merged = linkedMapOf<String, String>()
+        merged.putAll(profile.params)
+        merged.putAll(values)
+        merged["version_code"] = SIGNED_VERSION_CODE
+        merged["version_name"] = SIGNED_VERSION_NAME
+        merged["manifest_version_code"] = SIGNED_VERSION_CODE
+        merged["update_version_code"] = SIGNED_VERSION_CODE
+        merged["pv_player"] = SIGNED_VERSION_CODE
+        return signer.signPlayback(url, merged)
     }
 
-    fun initial(offset: Int = 0): SuixinPage {
+    private fun request(
+        url: String,
+        values: Map<String, String>,
+        body: ByteArray? = null,
+        unsignedFallback: Boolean = false,
+    ): JSONObject {
+        val signed = signedRequest(url, values, unsignedFallback)
+        if (signed != null) return JSONObject(text(signed, account?.cookie, SIGNED_USER_AGENT))
+        // 分类接口是 POST；书城 tab/cell 接口继续使用游客票据签名。
+        val guest = if (body == null) signer.signCatalog(url, values) else signer.sign(url, values, body)
+        return JSONObject(text(guest))
+    }
+
+    fun initial(offset: Int = 0, unsignedFallback: Boolean = false): SuixinPage {
         val values = linkedMapOf(
             "tab_type" to "16",
             "bottom_tab_type" to "7",
@@ -231,7 +346,9 @@ class SuixinFeedClient(
             "offset" to offset.toString(),
             "client_req_type" to if (offset == 0) "1" else "2",
         )
-        return SuixinFeedParser.initial(request("${host()}/reading/bookapi/bookmall/tab/v1/", values))
+        return withHosts("/reading/bookapi/bookmall/tab/v1/") { url ->
+            SuixinFeedParser.initial(request(url, values, unsignedFallback = unsignedFallback))
+        }
     }
 
     fun next(cursor: SuixinCursor): SuixinPage {
@@ -249,11 +366,10 @@ class SuixinFeedClient(
             "filter_ids" to cursor.seen.joinToString(","),
         )
         if (cursor.sessionId.isNotBlank()) values["session_id"] = cursor.sessionId
-        // 每个参数都交给 signCatalog 组装，避免二次编码和签名查询串不一致。
-        return SuixinFeedParser.next(
-            request("${host()}/reading/bookapi/bookmall/cell/change/v1/", values),
-            cursor,
-        )
+        // 每个参数都交给签名器组装，避免二次编码和签名查询串不一致。
+        return withHosts("/reading/bookapi/bookmall/cell/change/v1/") { url ->
+            SuixinFeedParser.next(request(url, values, unsignedFallback = cursor.unsignedFallback), cursor)
+        }
     }
 
     fun category(comic: Boolean, cursor: SuixinCategoryCursor? = null): SuixinPage {
@@ -264,11 +380,12 @@ class SuixinFeedClient(
             .forEach { selector.put(it, JSONArray()) }
         val body = JSONObject().put("req_scene", scene).put("offset", cursor?.offset ?: 0).put("limit", 24)
             .put("req_type", "only_content").put("need_selector_panel", false)
-            .put("client_req_type", if (cursor == null) 3 else 2).put("session_id", cursor?.sessionId.orEmpty()).put("filter_ids", "")
+            .put("client_req_type", if (cursor == null) 3 else 2).put("session_id", cursor?.sessionId.orEmpty())
+            .put("filter_ids", cursor?.seen?.joinToString(",").orEmpty())
             .put("select_items", selector).toString().toByteArray(Charsets.UTF_8)
-        return SuixinFeedParser.category(
-            request("${host()}/reading/distribution/category/landpage/v/", emptyMap(), body),
-            cursor,
-        )
+        return withHosts("/reading/distribution/category/landpage/v/") { url ->
+            // 分类接口与参考项目一致不走账号签名，始终游客口径。
+            SuixinFeedParser.category(request(url, emptyMap(), body, unsignedFallback = true), cursor)
+        }
     }
 }

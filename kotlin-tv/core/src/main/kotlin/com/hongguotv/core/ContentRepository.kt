@@ -220,31 +220,51 @@ open class ContentRepository(
     /** 未显式传会话时的默认会话，供只取单页的调用方使用。 */
     private val rankDefaultSessions = mutableMapOf<RankBoard, RankSession>()
 
+    /** 登录账号凭据；推荐请求用它走个性化口径，为空保持游客。由界面层在账号变化时注入。 */
+    @Volatile var feedAccount: AccountCredentials? = null
+
     /** 随心看首屏：书城推荐接口，返回卡片、试播集提示和服务端游标。 */
-    fun suixinInitial(): SuixinPage {
-        val page = SuixinFeedClient(http, activeSigner).initial()
+    fun suixinInitial(unsignedFallback: Boolean = false): SuixinPage {
+        val page = SuixinFeedClient(http, activeSigner, feedAccount).initial(0, unsignedFallback)
         val cursor = page.cursor?.copy(seen = page.items.mapTo(hashSetOf()) { it.id })
         return page.copy(cursor = cursor, items = page.items, trialHints = page.trialHints)
     }
 
-    /** 随心看续刷：优先走单列 cell/change，服务端没有单列上下文时回退 tab/v1 的按条 offset。 */
+    /**
+     * 随心看续刷：优先走单列 cell/change，服务端没有单列上下文时回退 tab/v1 的按条 offset。
+     * 110 先降级游客口径；其余非零错误码且已有服务端会话时丢弃旧会话从头拉（对齐参考 restartServer）。
+     */
     fun suixinNext(cursor: SuixinCursor): SuixinPage {
+        var current = cursor
+        var last: Exception? = null
+        repeat(3) {
+            try {
+                return suixinNextOnce(current)
+            } catch (feed: SuixinFeedException) {
+                last = feed
+                if (feed.code == 110 && !current.unsignedFallback) {
+                    current = current.copy(unsignedFallback = true)
+                    return@repeat
+                }
+                if (feed.code != 0 && current.sessionId.isNotEmpty()) {
+                    current = current.restarted()
+                    return@repeat
+                }
+                throw feed
+            }
+        }
+        throw last ?: IOException("随心看续刷失败")
+    }
+
+    private fun suixinNextOnce(cursor: SuixinCursor): SuixinPage {
         if (cursor.readyToContinue && cursor.cellId.isNotBlank()) {
-            val page = SuixinFeedClient(http, activeSigner).next(cursor)
+            val page = SuixinFeedClient(http, activeSigner, feedAccount).next(cursor)
             val seen = (cursor.seen + page.items.map { it.id }).toList().takeLast(540).toSet()
             val next = page.cursor?.copy(seen = seen)
             return page.copy(cursor = next, items = page.items.filter { it.id !in cursor.seen })
         }
-        val values = linkedMapOf(
-            "tab_type" to "16",
-            "bottom_tab_type" to "7",
-            "landing_bottom_tab_type" to "7",
-            "offset" to cursor.offset.toString(),
-            "client_req_type" to "2",
-            "_rticket" to clock().toString(),
-        )
-        if (cursor.sessionId.isNotBlank()) values["session_id"] = cursor.sessionId
-        val page = SuixinFeedParser.initial(catalogJson("$API/reading/bookapi/bookmall/tab/v1/", values))
+        // tab/v1 回退与 cell 通道统一走同一客户端：同一签名口径与主机轮换策略。
+        val page = SuixinFeedClient(http, activeSigner, feedAccount).initial(cursor.offset, cursor.unsignedFallback)
         val seen = (cursor.seen + page.items.map { it.id }).toList().takeLast(540).toSet()
         val pageCursor = page.cursor?.copy(offset = cursor.offset + maxOf(1, page.items.size), seen = seen)
         return page.copy(cursor = pageCursor, items = page.items.filter { it.id !in cursor.seen })

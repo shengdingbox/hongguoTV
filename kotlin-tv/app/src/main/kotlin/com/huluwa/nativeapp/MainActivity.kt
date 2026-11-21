@@ -733,8 +733,11 @@ class MainActivity: Activity() {
         newReleaseWindow=library.newReleaseWindow.takeIf { id -> NEW_RELEASE_WINDOWS.any { it.first==id } } ?: NEW_RELEASE_WINDOWS[0].first
         setupMouseGestures()
         accountManager=AccountManager(this,library,repository.activeSigner)
+        // 登录后推荐走账号个性化口径（74332 签名 + Cookie），退出回到游客票据。
+        repository.feedAccount=accountManager.feedCredentials
         accountManager.onAccountChanged={
             accountButton?.text=accountManager.accountLabel
+            repository.feedAccount=accountManager.feedCredentials
             // 账号状态变化后，正在展示的记录页立即重建（登录后拉取云端历史、退出后清空云端区）。
             // isLoaded 必须查：recreate()（换主题/缩放）会新建 AccountManager 并可能立刻回调，
             // 此时本机记录还在异步加载，页面一读取 state() 就会崩溃。
@@ -2272,6 +2275,7 @@ class MainActivity: Activity() {
                 loadMoreSuixinHome(newSession=true)
             } else {
                 suixinCategoryItems.remove(suixinFeedMode); suixinCategoryCursors.remove(suixinFeedMode)
+                runCatching { suixinCursorPrefs.edit().remove(suixinFeedMode).apply() }
                 page=1; showCatalog(true)
             }
         }
@@ -2330,11 +2334,17 @@ class MainActivity: Activity() {
     private fun suixinPage(requestPage: Int): CatalogPage {
         if(requestPage<=1) {
             suixinLoading=true
-            val page=try { repository.suixinInitial() } catch(_: Exception) {
+            // 冷启动先接上次的分页游标（对齐参考项目 cursor 恢复）：有会话进度直接续刷。
+            val saved=suixinCursorSnapshot()
+            val page=try {
+                if(saved!=null && (saved.sessionId.isNotEmpty() || saved.offset>0)) repository.suixinNext(saved)
+                else repository.suixinInitial()
+            } catch(_: Exception) {
                 if(suixinSource==null) suixinSource="fallback"
                 return repository.home(requestPage,library.contentType,null)
             }
             suixinCursor=page.cursor
+            saveSuixinCursor()
             suixinTrialHints=page.trialHints
             appendSuixinHot(page.items)
             suixinSource=if(page.cursor?.readyToContinue==true) "tab+cell" else "tab"
@@ -2349,6 +2359,7 @@ class MainActivity: Activity() {
             return CatalogPage(emptyList(),false)
         }
         suixinCursor=page.cursor
+        saveSuixinCursor()
         if(page.trialHints.isNotEmpty()) suixinTrialHints=suixinTrialHints+page.trialHints
         appendSuixinHot(page.items)
         return CatalogPage(page.items,page.cursor!=null)
@@ -2366,10 +2377,26 @@ class MainActivity: Activity() {
         suixinCursor=null
         val fresh=repository.suixinInitial()
         suixinCursor=fresh.cursor?.copy(seen=(seen+fresh.items.map { it.id }).toList().takeLast(540).toSet())
+        saveSuixinCursor()
         if(fresh.trialHints.isNotEmpty()) suixinTrialHints=suixinTrialHints+fresh.trialHints
         val items=fresh.items.filter { it.id !in seen }
         appendSuixinHot(items)
         return CatalogPage(items,fresh.cursor!=null)
+    }
+
+    /** 随心看游标快照（对齐参考 FeedStartupCache 的游标部分）：冷启动接着上次刷，不带任何凭据。 */
+    private val suixinCursorPrefs by lazy { getSharedPreferences("suixin-cursor-v1", MODE_PRIVATE) }
+    private fun suixinCursorSnapshot(): SuixinCursor? =
+        suixinCursorPrefs.getString("hot", null)?.let { runCatching { SuixinCursor.restore(it) }.getOrNull() }
+    private fun saveSuixinCursor() {
+        val cursor=suixinCursor ?: return
+        runCatching { suixinCursorPrefs.edit().putString("hot", cursor.snapshot()).apply() }
+    }
+    private fun savedCategoryCursor(mode: String): SuixinCategoryCursor? =
+        suixinCursorPrefs.getString(mode, null)?.let { runCatching { SuixinCategoryCursor.restore(it) }.getOrNull() }
+    private fun saveSuixinCategoryCursor(mode: String) {
+        val cursor=suixinCategoryCursors[mode] ?: return
+        runCatching { suixinCursorPrefs.edit().putString(mode, cursor.snapshot()).apply() }
     }
 
     /** 冷启动先恢复当前子栏的展示快照，联网请求随后在后台刷新。 */
@@ -2454,14 +2481,21 @@ class MainActivity: Activity() {
 
     private fun suixinCategoryPage(more: Boolean): CatalogPage {
         val comic=suixinFeedMode=="comic"
-        val cursor=if(more) suixinCategoryCursors[suixinFeedMode] else null
+        val mode=suixinFeedMode
+        // 内存游标优先；冷启动内存为空时恢复上次快照接着刷（已看集合随请求带给服务端去重）。
+        val cursor=suixinCategoryCursors[mode]
+            ?: if(more) null else savedCategoryCursor(mode)
         if(more && cursor==null) return CatalogPage(emptyList(),false)
         val page=repository.suixinCategory(comic,cursor)
-        suixinCategoryCursors[suixinFeedMode]=page.categoryCursor
+        // 分类游标带上已看集合：服务端 filter_ids 去重，本地过滤继续兜底。
+        val shown=suixinCategoryItems[mode].orEmpty().map { it.id }
+        val nextCursor=page.categoryCursor?.copy(seen=(shown+page.items.map { it.id }).takeLast(540).toSet())
+        suixinCategoryCursors[mode]=nextCursor
+        saveSuixinCategoryCursor(mode)
         if(page.trialHints.isNotEmpty()) suixinTrialHints=suixinTrialHints+page.trialHints
-        val seen=suixinCategoryItems[suixinFeedMode].orEmpty().mapTo(hashSetOf()) { it.id }
+        val seen=shown.toHashSet()
         val items=page.items.filter { it.id !in seen }
-        suixinCategoryItems[suixinFeedMode]=suixinCategoryItems[suixinFeedMode].orEmpty()+items
+        suixinCategoryItems[mode]=suixinCategoryItems[mode].orEmpty()+items
         return CatalogPage(items,page.categoryCursor!=null)
     }
 

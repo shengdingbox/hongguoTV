@@ -119,6 +119,9 @@ class AccountManager(
     private var busy = false
     var onAccountChanged: (() -> Unit)? = null
 
+    /** 推荐个性化用的当前凭据；未登录为 null。 */
+    val feedCredentials get() = credentials
+
     val signedIn get() = credentials != null && profile != null
 
     /** 账号卡与账号中心展示用的昵称；未登录时给出明确兜底，不把内部状态串进标题。 */

@@ -146,6 +146,17 @@ open class RemoteSigner(
         return SignedRequest(signedUrl, headers, body)
     }
 
+    /**
+     * 登录账号的个性化推荐口径（对齐参考项目 signPlayback）：[values] 必须已并入设备档案
+     * 与业务参数（含 74332 版本字段），本方法只负责按其现值签名，不再套用身份覆盖。
+     */
+    open fun signPlayback(url: String, values: Map<String, String>): SignedRequest {
+        val profile = profile()
+        if (!profile.available) throw SignatureException("本机匿名设备尚未就绪")
+        val (signedUrl, headers) = signQuery(url, values, null, profile)
+        return SignedRequest(signedUrl, headers, null)
+    }
+
     /** 书城推荐复用本机签名，并按 iOS SDK 带上同一设备的游客票据。 */
     @Synchronized
     open fun signCatalog(url: String, values: Map<String, String>, body: ByteArray? = null): SignedRequest {

@@ -60,8 +60,8 @@ class HomeScreen(
         minHeight=dp(38); setPadding(dp(12),dp(8),dp(12),dp(8))
         setOnClickListener { action() }
         setOnFocusChangeListener { _,focused ->
-            background=TvVisual.row(context,focused,isSelected)
-            setTextColor(if(isSelected) TvStyle.accent else TvStyle.text)
+            if(tag.toString()=="home:refresh" || tag.toString().startsWith("home:feed:")) paintFeedTabs()
+            else background=TvVisual.row(context,focused,isSelected)
             if(focused) lastFocus=tag.toString()
         }
         background=TvVisual.row(context,false)
@@ -149,13 +149,15 @@ class HomeScreen(
         // 固定分类 Tab：推荐 / 真人剧 / 漫剧 / 换一批，保持参考项目的布局。
         listOf("hot" to "推荐", "real" to "真人剧", "comic" to "漫剧").forEach { (key, title) ->
             val tab=button(title, "home:feed:$key") { selectFeed(key) }.apply {
-                textSize=14f; minHeight=dp(40); gravity=Gravity.CENTER
+                textSize=14f; minHeight=dp(36); gravity=Gravity.CENTER
+                setPadding(dp(14),dp(7),dp(14),dp(7))
                 contentDescription=title
             }
             feedTabs+=tab
-            selectorLine.addView(tab, LayoutParams(0, dp(40), 1f).apply { rightMargin=dp(8) })
+            selectorLine.addView(tab, LayoutParams(0, dp(36), 1f).apply { rightMargin=dp(8) })
         }
-        selectorLine.addView(refresh, LayoutParams(dp(140), dp(40)))
+        refresh.apply { textSize=14f; minHeight=dp(36); setPadding(dp(14),dp(7),dp(14),dp(7)) }
+        selectorLine.addView(refresh, LayoutParams(dp(140), dp(36)))
         val selectorViews=feedTabs+refresh
         selectorViews.forEachIndexed { index, tab ->
             tab.nextFocusLeftId=selectorViews[if(index==0) selectorViews.lastIndex else index-1].id
@@ -163,7 +165,8 @@ class HomeScreen(
         }
         feedTabs.forEach { it.nextFocusDownId=stage.id }
         refresh.nextFocusRightId=refresh.id
-        addView(selectors, LayoutParams(-1, dp(48)))
+        paintFeedTabs()
+        addView(selectors, LayoutParams(-1, dp(42)))
 
         carousel.addView(previousCard,FrameLayout.LayoutParams(dp(112),-1,Gravity.START).apply { topMargin=dp(16); bottomMargin=dp(16) })
         carousel.addView(nextCard,FrameLayout.LayoutParams(dp(112),-1,Gravity.END).apply { topMargin=dp(16); bottomMargin=dp(16) })
@@ -336,12 +339,15 @@ class HomeScreen(
         feedTabs.forEach { tab ->
             val selected=tab.tag=="home:feed:$feedMode"
             tab.isSelected=selected
-            tab.background=TvVisual.tab(context,tab.hasFocus(),selected)
+            tab.background=TvVisual.card(context,tab.hasFocus(),selected)
             tab.setTextColor(if(selected) TvStyle.accent else if(tab.hasFocus()) TvStyle.text else TvStyle.muted)
             tab.setTypeface(null,if(selected || tab.hasFocus()) Typeface.BOLD else Typeface.NORMAL)
         }
+        refresh.isSelected=false
+        refresh.background=TvVisual.card(context,refresh.hasFocus(),false)
+        refresh.setTextColor(if(refresh.hasFocus()) TvStyle.text else TvStyle.muted)
+        refresh.setTypeface(null,if(refresh.hasFocus()) Typeface.BOLD else Typeface.NORMAL)
     }
-
 
     fun capturePosition(): Position {
         val row=shelves.indexOfFirst { it.key==activeShelfKey }.coerceAtLeast(0)

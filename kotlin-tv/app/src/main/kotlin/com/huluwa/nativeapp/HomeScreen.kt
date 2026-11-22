@@ -141,9 +141,6 @@ class HomeScreen(
     private val manage=button("收藏 / 更多","home:actions") { openActions(manageAnchor()) }
     private val resume=button("查看详情","home:detail") { openCurrent() }
     private val positionLabel=label("",12f,TvStyle.accent).apply { gravity=Gravity.CENTER }
-    private val help=label("← →  换剧     确定  暂停 / 继续     ↓  操作     ↑  分类",11f,TvStyle.muted).apply {
-        gravity=Gravity.CENTER; maxLines=1; ellipsize=TextUtils.TruncateAt.END
-    }
     val refresh=button("换一批","home:refresh") {}.apply { textSize=14f; minHeight=dp(36); setPadding(dp(16),dp(7),dp(16),dp(7)) }
 
     init {
@@ -203,7 +200,6 @@ class HomeScreen(
         })
         addView(carousel,LayoutParams(-1,0,1f))
         addView(positionLabel,LayoutParams(-1,dp(23)))
-        addView(help,LayoutParams(-1,dp(23)))
         stage.nextFocusLeftId=stage.id; stage.nextFocusRightId=stage.id
         stage.nextFocusUpId=top.id; stage.nextFocusDownId=play.id
         stage.setOnFocusChangeListener { _,focused ->
@@ -384,7 +380,6 @@ class HomeScreen(
         render(emptyList(),"",false,null)
         empty.text=""
         positionLabel.text=""
-        help.visibility=INVISIBLE
         stage.isFocusable=false; stage.isClickable=false
         refresh.text=if(retry) "重试" else "换一批"
         refresh.nextFocusDownId=refresh.id
@@ -490,7 +485,6 @@ class HomeScreen(
         listOf(previousCard,nextCard).forEach { it.layoutParams=it.layoutParams.apply { width=sideWidth } }
         info.layoutParams=info.layoutParams.apply { width=minOf(dp(260),(w-edge*2-dp(34)).coerceAtLeast(dp(140))) }
         applyPreviewInfo()
-        help.visibility=if(h<dp(240)) GONE else VISIBLE
         post { loadArtwork() }
     }
     fun firstId()=if(current()!=null) stage.id else feedTabs.firstOrNull()?.id ?: refresh.id

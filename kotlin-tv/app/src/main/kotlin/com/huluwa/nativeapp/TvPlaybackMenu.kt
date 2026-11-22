@@ -30,6 +30,7 @@ class TvPlaybackMenu(
     onSpeed: (TextView) -> Unit,
     onQuality: (TextView) -> Unit,
     onDanmaku: (TextView) -> Unit,
+    onDetail: () -> Unit,
     onMore: (TextView) -> Unit,
     private val onEpisode: (Int) -> Unit,
 ) : LinearLayout(context) {
@@ -66,6 +67,7 @@ class TvPlaybackMenu(
         quality = card("清晰度", "") { onQuality(it) }
         danmaku = card("弹幕", "") { onDanmaku(it) }
         play = card("暂停", "") { onPlay() }
+        card("详情", "剧集信息") { onDetail() }
         card("更多", "播放设置") { onMore(it) }
         val enabledCards = cards.filter { it.isEnabled }
         enabledCards.forEachIndexed { index, view ->

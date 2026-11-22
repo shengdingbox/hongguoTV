@@ -5557,6 +5557,7 @@ class MainActivity: Activity() {
             onSpeed={ showSpeedPicker(it) },
             onQuality={ showQualityPicker(it,true) },
             onDanmaku={ showTvDanmakuMenu(it) },
+            onDetail={ returnToDetail(true) },
             onMore={ showTvPlaybackSettings(it) },
             onEpisode={ selected ->
                 if(selected==episodeIndex) hidePlaybackOverlay()

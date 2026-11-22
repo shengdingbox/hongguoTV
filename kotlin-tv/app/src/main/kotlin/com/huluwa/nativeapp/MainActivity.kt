@@ -2261,9 +2261,10 @@ class MainActivity: Activity() {
         val top=typeButtons[library.contentType] ?: nav[TvCatalogHeader.normalize(tab)]
         // 首页改由 Hero 展示当前焦点剧集（图、剧名、进度），不再额外占用一行文字预览
         val home=HomeScreen(this,top,::loadCover,{ _, _-> },
-            { item,_ ->
+            { item,resume ->
                 homePlayback?.checkpoint()
-                openDetail(item,true,trial=homePlayback?.currentPlayback(item.id))
+                val trial=homePlayback?.currentPlayback(item.id)
+                openDetail(item,resume,trial=if(resume) trial else null)
             },::quickActions,{ catalogFocus=it })
         homeScreen=home; body.addView(home,lp(-1,0).apply { weight=1f })
         val hot=catalog.filterNot { it.id in library.hidden() }
@@ -2624,17 +2625,20 @@ class MainActivity: Activity() {
             if(grouped) "取消收藏" else "收藏这部剧",
             if(library.queued(series.id)) "移出稍后看" else "加入稍后看")
         if(grouped) labels+="设置分组 · ${library.groupOf(series.id) ?: "未分组"}"
-        labels+="查看剧集详情"
         if(tab==0) labels+="不在热门推荐中显示"
         if(tab==4 || collection=="resume") labels+="管理观看记录"
         tvTools.choose(series.title,labels,anchor,{ choice ->
-            val detailIndex=if(grouped) 4 else 3
             when(choice) {
                 0 -> openDetail(series,true)
                 1 -> { val added=library.toggle(series); Toast.makeText(this,if(added) "已收藏" else "已取消收藏",Toast.LENGTH_SHORT).show(); refreshLibraryCards(series.id,!added && (tab==3 || collection=="updates")); if(added) favoriteMonitor.check() }
                 2 -> { val added=library.toggleLater(series); Toast.makeText(this,if(added) "已加入稍后看" else "已移出稍后看",Toast.LENGTH_SHORT).show(); refreshLibraryCards(series.id,!added && collection=="later") }
-                3 -> if(grouped) showGroupPicker(series,anchor) else openDetail(series)
-                else -> if(choice==detailIndex) openDetail(series) else if(tab==4 || collection=="resume") manageHistory(series,anchor) else { library.hide(series.id); Toast.makeText(this,"已隐藏热门推荐，可在设置中恢复",Toast.LENGTH_SHORT).show(); refreshLibraryCards(series.id,true) }
+                else -> {
+                    val index=if(grouped) choice-1 else choice
+                    when(index) {
+                        0 -> if(grouped) showGroupPicker(series,anchor) else if(tab==0) { library.hide(series.id); Toast.makeText(this,"已隐藏热门推荐，可在设置中恢复",Toast.LENGTH_SHORT).show(); refreshLibraryCards(series.id,true) } else if(tab==4 || collection=="resume") manageHistory(series,anchor)
+                        else -> if(tab==4 || collection=="resume") manageHistory(series,anchor) else { library.hide(series.id); Toast.makeText(this,"已隐藏热门推荐，可在设置中恢复",Toast.LENGTH_SHORT).show(); refreshLibraryCards(series.id,true) }
+                    }
+                }
             }
         })
     }

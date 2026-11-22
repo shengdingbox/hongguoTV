@@ -1095,7 +1095,8 @@ class MainActivity: Activity() {
         switcher.displayedChild=switcher.indexOfChild(state.page)
         // 只刷新导航选中态，不碰内容区的卡片和图片。
         nav.forEachIndexed { index,item ->
-            val selected=index==TvCatalogHeader.tabForIndex(tab)
+            // tab 是页面编号，比较按钮下标前必须先 normalize 转换，否则指示条错位
+            val selected=index==TvCatalogHeader.normalize(tab)
             (item as? TextView)?.let { paintPillNav(it,selected,false) }
         }
         gridFocusOwned=state.focusOwned; catalogFocusPos=state.focusPosition; pendingCatalogFocusPos=state.pendingFocusPosition

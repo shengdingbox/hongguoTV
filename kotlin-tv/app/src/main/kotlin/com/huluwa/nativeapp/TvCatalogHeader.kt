@@ -65,7 +65,9 @@ internal class TvCatalogHeader(
         })
         addView(brand, LayoutParams(dp(if (tiny) 38 else if (narrow) 108 else 140), dp(44)))
 
-        val selectedPage = tabForIndex(selected)
+        // selected 是页面编号（如收藏=3），与 DESTINATIONS 的 pageIndex 直接比较；
+        // 不能套 tabForIndex（那是“按钮下标→页面编号”，传页面编号进去会错位标亮别的 tab）
+        val selectedPage = selected
         DESTINATIONS.forEachIndexed { index, (pageIndex, title) ->
             val item = TextView(context).apply {
                 id = View.generateViewId()

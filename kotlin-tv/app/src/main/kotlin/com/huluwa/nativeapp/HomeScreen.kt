@@ -130,11 +130,11 @@ class HomeScreen(
     private val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply {
         max=100; DrawableCompat.setTint(progressDrawable, TvStyle.accent); visibility=GONE
     }
-    // 操作条恢复原 TV 样式：hero 底部独立一行，三按钮等宽均分，保留半透明圆角底色
+    // 操作条：原 TV 样式的等宽三等分按钮，悬浮在画面底部，半透明圆角底色
     private val actionLine=LinearLayout(context).apply {
-        gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(8),0,0)
+        gravity=Gravity.CENTER_VERTICAL; setPadding(dp(6),dp(2),dp(6),dp(2))
         background=TvStyle.shape(context,
-            if(TvStyle.theme==TvStyle.Theme.NIGHT) Color.argb(70,11,15,21) else Color.argb(90,255,250,241),radius=20)
+            if(TvStyle.theme==TvStyle.Theme.NIGHT) Color.argb(70,11,15,21) else Color.argb(90,255,250,241),radius=16)
     }
     private val play=button("播放全集","home:play") { openCurrent() }
     private val manage=button("收藏 / 更多","home:actions") { openActions(manageAnchor()) }
@@ -173,8 +173,8 @@ class HomeScreen(
         topBar.addView(topTitle)
         stage.addView(topBar,FrameLayout.LayoutParams(-1,-2,Gravity.TOP))
         stage.addView(progress,FrameLayout.LayoutParams(-1,dp(3),Gravity.BOTTOM))
-        // 恢复原 TV 样式：stage 回到 weight=1，操作条独立占 hero 底部一行、三等分
-        hero.addView(stage,LayoutParams(-1,0,1f))
+        // 画面占满整个 hero（视频延伸到操作区域），操作条悬浮其上，三按钮等宽三等分
+        hero.addView(stage,LayoutParams(-1,-1))
         listOf(play,manage,resume).forEachIndexed { index,view ->
             actionLine.addView(view,LayoutParams(0,dp(40),1f).apply { if(index<2) rightMargin=dp(8) })
             view.nextFocusUpId=stage.id; view.nextFocusDownId=view.id
@@ -182,7 +182,7 @@ class HomeScreen(
         play.nextFocusLeftId=play.id; play.nextFocusRightId=manage.id
         manage.nextFocusLeftId=play.id; manage.nextFocusRightId=resume.id
         resume.nextFocusLeftId=manage.id; resume.nextFocusRightId=resume.id
-        hero.addView(actionLine)
+        stage.addView(actionLine,FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
         carousel.addView(hero,FrameLayout.LayoutParams(-1,-1).apply {
             leftMargin=dp(76); rightMargin=dp(76); topMargin=dp(4); bottomMargin=dp(4)
         })

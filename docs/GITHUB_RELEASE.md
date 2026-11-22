@@ -14,7 +14,7 @@ bash scripts/publish-tv-release.sh
 - `task_id` 填写任务 ID：发布指定的成功构建。
 - `notes`：可选补充说明，会放在发布说明开头；不填时只有「本次更新」和「构建信息」两节。
 
-工作流直接读取已完成的 APK，不重新编译或修改签名。当前 `feat/android7-support` 分支的打包配置默认生成 Android 7.0（API 24）及以上安装包；发布说明中的最低系统以构建记录 `minSdk` 为准。
+工作流直接读取已完成的 APK，不重新编译或修改签名。当前 `main` 分支的打包配置默认生成 Android 6.0.1（API 23）及以上安装包；发布说明中的最低系统以构建记录 `minSdk` 为准。
 
 脚本创建的是正式 GitHub Release：先创建草稿，仅将 `hongguotv-kotlin-<版本号>.apk` 上传到该 Release 的 **Assets**，确认 APK 完整后再正式发布并设为 Latest。文件名不带系统后缀，例如 `hongguotv-kotlin-1.1.70.apk`；不生成或上传 `build-info.json`、`SHA256SUMS`。发布成功会输出 APK 的直接下载地址。APK 的大小和 SHA-256 必须与构建记录一致。Release 使用 `build-v<versionName>-<versionCode>` 标签，指向该 APK 构建记录中的完整源码提交，而非运行脚本或工作流时的最新源码。对应提交须已同步到 GitHub；已有标签必须指向同一提交，缺少标签时由 GitHub 在发布 Release 时自动生成，脚本不再提前单独创建 tag。
 

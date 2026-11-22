@@ -9,9 +9,9 @@ android {
     compileSdk = 36
     defaultConfig {
         applicationId = "com.huluwa.nativeapp"
-        // Android 7 专用分支：最低 API 24，保证可直接安装到 Android 7.0 设备；
+        // Android 6.0.1 分支：最低 API 23，保证可直接安装到小米电视4（MiTV4-ANSM0）等 Android 6 设备；
         // 仍保留属性覆盖，便于发布流程按需生成其他最低版本。
-        minSdk = findProperty("HONGGUOTV_MIN_SDK")?.toString()?.toInt() ?: 24
+        minSdk = findProperty("HONGGUOTV_MIN_SDK")?.toString()?.toInt() ?: 23
         targetSdk = 36
         // 界面为中文；保留中英文库资源，其余语言沿用默认文案。
         resourceConfigurations += listOf("zh", "en")
@@ -39,7 +39,7 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
-    // API 24 需要把 Java 8+ 库调用静态改写为 Android 7 可用的等价实现。
+    // API 24 及以下没有运行时脱糖，Java 8+ 库调用由 D8/B8 静态改写为系统可用的等价实现。
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

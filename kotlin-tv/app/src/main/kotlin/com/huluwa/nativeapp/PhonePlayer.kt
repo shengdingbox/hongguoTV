@@ -103,7 +103,6 @@ class PhonePlayer(
     private var speedBoostAreaTop = 0
     private var speedBoostAreaBottom = 0
     private var speedBoostImmersivePending: Runnable? = null
-    private var lastTapToggleAt = 0L
 
     private var fullscreen = false
     private var introExpanded = false
@@ -1048,8 +1047,9 @@ class PhonePlayer(
 
     /** 视频区触摸：长按计时与原有轻点/双击共用同一套事件，长按触发后吞掉抬手。 */
     private fun handleVideoTouch(event: MotionEvent) {
-        // 每个 MotionEvent 只能交给 GestureDetector 一次。尤其 DOWN 重复喂入
-        // 会重置双击计时，导致单击/双击都失灵；长按触发后才停止分发。
+        // 普通短按先把事件交给 GestureDetector，再清理长按临时状态。
+        // 若先 finishSpeedBoost() 就会先改一次显隐，接着 onSingleTapConfirmed
+        // 又改一次，表现成“隐藏后马上显示”。
         if (!longPressTriggered) {
             gesture.onTouchEvent(event)
         }
@@ -1063,9 +1063,10 @@ class PhonePlayer(
                 if (!longPressTriggered) handleLongPressOutside(event)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val wasBoosted = longPressTriggered || longPressSpeedActive || longPressLocked
                 cancelLongPress()
                 longPressFingerDown = false
-                finishSpeedBoost(restore = true)
+                if (wasBoosted) finishSpeedBoost(restore = true)
             }
         }
     }
@@ -1091,14 +1092,8 @@ class PhonePlayer(
 
     // ---------------- 操作 ----------------
 
-    /**
-     * 轻点画面切换控件显隐：第一次单击隐藏，第二次单击显示，如此交替。
-     * 仅在极短窗口内防止同一次抬起被重复处理。
-     */
+    /** 轻点画面切换控件显隐：每次确认的单击严格切换一次。 */
     private fun toggleUiToggleNow() {
-        val now = android.os.SystemClock.uptimeMillis()
-        if (now - lastTapToggleAt < 80L) return
-        lastTapToggleAt = now
         setUiHidden(!uiHidden)
     }
 
@@ -1228,7 +1223,6 @@ class PhonePlayer(
         speedBoostImmersivePending = null
         speedBoostOverlay = null; speedBoostLabel = null; portraitInfoContent = null
         speedBoostAreaTop = 0; speedBoostAreaBottom = 0
-        lastTapToggleAt = 0L
         cancelLongPress(); longPressFingerDown = false; longPressTriggered = false
         longPressLocked = false; longPressSpeedActive = false
     }

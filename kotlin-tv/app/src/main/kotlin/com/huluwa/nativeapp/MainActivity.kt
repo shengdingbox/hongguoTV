@@ -563,7 +563,8 @@ class MainActivity: Activity() {
     private var tvPauseButton: ImageButton?=null
     private lateinit var controls: LinearLayout
     private var panel=false
-    private var transportPlay: TextView?=null
+    /** TV 播放菜单里的常驻状态文字，用来承载控制条自动收起所需的「已暂停」指示。 */
+    private var tvPlaybackStatus: TextView?=null
     private var tvPlaybackMenu: TvPlaybackMenu?=null
     private var tvPlaybackHeader: LinearLayout?=null
     private var sleepButton: TextView?=null
@@ -4224,7 +4225,7 @@ class MainActivity: Activity() {
         playbackText.text="正在获取播放地址…"; progressBar.progress=0; progressBar.visibility=View.VISIBLE; hidePlaybackOverlay()
         // hud 默认隐藏，取址期间屏幕是全黑的：单独挂一个转圈，用户至少知道没死机。
         recoverySpinner?.visibility=View.VISIBLE
-        controls.removeAllViews(); controls.visibility=View.GONE; transportPlay=null; sleepButton=null; tvPlaybackMenu=null
+        controls.removeAllViews(); controls.visibility=View.GONE; tvPlaybackStatus?.visibility=View.GONE; tvPlaybackStatus=null; sleepButton=null; tvPlaybackMenu=null
         syncMediaSession()
         val requestedId=data.episodes[episodeIndex]; val maxQuality=effectiveQuality()
         // 每集最多自动降两档，换集后重新计数，避免一集失败就把整部剧拖到最低画质。
@@ -4936,7 +4937,7 @@ class MainActivity: Activity() {
     private fun canAutoHideHud(): Boolean {
         // 电视沿用原来的控制条显隐条件，触屏拖动与弹窗保护仅作用于手机。
         if(!touchPlayback) return !panel
-        return (!panel || transportPlay?.isAttachedToWindow==true) && !progressBar.scrubbing && TvDialog.topmostDialog()==null
+        return (!panel || tvPlaybackStatus?.isAttachedToWindow==true) && !progressBar.scrubbing && TvDialog.topmostDialog()==null
     }
     private fun scheduleHideHud() {
         main.removeCallbacks(hideHud)
@@ -4960,17 +4961,14 @@ class MainActivity: Activity() {
         refreshCacheStrip()
         updatePlaybackText(); scheduleHideHud()
     }
-    private fun playButtonLabel(): String {
-        val playing=if(touchPlayback && !playbackReady) requestedAutoplay else player?.playWhenReady==true
-        return if(playing) "暂停" else "播放"
-    }
     private fun updatePlaybackText() {
         refreshTvPauseButton()
         val tvMenu=tvPlaybackMenu?.takeIf { it.parent===controls }
         if(tvMenu!=null) {
             val danmakuOn=library.danmaku
-            tvMenu.update(PlaybackSpeed.label(effectiveSpeed()),quality.ifBlank { "${effectiveQuality()}P" },danmakuOn,player?.playWhenReady ?: requestedAutoplay)
-        } else transportPlay?.text=playButtonLabel()
+            tvMenu.update(PlaybackSpeed.label(effectiveSpeed()),quality.ifBlank { "${effectiveQuality()}P" },danmakuOn)
+        }
+        refreshTvPlaybackStatus()
         sleepButton?.text="定时 ${sleepTimer.label()}"
         if(screen!="player" || playError) return
         // 拖动进度条时别用播放位置盖掉「定位到 12:34」：手指还按着，文字每秒跳回去像坏了
@@ -5551,9 +5549,15 @@ class MainActivity: Activity() {
         val data=detail ?: return
         stopFastForward()
         panel=true; showHud(); controls.visibility=View.VISIBLE; controls.removeAllViews()
+        tvPlaybackStatus=text("",13f,Color.rgb(188,198,214)).apply {
+            maxLines=1
+            setPadding(dp(4),0,0,dp(8))
+            isFocusable=false
+            importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        controls.addView(tvPlaybackStatus,lp(-2,-2))
         val menu=TvPlaybackMenu(this,episodeIndex,data.episodes.size,
             onNext={ skipEpisode(1) },
-            onPlay={ togglePlayback() },
             onSpeed={ showSpeedPicker(it) },
             onQuality={ showQualityPicker(it,true) },
             onDanmaku={ showTvDanmakuMenu(it) },
@@ -5563,11 +5567,17 @@ class MainActivity: Activity() {
                 if(selected==episodeIndex) hidePlaybackOverlay()
                 else { playEpisode(selected,savedPosition(selected)); showHud() }
             })
-        tvPlaybackMenu=menu; transportPlay=menu.playButton
+        tvPlaybackMenu=menu
         controls.addView(menu,lp(-1,-2))
         updatePlaybackText()
         menu.focusPrimary()
         if(touchPlayback) scheduleHideHud()
+    }
+    /** 菜单不再放播放按钮后，用一行文字同步「正在播放 / 已暂停」，并据此触发控制条自动收起。 */
+    private fun refreshTvPlaybackStatus() {
+        val status=tvPlaybackStatus ?: return
+        val playing=playbackReady && player?.isPlaying==true
+        status.text=if(playing) "正在播放" else "已暂停"
     }
     private fun showTvDanmakuMenu(anchor: TextView) {
         val on=library.danmaku
@@ -6009,7 +6019,7 @@ class MainActivity: Activity() {
         video?.pauseReadAhead(cancelReads=true)
         tvVideoFrameWaitStartedAt=0L
         playerView?.player=null; playerView=null
-        playbackSession?.release(); playbackSession=null; player=null; playbackReady=false; playbackFirstFrameRendered=false; transportPlay=null; sleepButton=null; tvPlaybackMenu=null
+        playbackSession?.release(); playbackSession=null; player=null; playbackReady=false; playbackFirstFrameRendered=false; tvPlaybackStatus?.visibility=View.GONE; tvPlaybackStatus=null; sleepButton=null; tvPlaybackMenu=null
         playerVideo=null; switchingVideos.clear(); protectPlaybackVideos()
         // 手机播放面板的控件引用随页面一起作废，避免 tick 写到已移除的视图上
         // （旋转重建时由调用方先 takeFullscreenState，release 不会再抢方向）

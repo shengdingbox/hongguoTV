@@ -46,8 +46,6 @@ class TvPlaybackMenu(
     private val speed: MenuCard
     private val quality: MenuCard
     private val danmaku: MenuCard
-    private val play: MenuCard
-    val playButton: TextView get() = play
 
     init {
         orientation = VERTICAL
@@ -66,7 +64,6 @@ class TvPlaybackMenu(
         speed = card("倍速", "") { onSpeed(it) }
         quality = card("清晰度", "") { onQuality(it) }
         danmaku = card("弹幕", "") { onDanmaku(it) }
-        play = card("暂停", "") { onPlay() }
         card("详情", "剧集信息") { onDetail() }
         card("更多", "播放设置") { onMore(it) }
         val enabledCards = cards.filter { it.isEnabled }
@@ -121,11 +118,10 @@ class TvPlaybackMenu(
         episodeLayout.scrollToPositionWithOffset((currentEpisode - 2).coerceAtLeast(0), 0)
     }
 
-    fun update(speedLabel: String, qualityLabel: String, danmakuOn: Boolean, playing: Boolean) {
+    fun update(speedLabel: String, qualityLabel: String, danmakuOn: Boolean) {
         speed.update("倍速", speedLabel)
         quality.update("清晰度", qualityLabel)
         danmaku.update("弹幕", if (danmakuOn) "已开启" else "已关闭")
-        play.update(if (playing) "暂停" else "播放", if (playing) "正在播放" else "已暂停")
     }
 
     fun focusPrimary() {

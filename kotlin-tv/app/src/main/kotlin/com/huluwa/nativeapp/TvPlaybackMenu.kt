@@ -26,7 +26,6 @@ class TvPlaybackMenu(
     private val currentEpisode: Int,
     private val episodeCount: Int,
     onNext: () -> Unit,
-    onPlay: () -> Unit,
     onSpeed: (TextView) -> Unit,
     onQuality: (TextView) -> Unit,
     onDanmaku: (TextView) -> Unit,

@@ -29,7 +29,8 @@ internal object TvVisual {
         setStroke(density(context).toInt().coerceAtLeast(1), if (night) Color.argb(20, 255, 255, 255) else Color.argb(38, 100, 76, 49))
     }
 
-    fun card(context: Context, focused: Boolean, selected: Boolean = false) = GradientDrawable(
+    // radius 默认 10dp（小卡片）；首页 hero 大卡片传 16dp 与 panel 圆角对齐，避免聚焦边框跳角
+    fun card(context: Context, focused: Boolean, selected: Boolean = false, radius: Int = 10) = GradientDrawable(
         GradientDrawable.Orientation.TL_BR,
         if (night) when {
             focused -> intArrayOf(Color.argb(155, 184, 119, 82), Color.argb(235, 30, 42, 60))
@@ -41,7 +42,7 @@ internal object TvVisual {
             else -> intArrayOf(Color.argb(235, 255, 253, 248), Color.argb(225, 242, 234, 220))
         }
     ).apply {
-        cornerRadius = 10 * density(context)
+        cornerRadius = radius * density(context)
         setStroke(density(context).toInt().coerceAtLeast(1), when {
             focused -> if (night) Color.rgb(255, 172, 123) else TvStyle.accent
             selected -> TvStyle.accent

@@ -109,7 +109,7 @@ class HomeScreen(
     }
     private val stage=FrameLayout(context).apply {
         id=View.generateViewId(); isFocusable=true; isFocusableInTouchMode=true; isClickable=true
-        background=TvVisual.panel(context); clipToOutline=true
+        // 不再自带 panel 背景：卡片外形、描边与圆角裁剪统一交给外层 hero，避免两层圆角错位露缝
     }
     private val backdrop=cover().apply { alpha=.3f }
     private val poster=cover().apply { scaleType=ImageView.ScaleType.FIT_CENTER; setBackgroundColor(TvStyle.background) }
@@ -141,11 +141,15 @@ class HomeScreen(
     private val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply {
         max=100; DrawableCompat.setTint(progressDrawable, TvStyle.accent); visibility=GONE
     }
-    // 操作条：原 TV 样式的等宽三等分按钮，悬浮在画面底部，半透明圆角底色
+    // 操作条：原 TV 样式的等宽三等分按钮，悬浮在画面底部，半透明圆角底色；
+    // 顶角 8dp 小圆角、底角 16dp 与卡片圆角一致，贴卡片底边时两角完全咬合不留缝
     private val actionLine=LinearLayout(context).apply {
         gravity=Gravity.CENTER_VERTICAL; setPadding(dp(6),dp(2),dp(6),dp(2))
-        background=TvStyle.shape(context,
-            if(TvStyle.theme==TvStyle.Theme.NIGHT) Color.argb(70,11,15,21) else Color.argb(90,255,250,241),radius=16)
+        background=GradientDrawable().apply {
+            setColor(if(TvStyle.theme==TvStyle.Theme.NIGHT) Color.argb(70,11,15,21) else Color.argb(90,255,250,241))
+            cornerRadii=floatArrayOf(dp(8).toFloat(),dp(8).toFloat(),dp(8).toFloat(),dp(8).toFloat(),
+                dp(16).toFloat(),dp(16).toFloat(),dp(16).toFloat(),dp(16).toFloat())
+        }
     }
     private val play=button("播放全集","home:play") { openCurrent() }
     private val manage=button("收藏 / 更多","home:actions") { openActions(manageAnchor()) }
@@ -208,7 +212,8 @@ class HomeScreen(
         stage.nextFocusLeftId=stage.id; stage.nextFocusRightId=stage.id
         stage.nextFocusUpId=top.id; stage.nextFocusDownId=play.id
         stage.setOnFocusChangeListener { _,focused ->
-            hero.background=if(focused) TvVisual.card(context,true) else TvVisual.panel(context)
+            // 聚焦/非聚焦统一 16dp 圆角，深红描边与卡片外形一致，不再跳角
+            hero.background=if(focused) TvVisual.card(context,true,radius=16) else TvVisual.panel(context)
             if(focused) rememberCurrent()
         }
         stage.setOnClickListener { togglePreview() }

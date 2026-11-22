@@ -283,7 +283,8 @@ class PhonePlayer(
         val bounds = videoBoundsOnPage() ?: return
         if (overlay.height <= 0 || overlay.width <= 0) return
         // 竖屏画面通常铺满整屏；横屏全屏会受系统栏/刘海影响，统一按画面底边留安全距离。
-        val bottom = (overlay.height - bounds.bottom + if (fullscreen) dp(10) else dp(14)).coerceAtLeast(dp(10))
+        val margin = if (fullscreen) dp(10) else dp(14)
+        val bottom = (overlay.height - bounds.bottom.toInt() + margin).coerceAtLeast(dp(10))
         if (layout.bottomMargin != bottom) {
             layout.bottomMargin = bottom
             label.layoutParams = layout

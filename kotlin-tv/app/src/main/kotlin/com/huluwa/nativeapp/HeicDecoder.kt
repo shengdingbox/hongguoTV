@@ -36,6 +36,9 @@ object HeicHardDecoder {
     private const val TAG = "HEIC"
     private const val TIMEOUT_MS = 4_000L
     private val codecPermits = Semaphore(2)
+
+    /** 某些老 OMX 组件（Amlogic）不支持渲染到 RGBA ImageReader，start failed 一次后就直走 ByteBuffer。 */
+    @Volatile private var surfaceModeBroken = false
     private val readerThread by lazy { HandlerThread("heic-reader").apply { start() } }
     private val readerHandler by lazy { Handler(readerThread.looper) }
 
@@ -46,11 +49,16 @@ object HeicHardDecoder {
         try {
             // 首选 RGBA Surface 直出；老 OMX 组件可能不支持渲染到 ImageReader，
             // 失败后退到 ByteBuffer 模式拿 YUV 再软件转 RGB。
-            val bitmap = try {
-                decodeToSurface(image)
-            } catch (e: Exception) {
-                RuntimeLog.add("$TAG surface 模式失败(${e.javaClass.simpleName}: ${e.message?.take(50)})，改走 ByteBuffer")
+            val bitmap = if (surfaceModeBroken) {
                 decodeToBuffers(image)
+            } else {
+                try {
+                    decodeToSurface(image)
+                } catch (e: Exception) {
+                    surfaceModeBroken = true
+                    RuntimeLog.add("$TAG surface 模式失败(${e.javaClass.simpleName}: ${e.message?.take(50)})，改走 ByteBuffer")
+                    decodeToBuffers(image)
+                }
             }
             val result = scaleInto(bitmap, targetWidth, targetHeight)
             RuntimeLog.add("$TAG OK ${image.width}x${image.height}->${result.width}x${result.height} ${SystemClock.elapsedRealtime() - started}ms")
@@ -70,7 +78,8 @@ object HeicHardDecoder {
     }
 
     private fun queueFrame(codec: MediaCodec, frame: ByteArray) {
-        val index = codec.dequeueInputBuffer(1_000L)
+        // 超时单位是微秒：3 秒，别被毫秒坑第二次。
+        val index = codec.dequeueInputBuffer(3_000_000L)
         if (index < 0) throw IOException("HEIC 等待输入缓冲超时")
         val input = codec.getInputBuffer(index) ?: throw IOException("HEIC 输入缓冲缺失")
         if (input.remaining() < frame.size) throw IOException("HEIC 输入缓冲不足")

@@ -143,5 +143,5 @@ private fun decodeBytes(bytes: ByteArray, width: Int, height: Int, pool: BitmapP
     if (!HeicImageParser.isHeic(bytes)) throw IOException("HEIC 兜底解码器收到了非 HEIC 数据")
     val image = HeicImageParser.parse(bytes)
     val bitmap = HeicHardDecoder.decode(image, width, height)
-    return BitmapResource.obtain(bitmap, pool)
+    return BitmapResource.obtain(bitmap, pool) ?: BitmapResource(bitmap, pool)
 }

@@ -136,7 +136,12 @@ class HomeScreen(
     private val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply {
         max=100; DrawableCompat.setTint(progressDrawable, TvStyle.accent); visibility=GONE
     }
-    private val actionLine=LinearLayout(context).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(8),0,0) }
+    // 海外视频风格的悬浮操作条：压在画面底部，半透明底不再单独占一栏
+    private val actionLine=LinearLayout(context).apply {
+        gravity=Gravity.CENTER_VERTICAL; setPadding(dp(6),dp(2),dp(6),dp(2))
+        background=TvStyle.shape(context,
+            if(TvStyle.theme==TvStyle.Theme.NIGHT) Color.argb(120,11,15,21) else Color.argb(140,255,250,241),radius=20)
+    }
     private val play=button("播放全集","home:play") { openCurrent() }
     private val manage=button("收藏 / 更多","home:actions") { openActions(manageAnchor()) }
     private val resume=button("查看详情","home:detail") { openCurrent() }
@@ -182,19 +187,23 @@ class HomeScreen(
         stage.addView(info,FrameLayout.LayoutParams(dp(260),-2,Gravity.START or Gravity.BOTTOM).apply {
             leftMargin=dp(10); bottomMargin=dp(10)
         })
+        // 状态条抬到悬浮操作条上方（条占底部 10~54dp），避免互相遮挡
         stage.addView(previewStatus,FrameLayout.LayoutParams(-1,dp(28),Gravity.BOTTOM).apply {
-            leftMargin=dp(8); rightMargin=dp(8); bottomMargin=dp(7)
+            leftMargin=dp(8); rightMargin=dp(8); bottomMargin=dp(60)
         })
         stage.addView(progress,FrameLayout.LayoutParams(-1,dp(3),Gravity.BOTTOM))
-        hero.addView(stage,LayoutParams(-1,0,1f))
+        // 画面占满整个 hero，操作条悬浮其上，视频延伸到原按钮栏区域
+        hero.addView(stage,LayoutParams(-1,-1))
         listOf(play,manage,resume).forEachIndexed { index,view ->
-            actionLine.addView(view,LayoutParams(0,dp(40),1f).apply { if(index<2) rightMargin=dp(8) })
+            actionLine.addView(view,LayoutParams(-2,dp(40)).apply { if(index<2) rightMargin=dp(8) })
             view.nextFocusUpId=stage.id; view.nextFocusDownId=view.id
         }
         play.nextFocusLeftId=play.id; play.nextFocusRightId=manage.id
         manage.nextFocusLeftId=play.id; manage.nextFocusRightId=resume.id
         resume.nextFocusLeftId=manage.id; resume.nextFocusRightId=resume.id
-        hero.addView(actionLine)
+        stage.addView(actionLine,FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin=dp(10)
+        })
         carousel.addView(hero,FrameLayout.LayoutParams(-1,-1).apply {
             leftMargin=dp(76); rightMargin=dp(76); topMargin=dp(4); bottomMargin=dp(4)
         })
@@ -305,7 +314,8 @@ class HomeScreen(
         intro.visibility=if(compact || previewVisible) GONE else VISIBLE
         title.maxLines=if(compact || previewVisible) 1 else 2
         title.textSize=if(compact || previewVisible) 17f else 21f
-        val margin=if(previewStatus.visibility==VISIBLE) dp(40) else dp(10)
+        // 悬浮操作条占住底部约 54dp：信息块抬到条上方，状态条可见时再抬高一个状态条高度
+        val margin=if(previewStatus.visibility==VISIBLE) dp(94) else dp(60)
         (info.layoutParams as? FrameLayout.LayoutParams)?.takeIf { it.bottomMargin!=margin }?.let {
             it.bottomMargin=margin; info.layoutParams=it
         }

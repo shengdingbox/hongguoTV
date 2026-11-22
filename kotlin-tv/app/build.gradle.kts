@@ -17,10 +17,6 @@ android {
         resourceConfigurations += listOf("zh", "en")
         versionCode = System.getenv("HONGGUOTV_VERSION_CODE")?.toInt() ?: 12
         versionName = System.getenv("HONGGUOTV_VERSION_NAME") ?: "0.30.10"
-        ndk {
-            // ffmpeg-kit 只保留电视在用的 ARM 双架构，控制 APK 体积（x86 ABI 各 +8MB）。
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
-        }
     }
     buildFeatures { buildConfig = true }
     signingConfigs {
@@ -59,8 +55,6 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.github.bumptech.glide:glide:4.16.0")
-    // 老盒子 HEIC 兜底：Amlogic 等芯片的 MediaCodec CPU 侧拿不到色度，ffmpeg 纯软解最可靠。
-    implementation("com.arthenica:ffmpeg-kit-min:6.0-2")
     implementation("com.github.bumptech.glide:okhttp3-integration:4.16.0")
     implementation("com.github.bumptech.glide:recyclerview-integration:4.16.0")
     kapt("com.github.bumptech.glide:compiler:4.16.0")

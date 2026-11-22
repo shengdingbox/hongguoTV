@@ -6,10 +6,6 @@ dependencyResolutionManagement {
         maven("https://maven.aliyun.com/repository/google") {
             content { includeGroupByRegex("androidx\\..*") }
         }
-        // ffmpeg-kit 已被作者从 Maven Central 下架，阿里云 central 镜像仍有缓存。
-        maven("https://maven.aliyun.com/repository/central") {
-            content { includeGroup("com.arthenica") }
-        }
         google()
         mavenCentral()
     }

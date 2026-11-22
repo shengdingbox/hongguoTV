@@ -184,9 +184,9 @@ class HomeScreen(
         topBar.addView(topTitle)
         stage.addView(topBar,FrameLayout.LayoutParams(-1,-2,Gravity.TOP))
         stage.addView(progress,FrameLayout.LayoutParams(-1,dp(3),Gravity.BOTTOM))
-        // 状态提示悬浮在操作条上方（操作条高约 31dp + 6dp 间隙），底部居中
-        stage.addView(previewStatus,FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-            bottomMargin=dp(37)
+        // 状态提示悬浮在操作条上方（操作条高约 31dp + 6dp 间隙），靠左带边距
+        stage.addView(previewStatus,FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM or Gravity.START).apply {
+            leftMargin=dp(14); bottomMargin=dp(37)
         })
         // 画面占满整个 hero（视频延伸到操作区域），操作条悬浮其上，三按钮等宽三等分
         hero.addView(stage,LayoutParams(-1,-1))

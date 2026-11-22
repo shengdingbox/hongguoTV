@@ -310,20 +310,27 @@ object HeicHardDecoder {
         }
     }
 
-    /** 进程级复用的 EGL 上下文（1x1 pbuffer），GL 读回只在单一锁内使用，无并发冲突。 */
+    /** 进程级复用的 EGL 上下文（window surface 绑占位 SurfaceTexture，老 GPU 无 pbuffer 配置也能建）。 */
     private class GlContext private constructor() {
         private val display: EGLDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         private val context: EGLContext
         private val surface: EGLSurface
+        private val dummyTexture: SurfaceTexture = SurfaceTexture(0)
+        private val dummySurface: Surface = Surface(dummyTexture)
 
         init {
             if (!EGL14.eglInitialize(display, IntArray(2), 0, IntArray(2), 0)) throw IOException("EGL 初始化失败")
-            val attribs = intArrayOf(EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT, EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT, EGL14.EGL_NONE)
+            // 不指定 SURFACE_TYPE：pbuffer 在 Mali-450 等老 GPU 上常缺失，占位 window 用 WINDOW_BIT。
+            val attribs = intArrayOf(
+                EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
+                EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
+                EGL14.EGL_NONE,
+            )
             val configs = arrayOfNulls<EGLConfig>(1)
-            if (EGL14.eglChooseConfig(display, attribs, 0, configs, 0, 1, IntArray(1), 0) || configs[0] == null) throw IOException("EGL 配置缺失")
-            val pbuffer = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
-            surface = EGL14.eglCreatePbufferSurface(display, configs[0], pbuffer, 0)
-            if (surface == EGL14.EGL_NO_SURFACE) throw IOException("EGL pbuffer 创建失败")
+            if (!EGL14.eglChooseConfig(display, attribs, 0, configs, 0, 1, IntArray(1), 0) || configs[0] == null) throw IOException("EGL 配置缺失")
+            surface = EGL14.eglCreateWindowSurface(display, configs[0], dummySurface, intArrayOf(EGL14.EGL_NONE), 0)
+            if (surface == EGL14.EGL_NO_SURFACE) throw IOException("EGL window surface 创建失败")
             context = EGL14.eglCreateContext(display, configs[0], EGL14.EGL_NO_CONTEXT, intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0)
             if (context == EGL14.EGL_NO_CONTEXT) throw IOException("EGL 上下文创建失败")
         }

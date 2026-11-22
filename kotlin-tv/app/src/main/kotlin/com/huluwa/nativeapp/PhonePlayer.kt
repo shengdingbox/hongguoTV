@@ -685,6 +685,7 @@ class PhonePlayer(
         longPressTriggered = true
         longPressSpeedActive = true
         longPressSpeedBefore = before
+        cancelSuppressedGesture()
         activity.setPhonePlaybackSpeed(SPEED_BOOST)
         // 先记录原信息内容区坐标，再隐藏控件；布局尚未完成时下一帧再执行，
         // 避免在 long press 瞬间读到 0 高内容区而退回到估算位置。
@@ -770,6 +771,14 @@ class PhonePlayer(
         if (restore) activity.setPhonePlaybackSpeed(longPressSpeedBefore)
         hideSpeedBoostOverlay()
         restoreAfterSpeedBoost()
+    }
+
+    /** 长按已被识别为倍速：给 GestureDetector 补 CANCEL，避免松手后误触发单击。 */
+    private fun cancelSuppressedGesture() {
+        val now = android.os.SystemClock.uptimeMillis()
+        val cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+        gesture.onTouchEvent(cancel)
+        cancel.recycle()
     }
 
     private fun cancelLongPress() {
@@ -1054,6 +1063,11 @@ class PhonePlayer(
 
     /** 视频区触摸：长按计时与原有轻点/双击共用同一套事件，长按触发后吞掉抬手。 */
     private fun handleVideoTouch(event: MotionEvent) {
+        // 每个 MotionEvent 只能交给 GestureDetector 一次。尤其 DOWN 重复喂入
+        // 会重置双击计时，导致单击/双击都失灵；长按触发后才停止分发。
+        if (!longPressTriggered) {
+            gesture.onTouchEvent(event)
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 longPressFingerDown = true
@@ -1061,24 +1075,13 @@ class PhonePlayer(
                 beginLongPress(event)
             }
             MotionEvent.ACTION_MOVE -> {
-                if (longPressTriggered) {
-                    // 长按期间的手指抖动不再参与轻点/双击识别。
-                    return
-                }
-                if (!handleLongPressOutside(event)) {
-                    // 已判定为滑动后，同一手势后续的 MOVE 继续交给分页。
-                    gesture.onTouchEvent(event)
-                }
+                if (!longPressTriggered) handleLongPressOutside(event)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                val wasBoosted = longPressTriggered || longPressLocked
                 cancelLongPress()
                 longPressFingerDown = false
                 finishSpeedBoost(restore = true)
-                // 长按已经消费这次抬手，不能再让 GestureDetector 判成轻点。
-                if (!wasBoosted) gesture.onTouchEvent(event)
             }
-            else -> if (!longPressTriggered) gesture.onTouchEvent(event)
         }
     }
 

@@ -16,6 +16,7 @@ import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
 import android.opengl.EGLSurface
+import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.os.Handler
 import android.os.HandlerThread
@@ -284,7 +285,7 @@ object HeicHardDecoder {
             gl.makeCurrent()
             val tex = IntArray(1)
             GLES20.glGenTextures(1, tex, 0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_EXTERNAL_OES, tex[0])
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex[0])
             val texture = SurfaceTexture(tex[0])
             texture.setDefaultBufferSize(image.width, image.height)
             val rendered = CountDownLatch(1)
@@ -319,7 +320,7 @@ object HeicHardDecoder {
             if (!EGL14.eglInitialize(display, IntArray(2), 0, IntArray(2), 0)) throw IOException("EGL 初始化失败")
             val attribs = intArrayOf(EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT, EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT, EGL14.EGL_NONE)
             val configs = arrayOfNulls<EGLConfig>(1)
-            if (EGL14.eglChooseConfig(display, attribs, configs, 1, IntArray(1), 0) != true || configs[0] == null) throw IOException("EGL 配置缺失")
+            if (EGL14.eglChooseConfig(display, attribs, 0, configs, 0, 1, IntArray(1), 0) || configs[0] == null) throw IOException("EGL 配置缺失")
             val pbuffer = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
             surface = EGL14.eglCreatePbufferSurface(display, configs[0], pbuffer, 0)
             if (surface == EGL14.EGL_NO_SURFACE) throw IOException("EGL pbuffer 创建失败")
@@ -349,7 +350,7 @@ object HeicHardDecoder {
             val program = buildProgram()
             GLES20.glUseProgram(program)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_EXTERNAL_OES, externalTex)
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTex)
             val pos = GLES20.glGetAttribLocation(program, "pos")
             val mat = GLES20.glGetUniformLocation(program, "mat")
             GLES20.glUniformMatrix4fv(mat, 1, false, matrix, 0)

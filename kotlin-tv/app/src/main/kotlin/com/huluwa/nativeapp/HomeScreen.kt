@@ -153,7 +153,7 @@ class HomeScreen(
     }
     private val play=button("播放全集","home:play") { openCurrent() }
     private val manage=button("收藏 / 更多","home:actions") { openActions(manageAnchor()) }
-    private val resume=button("查看详情","home:detail") { openCurrent() }
+    private val resume=button("查看详情","home:detail") { openDetailPage() }
     val refresh=button("换一批","home:refresh") {}.apply { textSize=14f; minHeight=dp(36); setPadding(dp(16),dp(7),dp(16),dp(7)) }
 
     init {
@@ -261,7 +261,9 @@ class HomeScreen(
             lastFocus=currentKey(); remember(lastFocus); selected(entry.series,entry.label)
         }
     }
-    private fun openCurrent() { current()?.let { rememberCurrent(); open(it.series,false) } }
+    private fun openCurrent() { current()?.let { rememberCurrent(); open(it.series,true) } }
+    /** 查看详情只进入剧集信息页，不在首页试播流上直接续播。 */
+    private fun openDetailPage() { current()?.let { rememberCurrent(); open(it.series,false) } }
     private fun togglePreview() {
         if(current()==null) return
         rememberCurrent()

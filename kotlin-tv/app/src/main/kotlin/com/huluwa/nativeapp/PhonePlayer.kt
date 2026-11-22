@@ -103,6 +103,7 @@ class PhonePlayer(
     private var speedBoostAreaTop = 0
     private var speedBoostAreaBottom = 0
     private var speedBoostImmersivePending: Runnable? = null
+    private var lastTapToggleAt = 0L
 
     private var fullscreen = false
     private var introExpanded = false
@@ -647,15 +648,9 @@ class PhonePlayer(
     private fun enterSpeedBoostImmersive() {
         captureSpeedBoostArea()
         uiHiddenBeforeSpeedBoost = uiHidden
-        uiHidden = true
-        listOfNotNull(controls, topBar).forEach { layer ->
-            layer.animate().cancel()
-            layer.visibility = View.GONE
-            layer.alpha = 0f
-        }
+        setUiHidden(true)
         portraitFullscreenButton?.visibility = View.GONE
         centerPlay?.visibility = View.GONE
-        syncDanmakuWithControls()
         // 长按刚开始时播放器可能还没完成首帧测量，下一帧再校准底部位置。
         speedBoostOverlay?.post { updateSpeedBoostPosition() }
     }
@@ -663,17 +658,7 @@ class PhonePlayer(
     /** 松开长按后恢复播放页原有信息；锁定态继续沉浸，不提前露出控件。 */
     private fun restoreAfterSpeedBoost() {
         if (longPressLocked) return
-        uiHidden = uiHiddenBeforeSpeedBoost
-        syncDanmakuWithControls()
-        listOfNotNull(controls, topBar).forEach { layer ->
-            layer.animate().cancel()
-            layer.visibility = View.VISIBLE
-            layer.animate()
-                .alpha(if (uiHidden) 0f else 1f)
-                .setDuration(140)
-                .withEndAction { if (uiHidden) layer.visibility = View.GONE }
-                .start()
-        }
+        setUiHidden(uiHiddenBeforeSpeedBoost)
         updatePortraitFullscreenButton()
         updateSpeedBoostPosition()
     }
@@ -1092,7 +1077,7 @@ class PhonePlayer(
 
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 // 轻点画面 = 切换控件显隐，进入 / 退出沉浸式观看（横竖屏皮肤一致）
-                toggleUiVisibility()
+                toggleUiToggleNow()
                 return true
             }
 
@@ -1107,25 +1092,42 @@ class PhonePlayer(
     // ---------------- 操作 ----------------
 
     /**
-     * 轻点画面切换控件显隐：隐藏时顶部栏与底部面板淡出，只留画面与暂停大播放键，
-     * 即沉浸式观看；再点一次恢复。只动控件层，不碰播放内核。
+     * 轻点画面切换控件显隐：第一次单击隐藏，第二次单击显示，如此交替。
+     * 仅在极短窗口内防止同一次抬起被重复处理。
      */
-    private fun toggleUiVisibility() {
+    private fun toggleUiToggleNow() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastTapToggleAt < 80L) return
+        lastTapToggleAt = now
+        setUiHidden(!uiHidden)
+    }
+
+    /** 明确设置沉浸状态；单击、长按倍速和恢复流程共用同一套显隐逻辑。 */
+    private fun setUiHidden(hidden: Boolean) {
         if (controls == null) return
-        uiHidden = !uiHidden
+        uiHidden = hidden
         // 横屏全屏的弹幕跟着控件一起进出：控件在时让位，沉浸时才铺到标题栏位置
         syncDanmakuWithControls()
         listOfNotNull(controls, topBar).forEach { layer ->
             layer.animate().cancel()
-            layer.visibility = View.VISIBLE
-            layer.animate()
-                .alpha(if (uiHidden) 0f else 1f)
-                .setDuration(180)
-                .withEndAction {
-                    // 动画期间用户可能又点了一次，状态已变回显示时不能把它藏掉
-                    if (uiHidden) layer.visibility = View.GONE
-                }
-                .start()
+            if (hidden) {
+                layer.visibility = View.VISIBLE
+                layer.animate()
+                    .alpha(0f)
+                    .setDuration(180)
+                    .withEndAction {
+                        // 回调绑定这一次的隐藏目标：即使之后又单击恢复，
+                        // 旧动画的结束回调也不能把新显示的控件再次藏掉。
+                        if (hidden) layer.visibility = View.GONE
+                    }
+                    .start()
+            } else {
+                layer.visibility = View.VISIBLE
+                layer.animate()
+                    .alpha(1f)
+                    .setDuration(180)
+                    .start()
+            }
         }
     }
 
@@ -1226,6 +1228,7 @@ class PhonePlayer(
         speedBoostImmersivePending = null
         speedBoostOverlay = null; speedBoostLabel = null; portraitInfoContent = null
         speedBoostAreaTop = 0; speedBoostAreaBottom = 0
+        lastTapToggleAt = 0L
         cancelLongPress(); longPressFingerDown = false; longPressTriggered = false
         longPressLocked = false; longPressSpeedActive = false
     }

@@ -297,6 +297,18 @@ object HeicHardDecoder {
                 codec.configure(inputFormat(image), surface, null, 0)
                 codec.start()
                 queueFrame(codec, image.frame)
+                // Surface 模式必须显式 releaseOutputBuffer(render=true) 才会把帧推到 SurfaceTexture。
+                val info = MediaCodec.BufferInfo()
+                val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS
+                while (SystemClock.elapsedRealtime() < deadline && rendered.count == 0L) {
+                    when (val index = codec.dequeueOutputBuffer(info, 50_000L)) {
+                        MediaCodec.INFO_TRY_AGAIN_LATER, MediaCodec.INFO_OUTPUT_FORMAT_CHANGED, MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> Unit
+                        else -> if (index >= 0) {
+                            codec.releaseOutputBuffer(index, true)
+                            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+                        }
+                    }
+                }
                 if (!rendered.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) throw IOException("HEIC GL 渲染超时")
                 texture.updateTexImage()
                 return gl.readTexture(tex[0], texture, image.width, image.height)
@@ -306,6 +318,7 @@ object HeicHardDecoder {
                 runCatching { surface.release() }
                 runCatching { texture.release() }
                 GLES20.glDeleteTextures(1, tex, 0)
+                gl.releaseCurrent()
             }
         }
     }
@@ -337,6 +350,11 @@ object HeicHardDecoder {
 
         fun makeCurrent() {
             if (!EGL14.eglMakeCurrent(display, surface, surface, context)) throw IOException("EGL 绑定失败")
+        }
+
+        /** 解完释放当前线程的 context 绑定，EGL context 单线程独占，不释放会卡死下一个解码线程。 */
+        fun releaseCurrent() {
+            EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
         }
 
         /** 外部 OES 纹理 → FBO → glReadPixels → Bitmap，用 SurfaceTexture 变换矩阵摆正朝向。 */

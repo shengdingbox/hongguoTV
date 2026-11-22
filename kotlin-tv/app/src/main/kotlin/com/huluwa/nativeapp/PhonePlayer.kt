@@ -743,7 +743,7 @@ class PhonePlayer(
     }
 
     private fun cancelLongPress() {
-        longPressRunnable?.let { activity.mainHandler.removeCallbacks(it) }
+        longPressRunnable?.let { activity.window.decorView.removeCallbacks(it) }
         longPressRunnable = null
     }
 
@@ -756,7 +756,7 @@ class PhonePlayer(
             startSpeedBoost()
         }
         longPressRunnable = runnable
-        activity.mainHandler.postDelayed(runnable, LONG_PRESS_MS)
+        activity.window.decorView.postDelayed(runnable, LONG_PRESS_MS)
     }
 
     private fun handleLongPressOutside(event: MotionEvent): Boolean {
@@ -1017,6 +1017,12 @@ class PhonePlayer(
 
     @SuppressLint("ClickableViewAccessibility")
     private val touchListener = View.OnTouchListener { _, event ->
+        handleVideoTouch(event)
+        true
+    }
+
+    /** 视频区触摸：长按计时与原有轻点/双击共用同一套事件，长按触发后吞掉抬手。 */
+    private fun handleVideoTouch(event: MotionEvent) {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 longPressFingerDown = true
@@ -1026,13 +1032,12 @@ class PhonePlayer(
             MotionEvent.ACTION_MOVE -> {
                 if (longPressTriggered) {
                     // 长按期间的手指抖动不再参与轻点/双击识别。
-                    return true
+                    return
                 }
                 if (!handleLongPressOutside(event)) {
                     // 已判定为滑动后，同一手势后续的 MOVE 继续交给分页。
                     gesture.onTouchEvent(event)
                 }
-                return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val wasBoosted = longPressTriggered || longPressLocked
@@ -1041,11 +1046,9 @@ class PhonePlayer(
                 finishSpeedBoost(restore = true)
                 // 长按已经消费这次抬手，不能再让 GestureDetector 判成轻点。
                 if (!wasBoosted) gesture.onTouchEvent(event)
-                return true
             }
+            else -> if (!longPressTriggered) gesture.onTouchEvent(event)
         }
-        if (!longPressTriggered) gesture.onTouchEvent(event)
-        true
     }
 
     // 分页手势由外层 PhoneEpisodePager 拦截，视频区仅处理轻点和双击。

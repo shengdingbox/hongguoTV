@@ -935,7 +935,11 @@ class MainActivity: Activity() {
         stopTvHomePlayback()
         retainedPhoneCatalogs.clear()
         retainedCatalogs.clear(); catalogSwitcher=null; catalogContainer=null
-        homeScreen?.let { homePosition=it.capturePosition() }
+        homeScreen?.let {
+            homePosition=it.capturePosition()
+            // 离开首页（进详情/切页签/退出）时把「从当前焦点往后」的快照落盘，下次冷启动直接续着看。
+            if(screen=="catalog" && library.isLoaded) persistSuixinSnapshot(position=homePosition)
+        }
         (catalogRecycler?.layoutManager as? GridLayoutManager)?.let { scrollPositions[catalogPageKey]=it.findFirstVisibleItemPosition() }
         homeScreen=null; selectionPreview=null; catalogRecycler=null; catalogAdapter=null; loadingMore=false
         // 这里只清「列表页」的视图引用。整集预载状态条属于播放页：手机竖屏切集走 reuse
@@ -1603,20 +1607,15 @@ class MainActivity: Activity() {
             val requestSuixinMode=suixinMode; val requestSuixinFeed=suixinFeedMode
             work({
                 val result=when(requestTab) {
-                    0 -> if(requestSuixinMode) { if(requestSuixinFeed=="hot") suixinPage(requestPage) else suixinCategoryPage(requestPage>1 && suixinCategoryCursors[requestSuixinFeed]!=null) } else repository.home(requestPage,requestType,requestGenre)
+                    0 -> if(requestSuixinMode) { if(requestSuixinFeed=="hot") suixinPage(requestPage) else suixinCategoryPage() } else repository.home(requestPage,requestType,requestGenre)
                     2 -> if(requestAi) repository.home(requestPage,ContentType.AI,requestAiGenre) else repository.ranking(requestBoard,requestPage,rankSession)
                     else -> repository.search(requestQuery,requestPage,requestType)
                 }
                 result
             }, { result ->
                 if(requestTab==0 && !requestSuixinMode && requestPage==1 && requestGenre==null) library.cacheHome(requestType,result.items,result.hasMore)
-                if(requestTab==0 && requestSuixinMode && requestPage==1 && requestGenre==null && library.isLoaded) persistSuixinCache(requestSuixinFeed,result.items,result.hasMore)
-                if(requestTab==0 && requestSuixinMode && requestPage==1 && requestGenre==null && result.items.isNotEmpty()) {
-                    when(requestSuixinFeed) {
-                        "comic", "real" -> suixinCategoryItems[requestSuixinFeed]=result.items
-                        else -> { suixinHotItems.clear(); suixinHotItems.addAll(result.items) }
-                    }
-                }
+                // 对齐参考项目 append+distinctBy：首屏成功不整表替换，缓存里已刷过的内容保留，
+                // 新批次由 suixinPage/suixinCategoryPage 内部追加，避免冷启动反复覆盖成同一批。
                 // 榜单第 1 页到手先落缓存，无论界面是否立即换新
                 if(requestTab==2 && requestPage==1 && !requestAi) library.cacheRank(requestBoard,result.items,result.hasMore,result.ranking)
                 if(requestTab==0 && requestPage==1 && requestGenre==null && requestSuixinFeed==suixinFeedMode) {
@@ -1627,6 +1626,8 @@ class MainActivity: Activity() {
                         home.updateShelves(homeShelves(),requestFocus=false)
                         if(position!=null) home.restorePosition(position,requestFocus=home.hasFocus()) else home.refreshSelection()
                     }
+                    // 焦点已恢复、hasMore 已更新后落快照：保存「从当前正在看的剧往后」的数据。
+                    if(requestSuixinMode && library.isLoaded) persistSuixinSnapshot(requestSuixinFeed)
                 } else if(requestTab==2 && requestPage==1 && !requestAi && rankFromCache) {
                     // 缓存刷新保留正在看的旧榜；手动换新时走差异更新，不重建网格和图片控件。
                     (rankRefresh as? TextView)?.text="榜单已更新 · 按确认查看"
@@ -2009,7 +2010,7 @@ class MainActivity: Activity() {
         loadingMore=true; rememberCatalogFocus(); adapter.updateFooter(FOOTER_LOADING); restoreCatalogFocus()
         work({
             when(requestTab) {
-                0 -> if(requestSuixinMode) { if(requestSuixinFeed=="hot") suixinPage(requestPage) else suixinCategoryPage(requestPage>1 && suixinCategoryCursors[requestSuixinFeed]!=null) } else repository.home(requestPage,requestType,requestGenre)
+                0 -> if(requestSuixinMode) { if(requestSuixinFeed=="hot") suixinPage(requestPage) else suixinCategoryPage() } else repository.home(requestPage,requestType,requestGenre)
                 2 -> if(requestAi) repository.home(requestPage,ContentType.AI,requestAiGenre) else repository.ranking(requestBoard,requestPage,rankSession)
                 else -> repository.search(requestQuery,requestPage,requestType)
             }
@@ -2342,6 +2343,16 @@ class MainActivity: Activity() {
                 if(suixinSource==null) suixinSource="fallback"
                 return repository.home(requestPage,library.contentType,null)
             }
+            // 旧会话续刷整页与已看重复（服务端 session 失效回默认池）：丢弃旧会话重开取新批次，
+            // 对齐参考项目“空批即重建会话”的处理，避免每次冷启动都覆盖/停留在同一批内容。
+            if(page.items.isEmpty()) {
+                val retry=try { suixinNewBatch(requestPage) } catch(_: Exception) { null }
+                if(retry!=null && retry.items.isNotEmpty()) {
+                    suixinLoading=false; suixinFailed=false; suixinSource="tab"
+                    main.post { if(!suixinHomeLoading) loadMoreSuixinHome() }
+                    return retry
+                }
+            }
             suixinCursor=page.cursor
             saveSuixinCursor()
             suixinTrialHints=page.trialHints
@@ -2370,17 +2381,26 @@ class MainActivity: Activity() {
         suixinHotItems.addAll(items.filter { it.id !in seen })
     }
 
-    /** 当前推荐批次耗尽后重建服务端会话；保留已看记录，避免重复三部剧循环。 */
+    /** 当前推荐批次耗尽后重建服务端会话；保留已看记录，避免重复三部剧循环。
+     *  对齐参考项目 repeat(3)：新会话默认池与已看整页重复时沿 offset 推进再拉，最多三批。 */
     private fun suixinNewBatch(requestedPage: Int): CatalogPage {
         val seen=suixinHotItems.mapTo(hashSetOf()) { it.id }
         suixinCursor=null
-        val fresh=repository.suixinInitial()
-        suixinCursor=fresh.cursor?.copy(seen=(seen+fresh.items.map { it.id }).toList().takeLast(540).toSet())
-        saveSuixinCursor()
-        if(fresh.trialHints.isNotEmpty()) suixinTrialHints=suixinTrialHints+fresh.trialHints
-        val items=fresh.items.filter { it.id !in seen }
-        appendSuixinHot(items)
-        return CatalogPage(items,fresh.cursor!=null)
+        var offset=0
+        repeat(3) {
+            val fresh=try { repository.suixinInitial(offset) } catch(_: Exception) { return CatalogPage(emptyList(),false) }
+            suixinCursor=fresh.cursor?.copy(seen=(seen+fresh.items.map { it.id }).toList().takeLast(540).toSet())
+            saveSuixinCursor()
+            if(fresh.trialHints.isNotEmpty()) suixinTrialHints=suixinTrialHints+fresh.trialHints
+            val items=fresh.items.filter { it.id !in seen }
+            if(items.isNotEmpty()) {
+                appendSuixinHot(items)
+                return CatalogPage(items,fresh.cursor!=null)
+            }
+            // tab 通道优先用服务端 next_offset 推进；没有就按本批条数推进（对齐参考 rawVideoCount 语义）。
+            offset=fresh.cursor?.offset?.takeIf { it>offset } ?: offset+maxOf(1,fresh.items.size)
+        }
+        return CatalogPage(emptyList(),suixinCursor!=null)
     }
 
     /** 随心看游标快照（对齐参考 FeedStartupCache 的游标部分）：冷启动接着上次刷，不带任何凭据。 */
@@ -2421,6 +2441,24 @@ class MainActivity: Activity() {
         if(items.isEmpty()) return
         library.cacheTvHome(mode,items,hasMore)
     }
+
+    /**
+     * 把当前首页展示快照写入 SP：从焦点作品开始裁剪，只保存「上次刷到的位置往后」的数据。
+     * 下次冷启动恢复后首张卡片就是上次正在看的剧，缓存列表更小、读写都更快。
+     */
+    private fun persistSuixinSnapshot(mode: String=suixinFeedMode,position: HomeScreen.Position?=homeScreen?.capturePosition()) {
+        if(!library.isLoaded) return
+        val focusId=position?.focus?.takeIf { it.startsWith("hot:") }?.removePrefix("hot:").orEmpty()
+        fun trimmed(items: List<Series>): List<Series> {
+            if(items.isEmpty()) return items
+            val index=focusId.takeIf(String::isNotBlank)?.let { id -> items.indexOfFirst { it.id==id } } ?: 0
+            return if(index>0) items.drop(index) else items
+        }
+        when(mode) {
+            "comic","real" -> suixinCategoryItems[mode]?.let { persistSuixinCache(mode,trimmed(it),hasMore) }
+            else -> persistSuixinCache("hot",trimmed(suixinHotItems.toList()),hasMore)
+        }
+    }
     /** 首页子菜单：推荐走书城连续流，漫剧/真人剧走分类接口。 */
     private fun changeSuixinFeed(mode: String) {
         if(mode==suixinFeedMode) return
@@ -2440,6 +2478,8 @@ class MainActivity: Activity() {
         val nextPage=suixinHomePage+1
         val ticket=generation
         val scope=RequestScope()
+        // 触边/换一批前的展示长度：加载完成后跳到这里，即新批次第一条（对齐参考项目加载完成自动 move(1)）。
+        val oldCount=homeShelves().firstOrNull()?.entries?.size ?: 0
         suixinFeedScope?.cancel()
         suixinFeedScope=scope
         suixinFeedJob=io.submit {
@@ -2450,7 +2490,7 @@ class MainActivity: Activity() {
                             val more=suixinPage(nextPage)
                             if(more.items.isNotEmpty()) more else suixinNewBatch(nextPage)
                         }
-                    } else suixinCategoryPage(true)
+                    } else suixinCategoryPage()
                 }
                 main.post {
                     if(isDestroyed || generation!=ticket || scope.isCancelled || mode!=suixinFeedMode) {
@@ -2461,30 +2501,51 @@ class MainActivity: Activity() {
                         hasMore=result.hasMore
                         if(mode=="hot") appendSuixinHot(result.items)
                         homeScreen?.let { home ->
-                            val position=home.capturePosition()
+                            var position=home.capturePosition()
                             val advance=suixinAdvanceAfterLoad
                             suixinAdvanceAfterLoad=false
+                            // 对齐参考项目 DramaFeedState.append 的 72 条内存上限：从头裁剪，
+                            // 最多裁到当前焦点之前，裁完同步前移焦点列号，列表不会无限增长。
+                            var drop=0
+                            when(mode) {
+                                "hot" -> if(suixinHotItems.size>72) {
+                                    drop=minOf(suixinHotItems.size-72,position.column)
+                                    if(drop>0) { val kept=suixinHotItems.drop(drop); suixinHotItems.clear(); suixinHotItems.addAll(kept) }
+                                }
+                                else -> suixinCategoryItems[mode]?.let { items ->
+                                    if(items.size>72) {
+                                        val trim=minOf(items.size-72,position.column)
+                                        if(trim>0) { suixinCategoryItems[mode]=items.drop(trim); drop=trim }
+                                    }
+                                }
+                            }
+                            if(drop>0) position=position.copy(column=(position.column-drop).coerceAtLeast(0))
                             home.updateShelves(homeShelves(),requestFocus=false)
                             if(advance) {
                                 val shown=homeShelves().firstOrNull()?.entries.orEmpty()
-                                if(shown.isNotEmpty()) home.restorePosition(position.copy(column=shown.lastIndex),requestFocus=true)
+                                if(shown.isNotEmpty()) home.restorePosition(position.copy(column=(oldCount-drop).coerceIn(0,shown.lastIndex)),requestFocus=true)
                             } else home.restorePosition(position,requestFocus=true)
+                            // 触边加载的新批次已就位：更新从当前焦点往后的展示快照。
+                            if(library.isLoaded) persistSuixinSnapshot(mode)
                         }
                     }
                 }
             } catch (_: Exception) {
-                main.post { suixinHomeLoading=false; hasMore=false }
+                main.post {
+                    suixinHomeLoading=false; hasMore=false
+                    // 触边提示落空时复位，避免停在「正在加载更多…」。
+                    homeScreen?.clearEdgeHint()
+                }
             }
         }
     }
 
-    private fun suixinCategoryPage(more: Boolean): CatalogPage {
+    private fun suixinCategoryPage(): CatalogPage {
         val comic=suixinFeedMode=="comic"
         val mode=suixinFeedMode
-        // 内存游标优先；冷启动内存为空时恢复上次快照接着刷（已看集合随请求带给服务端去重）。
-        val cursor=suixinCategoryCursors[mode]
-            ?: if(more) null else savedCategoryCursor(mode)
-        if(more && cursor==null) return CatalogPage(emptyList(),false)
+        // 内存游标优先；冷启动内存为空时恢复上次快照接着刷；两者都没有（如首屏失败后触边）
+        // 直接新会话从头拉，已看集合随请求带给服务端去重，不再让触边加载空转卡死。
+        val cursor=suixinCategoryCursors[mode] ?: savedCategoryCursor(mode)
         val page=repository.suixinCategory(comic,cursor)
         // 分类游标带上已看集合：服务端 filter_ids 去重，本地过滤继续兜底。
         val shown=suixinCategoryItems[mode].orEmpty().map { it.id }
@@ -2517,7 +2578,9 @@ class MainActivity: Activity() {
             "real" -> suixinCategoryItems["real"].orEmpty()
             else -> suixinHotItems.toList()
         }.filterNot { it.id in library.hidden() }
-        return listOf(HomeScreen.Shelf("hot","随心看",shown.take(20).map { HomeScreen.Entry(it,it.badge.ifBlank { "随心看 · 为你推荐" }) }))
+        // 对齐参考项目 DramaFeedState.append：列表无展示上限，触边加载的新批次直接接在末尾；
+        // 内存由加载侧的 72 条上限头部裁剪控制，不再 take(20) 把新内容截掉。
+        return listOf(HomeScreen.Shelf("hot","随心看",shown.map { HomeScreen.Entry(it,it.badge.ifBlank { "随心看 · 为你推荐" }) }))
     }
     private fun refreshLibraryCards(changedId: String,removed: Boolean=false) {
         if(screen!="catalog") return
@@ -7951,7 +8014,10 @@ class MainActivity: Activity() {
         } else playbackKeptOnStop=false
         retainedPhoneCatalogs.clear()
         // 页面解绑由 Glide 释放资源，缓存与内存压力由 Glide 的应用生命周期回调管理。
-        artwork.clearPage(); library.flush()
+        artwork.clearPage()
+        // 退后台/被系统回收前记录首页浏览位置：下次冷启动从上次刷到的剧继续显示。
+        if(screen=="catalog" && library.isLoaded) persistSuixinSnapshot(position=homeScreen?.capturePosition() ?: homePosition)
+        library.flush()
         super.onStop()
     }
     override fun onTrimMemory(level: Int) {

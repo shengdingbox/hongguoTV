@@ -325,6 +325,9 @@ class HomeScreen(
         if(shelf.entries.isEmpty()) { onFeedEdge?.invoke(); return }
         val next=currentIndex()+delta
         if(next !in shelf.entries.indices) {
+            // 对齐参考项目：向左到头只提示，不触发加载；向右触边提示加载中，取回后由上层跳到新批次。
+            if(delta<0) { positionLabel.text="已到本次浏览的最早作品"; return }
+            positionLabel.text="正在加载更多…"
             onFeedEdge?.invoke()
             return
         }
@@ -370,6 +373,8 @@ class HomeScreen(
         return true
     }
     fun refreshSelection() { current()?.let { selected(it.series,it.label) } }
+    /** 触边提示（正在加载更多…/已到最早作品）落空时复位到底部状态行。 */
+    fun clearEdgeHint() { paintSelection() }
     fun reloadArtwork() { loadArtwork() }
 
     /** 冷启动直接呈现主页，后台记录尚未就绪时不显示加载或空记录提示。 */

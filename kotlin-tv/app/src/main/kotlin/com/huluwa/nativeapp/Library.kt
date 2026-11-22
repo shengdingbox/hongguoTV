@@ -313,6 +313,8 @@ class Library(context: Context) {
 
     fun cacheTvHome(mode: String, items: List<Series>, hasMore: Boolean) {
         state()
+        // onDestroy 里 releaseCatalogViews 晚于 library.close()：队列已关时静默跳过，避免提交崩溃。
+        if (closed) return
         if (!validTvHomeMode(mode) || items.isEmpty()) return
         val now = System.currentTimeMillis()
         val retained = items.distinctBy { it.id }.take(TV_HOME_CACHE_ITEMS)

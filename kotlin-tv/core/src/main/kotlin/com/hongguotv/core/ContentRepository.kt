@@ -223,9 +223,9 @@ open class ContentRepository(
     /** 登录账号凭据；推荐请求用它走个性化口径，为空保持游客。由界面层在账号变化时注入。 */
     @Volatile var feedAccount: AccountCredentials? = null
 
-    /** 随心看首屏：书城推荐接口，返回卡片、试播集提示和服务端游标。 */
-    fun suixinInitial(unsignedFallback: Boolean = false): SuixinPage {
-        val page = SuixinFeedClient(http, activeSigner, feedAccount).initial(0, unsignedFallback)
+    /** 随心看首屏：书城推荐接口，返回卡片、试播集提示和服务端游标；offset>0 时按 tab 翻页口径续拉。 */
+    fun suixinInitial(offset: Int = 0, unsignedFallback: Boolean = false): SuixinPage {
+        val page = SuixinFeedClient(http, activeSigner, feedAccount).initial(offset, unsignedFallback)
         val cursor = page.cursor?.copy(seen = page.items.mapTo(hashSetOf()) { it.id })
         return page.copy(cursor = cursor, items = page.items, trialHints = page.trialHints)
     }

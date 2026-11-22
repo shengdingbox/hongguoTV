@@ -176,21 +176,45 @@ object HeicHardDecoder {
         }
     }
 
-    /** ByteBuffer 兜底：拿 YUV_420_888 输出经 NV21→JPEG 转成 Bitmap；soft=true 用系统软解码器。 */
+    /** ByteBuffer 兜底：拿 YUV_420_888 输出经 NV21→JPEG 转成 Bitmap。
+     *  soft=true 用系统软解；否则枚举设备全部 HEVC 解码器逐个试（createDecoderByType 只挑一个，可能漏）。 */
     private fun decodeToBuffers(image: HeicImageParser.HeicImage, soft: Boolean): Bitmap {
-        var codec: MediaCodec? = null
-        try {
-            codec = if (soft) {
-                if (softDecoderBroken) throw IOException("软解组件不可用")
-                try {
-                    MediaCodec.createByCodecName(SOFT_DECODER)
-                } catch (e: Exception) {
-                    softDecoderBroken = true
-                    throw e
-                }
-            } else {
-                MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
+        if (soft) {
+            if (softDecoderBroken) throw IOException("软解组件不可用")
+            return try {
+                decodeWith(image, MediaCodec.createByCodecName(SOFT_DECODER), false)
+            } catch (e: Exception) {
+                softDecoderBroken = true
+                throw e
             }
+        }
+        val candidates = hevcDecoders.filter { it !in brokenDecoders }
+        var last: Exception? = null
+        for (name in candidates) {
+            try {
+                return decodeWith(image, MediaCodec.createByCodecName(name), false)
+            } catch (e: Exception) {
+                brokenDecoders.add(name)
+                RuntimeLog.add("$TAG decoder[$name] 失败: ${e.message?.take(40)}")
+                last = e
+            }
+        }
+        throw last ?: IOException("无可用 HEVC 解码器: ${hevcDecoders.joinToString().take(80)}")
+    }
+
+    /** 设备上全部 video/hevc 解码器组件名（q200 固件可能有多个 amlogic 变体）。 */
+    private val hevcDecoders: List<String> by lazy {
+        runCatching {
+            android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).codecInfos
+                .filter { !it.isEncoder && it.supportedTypes.any { t -> t.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, true) } }
+                .map { it.name }
+        }.getOrDefault(emptyList())
+    }
+
+    private val brokenDecoders = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    private fun decodeWith(image: HeicImageParser.HeicImage, codec: MediaCodec, soft: Boolean): Bitmap {
+        try {
             codec.configure(inputFormat(image), null, null, 0)
             codec.start()
             queueFrame(codec, image.frame)
@@ -206,7 +230,10 @@ object HeicHardDecoder {
                             val out = codec.getOutputImage(index)
                                 ?: throw IOException("HEIC ByteBuffer 模式无 Image 输出")
                             out.use { yuv ->
-                                if (!soft && chromaIsBlank(yuv)) throw IOException("硬解色度输出为空")
+                                if (!soft && chromaIsBlank(yuv)) {
+                                    dumpRawChroma(codec, index, yuv)
+                                    throw IOException("硬解色度输出为空")
+                                }
                                 return yuvToBitmap(yuv)
                             }
                         } finally {
@@ -217,8 +244,22 @@ object HeicHardDecoder {
             }
             throw IOException("HEIC ByteBuffer 模式输出超时")
         } finally {
-            runCatching { codec?.stop() }
-            runCatching { codec?.release() }
+            runCatching { codec.stop() }
+            runCatching { codec.release() }
+        }
+    }
+
+    /** 色度被判空时 dump 原始 buffer 的 Y 尺寸边界处字节，探测色度是否只是 Image 平面映射偏移错。 */
+    private fun dumpRawChroma(codec: MediaCodec, index: Int, yuv: Image) {
+        runCatching {
+            val raw = codec.getOutputBuffer(index) ?: return
+            val ySize = yuv.planes[0].rowStride * yuv.height
+            val head = StringBuilder()
+            for (i in 0 until 48) {
+                if (ySize + i >= raw.capacity()) break
+                head.append("%02x".format(raw.get(ySize + i)))
+            }
+            RuntimeLog.add("$TAG rawChroma@$ySize(cap=${raw.capacity()})= $head")
         }
     }
 

@@ -122,9 +122,6 @@ class HomeScreen(
     private val metadata=label("",12f,TvStyle.accent).apply { maxLines=1; ellipsize=TextUtils.TruncateAt.END }
     private val intro=label("热门短剧，随心发现",13f,TvStyle.muted).apply { maxLines=2; ellipsize=TextUtils.TruncateAt.END }
     private val info=LinearLayout(context).apply { orientation=VERTICAL; setPadding(dp(12),dp(10),dp(12),dp(10)) }
-    private val badge=label("随心看",11f,TvStyle.accent).apply {
-        maxLines=1; setPadding(dp(10),dp(6),dp(10),dp(6)); background=TvVisual.row(context,false,true)
-    }
     private val empty=label("正在发现好剧…",15f,TvStyle.muted).apply { gravity=Gravity.CENTER; maxLines=3 }
     private val previewStatus=label("",11f).apply {
         gravity=Gravity.CENTER_VERTICAL; maxLines=1; ellipsize=TextUtils.TruncateAt.END
@@ -140,7 +137,7 @@ class HomeScreen(
     private val actionLine=LinearLayout(context).apply {
         gravity=Gravity.CENTER_VERTICAL; setPadding(dp(6),dp(2),dp(6),dp(2))
         background=TvStyle.shape(context,
-            if(TvStyle.theme==TvStyle.Theme.NIGHT) Color.argb(120,11,15,21) else Color.argb(140,255,250,241),radius=20)
+            if(TvStyle.theme==TvStyle.Theme.NIGHT) Color.argb(70,11,15,21) else Color.argb(90,255,250,241),radius=20)
     }
     private val play=button("播放全集","home:play") { openCurrent() }
     private val manage=button("收藏 / 更多","home:actions") { openActions(manageAnchor()) }
@@ -177,7 +174,6 @@ class HomeScreen(
         stage.addView(View(context).apply { background=shade() },FrameLayout.LayoutParams(-1,-1))
         stage.addView(poster,FrameLayout.LayoutParams(-1,-1))
         stage.addView(empty,FrameLayout.LayoutParams(-1,-1))
-        stage.addView(badge,FrameLayout.LayoutParams(-2,-2,Gravity.TOP or Gravity.START).apply { leftMargin=dp(10); topMargin=dp(8) })
         info.background=GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
             if(TvStyle.theme==TvStyle.Theme.NIGHT) intArrayOf(0xe60b101a.toInt(),0x550b101a)
             else intArrayOf(0xe6eee4d4.toInt(),0x55eee4d4))
@@ -446,9 +442,7 @@ class HomeScreen(
         title.text=entry?.series?.title ?: "发现下一部好剧"
         metadata.text=entry?.let { listOf(it.label,it.series.tags).filter(String::isNotBlank).distinct().joinToString("  ·  ") }.orEmpty()
         intro.text=entry?.series?.description?.takeIf(String::isNotBlank) ?: "左右换剧，挑选喜欢的故事"
-        badge.text=if(shelf?.key=="hot") "随心看" else shelf?.title ?: "随心看"
         info.visibility=if(entry==null) GONE else VISIBLE
-        badge.visibility=if(entry==null) GONE else VISIBLE
         empty.visibility=if(entry==null) VISIBLE else GONE
         empty.text="还没有可展示的剧集\n按右上方刷新发现更多好剧"
         play.text="播放随心看"

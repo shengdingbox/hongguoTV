@@ -101,7 +101,8 @@ class HomeScreen(
     private val feedTabs=mutableListOf<TextView>()
     private val carousel=FrameLayout(context).apply { clipChildren=false; clipToPadding=false }
     private val hero=LinearLayout(context).apply {
-        orientation=VERTICAL; setPadding(dp(8),dp(8),dp(8),dp(8))
+        orientation=VERTICAL
+        // 去掉内边距：画面与操作条直接贴到面板边缘，操作条才能真正贴住底部
         background=TvVisual.panel(context); clipToOutline=true
     }
     private val stage=FrameLayout(context).apply {
@@ -176,7 +177,10 @@ class HomeScreen(
         // 画面占满整个 hero（视频延伸到操作区域），操作条悬浮其上，三按钮等宽三等分
         hero.addView(stage,LayoutParams(-1,-1))
         listOf(play,manage,resume).forEachIndexed { index,view ->
-            actionLine.addView(view,LayoutParams(0,dp(40),1f).apply { if(index<2) rightMargin=dp(8) })
+            // 高度压到原 40dp 的三分之二（27dp），字号与内边距同步缩小
+            view.minHeight=dp(27); view.textSize=12f
+            view.setPadding(dp(10),dp(3),dp(10),dp(3))
+            actionLine.addView(view,LayoutParams(0,dp(27),1f).apply { if(index<2) rightMargin=dp(8) })
             view.nextFocusUpId=stage.id; view.nextFocusDownId=view.id
         }
         play.nextFocusLeftId=play.id; play.nextFocusRightId=manage.id

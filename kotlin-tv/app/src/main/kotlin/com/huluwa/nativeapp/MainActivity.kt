@@ -4317,6 +4317,7 @@ class MainActivity: Activity() {
                     playbackTitle.text="${data.series.title}  ·  第 ${episodeIndex+1} 集"
                     // 自然连播沿用视频输出，Media3 不保证为每集再次发送首帧回调。
                     // 同步标题与集号时保留连续画面，避免重新盖上封面后一直等不到回调。
+                    if(phonePlayerLayout()) phonePlayer?.restoreSpeedBeforeEpisodeChange()
                     if(phonePlayerLayout()) phonePlayer?.updateEpisode(data,waitForFirstFrame=false)
                     progressBar.progress=0
                     oldVideo?.setPlaybackActive(false)
@@ -5993,6 +5994,8 @@ class MainActivity: Activity() {
         mediaSession.deactivate(); tvTools.close()
         main.removeCallbacks(menuLongRunnable); menuLongFired=false
         ffActive=false; outroSkipSeconds=0; outroTriggered=false
+        // 手机长按倍速可能还没走到外壳重建：释放播放器前先恢复原倍速。
+        if(phonePlayer?.hasActiveSpeedBoost()==true) phonePlayer?.restoreSpeedBeforeEpisodeChange()
         val wasForeground=foreground; foreground=false
         val oldPanel=episodePanel; episodePanel=null; oldPanel?.dismiss(); foreground=wasForeground
         // 手机竖屏选集弹层同样随播放器一起收掉，否则会浮在详情页上
@@ -7255,6 +7258,11 @@ class MainActivity: Activity() {
     /** 手机播放控制桥接：由 PhonePlayer 调用，复用既有播放操作。 */
     fun togglePlaybackPhone()=togglePlayback()
     fun seekToPhone(position: Long)=seekTo(position)
+    /** 长按倍速只改当前会话，不写回全局/本剧设置；松手或解锁时恢复这里读到的值。 */
+    fun phonePlaybackSpeed(): Float = player?.playbackParameters?.speed ?: effectiveSpeed()
+    fun setPhonePlaybackSpeed(speed: Float) {
+        if(screen=="player" && phonePlayerLayout()) player?.setPlaybackSpeed(speed)
+    }
     fun skipEpisodePhone(direction: Int): Boolean = skipEpisode(direction).also { if(!it) PhoneUi.toast(this,"没有更多集数") }
     fun showPhoneEpisodePicker() { if(detail!=null) showEpisodePanel(pickerAnchor) }
 

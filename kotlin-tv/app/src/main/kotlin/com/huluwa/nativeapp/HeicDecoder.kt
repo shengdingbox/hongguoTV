@@ -50,6 +50,9 @@ object HeicHardDecoder {
     /** 某些老 OMX 组件（Amlogic）不支持渲染到 RGBA ImageReader，start failed 一次后就直走 ByteBuffer。 */
     @Volatile private var surfaceModeBroken = false
 
+    /** YUV_420_888 ImageReader 路线的判死标记（Amlogic 可能只接受显示用途窗口，两者都拒就无解）。 */
+    @Volatile private var yuvSurfaceBroken = false
+
     /** Amlogic ByteBuffer 模式色度走独立 DMA 段，app 读到全零（图变绿），只能退系统软解。 */
     @Volatile private var hardwareChromaBroken = false
 
@@ -63,9 +66,10 @@ object HeicHardDecoder {
         val started = SystemClock.elapsedRealtime()
         codecPermits.acquire()
         try {
-            // 四级降级（当贝 Amlogic 实测：RGBA ImageReader 不支持、色度走独立 DMA、软解组件被 ROM 裁掉）：
-            // RGBA Surface 直出 → 硬件 ByteBuffer(色度检测) → 系统软解 → GL SurfaceTexture 渲染读回。
+            // 五级降级（当贝 Amlogic 实测逐级排障）：RGBA Surface → YUV ImageReader(消费者分配 CPU 可读) →
+            // 硬件 ByteBuffer(色度检测) → 系统软解 → GL SurfaceTexture 渲染读回。
             val bitmap = attempt("surface", surfaceModeBroken, { surfaceModeBroken = true }) { decodeToSurface(image) }
+                ?: attempt("yuv-surface", yuvSurfaceBroken, { yuvSurfaceBroken = true }) { decodeToYuvSurface(image) }
                 ?: attempt("hw-buf", hardwareChromaBroken, { hardwareChromaBroken = true }) { decodeToBuffers(image, soft = false) }
                 ?: attempt("soft", softDecoderBroken, { softDecoderBroken = true }) { decodeToBuffers(image, soft = true) }
                 ?: glDecode(image)
@@ -120,6 +124,7 @@ object HeicHardDecoder {
             codec.configure(inputFormat(image), reader.surface, null, 0)
             codec.start()
             queueFrame(codec, image.frame)
+            drainToSurface(codec, rendered)
             if (!rendered.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) throw IOException("HEIC 硬解输出超时")
             val captured = reader.acquireLatestImage() ?: throw IOException("HEIC 硬解无帧")
             captured.use { raw -> return rawToBitmap(raw) }
@@ -127,6 +132,47 @@ object HeicHardDecoder {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
             runCatching { reader?.close() }
+        }
+    }
+
+    /** YUV ImageReader：消费者侧分配 CPU 可读 buffer，绕开 ByteBuffer 模式的 DMA 色度空段。 */
+    private fun decodeToYuvSurface(image: HeicImageParser.HeicImage): Bitmap {
+        var codec: MediaCodec? = null
+        var reader: ImageReader? = null
+        try {
+            reader = ImageReader.newInstance(image.width, image.height, android.graphics.ImageFormat.YUV_420_888, 3)
+            val rendered = CountDownLatch(1)
+            reader.setOnImageAvailableListener({ rendered.countDown() }, readerHandler)
+            codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
+            codec.configure(inputFormat(image), reader.surface, null, 0)
+            codec.start()
+            queueFrame(codec, image.frame)
+            drainToSurface(codec, rendered)
+            if (!rendered.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) throw IOException("HEIC YUV 输出超时")
+            val captured = reader.acquireLatestImage() ?: throw IOException("HEIC YUV 无帧")
+            captured.use { yuv ->
+                if (chromaIsBlank(yuv)) throw IOException("YUV 路径色度输出为空")
+                return yuvToBitmap(yuv)
+            }
+        } finally {
+            runCatching { codec?.stop() }
+            runCatching { codec?.release() }
+            runCatching { reader?.close() }
+        }
+    }
+
+    /** Surface 模式的帧必须显式 releaseOutputBuffer(render=true) 才渲染到消费端，循环到 EOS 或帧到达。 */
+    private fun drainToSurface(codec: MediaCodec, rendered: CountDownLatch) {
+        val info = MediaCodec.BufferInfo()
+        val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS
+        while (SystemClock.elapsedRealtime() < deadline && rendered.count == 0L) {
+            when (val index = codec.dequeueOutputBuffer(info, 50_000L)) {
+                MediaCodec.INFO_TRY_AGAIN_LATER, MediaCodec.INFO_OUTPUT_FORMAT_CHANGED, MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> Unit
+                else -> if (index >= 0) {
+                    codec.releaseOutputBuffer(index, true)
+                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+                }
+            }
         }
     }
 
@@ -297,18 +343,7 @@ object HeicHardDecoder {
                 codec.configure(inputFormat(image), surface, null, 0)
                 codec.start()
                 queueFrame(codec, image.frame)
-                // Surface 模式必须显式 releaseOutputBuffer(render=true) 才会把帧推到 SurfaceTexture。
-                val info = MediaCodec.BufferInfo()
-                val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS
-                while (SystemClock.elapsedRealtime() < deadline && rendered.count == 0L) {
-                    when (val index = codec.dequeueOutputBuffer(info, 50_000L)) {
-                        MediaCodec.INFO_TRY_AGAIN_LATER, MediaCodec.INFO_OUTPUT_FORMAT_CHANGED, MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> Unit
-                        else -> if (index >= 0) {
-                            codec.releaseOutputBuffer(index, true)
-                            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
-                        }
-                    }
-                }
+                drainToSurface(codec, rendered)
                 if (!rendered.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) throw IOException("HEIC GL 渲染超时")
                 texture.updateTexImage()
                 return gl.readTexture(tex[0], texture, image.width, image.height)

@@ -96,6 +96,8 @@ class HomeScreen(
     private var previewVisible=false
     private var previewPlaying=false
     private var previewFailed=false
+    /** 本次换剧的按键方向：>0 按右看下一部，<0 按左，0 非按键触发（恢复/重建）。 */
+    private var pendingDirection=0
     private val selectorLine=LinearLayout(context).apply { gravity=Gravity.CENTER_VERTICAL }
     private val selectors=HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled=false; addView(selectorLine) }
     private val feedTabs=mutableListOf<TextView>()
@@ -306,6 +308,7 @@ class HomeScreen(
             return
         }
         indices[activeShelfKey]=next
+        pendingDirection=delta
         paintSelection(); rememberCurrent()
     }
     fun setFeedMode(key: String) { feedMode = key; paintFeedTabs() }
@@ -406,6 +409,18 @@ class HomeScreen(
         if(previewSeriesId!=nextId) {
             previewSeriesId=nextId; previewVisible=false; previewPlaying=false; previewFailed=false
             poster.visibility=VISIBLE; previewView?.visibility=VISIBLE
+            // 按键换剧立即更新画面：直接复用相邻侧卡已加载的封面（按右时 nextCover 正是新剧封面），
+            // 不等 Glide 网络请求；后续正式加载以它为 placeholder 无缝换高清图
+            val side=when {
+                pendingDirection>0 -> nextCover
+                pendingDirection<0 -> previousCover
+                else -> null
+            }
+            side?.drawable?.let {
+                poster.setImageDrawable(it)
+                backdrop.setImageDrawable(it)
+            }
+            pendingDirection=0
         }
         // 顶部一行合并剧名与集数标签（如「剧名 · 第1集/共1000集」），画面内不再显示简介与状态条
         topTitle.text=if(entry==null) "发现下一部好剧"

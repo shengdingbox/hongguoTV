@@ -94,9 +94,11 @@ class PhonePlayer(
     private var errorText: TextView? = null
     /** 长按倍速状态：只保留底部黄色一行提示，长按期间播放页其余信息全部隐藏。 */
     private var speedBoostOverlay: View? = null
-    private var speedBoostLabel: TextView? = null
+    private var speedBoostLabel: LinearLayout? = null
     /** 长按前用户是否已经是沉浸模式；松开后按原样恢复，不能把原本隐藏的控件硬显示出来。 */
     private var uiHiddenBeforeSpeedBoost = false
+    /** 长按瞬间原底部剧集信息面板的上沿（页面坐标）；隐藏后再按它定位倍速状态。 */
+    private var speedBoostAreaTop = 0
 
     private var fullscreen = false
     private var introExpanded = false
@@ -275,20 +277,43 @@ class PhonePlayer(
         return RectF(left, top, left + frame.width, top + frame.height)
     }
 
-    /** 底部倍速状态贴着实际画面下沿，长按沉浸时不被系统手势条遮住。 */
+    /**
+     * 长按倍速状态放在原先竖屏“剧名/集数/简介/选集/收藏”面板的位置。
+     *
+     * 控制层会在长按开始时整体隐藏，所以先在隐藏前记下 bottomBar 的上沿；
+     * 状态条在“上沿到底部”的这段真实区域里居中，避免固定 dp 在简介行高、
+     * 界面缩放和大字号下漂移。
+     */
     private fun updateSpeedBoostPosition() {
         val overlay = speedBoostOverlay ?: return
         val label = speedBoostLabel ?: return
         val layout = label.layoutParams as? FrameLayout.LayoutParams ?: return
-        val bounds = videoBoundsOnPage() ?: return
-        if (overlay.height <= 0 || overlay.width <= 0) return
-        // 竖屏画面通常铺满整屏；横屏全屏会受系统栏/刘海影响，统一按画面底边留安全距离。
-        val margin = if (fullscreen) dp(10) else dp(14)
-        val bottom = (overlay.height - bounds.bottom.toInt() + margin).coerceAtLeast(dp(10))
+        if (overlay.height <= 0) return
+        if (speedBoostAreaTop <= 0) {
+            // 横屏全屏没有竖屏剧集信息区，沿用底部控制条上方的紧凑位置。
+            layout.bottomMargin = if (fullscreen) dp(72) else dp(150) + topInsetPx
+            label.layoutParams = layout
+            return
+        }
+        val labelHeight = label.height.takeIf { it > 0 } ?: label.measuredHeight.takeIf { it > 0 } ?: dp(42)
+        val areaHeight = (overlay.height - speedBoostAreaTop).coerceAtLeast(labelHeight)
+        val bottom = ((areaHeight - labelHeight) / 2 - dp(8)).coerceAtLeast(dp(12))
         if (layout.bottomMargin != bottom) {
             layout.bottomMargin = bottom
             label.layoutParams = layout
         }
+    }
+
+    /** 隐藏底栏前记下它的真实页面位置，作为长按倍速状态所在的区域。 */
+    private fun captureSpeedBoostArea() {
+        val page = host ?: return
+        val bar = bottom ?: return
+        if (bar.height <= 0) return
+        val pageLocation = IntArray(2)
+        val barLocation = IntArray(2)
+        page.getLocationOnScreen(pageLocation)
+        bar.getLocationOnScreen(barLocation)
+        speedBoostAreaTop = (barLocation[1] - pageLocation[1]).coerceAtLeast(0)
     }
 
     private fun applyEpisodeSheetTransform() {
@@ -568,8 +593,8 @@ class PhonePlayer(
      * 两套共用顶部状态栏（横屏时标题多带剧名）。
      */
     /**
-     * 长按倍速底部状态：长按期间只显示黄色「2.0× 倍速播放中」，
-     * 同时由调用方隐藏播放页其余信息；点击这行可锁定/解锁倍速。
+     * 长按倍速底部状态：落在原先剧集信息/收藏区域，
+     * 「2.0×」黄色，后面的「倍速播放中」白色。点击整行可锁定/解锁。
      */
     private fun buildSpeedBoostOverlay(parent: FrameLayout) {
         val overlay = FrameLayout(activity).apply {
@@ -577,11 +602,9 @@ class PhonePlayer(
             isClickable = false
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        val label = text("2.0× 倍速播放中", 17f, SPEED_BOOST_COLOR).apply {
+        val label = row().apply {
             gravity = Gravity.CENTER
-            setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
-            setShadowLayer(dp(3).toFloat(), 0f, dp(1).toFloat(), Color.argb(180, 0, 0, 0))
-            setPadding(dp(18), dp(8), dp(18), dp(8))
+            setPadding(dp(16), dp(8), dp(16), dp(8))
             isClickable = true
             isFocusable = true
             contentDescription = "2.0倍速播放中，点击锁定倍速"
@@ -589,6 +612,14 @@ class PhonePlayer(
                 if (longPressLocked) unlockSpeedBoost() else lockSpeedBoost()
             }
         }
+        label.addView(text("2.0×", 22f, SPEED_BOOST_COLOR).apply {
+            setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
+            setShadowLayer(dp(3).toFloat(), 0f, dp(1).toFloat(), Color.argb(180, 0, 0, 0))
+        }, rowLp(-2, -2))
+        label.addView(text("倍速播放中", 17f, Color.WHITE).apply {
+            setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
+            setShadowLayer(dp(3).toFloat(), 0f, dp(1).toFloat(), Color.argb(180, 0, 0, 0))
+        }, rowLp(-2, -2).apply { leftMargin = dp(6) })
         speedBoostLabel = label
         overlay.addView(label, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
         parent.addView(overlay, FrameLayout.LayoutParams(-1, -1))
@@ -599,10 +630,8 @@ class PhonePlayer(
         val overlay = speedBoostOverlay ?: return
         overlay.visibility = View.VISIBLE
         overlay.bringToFront()
-        speedBoostLabel?.apply {
-            text = "2.0× 倍速播放中"
-            contentDescription = if (longPressLocked) "2.0倍速已锁定，点击解锁并恢复原倍速" else "2.0倍速播放中，点击锁定倍速"
-        }
+        speedBoostLabel?.contentDescription =
+            if (longPressLocked) "2.0倍速已锁定，点击解锁并恢复原倍速" else "2.0倍速播放中，点击锁定倍速"
         updateSpeedBoostPosition()
     }
 
@@ -613,6 +642,7 @@ class PhonePlayer(
     /** 长按倍速时隐藏播放页其余信息，只保留底部黄色倍速状态。 */
     private fun enterSpeedBoostImmersive() {
         uiHiddenBeforeSpeedBoost = uiHidden
+        captureSpeedBoostArea()
         uiHidden = true
         listOfNotNull(controls, topBar).forEach { layer ->
             layer.animate().cancel()
@@ -1167,7 +1197,7 @@ class PhonePlayer(
         playPauseButton = null; timeText = null; fsEpisodeButton = null
         seekBar = null; favoriteButton = null; fullscreenButton = null; portraitFullscreenButton = null
         centerPlay = null; buffering = null; errorBlock = null; errorText = null
-        speedBoostOverlay = null; speedBoostLabel = null
+        speedBoostOverlay = null; speedBoostLabel = null; speedBoostAreaTop = 0
         cancelLongPress(); longPressFingerDown = false; longPressTriggered = false
         longPressLocked = false; longPressSpeedActive = false
     }

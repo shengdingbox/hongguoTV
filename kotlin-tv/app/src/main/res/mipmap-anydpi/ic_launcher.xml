@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Android 6/7（API 23-25）没有自适应图标（adaptive-icon 需 API 26），
+<!-- Android 7.x（API 24-25）没有自适应图标（adaptive-icon 需 API 26），
      启动器直接取 @mipmap/ic_launcher 时会因只有 -v26 版本而拿不到图标。
      这里用自带珊瑚红底色的完整品牌标 @drawable/app_icon 兜底；
      API 26+ 仍由 mipmap-anydpi-v26 的自适应图标优先命中。 -->

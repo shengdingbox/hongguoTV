@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.huluwa.nativeapp
 
+import kotlin.math.min
+
 /**
  * 最小 HEIC 容器解析：只提取主图（pitm 指向的 hvc1 item）解码所需的三样东西——
  * hvcC 参数集（含 box 头，可直接作 MediaCodec 的 csd-0）、长度前缀码流、ispe 宽高。
@@ -147,6 +149,9 @@ object HeicImageParser {
         }
         val csd = hvcC ?: throw IllegalArgumentException("缺少 hvcC")
         if (width <= 0 || height <= 0) throw IllegalArgumentException("缺少 ispe 尺寸")
+        // HEIC 静态图普遍虚标 level（常见 6.2/186），Amlogic 等老固件 HEVC 组件
+        // 只认到 5.1，超限直接 start failed。单帧小图的负载远低于 4.1，钳到 120 安全。
+        if (csd.size > 20) csd[20] = min(csd[20].toInt() and 0xff, 120).toByte()
 
         val extents = itemExtents?.get(item) ?: throw IllegalArgumentException("缺少主图码流位置")
         val dataBase = if (constructionMethodOne) {

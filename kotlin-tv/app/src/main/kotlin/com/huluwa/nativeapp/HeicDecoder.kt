@@ -2,18 +2,23 @@
 package com.huluwa.nativeapp
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.PixelFormat
+import android.graphics.Rect
+import android.graphics.YuvImage
+import android.media.Image
 import android.media.ImageReader
 import android.media.MediaCodec
 import android.media.MediaFormat
-import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import com.bumptech.glide.load.Options
 import com.bumptech.glide.load.ResourceDecoder
 import com.bumptech.glide.load.engine.Resource
 import com.bumptech.glide.load.engine.bitmap_recycle.BitmapPool
 import com.bumptech.glide.load.resource.bitmap.BitmapResource
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.nio.ByteBuffer
@@ -24,57 +29,111 @@ import kotlin.math.min
 
 /**
  * HEIC 封面兜底解码：Android 9 以前系统没有 HEIC 解码器，当贝等老盒子上 Glide 全军覆没。
- * 这里解析容器取出单帧 HEVC（hvc1），借电视芯片必带的 HEVC 硬解渲染到 ImageReader 拿 Bitmap。
+ * 这里解析容器取出单帧 HEVC（hvc1），借电视芯片必带的 HEVC 硬解得到 Bitmap。
  * 仅在 SDK < 28 时注册；解码失败直接抛异常，Glide 会按原链路继续尝试，不影响其他格式。
  */
 object HeicHardDecoder {
     private const val TAG = "HEIC"
+    private const val TIMEOUT_MS = 4_000L
     private val codecPermits = Semaphore(2)
     private val readerThread by lazy { HandlerThread("heic-reader").apply { start() } }
     private val readerHandler by lazy { Handler(readerThread.looper) }
 
     /** 并发上限 2：首页几十张封面排队解，别把盒子上留给视频播放的 codec 实例全占掉。 */
     fun decode(image: HeicImageParser.HeicImage, targetWidth: Int, targetHeight: Int): Bitmap {
-        val started = android.os.SystemClock.elapsedRealtime()
+        val started = SystemClock.elapsedRealtime()
         codecPermits.acquire()
+        try {
+            // 首选 RGBA Surface 直出；老 OMX 组件可能不支持渲染到 ImageReader，
+            // 失败后退到 ByteBuffer 模式拿 YUV 再软件转 RGB。
+            val bitmap = try {
+                decodeToSurface(image)
+            } catch (e: Exception) {
+                RuntimeLog.add("$TAG surface 模式失败(${e.javaClass.simpleName}: ${e.message?.take(50)})，改走 ByteBuffer")
+                decodeToBuffers(image)
+            }
+            val result = scaleInto(bitmap, targetWidth, targetHeight)
+            RuntimeLog.add("$TAG OK ${image.width}x${image.height}->${result.width}x${result.height} ${SystemClock.elapsedRealtime() - started}ms")
+            return result
+        } catch (e: Exception) {
+            RuntimeLog.add("$TAG fail ${e.javaClass.simpleName}: ${e.message?.take(60)} ${SystemClock.elapsedRealtime() - started}ms")
+            throw e
+        } finally {
+            codecPermits.release()
+        }
+    }
+
+    private fun inputFormat(image: HeicImageParser.HeicImage): MediaFormat {
+        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, image.width, image.height)
+        format.setByteBuffer("csd-0", ByteBuffer.wrap(image.hvcC))
+        return format
+    }
+
+    private fun queueFrame(codec: MediaCodec, frame: ByteArray) {
+        val index = codec.dequeueInputBuffer(1_000L)
+        if (index < 0) throw IOException("HEIC 等待输入缓冲超时")
+        val input = codec.getInputBuffer(index) ?: throw IOException("HEIC 输入缓冲缺失")
+        if (input.remaining() < frame.size) throw IOException("HEIC 输入缓冲不足")
+        input.put(frame)
+        codec.queueInputBuffer(index, 0, frame.size, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+    }
+
+    /** RGBA Surface 直出：硬解直接渲染到 ImageReader，无逐像素转换，性能最好。 */
+    private fun decodeToSurface(image: HeicImageParser.HeicImage): Bitmap {
         var codec: MediaCodec? = null
         var reader: ImageReader? = null
         try {
             reader = ImageReader.newInstance(image.width, image.height, PixelFormat.RGBA_8888, 2)
             val rendered = CountDownLatch(1)
             reader.setOnImageAvailableListener({ rendered.countDown() }, readerHandler)
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, image.width, image.height)
-            format.setByteBuffer("csd-0", ByteBuffer.wrap(image.hvcC))
             codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
-            codec.configure(format, reader.surface, null, 0)
+            codec.configure(inputFormat(image), reader.surface, null, 0)
             codec.start()
-            val inputIndex = codec.dequeueInputBuffer(1_000)
-            if (inputIndex < 0) throw IOException("HEIC 等待输入缓冲超时")
-            val input = codec.getInputBuffer(inputIndex) ?: throw IOException("HEIC 输入缓冲缺失")
-            if (input.remaining() < image.frame.size) throw IOException("HEIC 输入缓冲不足")
-            input.put(image.frame)
-            codec.queueInputBuffer(inputIndex, 0, image.frame.size, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-            if (!rendered.await(4_000, TimeUnit.MILLISECONDS)) throw IOException("HEIC 硬解输出超时")
+            queueFrame(codec, image.frame)
+            if (!rendered.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) throw IOException("HEIC 硬解输出超时")
             val captured = reader.acquireLatestImage() ?: throw IOException("HEIC 硬解无帧")
-            captured.use { raw ->
-                val bitmap = rawToBitmap(raw)
-                val result = scaleInto(bitmap, targetWidth, targetHeight)
-                RuntimeLog.add("$TAG OK ${image.width}x${image.height}->${result.width}x${result.height} ${android.os.SystemClock.elapsedRealtime() - started}ms")
-                return result
-            }
-        } catch (e: Exception) {
-            RuntimeLog.add("$TAG fail ${e.javaClass.simpleName}: ${e.message?.take(60)} ${android.os.SystemClock.elapsedRealtime() - started}ms")
-            throw e
+            captured.use { raw -> return rawToBitmap(raw) }
         } finally {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
             runCatching { reader?.close() }
-            codecPermits.release()
+        }
+    }
+
+    /** ByteBuffer 兜底：拿 YUV_420_888 输出经 NV21→JPEG 转成 Bitmap，慢但兼容性最好。 */
+    private fun decodeToBuffers(image: HeicImageParser.HeicImage): Bitmap {
+        var codec: MediaCodec? = null
+        try {
+            codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
+            codec.configure(inputFormat(image), null, null, 0)
+            codec.start()
+            queueFrame(codec, image.frame)
+            val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS
+            while (SystemClock.elapsedRealtime() < deadline) {
+                when (val index = codec.dequeueOutputBuffer(50_000L)) {
+                    MediaCodec.INFO_TRY_AGAIN_LATER, MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> continue
+                    MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> continue
+                    else -> {
+                        if (index < 0) continue
+                        try {
+                            val out = codec.getOutputImage(index)
+                                ?: throw IOException("HEIC ByteBuffer 模式无 Image 输出")
+                            out.use { yuv -> return yuvToBitmap(yuv) }
+                        } finally {
+                            codec.releaseOutputBuffer(index, false)
+                        }
+                    }
+                }
+            }
+            throw IOException("HEIC ByteBuffer 模式输出超时")
+        } finally {
+            runCatching { codec?.stop() }
+            runCatching { codec?.release() }
         }
     }
 
     /** ImageReader 的 RGBA 平面可能带行对齐 padding，先读进等宽 bitmap 再裁掉。 */
-    private fun rawToBitmap(raw: android.media.Image): Bitmap {
+    private fun rawToBitmap(raw: Image): Bitmap {
         val plane = raw.planes[0]
         val buffer = plane.buffer.duplicate()
         buffer.rewind()
@@ -87,6 +146,62 @@ object HeicHardDecoder {
         val tight = Bitmap.createBitmap(full, 0, 0, width, height)
         if (tight !== full) full.recycle()
         return tight
+    }
+
+    /** YUV_420_888 → NV21 → JPEG → Bitmap。四百像素宽的小图整链 <50ms，够用。 */
+    private fun yuvToBitmap(yuv: Image): Bitmap {
+        val width = yuv.width
+        val height = yuv.height
+        val nv21 = toNv21(yuv, width, height)
+        val jpeg = ByteArrayOutputStream()
+        YuvImage(nv21, android.graphics.ImageFormat.NV21, width, height, null)
+            .compressToJpeg(Rect(0, 0, width, height), 92, jpeg)
+        return BitmapFactory.decodeByteArray(jpeg.toByteArray(), 0, jpeg.size())
+            ?: throw IOException("HEIC JPEG 回转失败")
+    }
+
+    private fun toNv21(image: Image, width: Int, height: Int): ByteArray {
+        val ySize = width * height
+        val nv21 = ByteArray(ySize + ySize / 2)
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+        val yBuf = yPlane.buffer.duplicate().rewind() as ByteBuffer
+        for (row in 0 until height) {
+            yBuf.position(row * yPlane.rowStride)
+            yBuf.get(nv21, row * width, width)
+        }
+        val chromaHeight = height / 2
+        val chromaRow = width / 2
+        var pos = ySize
+        if (uPlane.pixelStride == 2 && vPlane.pixelStride == 2) {
+            // 半平面交错（NV12 类）：U/V 在同一底层数组相邻，按绝对位置交错读。
+            val uBuf = uPlane.buffer.duplicate().rewind() as ByteBuffer
+            val vBuf = vPlane.buffer.duplicate().rewind() as ByteBuffer
+            for (row in 0 until chromaHeight) {
+                for (col in 0 until chromaRow) {
+                    nv21[pos++] = vBuf.get(row * vPlane.rowStride + col * vPlane.pixelStride)
+                    nv21[pos++] = uBuf.get(row * uPlane.rowStride + col * uPlane.pixelStride)
+                }
+            }
+        } else {
+            // planar 布局（I420 类）：先各自读出再交叉写 NV21。
+            val u = ByteArray(chromaHeight * chromaRow)
+            val v = ByteArray(chromaHeight * chromaRow)
+            val uBuf = uPlane.buffer.duplicate().rewind() as ByteBuffer
+            val vBuf = vPlane.buffer.duplicate().rewind() as ByteBuffer
+            for (row in 0 until chromaHeight) {
+                for (col in 0 until chromaRow) {
+                    u[row * chromaRow + col] = uBuf.get(row * uPlane.rowStride + col * uPlane.pixelStride)
+                    v[row * chromaRow + col] = vBuf.get(row * vPlane.rowStride + col * vPlane.pixelStride)
+                }
+            }
+            for (i in u.indices) {
+                nv21[pos++] = v[i]
+                nv21[pos++] = u[i]
+            }
+        }
+        return nv21
     }
 
     /** 目标尺寸有效时按 CENTER_INSIDE 语义等比缩小，省内存；放大无意义直接返回原图。 */

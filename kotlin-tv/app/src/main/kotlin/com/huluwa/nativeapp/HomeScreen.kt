@@ -116,7 +116,7 @@ class HomeScreen(
     private val nextTitle=label("",14f)
     private val previousCard=side(previousCover,previousTitle,-1)
     private val nextCard=side(nextCover,nextTitle,1)
-    // 剧名与集数合并成一行放画面顶部（「剧名 · 集数」），下方信息块只留简介
+    // 剧名与集数合并成一行放画面顶部（「剧名 · 集数」），画面内只保留顶部剧名与底部操作条
     private val topTitle=label("发现下一部好剧",17f).apply {
         typeface=Typeface.DEFAULT_BOLD; maxLines=1; ellipsize=TextUtils.TruncateAt.END
         setPadding(dp(12),dp(10),dp(12),dp(10))
@@ -126,16 +126,7 @@ class HomeScreen(
             if(TvStyle.theme==TvStyle.Theme.NIGHT) intArrayOf(0xd90b101a.toInt(),Color.TRANSPARENT)
             else intArrayOf(0xd9eee4d4.toInt(),Color.TRANSPARENT))
     }
-    private val intro=label("热门短剧，随心发现",13f,TvStyle.muted).apply { maxLines=2; ellipsize=TextUtils.TruncateAt.END }
-    private val info=LinearLayout(context).apply { orientation=VERTICAL; setPadding(dp(12),dp(10),dp(12),dp(10)) }
     private val empty=label("正在发现好剧…",15f,TvStyle.muted).apply { gravity=Gravity.CENTER; maxLines=3 }
-    private val previewStatus=label("",11f).apply {
-        gravity=Gravity.CENTER_VERTICAL; maxLines=1; ellipsize=TextUtils.TruncateAt.END
-        setPadding(dp(10),dp(5),dp(10),dp(5)); visibility=GONE
-        background=TvStyle.shape(context,
-            if(TvStyle.theme==TvStyle.Theme.NIGHT) Color.argb(210,11,15,21) else Color.argb(225,255,250,241),radius=6)
-        importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO
-    }
     private val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply {
         max=100; DrawableCompat.setTint(progressDrawable, TvStyle.accent); visibility=GONE
     }
@@ -180,19 +171,8 @@ class HomeScreen(
         stage.addView(View(context).apply { background=shade() },FrameLayout.LayoutParams(-1,-1))
         stage.addView(poster,FrameLayout.LayoutParams(-1,-1))
         stage.addView(empty,FrameLayout.LayoutParams(-1,-1))
-        info.background=GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-            if(TvStyle.theme==TvStyle.Theme.NIGHT) intArrayOf(0xe60b101a.toInt(),0x550b101a)
-            else intArrayOf(0xe6eee4d4.toInt(),0x55eee4d4))
-        info.addView(intro)
-        stage.addView(info,FrameLayout.LayoutParams(dp(260),-2,Gravity.START or Gravity.BOTTOM).apply {
-            leftMargin=dp(10); bottomMargin=dp(10)
-        })
         topBar.addView(topTitle)
         stage.addView(topBar,FrameLayout.LayoutParams(-1,-2,Gravity.TOP))
-        // 状态条抬到悬浮操作条上方（条占底部 10~54dp），避免互相遮挡
-        stage.addView(previewStatus,FrameLayout.LayoutParams(-1,dp(28),Gravity.BOTTOM).apply {
-            leftMargin=dp(8); rightMargin=dp(8); bottomMargin=dp(60)
-        })
         stage.addView(progress,FrameLayout.LayoutParams(-1,dp(3),Gravity.BOTTOM))
         // 画面占满整个 hero，操作条悬浮其上，视频延伸到原按钮栏区域
         hero.addView(stage,LayoutParams(-1,-1))
@@ -304,27 +284,13 @@ class HomeScreen(
         previewSeriesId=seriesId; previewVisible=!showCover; previewPlaying=playing; previewFailed=failed
         poster.visibility=if(showCover) VISIBLE else GONE
         previewView?.visibility=VISIBLE
-        previewStatus.text=label
-        previewStatus.setTextColor(if(failed) TvStyle.accent else TvStyle.text)
-        previewStatus.visibility=if(label.isBlank()) GONE else VISIBLE
-        applyPreviewInfo()
         describeStage()
-    }
-
-    private fun applyPreviewInfo() {
-        val compact=height>0 && height<dp(300)
-        intro.visibility=if(compact || previewVisible) GONE else VISIBLE
-        // 悬浮操作条占住底部约 54dp：信息块抬到条上方，状态条可见时再抬高一个状态条高度
-        val margin=if(previewStatus.visibility==VISIBLE) dp(94) else dp(60)
-        (info.layoutParams as? FrameLayout.LayoutParams)?.takeIf { it.bottomMargin!=margin }?.let {
-            it.bottomMargin=margin; info.layoutParams=it
-        }
     }
 
     private fun describeStage() {
         stage.contentDescription=current()?.let {
             val action=if(onPreviewToggle==null) "确定看全集" else if(previewFailed) "确定重试播放" else if(previewPlaying) "确定暂停" else "确定继续播放"
-            "${it.series.title}，${it.label}，${previewStatus.text}，左右换剧，$action，长按打开片单操作"
+            "${it.series.title}，${it.label}，左右换剧，$action，长按打开片单操作"
         } ?: "暂无剧集，请刷新"
     }
     private fun continueWatching() { openCurrent() }
@@ -441,13 +407,10 @@ class HomeScreen(
         if(previewSeriesId!=nextId) {
             previewSeriesId=nextId; previewVisible=false; previewPlaying=false; previewFailed=false
             poster.visibility=VISIBLE; previewView?.visibility=VISIBLE
-            previewStatus.text=""; previewStatus.visibility=GONE
         }
-        // 顶部一行合并剧名与集数标签（如「剧名 · 第1集/共1000集」），原下方 metadata 行不再显示
+        // 顶部一行合并剧名与集数标签（如「剧名 · 第1集/共1000集」），画面内不再显示简介与状态条
         topTitle.text=if(entry==null) "发现下一部好剧"
             else listOf(entry.series.title,entry.label).filter(String::isNotBlank).distinct().joinToString("  ·  ")
-        intro.text=entry?.series?.description?.takeIf(String::isNotBlank) ?: "左右换剧，挑选喜欢的故事"
-        info.visibility=if(entry==null) GONE else VISIBLE
         topBar.visibility=if(entry==null) GONE else VISIBLE
         empty.visibility=if(entry==null) VISIBLE else GONE
         empty.text="还没有可展示的剧集\n按右上方刷新发现更多好剧"
@@ -467,7 +430,6 @@ class HomeScreen(
         positionLabel.text=if(entry!=null) "${index+1} / ${entries.size}  ·  ${shelf?.title.orEmpty()}" else "好故事，即将开始"
         describeStage()
         stage.nextFocusUpId=feedTabs.firstOrNull { it.tag=="home:feed:$feedMode" }?.id ?: top.id
-        applyPreviewInfo()
         loadArtwork()
         selectPreview()
         // 剩余不足 5 条时通知上层预取；post 到下一帧，避免在布局/绘制中途发起加载回调链。
@@ -493,8 +455,6 @@ class HomeScreen(
         (hero.layoutParams as FrameLayout.LayoutParams).apply { leftMargin=edge; rightMargin=edge }.also { hero.layoutParams=it }
         val sideWidth=if(compact) dp(70) else dp(112)
         listOf(previousCard,nextCard).forEach { it.layoutParams=it.layoutParams.apply { width=sideWidth } }
-        info.layoutParams=info.layoutParams.apply { width=minOf(dp(260),(w-edge*2-dp(34)).coerceAtLeast(dp(140))) }
-        applyPreviewInfo()
         post { loadArtwork() }
     }
     fun firstId()=if(current()!=null) stage.id else feedTabs.firstOrNull()?.id ?: refresh.id

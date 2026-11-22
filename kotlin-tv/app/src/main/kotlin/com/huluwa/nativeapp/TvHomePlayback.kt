@@ -272,7 +272,7 @@ internal class TvHomePlayback(
         val p = player ?: return null
         if (closed || failed || userPaused || ended || !firstFrame) return null
         if (p.playbackState == Player.STATE_BUFFERING) return null
-        if (p.currentPosition() <= 0) return null
+        if (p.currentPosition <= 0) return null
         if (episodeId.isBlank() || detail?.series?.id != id) return null
         val current = video ?: return null
         return TrialHandoff(episodeId, current, quality(), android.os.SystemClock.elapsedRealtime())

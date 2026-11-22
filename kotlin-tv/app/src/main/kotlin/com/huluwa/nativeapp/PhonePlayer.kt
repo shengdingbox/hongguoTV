@@ -92,11 +92,11 @@ class PhonePlayer(
     private var buffering: ProgressBar? = null
     private var errorBlock: View? = null
     private var errorText: TextView? = null
-    /** 长按倍速浮层：按住时展示，松手后隐藏；锁定后常驻，直到用户主动解锁。 */
+    /** 长按倍速状态：只保留底部黄色一行提示，长按期间播放页其余信息全部隐藏。 */
     private var speedBoostOverlay: View? = null
-    private var speedBoostCard: View? = null
-    private var speedBoostLockButton: TextView? = null
-    private var speedBoostHint: TextView? = null
+    private var speedBoostLabel: TextView? = null
+    /** 长按前用户是否已经是沉浸模式；松开后按原样恢复，不能把原本隐藏的控件硬显示出来。 */
+    private var uiHiddenBeforeSpeedBoost = false
 
     private var fullscreen = false
     private var introExpanded = false
@@ -194,7 +194,7 @@ class PhonePlayer(
         buildSpeedBoostOverlay(videoHost ?: episodePage)
 
         buildControls(if (fullscreen) page else episodePage)
-        // 提示卡必须压在控制层之上：锁定按钮不能被同位置的渐变/按钮盖住。
+        // 底部倍速状态始终压在最上层，长按沉浸时仍可见。
         speedBoostOverlay?.bringToFront()
         // 顶栏（以及横屏全屏控制条）保持固定，视频和竖屏剧集信息随整页翻动。
         buildTopBar(page)
@@ -275,26 +275,18 @@ class PhonePlayer(
         return RectF(left, top, left + frame.width, top + frame.height)
     }
 
-    /** 提示卡跟随实际视频区居中；选集面板把画面压缩时也不跑到屏幕外。 */
+    /** 底部倍速状态贴着实际画面下沿，长按沉浸时不被系统手势条遮住。 */
     private fun updateSpeedBoostPosition() {
         val overlay = speedBoostOverlay ?: return
+        val label = speedBoostLabel ?: return
+        val layout = label.layoutParams as? FrameLayout.LayoutParams ?: return
         val bounds = videoBoundsOnPage() ?: return
-        val card = speedBoostCard ?: return
-        val layout = card.layoutParams as? FrameLayout.LayoutParams ?: return
-        val cardWidth = card.width.takeIf { it > 0 } ?: card.measuredWidth.takeIf { it > 0 } ?: dp(180)
-        val cardHeight = card.height.takeIf { it > 0 } ?: card.measuredHeight.takeIf { it > 0 } ?: dp(150)
-        if (overlay.width <= 0 || overlay.height <= 0) return
-        val x = bounds.left + (bounds.width() - cardWidth) / 2f
-        val y = bounds.top + (bounds.height() - cardHeight) / 2f
-        val safeX = x.coerceIn(dp(12).toFloat(), (overlay.width - cardWidth - dp(12)).coerceAtLeast(dp(12)).toFloat())
-        val safeY = y.coerceIn(dp(12).toFloat(), (overlay.height - cardHeight - dp(12)).coerceAtLeast(dp(12)).toFloat())
-        val left = safeX.toInt()
-        val top = safeY.toInt()
-        if (layout.leftMargin != left || layout.topMargin != top || layout.gravity != (Gravity.TOP or Gravity.START)) {
-            layout.gravity = Gravity.TOP or Gravity.START
-            layout.leftMargin = left
-            layout.topMargin = top
-            card.layoutParams = layout
+        if (overlay.height <= 0 || overlay.width <= 0) return
+        // 竖屏画面通常铺满整屏；横屏全屏会受系统栏/刘海影响，统一按画面底边留安全距离。
+        val bottom = (overlay.height - bounds.bottom + if (fullscreen) dp(10) else dp(14)).coerceAtLeast(dp(10))
+        if (layout.bottomMargin != bottom) {
+            layout.bottomMargin = bottom
+            label.layoutParams = layout
         }
     }
 
@@ -575,100 +567,82 @@ class PhonePlayer(
      * 两套共用顶部状态栏（横屏时标题多带剧名）。
      */
     /**
-     * 长按倍速提示卡：居中悬浮在画面之上，采用半透明深色圆角卡片。
-     * 按住时显示「2× 倍速播放中」和锁定按钮；锁定后按钮变成可解锁的操作入口。
+     * 长按倍速底部状态：长按期间只显示黄色「2.0× 倍速播放中」，
+     * 同时由调用方隐藏播放页其余信息；点击这行可锁定/解锁倍速。
      */
     private fun buildSpeedBoostOverlay(parent: FrameLayout) {
-        // 外层只负责定位，不拦截触摸：锁定时用户仍可正常上下滑动切集。
         val overlay = FrameLayout(activity).apply {
             visibility = View.GONE
-            setPadding(dp(20), 0, dp(20), 0)
             isClickable = false
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        val card = column().apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-            background = GradientDrawable().apply {
-                setColor(Color.argb(220, 22, 22, 24))
-                cornerRadius = dp(18).toFloat()
-                setStroke(dp(1), Color.argb(36, 255, 255, 255))
-            }
-            setPadding(dp(24), dp(18), dp(24), dp(14))
-            elevation = dp(8).toFloat()
-            contentDescription = "2倍速播放中"
-            isClickable = false
-        }
-        card.addView(text("2×", 40f).apply {
+        val label = text("2.0× 倍速播放中", 17f, SPEED_BOOST_COLOR).apply {
             gravity = Gravity.CENTER
             setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
-            includeFontPadding = false
-        }, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL })
-        card.addView(text("倍速播放中", 13f, Color.argb(220, 255, 255, 255)).apply {
-            gravity = Gravity.CENTER
-        }, LinearLayout.LayoutParams(-2, -2).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-            topMargin = dp(4)
-        })
-        val lock = text("锁定倍速", 13f).apply {
-            gravity = Gravity.CENTER
-            setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL))
-            setTextColor(Color.WHITE)
-            minWidth = dp(104)
-            minHeight = dp(36)
-            setPadding(dp(14), 0, dp(14), 0)
-            background = TvStyle.shape(activity, Color.argb(190, 50, 50, 54), Color.argb(80, 255, 255, 255), radius = 18)
+            setShadowLayer(dp(3).toFloat(), 0f, dp(1).toFloat(), Color.argb(180, 0, 0, 0))
+            setPadding(dp(18), dp(8), dp(18), dp(8))
             isClickable = true
             isFocusable = true
-            contentDescription = "锁定2倍速"
+            contentDescription = "2.0倍速播放中，点击锁定倍速"
             setOnClickListener {
                 if (longPressLocked) unlockSpeedBoost() else lockSpeedBoost()
             }
         }
-        card.addView(lock, LinearLayout.LayoutParams(-2, dp(36)).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-            topMargin = dp(12)
-        })
-        speedBoostLockButton = lock
-        speedBoostHint = text("松手后自动恢复", 12f, Color.argb(180, 255, 255, 255)).apply {
-            gravity = Gravity.CENTER
-        }
-        card.addView(speedBoostHint, LinearLayout.LayoutParams(-2, -2).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-            topMargin = dp(8)
-        })
-        speedBoostCard = card
-        overlay.addView(card, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        speedBoostLabel = label
+        overlay.addView(label, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
         parent.addView(overlay, FrameLayout.LayoutParams(-1, -1))
         speedBoostOverlay = overlay
     }
 
-    private fun showSpeedBoostOverlay(locked: Boolean = false) {
+    private fun showSpeedBoostOverlay() {
         val overlay = speedBoostOverlay ?: return
-        if (locked) longPressLocked = true
         overlay.visibility = View.VISIBLE
         overlay.bringToFront()
-        speedBoostCard?.alpha = 1f
-        // 卡片刚从 GONE 变为可见时还没有测量尺寸，等这一轮布局结束再精确定位。
-        overlay.post { updateSpeedBoostPosition() }
-        speedBoostLockButton?.apply {
-            text = if (longPressLocked) "已锁定  点击解锁" else "锁定倍速"
-            contentDescription = if (longPressLocked) "已锁定2倍速，点击解锁并恢复原倍速" else "锁定2倍速"
-            background = TvStyle.shape(
-                activity,
-                if (longPressLocked) Color.argb(210, 255, 137, 100) else Color.argb(190, 50, 50, 54),
-                if (longPressLocked) Color.TRANSPARENT else Color.argb(80, 255, 255, 255),
-                radius = 18,
-            )
-            setTextColor(if (longPressLocked) Color.rgb(44, 26, 20) else Color.WHITE)
+        speedBoostLabel?.apply {
+            text = "2.0× 倍速播放中"
+            contentDescription = if (longPressLocked) "2.0倍速已锁定，点击解锁并恢复原倍速" else "2.0倍速播放中，点击锁定倍速"
         }
-        speedBoostHint?.text = if (longPressLocked) "保持 2×   点击解锁恢复" else "松手后自动恢复"
+        updateSpeedBoostPosition()
     }
 
     private fun hideSpeedBoostOverlay() {
         speedBoostOverlay?.visibility = View.GONE
     }
 
-    /** 开始临时 2×；提示卡只挂在手机播放页自己的视频区，不污染电视端 HUD。 */
+    /** 长按倍速时隐藏播放页其余信息，只保留底部黄色倍速状态。 */
+    private fun enterSpeedBoostImmersive() {
+        uiHiddenBeforeSpeedBoost = uiHidden
+        uiHidden = true
+        listOfNotNull(controls, topBar).forEach { layer ->
+            layer.animate().cancel()
+            layer.visibility = View.GONE
+            layer.alpha = 0f
+        }
+        portraitFullscreenButton?.visibility = View.GONE
+        centerPlay?.visibility = View.GONE
+        syncDanmakuWithControls()
+        // 长按刚开始时播放器可能还没完成首帧测量，下一帧再校准底部位置。
+        speedBoostOverlay?.post { updateSpeedBoostPosition() }
+    }
+
+    /** 松开长按后恢复播放页原有信息；锁定态继续沉浸，不提前露出控件。 */
+    private fun restoreAfterSpeedBoost() {
+        if (longPressLocked) return
+        uiHidden = uiHiddenBeforeSpeedBoost
+        syncDanmakuWithControls()
+        listOfNotNull(controls, topBar).forEach { layer ->
+            layer.animate().cancel()
+            layer.visibility = View.VISIBLE
+            layer.animate()
+                .alpha(if (uiHidden) 0f else 1f)
+                .setDuration(140)
+                .withEndAction { if (uiHidden) layer.visibility = View.GONE }
+                .start()
+        }
+        updatePortraitFullscreenButton()
+        updateSpeedBoostPosition()
+    }
+
     private fun startSpeedBoost() {
         if (!longPressFingerDown || longPressTriggered || longPressLocked) return
         if (!activity.phonePlaybackReady) return
@@ -677,17 +651,17 @@ class PhonePlayer(
         longPressSpeedActive = true
         longPressSpeedBefore = before
         activity.setPhonePlaybackSpeed(SPEED_BOOST)
+        enterSpeedBoostImmersive()
         showSpeedBoostOverlay()
         speedBoostOverlay?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
     }
 
-    /** 松手：已锁定则保留 2× 和提示卡；否则恢复用户原来的倍速。 */
+    /** 松手：已锁定则保留 2× 和沉浸界面；否则恢复原倍速与原界面。 */
     private fun finishSpeedBoost(restore: Boolean) {
         cancelLongPress()
         longPressFingerDown = false
         longPressTriggered = false
         if (longPressLocked) {
-            // 锁定态只收掉手指状态，不清 2×，也不隐藏卡片。
             updateSpeedBoostPosition()
             return
         }
@@ -696,6 +670,7 @@ class PhonePlayer(
             longPressSpeedActive = false
         }
         hideSpeedBoostOverlay()
+        restoreAfterSpeedBoost()
     }
 
     /** 离开播放页、切集或旋转重建前彻底结束长按会话，避免把临时状态带到新页面。 */
@@ -709,12 +684,13 @@ class PhonePlayer(
         longPressSpeedActive = false
         if ((active || locked) && restore) activity.setPhonePlaybackSpeed(longPressSpeedBefore)
         hideSpeedBoostOverlay()
+        if (active || locked) restoreAfterSpeedBoost()
     }
 
     private fun lockSpeedBoost() {
         if (!longPressSpeedActive) return
         longPressLocked = true
-        showSpeedBoostOverlay(locked = true)
+        showSpeedBoostOverlay()
     }
 
     /** 当前是否仍占用 2×，供 MainActivity 在尚未走到 UI 重建的释放路径里先恢复。 */
@@ -731,6 +707,7 @@ class PhonePlayer(
         longPressSpeedActive = false
         if (active || locked) activity.setPhonePlaybackSpeed(longPressSpeedBefore)
         hideSpeedBoostOverlay()
+        if (active || locked) restoreAfterSpeedBoost()
     }
 
     private fun unlockSpeedBoost() {
@@ -740,6 +717,7 @@ class PhonePlayer(
         longPressTriggered = false
         if (restore) activity.setPhonePlaybackSpeed(longPressSpeedBefore)
         hideSpeedBoostOverlay()
+        restoreAfterSpeedBoost()
     }
 
     private fun cancelLongPress() {
@@ -1188,7 +1166,7 @@ class PhonePlayer(
         playPauseButton = null; timeText = null; fsEpisodeButton = null
         seekBar = null; favoriteButton = null; fullscreenButton = null; portraitFullscreenButton = null
         centerPlay = null; buffering = null; errorBlock = null; errorText = null
-        speedBoostOverlay = null; speedBoostCard = null; speedBoostLockButton = null; speedBoostHint = null
+        speedBoostOverlay = null; speedBoostLabel = null
         cancelLongPress(); longPressFingerDown = false; longPressTriggered = false
         longPressLocked = false; longPressSpeedActive = false
     }
@@ -1199,6 +1177,7 @@ class PhonePlayer(
         /** 长按触发阈值与固定倍速。 */
         const val LONG_PRESS_MS = 420L
         const val SPEED_BOOST = 2f
+        val SPEED_BOOST_COLOR = Color.rgb(255, 214, 64)
         /** 弹幕层的 view tag：Insets 变化后按它找回来重设上边距。 */
         const val TAG_DANMAKU = "phone-danmaku-layer"
     }

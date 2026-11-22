@@ -116,10 +116,16 @@ class HomeScreen(
     private val nextTitle=label("",14f)
     private val previousCard=side(previousCover,previousTitle,-1)
     private val nextCard=side(nextCover,nextTitle,1)
-    private val title=label("发现下一部好剧",21f).apply {
-        typeface=Typeface.DEFAULT_BOLD; maxLines=2; ellipsize=TextUtils.TruncateAt.END
+    // 剧名与集数合并成一行放画面顶部（「剧名 · 集数」），下方信息块只留简介
+    private val topTitle=label("发现下一部好剧",17f).apply {
+        typeface=Typeface.DEFAULT_BOLD; maxLines=1; ellipsize=TextUtils.TruncateAt.END
+        setPadding(dp(12),dp(10),dp(12),dp(10))
     }
-    private val metadata=label("",12f,TvStyle.accent).apply { maxLines=1; ellipsize=TextUtils.TruncateAt.END }
+    private val topBar=LinearLayout(context).apply {
+        background=GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+            if(TvStyle.theme==TvStyle.Theme.NIGHT) intArrayOf(0xd90b101a.toInt(),Color.TRANSPARENT)
+            else intArrayOf(0xd9eee4d4.toInt(),Color.TRANSPARENT))
+    }
     private val intro=label("热门短剧，随心发现",13f,TvStyle.muted).apply { maxLines=2; ellipsize=TextUtils.TruncateAt.END }
     private val info=LinearLayout(context).apply { orientation=VERTICAL; setPadding(dp(12),dp(10),dp(12),dp(10)) }
     private val empty=label("正在发现好剧…",15f,TvStyle.muted).apply { gravity=Gravity.CENTER; maxLines=3 }
@@ -177,12 +183,12 @@ class HomeScreen(
         info.background=GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
             if(TvStyle.theme==TvStyle.Theme.NIGHT) intArrayOf(0xe60b101a.toInt(),0x550b101a)
             else intArrayOf(0xe6eee4d4.toInt(),0x55eee4d4))
-        info.addView(title)
-        info.addView(metadata,LayoutParams(-1,-2).apply { topMargin=dp(5) })
-        info.addView(intro,LayoutParams(-1,-2).apply { topMargin=dp(5) })
+        info.addView(intro)
         stage.addView(info,FrameLayout.LayoutParams(dp(260),-2,Gravity.START or Gravity.BOTTOM).apply {
             leftMargin=dp(10); bottomMargin=dp(10)
         })
+        topBar.addView(topTitle)
+        stage.addView(topBar,FrameLayout.LayoutParams(-1,-2,Gravity.TOP))
         // 状态条抬到悬浮操作条上方（条占底部 10~54dp），避免互相遮挡
         stage.addView(previewStatus,FrameLayout.LayoutParams(-1,dp(28),Gravity.BOTTOM).apply {
             leftMargin=dp(8); rightMargin=dp(8); bottomMargin=dp(60)
@@ -308,8 +314,6 @@ class HomeScreen(
     private fun applyPreviewInfo() {
         val compact=height>0 && height<dp(300)
         intro.visibility=if(compact || previewVisible) GONE else VISIBLE
-        title.maxLines=if(compact || previewVisible) 1 else 2
-        title.textSize=if(compact || previewVisible) 17f else 21f
         // 悬浮操作条占住底部约 54dp：信息块抬到条上方，状态条可见时再抬高一个状态条高度
         val margin=if(previewStatus.visibility==VISIBLE) dp(94) else dp(60)
         (info.layoutParams as? FrameLayout.LayoutParams)?.takeIf { it.bottomMargin!=margin }?.let {
@@ -439,10 +443,12 @@ class HomeScreen(
             poster.visibility=VISIBLE; previewView?.visibility=VISIBLE
             previewStatus.text=""; previewStatus.visibility=GONE
         }
-        title.text=entry?.series?.title ?: "发现下一部好剧"
-        metadata.text=entry?.let { listOf(it.label,it.series.tags).filter(String::isNotBlank).distinct().joinToString("  ·  ") }.orEmpty()
+        // 顶部一行合并剧名与集数标签（如「剧名 · 第1集/共1000集」），原下方 metadata 行不再显示
+        topTitle.text=if(entry==null) "发现下一部好剧"
+            else listOf(entry.series.title,entry.label).filter(String::isNotBlank).distinct().joinToString("  ·  ")
         intro.text=entry?.series?.description?.takeIf(String::isNotBlank) ?: "左右换剧，挑选喜欢的故事"
         info.visibility=if(entry==null) GONE else VISIBLE
+        topBar.visibility=if(entry==null) GONE else VISIBLE
         empty.visibility=if(entry==null) VISIBLE else GONE
         empty.text="还没有可展示的剧集\n按右上方刷新发现更多好剧"
         play.text="播放随心看"

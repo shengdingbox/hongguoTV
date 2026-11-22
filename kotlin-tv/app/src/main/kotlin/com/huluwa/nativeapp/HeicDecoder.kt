@@ -108,9 +108,10 @@ object HeicHardDecoder {
             codec.configure(inputFormat(image), null, null, 0)
             codec.start()
             queueFrame(codec, image.frame)
+            val info = MediaCodec.BufferInfo()
             val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS
             while (SystemClock.elapsedRealtime() < deadline) {
-                when (val index = codec.dequeueOutputBuffer(50_000L)) {
+                when (val index = codec.dequeueOutputBuffer(info, 50_000L)) {
                     MediaCodec.INFO_TRY_AGAIN_LATER, MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> continue
                     MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> continue
                     else -> {

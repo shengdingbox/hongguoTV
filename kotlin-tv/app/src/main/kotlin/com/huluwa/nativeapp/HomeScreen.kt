@@ -139,7 +139,6 @@ class HomeScreen(
     private val play=button("播放全集","home:play") { openCurrent() }
     private val manage=button("收藏 / 更多","home:actions") { openActions(manageAnchor()) }
     private val resume=button("查看详情","home:detail") { openCurrent() }
-    private val positionLabel=label("",12f,TvStyle.accent).apply { gravity=Gravity.CENTER }
     val refresh=button("换一批","home:refresh") {}.apply { textSize=14f; minHeight=dp(36); setPadding(dp(16),dp(7),dp(16),dp(7)) }
 
     init {
@@ -190,7 +189,6 @@ class HomeScreen(
             leftMargin=dp(76); rightMargin=dp(76); topMargin=dp(4); bottomMargin=dp(4)
         })
         addView(carousel,LayoutParams(-1,0,1f))
-        addView(positionLabel,LayoutParams(-1,dp(23)))
         stage.nextFocusLeftId=stage.id; stage.nextFocusRightId=stage.id
         stage.nextFocusUpId=top.id; stage.nextFocusDownId=play.id
         stage.setOnFocusChangeListener { _,focused ->
@@ -299,9 +297,9 @@ class HomeScreen(
         if(shelf.entries.isEmpty()) { onFeedEdge?.invoke(); return }
         val next=currentIndex()+delta
         if(next !in shelf.entries.indices) {
-            // 对齐参考项目：向左到头只提示，不触发加载；向右触边提示加载中，取回后由上层跳到新批次。
-            if(delta<0) { positionLabel.text="已到本次浏览的最早作品"; return }
-            positionLabel.text="正在加载更多…"
+            // 对齐参考项目：向左到头不触发加载；向右触边拉取下一批，取回后由上层跳到新批次。
+            // 底部位置栏已去掉，触边不再有文字提示。
+            if(delta<0) return
             onFeedEdge?.invoke()
             return
         }
@@ -355,7 +353,6 @@ class HomeScreen(
     fun showStartup(retry: Boolean=false) {
         render(emptyList(),"",false,null)
         empty.text=""
-        positionLabel.text=""
         stage.isFocusable=false; stage.isClickable=false
         refresh.text=if(retry) "重试" else "换一批"
         refresh.nextFocusDownId=refresh.id
@@ -427,7 +424,6 @@ class HomeScreen(
         previousCard.visibility=if(entries.size>1) VISIBLE else INVISIBLE
         nextCard.visibility=if(entries.size>1) VISIBLE else INVISIBLE
         previousCard.contentDescription="上一部，${previousTitle.text}"; nextCard.contentDescription="下一部，${nextTitle.text}"
-        positionLabel.text=if(entry!=null) "${index+1} / ${entries.size}  ·  ${shelf?.title.orEmpty()}" else "好故事，即将开始"
         describeStage()
         stage.nextFocusUpId=feedTabs.firstOrNull { it.tag=="home:feed:$feedMode" }?.id ?: top.id
         loadArtwork()

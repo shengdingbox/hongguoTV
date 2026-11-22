@@ -20,9 +20,9 @@ internal class TvCatalogHeader(
         /** 设置页沿用当前内部的 6，其余入口与原版页面编号保持一致。 */
         val DESTINATIONS = listOf(
             0 to "首页",
+            3 to "收藏",
             1 to "找剧",
             2 to "排行榜",
-            3 to "收藏",
             4 to "观看历史",
             6 to "设置",
         )
@@ -30,9 +30,9 @@ internal class TvCatalogHeader(
         /** 页面编号到顶部按钮下标的映射；随心看仍由首页入口承载。 */
         fun normalize(index: Int) = when (index) {
             0 -> 0
-            1 -> 1
-            2 -> 2
-            3 -> 3
+            1 -> 2
+            2 -> 3
+            3 -> 1
             4 -> 4
             5 -> 4
             6 -> 5

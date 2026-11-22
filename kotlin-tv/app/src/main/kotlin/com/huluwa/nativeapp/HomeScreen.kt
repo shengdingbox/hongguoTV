@@ -130,9 +130,9 @@ class HomeScreen(
     private val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply {
         max=100; DrawableCompat.setTint(progressDrawable, TvStyle.accent); visibility=GONE
     }
-    // 海外视频风格的悬浮操作条：压在画面底部，半透明底不再单独占一栏
+    // 操作条恢复原 TV 样式：hero 底部独立一行，三按钮等宽均分，保留半透明圆角底色
     private val actionLine=LinearLayout(context).apply {
-        gravity=Gravity.CENTER_VERTICAL; setPadding(dp(6),dp(2),dp(6),dp(2))
+        gravity=Gravity.CENTER_VERTICAL; setPadding(0,dp(8),0,0)
         background=TvStyle.shape(context,
             if(TvStyle.theme==TvStyle.Theme.NIGHT) Color.argb(70,11,15,21) else Color.argb(90,255,250,241),radius=20)
     }
@@ -173,18 +173,16 @@ class HomeScreen(
         topBar.addView(topTitle)
         stage.addView(topBar,FrameLayout.LayoutParams(-1,-2,Gravity.TOP))
         stage.addView(progress,FrameLayout.LayoutParams(-1,dp(3),Gravity.BOTTOM))
-        // 画面占满整个 hero，操作条悬浮其上，视频延伸到原按钮栏区域
-        hero.addView(stage,LayoutParams(-1,-1))
+        // 恢复原 TV 样式：stage 回到 weight=1，操作条独立占 hero 底部一行、三等分
+        hero.addView(stage,LayoutParams(-1,0,1f))
         listOf(play,manage,resume).forEachIndexed { index,view ->
-            actionLine.addView(view,LayoutParams(-2,dp(40)).apply { if(index<2) rightMargin=dp(8) })
+            actionLine.addView(view,LayoutParams(0,dp(40),1f).apply { if(index<2) rightMargin=dp(8) })
             view.nextFocusUpId=stage.id; view.nextFocusDownId=view.id
         }
         play.nextFocusLeftId=play.id; play.nextFocusRightId=manage.id
         manage.nextFocusLeftId=play.id; manage.nextFocusRightId=resume.id
         resume.nextFocusLeftId=manage.id; resume.nextFocusRightId=resume.id
-        stage.addView(actionLine,FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-            bottomMargin=dp(10)
-        })
+        hero.addView(actionLine)
         carousel.addView(hero,FrameLayout.LayoutParams(-1,-1).apply {
             leftMargin=dp(76); rightMargin=dp(76); topMargin=dp(4); bottomMargin=dp(4)
         })

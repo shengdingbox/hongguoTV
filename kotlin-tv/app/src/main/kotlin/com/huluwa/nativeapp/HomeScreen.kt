@@ -2,6 +2,7 @@
 package com.huluwa.nativeapp
 
 import androidx.core.graphics.drawable.DrawableCompat
+import android.animation.ObjectAnimator
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
@@ -11,6 +12,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
 import android.widget.*
 import com.hongguotv.core.Series
 
@@ -307,6 +309,20 @@ class HomeScreen(
         }
         indices[activeShelfKey]=next
         paintSelection(); rememberCurrent()
+        slideStage(delta)
+    }
+
+    /** 遥控器左右换剧：新画面沿按键方向整页滑入（ViewPager 式纯平移）；连续按键时重起动画。 */
+    private var stageAnim: ObjectAnimator?=null
+    private fun slideStage(direction: Int) {
+        stageAnim?.cancel()
+        val width=stage.width.coerceAtLeast(dp(320))
+        val from=(width*direction).toFloat()
+        stage.translationX=from
+        stageAnim=ObjectAnimator.ofFloat(stage,View.TRANSLATION_X,from,0f).apply {
+            duration=240; interpolator=DecelerateInterpolator()
+            start()
+        }
     }
     fun setFeedMode(key: String) { feedMode = key; paintFeedTabs() }
 

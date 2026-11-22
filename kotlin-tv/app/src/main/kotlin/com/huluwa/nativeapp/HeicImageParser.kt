@@ -10,7 +10,7 @@ import kotlin.math.min
  */
 object HeicImageParser {
 
-    class HeicImage(val hvcC: ByteArray, val frame: ByteArray, val width: Int, val height: Int)
+    class HeicImage(val hvcC: ByteArray, val frame: ByteArray, val width: Int, val height: Int, val raw: ByteArray)
 
     private val brands = hashSetOf("heic", "mif1", "msf1", "hevc", "heix", "miaf")
 
@@ -167,7 +167,7 @@ object HeicImageParser {
             System.arraycopy(data, from, frame, cursor, length)
             cursor += length
         }
-        return HeicImage(csd, frame, width, height)
+        return HeicImage(csd, frame, width, height, data)
     }
 
     private class Box(val type: String, val start: Int, val end: Int)

@@ -28,6 +28,7 @@ import com.bumptech.glide.load.engine.Resource
 import com.bumptech.glide.load.engine.bitmap_recycle.BitmapPool
 import com.bumptech.glide.load.resource.bitmap.BitmapResource
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.nio.ByteBuffer
@@ -58,20 +59,24 @@ object HeicHardDecoder {
 
     private const val SOFT_DECODER = "OMX.google.hevc.decoder"
     @Volatile private var softDecoderBroken = false
+
+    /** ffmpeg-kit 软解兜底（库缺失或持续失败时判死，回落 GL）。 */
+    @Volatile private var ffmpegBroken = false
     private val readerThread by lazy { HandlerThread("heic-reader").apply { start() } }
     private val readerHandler by lazy { Handler(readerThread.looper) }
 
     /** 并发上限 2：首页几十张封面排队解，别把盒子上留给视频播放的 codec 实例全占掉。 */
-    fun decode(image: HeicImageParser.HeicImage, targetWidth: Int, targetHeight: Int): Bitmap {
+    fun decode(image: HeicImageParser.HeicImage, targetWidth: Int, targetHeight: Int, cacheDir: File?): Bitmap {
         val started = SystemClock.elapsedRealtime()
         codecPermits.acquire()
         try {
-            // 五级降级（当贝 Amlogic 实测逐级排障）：RGBA Surface → YUV ImageReader(消费者分配 CPU 可读) →
-            // 硬件 ByteBuffer(色度检测) → 系统软解 → GL SurfaceTexture 渲染读回。
+            // 六级降级（当贝 Amlogic 实测逐级排障）：RGBA Surface → YUV ImageReader → 硬件 ByteBuffer(色度检测)
+            // → 系统软解 → ffmpeg 软解(最可靠) → GL SurfaceTexture。
             val bitmap = attempt("surface", surfaceModeBroken, { surfaceModeBroken = true }) { decodeToSurface(image) }
                 ?: attempt("yuv-surface", yuvSurfaceBroken, { yuvSurfaceBroken = true }) { decodeToYuvSurface(image) }
                 ?: attempt("hw-buf", hardwareChromaBroken, { hardwareChromaBroken = true }) { decodeToBuffers(image, soft = false) }
                 ?: attempt("soft", softDecoderBroken, { softDecoderBroken = true }) { decodeToBuffers(image, soft = true) }
+                ?: attempt("ffmpeg", ffmpegBroken, { ffmpegBroken = true }) { ffmpegDecode(image, cacheDir) }
                 ?: glDecode(image)
             val result = scaleInto(bitmap, targetWidth, targetHeight)
             RuntimeLog.add("$TAG OK ${image.width}x${image.height}->${result.width}x${result.height} ${SystemClock.elapsedRealtime() - started}ms")
@@ -362,6 +367,24 @@ object HeicHardDecoder {
         return scaled
     }
 
+    /** ffmpeg 软解：完整 HEIC 落盘 → 转单帧 JPEG → Bitmap。绕开 MediaCodec 全部固件坑，纯 CPU 最可靠。 */
+    private fun ffmpegDecode(image: HeicImageParser.HeicImage, cacheDir: File?): Bitmap {
+        val dir = File(cacheDir ?: throw IOException("无缓存目录"), "heic").apply { mkdirs() }
+        val input = File(dir, "in.heic")
+        val output = File(dir, "out.jpg")
+        try {
+            input.writeBytes(image.raw)
+            val session = com.arthenica.ffmpegkit.FFmpegKit.execute("-y -i ${input.absolutePath} -frames:v 1 -f image2 ${output.absolutePath}")
+            if (!com.arthenica.ffmpegkit.ReturnCode.isSuccess(session.returnCode)) {
+                throw IOException("ffmpeg rc=${session.returnCode}")
+            }
+            return BitmapFactory.decodeFile(output.absolutePath) ?: throw IOException("ffmpeg JPEG 解码失败")
+        } finally {
+            runCatching { input.delete() }
+            runCatching { output.delete() }
+        }
+    }
+
     private val glLock = Any()
 
     /** 终极兜底：解码器渲染到 SurfaceTexture（电视盒子的视频原生通路），GL 采样读回像素。
@@ -504,7 +527,7 @@ object HeicHardDecoder {
 }
 
 /** 磁盘缓存路径的 HEIC 数据解码入口。 */
-class HeicByteBufferDecoder(private val pool: BitmapPool) : ResourceDecoder<ByteBuffer, Bitmap> {
+class HeicByteBufferDecoder(private val pool: BitmapPool, private val cacheDir: File?) : ResourceDecoder<ByteBuffer, Bitmap> {
     override fun handles(source: ByteBuffer, options: Options): Boolean {
         val copy = source.duplicate()
         if (copy.remaining() < 12) return false
@@ -516,12 +539,12 @@ class HeicByteBufferDecoder(private val pool: BitmapPool) : ResourceDecoder<Byte
     override fun decode(source: ByteBuffer, width: Int, height: Int, options: Options): Resource<Bitmap> {
         val bytes = ByteArray(source.remaining())
         source.get(bytes)
-        return decodeBytes(bytes, width, height, pool)
+        return decodeBytes(bytes, width, height, pool, cacheDir)
     }
 }
 
 /** 网络路径的 HEIC 数据解码入口。不可 mark 的流乐观放行，由 parse 阶段做最终判定。 */
-class HeicStreamDecoder(private val pool: BitmapPool) : ResourceDecoder<InputStream, Bitmap> {
+class HeicStreamDecoder(private val pool: BitmapPool, private val cacheDir: File?) : ResourceDecoder<InputStream, Bitmap> {
     override fun handles(source: InputStream, options: Options): Boolean {
         if (!source.markSupported()) return true
         source.mark(32)
@@ -537,12 +560,12 @@ class HeicStreamDecoder(private val pool: BitmapPool) : ResourceDecoder<InputStr
     }
 
     override fun decode(source: InputStream, width: Int, height: Int, options: Options): Resource<Bitmap> =
-        decodeBytes(source.readBytes(), width, height, pool)
+        decodeBytes(source.readBytes(), width, height, pool, cacheDir)
 }
 
-private fun decodeBytes(bytes: ByteArray, width: Int, height: Int, pool: BitmapPool): Resource<Bitmap> {
+private fun decodeBytes(bytes: ByteArray, width: Int, height: Int, pool: BitmapPool, cacheDir: File?): Resource<Bitmap> {
     if (!HeicImageParser.isHeic(bytes)) throw IOException("HEIC 兜底解码器收到了非 HEIC 数据")
     val image = HeicImageParser.parse(bytes)
-    val bitmap = HeicHardDecoder.decode(image, width, height)
+    val bitmap = HeicHardDecoder.decode(image, width, height, cacheDir)
     return BitmapResource.obtain(bitmap, pool) ?: BitmapResource(bitmap, pool)
 }

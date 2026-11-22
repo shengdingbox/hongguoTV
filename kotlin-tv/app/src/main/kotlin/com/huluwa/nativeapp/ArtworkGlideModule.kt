@@ -62,8 +62,8 @@ class ArtworkGlideModule : AppGlideModule() {
         // Android 9 以前系统无 HEIC 解码器（当贝等老盒子封面全灭），
         // HEIC 数据前置交给芯片 HEVC 硬解兜底；其他格式仍走后面的标准链路。
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
-            registry.prepend(Registry.BUCKET_BITMAP, ByteBuffer::class.java, Bitmap::class.java, HeicByteBufferDecoder(glide.bitmapPool))
-            registry.prepend(Registry.BUCKET_BITMAP, InputStream::class.java, Bitmap::class.java, HeicStreamDecoder(glide.bitmapPool))
+            registry.prepend(Registry.BUCKET_BITMAP, ByteBuffer::class.java, Bitmap::class.java, HeicByteBufferDecoder(glide.bitmapPool, context.cacheDir))
+            registry.prepend(Registry.BUCKET_BITMAP, InputStream::class.java, Bitmap::class.java, HeicStreamDecoder(glide.bitmapPool, context.cacheDir))
         }
         registry
             .append(ByteBuffer::class.java, ByteBufferEncoder())

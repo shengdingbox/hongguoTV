@@ -88,6 +88,8 @@ class HomeScreen(
     var onFeedMode: ((String) -> Unit)?=null
     /** 当前列表已到边缘：让上层继续取下一批，而不是在旧列表里循环。 */
     var onFeedEdge: (() -> Unit)?=null
+    /** 剩余可看不足 5 条时让上层后台预取下一批（对齐参考 ensureNextWorks 的 lookahead 预取）。 */
+    var onFeedPrefetch: (() -> Unit)?=null
     private var feedMode = "hot"
     private var previewView: View?=null
     private var previewSeriesId=""
@@ -463,6 +465,8 @@ class HomeScreen(
         applyPreviewInfo()
         loadArtwork()
         selectPreview()
+        // 剩余不足 5 条时通知上层预取；post 到下一帧，避免在布局/绘制中途发起加载回调链。
+        if(entry!=null && entries.size-index-1<=5) post { onFeedPrefetch?.invoke() }
     }
     private fun loadArtwork() {
         val entries=activeShelf()?.entries.orEmpty(); val index=currentIndex(); val entry=entries.getOrNull(index)

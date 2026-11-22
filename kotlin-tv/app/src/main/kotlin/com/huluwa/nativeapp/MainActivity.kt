@@ -373,6 +373,8 @@ class MainActivity: Activity() {
     private val suixinHotItems=mutableListOf<Series>()
     private var suixinHomeLoading=false
     private var suixinAdvanceAfterLoad=false
+    /** 预取连续空批/失败后的退避时间点（elapsedRealtime，20 秒）：对齐参考 catalogRetryAt。 */
+    private var suixinPrefetchRetryAt=0L
     private var suixinFeedScope: RequestScope?=null
     private var suixinFeedJob: java.util.concurrent.Future<*>?=null
     private var suixinSource: String?=null
@@ -2315,6 +2317,8 @@ class MainActivity: Activity() {
         home.onPreviewActions=playback::pauseForActions
         home.onPreviewCleared=playback::clearSelection
         home.onFeedEdge={ suixinAdvanceAfterLoad=true; loadMoreSuixinHome() }
+        // 剩余不足 5 条时后台预取下一批（对齐参考 ensureNextWorks lookahead）：翻到边缘时数据已就位。
+        home.onFeedPrefetch={ loadMoreSuixinHome(prefetch=true) }
         home.onFeedMode={ mode ->
             when(mode) {
                 "comic" -> changeSuixinFeed("comic")
@@ -2470,9 +2474,12 @@ class MainActivity: Activity() {
         showCatalog(load=true)
     }
 
-    /** 首页左右切换触边：继续取同一分类的下一批，不重建页面。 */
-    private fun loadMoreSuixinHome(newSession: Boolean = false) {
+    /** 首页左右切换触边：继续取同一分类的下一批，不重建页面。
+     *  prefetch=true 为剩余不足 5 条时的后台预取：受失败退避限制，加载成功不抢焦点。 */
+    private fun loadMoreSuixinHome(newSession: Boolean = false, prefetch: Boolean = false) {
         if(suixinHomeLoading) return
+        // 预取在退避期内直接跳过；触边/换一批是用户明确操作，不受退避限制。
+        if(prefetch && android.os.SystemClock.elapsedRealtime()<suixinPrefetchRetryAt) return
         suixinHomeLoading=true
         val mode=suixinFeedMode
         val nextPage=suixinHomePage+1
@@ -2498,6 +2505,8 @@ class MainActivity: Activity() {
                     } else {
                         suixinHomeLoading=false
                         if(result.items.isNotEmpty()) suixinHomePage=nextPage
+                        // 预取连续拿不到新内容时进入 20 秒退避，避免残余不足 5 条时反复空转请求。
+                        suixinPrefetchRetryAt=if(result.items.isEmpty()) android.os.SystemClock.elapsedRealtime()+20_000 else 0L
                         hasMore=result.hasMore
                         if(mode=="hot") appendSuixinHot(result.items)
                         homeScreen?.let { home ->
@@ -2524,7 +2533,9 @@ class MainActivity: Activity() {
                             if(advance) {
                                 val shown=homeShelves().firstOrNull()?.entries.orEmpty()
                                 if(shown.isNotEmpty()) home.restorePosition(position.copy(column=(oldCount-drop).coerceIn(0,shown.lastIndex)),requestFocus=true)
-                            } else home.restorePosition(position,requestFocus=true)
+                            }
+                            // 预取（advance=false）时 updateShelves 已按 focus id 恢复位置，
+                            // 不再 requestFocus，避免用户焦点在分类 Tab 上时被拉回主卡。
                             // 触边加载的新批次已就位：更新从当前焦点往后的展示快照。
                             if(library.isLoaded) persistSuixinSnapshot(mode)
                         }
@@ -2533,6 +2544,7 @@ class MainActivity: Activity() {
             } catch (_: Exception) {
                 main.post {
                     suixinHomeLoading=false; hasMore=false
+                    suixinPrefetchRetryAt=android.os.SystemClock.elapsedRealtime()+20_000
                     // 触边提示落空时复位，避免停在「正在加载更多…」。
                     homeScreen?.clearEdgeHint()
                 }

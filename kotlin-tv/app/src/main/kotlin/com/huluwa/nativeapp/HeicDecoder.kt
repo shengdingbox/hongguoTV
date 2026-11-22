@@ -39,6 +39,12 @@ object HeicHardDecoder {
 
     /** 某些老 OMX 组件（Amlogic）不支持渲染到 RGBA ImageReader，start failed 一次后就直走 ByteBuffer。 */
     @Volatile private var surfaceModeBroken = false
+
+    /** Amlogic ByteBuffer 模式色度走独立 DMA 段，app 读到全零（图变绿），只能退系统软解。 */
+    @Volatile private var hardwareChromaBroken = false
+
+    private const val SOFT_DECODER = "OMX.google.hevc.decoder"
+    @Volatile private var softDecoderBroken = false
     private val readerThread by lazy { HandlerThread("heic-reader").apply { start() } }
     private val readerHandler by lazy { Handler(readerThread.looper) }
 
@@ -47,17 +53,17 @@ object HeicHardDecoder {
         val started = SystemClock.elapsedRealtime()
         codecPermits.acquire()
         try {
-            // 首选 RGBA Surface 直出；老 OMX 组件可能不支持渲染到 ImageReader，
-            // 失败后退到 ByteBuffer 模式拿 YUV 再软件转 RGB。
-            val bitmap = if (surfaceModeBroken) {
-                decodeToBuffers(image)
-            } else {
-                try {
+            // 三级降级：RGBA Surface 直出 → 硬件 ByteBuffer（色度全零检测）→ 系统软解码器。
+            // Amlogic 老固件前两级分别败在「不能渲染到 ImageReader」和「色度走独立 DMA 段」。
+            val bitmap = when {
+                surfaceModeBroken && hardwareChromaBroken -> decodeToBuffers(image, soft = true)
+                surfaceModeBroken -> buffersOrSoft(image)
+                else -> try {
                     decodeToSurface(image)
                 } catch (e: Exception) {
                     surfaceModeBroken = true
                     RuntimeLog.add("$TAG surface 模式失败(${e.javaClass.simpleName}: ${e.message?.take(50)})，改走 ByteBuffer")
-                    decodeToBuffers(image)
+                    buffersOrSoft(image)
                 }
             }
             val result = scaleInto(bitmap, targetWidth, targetHeight)
@@ -69,6 +75,15 @@ object HeicHardDecoder {
         } finally {
             codecPermits.release()
         }
+    }
+
+    /** 硬件 ByteBuffer 解码，色度输出为空时自动降级系统软解（软解输出标准 I420，数据可靠）。 */
+    private fun buffersOrSoft(image: HeicImageParser.HeicImage): Bitmap = try {
+        decodeToBuffers(image, soft = false)
+    } catch (e: Exception) {
+        hardwareChromaBroken = true
+        RuntimeLog.add("$TAG 硬件 ByteBuffer 失败(${e.message?.take(44)})，降级软解")
+        decodeToBuffers(image, soft = true)
     }
 
     private fun inputFormat(image: HeicImageParser.HeicImage): MediaFormat {
@@ -109,11 +124,21 @@ object HeicHardDecoder {
         }
     }
 
-    /** ByteBuffer 兜底：拿 YUV_420_888 输出经 NV21→JPEG 转成 Bitmap，慢但兼容性最好。 */
-    private fun decodeToBuffers(image: HeicImageParser.HeicImage): Bitmap {
+    /** ByteBuffer 兜底：拿 YUV_420_888 输出经 NV21→JPEG 转成 Bitmap；soft=true 用系统软解码器。 */
+    private fun decodeToBuffers(image: HeicImageParser.HeicImage, soft: Boolean): Bitmap {
         var codec: MediaCodec? = null
         try {
-            codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
+            codec = if (soft) {
+                if (softDecoderBroken) throw IOException("软解组件不可用")
+                try {
+                    MediaCodec.createByCodecName(SOFT_DECODER)
+                } catch (e: Exception) {
+                    softDecoderBroken = true
+                    throw e
+                }
+            } else {
+                MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_HEVC)
+            }
             codec.configure(inputFormat(image), null, null, 0)
             codec.start()
             queueFrame(codec, image.frame)
@@ -129,12 +154,7 @@ object HeicHardDecoder {
                             val out = codec.getOutputImage(index)
                                 ?: throw IOException("HEIC ByteBuffer 模式无 Image 输出")
                             out.use { yuv ->
-                                // TODO 临时诊断：老盒子 vendor YUV 布局与标准 YUV_420_888 不一致导致偏色，打全平面信息定位
-                                if (diagnoseDumps-- > 0) {
-                                    val fmt = codec.outputFormat
-                                    RuntimeLog.add("$TAG plane0 s=${yuv.planes[0].rowStride}/${yuv.planes[0].pixelStride} cap=${yuv.planes[0].buffer.remaining()} p1=${yuv.planes[1].rowStride}/${yuv.planes[1].pixelStride} cap=${yuv.planes[1].buffer.remaining()} p2=${yuv.planes[2].rowStride}/${yuv.planes[2].pixelStride} cap=${yuv.planes[2].buffer.remaining()} fmt=${fmt.getInteger(MediaFormat.KEY_COLOR_FORMAT)} ${yuv.width}x${yuv.height} buf=${info.size}@${info.offset}")
-                                    RuntimeLog.add("$TAG uHead=${hex8(yuv.planes[1])} vHead=${hex8(yuv.planes[2])}")
-                                }
+                                if (!soft && chromaIsBlank(yuv)) throw IOException("硬解色度输出为空")
                                 return yuvToBitmap(yuv)
                             }
                         } finally {
@@ -150,14 +170,19 @@ object HeicHardDecoder {
         }
     }
 
-    private var diagnoseDumps = 3
-
-    private fun hex8(plane: android.media.Image.Plane): String {
-        val b = plane.buffer.duplicate().rewind() as ByteBuffer
-        val n = min(b.remaining(), 8)
-        val bytes = ByteArray(n)
-        b.get(bytes)
-        return bytes.joinToString("") { "%02x".format(it) }
+    /** Amlogic 色度走独立 DMA 段时 app 读到全零（图变绿）；抽头/中/尾三段探测，全零即判硬解输出无效。 */
+    private fun chromaIsBlank(yuv: Image): Boolean {
+        val buf = yuv.planes[1].buffer.duplicate().rewind() as ByteBuffer
+        val size = buf.remaining()
+        if (size < 32) return true
+        val probes = intArrayOf(0, size / 2 - 16, size - 32)
+        for (probe in probes) {
+            for (i in 0 until 32) {
+                val idx = probe + i
+                if (idx in 0 until size && buf.get(idx).toInt() != 0) return false
+            }
+        }
+        return true
     }
 
     /** ImageReader 的 RGBA 平面可能带行对齐 padding，先读进等宽 bitmap 再裁掉。 */

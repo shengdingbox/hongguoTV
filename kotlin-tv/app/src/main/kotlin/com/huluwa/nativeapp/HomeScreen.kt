@@ -130,6 +130,14 @@ class HomeScreen(
             else intArrayOf(0xd9eee4d4.toInt(),Color.TRANSPARENT))
     }
     private val empty=label("正在发现好剧…",15f,TvStyle.muted).apply { gravity=Gravity.CENTER; maxLines=3 }
+    // 播放状态提示（参考参考项目 HomeFeedScreen 的 status 标签）：
+    // 12sp 居中、深色半透明圆角底，只显示加载/暂停/失败等状态，正常播放不占画面
+    private val previewStatus=label("",12f,Color.WHITE).apply {
+        gravity=Gravity.CENTER; maxLines=1; ellipsize=TextUtils.TruncateAt.END
+        setPadding(dp(8),dp(6),dp(8),dp(6)); visibility=GONE
+        background=TvStyle.shape(context,Color.argb(215,11,15,21))
+        importantForAccessibility=IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
     private val progress=ProgressBar(context,null,android.R.attr.progressBarStyleHorizontal).apply {
         max=100; DrawableCompat.setTint(progressDrawable, TvStyle.accent); visibility=GONE
     }
@@ -176,6 +184,10 @@ class HomeScreen(
         topBar.addView(topTitle)
         stage.addView(topBar,FrameLayout.LayoutParams(-1,-2,Gravity.TOP))
         stage.addView(progress,FrameLayout.LayoutParams(-1,dp(3),Gravity.BOTTOM))
+        // 状态提示悬浮在操作条上方（操作条高约 31dp + 6dp 间隙），底部居中
+        stage.addView(previewStatus,FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin=dp(37)
+        })
         // 画面占满整个 hero（视频延伸到操作区域），操作条悬浮其上，三按钮等宽三等分
         hero.addView(stage,LayoutParams(-1,-1))
         listOf(play,manage,resume).forEachIndexed { index,view ->
@@ -286,6 +298,11 @@ class HomeScreen(
         previewSeriesId=seriesId; previewVisible=!showCover; previewPlaying=playing; previewFailed=failed
         poster.visibility=if(showCover) VISIBLE else GONE
         previewView?.visibility=VISIBLE
+        // 参考参考项目：只在取址/缓冲/暂停/失败/播完时显示提示，正常播放的纯集数标签不占画面
+        val informative=label.contains("正在")||label.contains("暂停")||label.contains("不可用")||label.contains("播完")||label.contains("准备")
+        previewStatus.text=label
+        previewStatus.setTextColor(if(failed) TvStyle.accent else Color.WHITE)
+        previewStatus.visibility=if(informative) VISIBLE else GONE
         describeStage()
     }
 
@@ -409,6 +426,7 @@ class HomeScreen(
         if(previewSeriesId!=nextId) {
             previewSeriesId=nextId; previewVisible=false; previewPlaying=false; previewFailed=false
             poster.visibility=VISIBLE; previewView?.visibility=VISIBLE
+            previewStatus.text=""; previewStatus.visibility=GONE
             // 按键换剧立即更新画面：直接复用相邻侧卡已加载的封面（按右时 nextCover 正是新剧封面），
             // 不等 Glide 网络请求；后续正式加载以它为 placeholder 无缝换高清图
             val side=when {

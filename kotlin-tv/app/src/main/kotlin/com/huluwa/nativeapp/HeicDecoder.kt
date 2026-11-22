@@ -132,7 +132,7 @@ object HeicHardDecoder {
                                 // TODO 临时诊断：老盒子 vendor YUV 布局与标准 YUV_420_888 不一致导致偏色，打全平面信息定位
                                 if (diagnoseDumps-- > 0) {
                                     val fmt = codec.outputFormat
-                                    RuntimeLog.add("$TAG plane0 s=${yuv.planes[0].rowStride}/${yuv.planes[0].pixelStride} cap=${yuv.planes[0].buffer.remaining()} p1=${yuv.planes[1].rowStride}/${yuv.planes[1].pixelStride} cap=${yuv.planes[1].buffer.remaining()} p2=${yuv.planes[2].rowStride}/${yuv.planes[2].pixelStride} cap=${yuv.planes[2].buffer.remaining()} fmt=${fmt.getInteger(MediaFormat.KEY_COLOR_FORMAT)} ${yuv.width}x${yuv.height} info=${info.width}x${info.height}@${info.offset}")
+                                    RuntimeLog.add("$TAG plane0 s=${yuv.planes[0].rowStride}/${yuv.planes[0].pixelStride} cap=${yuv.planes[0].buffer.remaining()} p1=${yuv.planes[1].rowStride}/${yuv.planes[1].pixelStride} cap=${yuv.planes[1].buffer.remaining()} p2=${yuv.planes[2].rowStride}/${yuv.planes[2].pixelStride} cap=${yuv.planes[2].buffer.remaining()} fmt=${fmt.getInteger(MediaFormat.KEY_COLOR_FORMAT)} ${yuv.width}x${yuv.height} buf=${info.size}@${info.offset}")
                                     RuntimeLog.add("$TAG uHead=${hex8(yuv.planes[1])} vHead=${hex8(yuv.planes[2])}")
                                 }
                                 return yuvToBitmap(yuv)

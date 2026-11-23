@@ -1238,7 +1238,9 @@ open class ContentRepository(
      *  而下面的 `multi_video_model` 对匿名设备基本是一次性配额（同一设备第 1 次成功后持续空响应，
      *  换主机只能再成功一次），也是「一直卡在正在获取播放地址」的根因。
      *  因此单集取址优先走这里，`multi_video_model` 只作为兜底。
-     *  参数照抄第三方参考实现的后端已验证的组合：video_id / source / need_all_video_definition。 */
+     *  2026-11-23 小米电视实测：`device_level=3` 会让平台把 360P–1080P 全部下发为 bytevc2，
+     *  电视端必须显式固定为 1；否则会误报「平台未提供电视可解码的清晰度」。
+     *  参数照抄第三方参考实现的后端已验证的组合：video_id / source / need_all_video_definition / device_level。 */
     private fun videoTabSingleModel(id: String, preferAlt: Boolean = false): JSONObject? = videoTabSingle(id,preferAlt).model
     /** 单集取址的完整结果：`model` 为空时由 [blank] 区分「空体」和「有明确错误码」，
      *  后者不该再触发换设备重扫。 */
@@ -1246,6 +1248,8 @@ open class ContentRepository(
     private fun videoTabSingle(id: String, preferAlt: Boolean = false): SingleTab {
         val extra=linkedMapOf(
             "video_id" to id, "source" to "0", "need_all_video_definition" to "true",
+            // 电视端的兼容档：服务端在 3 下可能整集改成 VVC，Media3 的 MP4 提取器读不出视频轨。
+            "device_level" to "1",
         )
         val hosts=listOf(
             "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/video_model/v",
@@ -1679,9 +1683,9 @@ open class ContentRepository(
         // 降级模型按请求间歇出现（实测约 1/3），一次取址失败后最多再赌两轮正常模型；仍降级才报不兼容。
         private const val PLAYBACK_RETRY_ROUNDS=3
         private const val RETRY_BACKOFF_MS=400L
-        // 重试轮次轮换参数：诊断降级窗口下 level=3 与备用主机是否下发电视可解码的转码集
-        // （1=现行为，3=官方档位；preferAlt=优先 reading.snssdk.com 备用主机）。
-        private val RETRY_PLANS=listOf(1 to true, 3 to false)
+        // 电视兼容重试：先固定 device_level=1，再换备用主机；最后才用 3 做诊断兜底。
+        // 平台在 level=3 下会把整集下发成 bytevc2，电视无法解码，不能作为首轮参数。
+        private val RETRY_PLANS=listOf(1 to true, 1 to false)
         private const val LEVEL_KEY="__level"
         // 短剧榜单页面的书城 cell：电视与手机排行榜共用同一份官方目录。
         private const val RANK_CELL_ID="7470092475068071998"

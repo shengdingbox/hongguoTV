@@ -115,6 +115,29 @@ class PlaybackAlgorithmPolicyTest {
         assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
     }
 
+    @Test fun staleSuccessfulProbeDoesNotOverrideManualSelection() {
+        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.FRIDA)
+        val stale = policy.beginAddress()
+        policy.localProbeSucceeded(attempt = stale)
+        policy.select(PlaybackAlgorithm.UNIDBG)
+        repeat(2) { policy.localProbeSucceeded(attempt = stale) }
+        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
+    }
+
+    @Test fun staleFailedProbeDoesNotEraseCurrentSuccessfulProbe() {
+        val policy = PlaybackAlgorithmPolicy(
+            PlaybackAlgorithm.FRIDA,
+            localProbeFactory = { FakeSigner() },
+        )
+        val stale = policy.beginAddress()
+        policy.select(PlaybackAlgorithm.UNIDBG)
+        val current = policy.beginAddress()
+        policy.localProbeSucceeded(attempt = current)
+        assertFalse(policy.probeLocal(revision = stale) { false })
+        policy.localProbeSucceeded(attempt = current)
+        assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
+    }
+
     @Test fun playbackFallbackOnlyAvailableUnderLocalAlgorithm() {
         val policy = PlaybackAlgorithmPolicy(
             PlaybackAlgorithm.LOCAL,

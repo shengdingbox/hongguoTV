@@ -63,7 +63,7 @@ data class StreamInfo(val url: String, val key: ByteArray?, val quality: String,
 /** 一次窗口取址的结果：[requested] 请求集数、[cached] 取址后可播放的集数、[batch] 本次批量新增、[route] 命中的路由。 */
 data class WarmReport(val requested: Int, val cached: Int, val batch: Int, val route: String?)
 class SearchSessionExpiredException: IOException("搜索结果已过期，请从第 1 页重新搜索")
-/** 平台对该集只产出了 ByteVC2 等电视无法解码的编码，重试与换清晰度都不会成功。 */
+/** 已尝试的取址路由没有返回当前播放链路可用的视频，保留诊断信息供兼容源回退使用。 */
 class UnplayableVideoException(message: String, val diagnostic: String = ""): IOException(message)
 /** 播放信息接口返回了 HTTP 200 空体；已按有界退避重读仍未成功。 */
 class EmptyPlaybackResponseException: IOException("播放接口暂时返回空响应，请稍后重试")
@@ -1064,17 +1064,30 @@ open class ContentRepository(
         }
     }
 
+    private data class CompatiblePlayback(val model: JSONObject, val stream: StreamInfo)
+
     private fun streamUnbounded(id: String, maxQuality: Int, refreshModel: Boolean, playback: Boolean, ahead: List<String> = emptyList()): StreamInfo {
         if(refreshModel) modelCache.evict(id)
         val albumEpisode=isAlbumEpisode(id)
+        val policy=playbackAlgorithms
+        // 每次取流只探测一次本地算法；远程正常时并行执行，不拖慢首帧。
+        var probe=if(modelCache.get(id,clock())==null && policy?.needsLocalProbe()==true)
+            startLocalProbe(id,maxQuality,albumEpisode,policy) else null
         try {
             return streamFromModel(addressModel(id, albumEpisode = albumEpisode, playback = playback, ahead = ahead),maxQuality)
         } catch (unplayable: UnplayableVideoException) {
-            // 站方对同一集会间歇性下发降级模型（2026-11-08 路由标记诊断证实：来自 video_tab 主接口，
-            // video_list 全部清晰度都是 bytevc2 加密 blob，旧 POST 路由已全空、无路由可跳，换身份也不影响下发）。
-            // 降级按请求随机出现：剔除坏缓存，再赌几轮正常模型，轮间稍作退避；
-            // 连续降级才把异常交给上层，由「自动跳过不兼容集数」接手。
-            // 这里不再 recover：单集接口对同一身份可重复请求，换设备只会白白多消耗一次取址配额。
+            // 远程返回模型并不代表它有兼容视频。优先复用本地探测结果救当前这一集，
+            // 使用独立的本地设备和真正的 V5 签名，不把 Frida 身份混进本地请求。
+            if(probe==null && policy?.needsLocalProbe()==true)
+                probe=startLocalProbe(id,maxQuality,albumEpisode,policy)
+            probe?.let { pending ->
+                awaitLocalPlayback(pending)?.let { compatible ->
+                    modelCache.put(id,compatible.model,clock())
+                    return compatible.stream
+                }
+            }
+            // 平台也可能间歇下发不兼容模型：本地没有兼容源时保留有界重取，
+            // 始终使用电视兼容档位，不切到 level=3，也不反复更换设备。
             var failure=unplayable
             for(round in 1 until PLAYBACK_RETRY_ROUNDS) {
                 if(Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
@@ -1088,7 +1101,41 @@ open class ContentRepository(
                     failure=next
                 }
             }
+            // 最后一轮的不兼容模型也要移除，避免下一次播放直接命中坏缓存。
+            modelCache.evict(id)
             throw failure
+        } catch (cancel: java.io.InterruptedIOException) {
+            probe?.cancel(true)
+            throw cancel
+        }
+    }
+
+    /** 等待已启动的本地探测，沿用当前播放总预算；取消必须停止探测和它持有的网络请求。 */
+    private fun awaitLocalPlayback(probe: Future<CompatiblePlayback?>): CompatiblePlayback? {
+        try {
+            RequestScope.ensureActive()
+            val remaining=RequestScope.remainingMillis() ?: LOCAL_PROBE_TIMEOUT_MS
+            if(remaining<=0) throw java.io.InterruptedIOException("播放请求超时")
+            val result=probe.get(minOf(remaining,LOCAL_PROBE_TIMEOUT_MS),TimeUnit.MILLISECONDS)
+            RequestScope.ensureActive()
+            return result
+        } catch (cancel: java.io.InterruptedIOException) {
+            probe.cancel(true)
+            throw cancel
+        } catch (cancel: InterruptedException) {
+            probe.cancel(true)
+            Thread.currentThread().interrupt()
+            throw java.io.InterruptedIOException("播放请求已取消").apply { initCause(cancel) }
+        } catch (_: TimeoutException) {
+            probe.cancel(true)
+            RequestScope.ensureActive()
+            return null
+        } catch (_: java.util.concurrent.CancellationException) {
+            RequestScope.ensureActive()
+            return null
+        } catch (_: ExecutionException) {
+            RequestScope.ensureActive()
+            return null
         }
     }
     private fun streamFromModel(model: JSONObject, maxQuality: Int): StreamInfo {
@@ -1334,6 +1381,8 @@ open class ContentRepository(
         val host = "api5-normal-sinfonlineb.fqnovel.com"
         val request = try {
             MobilePlayback.videoTabRequest(id, activeSigner.profile(), clock(), host)
+        } catch (cancel: java.io.InterruptedIOException) {
+            throw cancel
         } catch (_: Exception) {
             return null
         }
@@ -1354,9 +1403,8 @@ open class ContentRepository(
         if (root.optInt("code", root.optInt("Code", -1)) != 0) return null
         val data = root.optJSONObject("data") ?: return null
         val rows = data.optJSONObject("video_model_data") ?: data
-        val row = rows.optJSONObject(id)
-            ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
-            ?: return null
+        // 只能使用目标分集，不能把响应里的其它分集误当成兼容源。
+        val row = rows.optJSONObject(id) ?: return null
         val model = modelOf(row.opt("video_model")) ?: return null
         return model.put(ROUTE_KEY, "v5get|$host")
     }
@@ -1370,17 +1418,14 @@ open class ContentRepository(
             policy?.addressSucceeded(attempt)
             return it
         }
-        val probe = if (policy?.needsLocalProbe()==true) startLocalProbe(id,level,preferAlt,albumEpisode,policy) else null
         try {
             val model = fetchVideoModel(id,level,preferAlt,albumEpisode,ahead)
             policy?.addressSucceeded(attempt)
             // 真实取址成功：连续空轮清零，匿名身份不需要恢复。
             playbackRecovery.markNonEmptyRound()
             modelCache.put(id,model.put(LEVEL_KEY,level),clock())
-            probe
             return model
         } catch (problem: IOException) {
-            probe?.cancel(false)
             // 整次取址以空体收场才累计「连续空轮」；网络异常不算（域名健康度另行记录）。
             if (problem is EmptyPlaybackResponseException) playbackRecovery.markEmptyRound()
             // 空体/错误码是签名口径失效的确定性信号，换算法才有意义；
@@ -1417,20 +1462,59 @@ open class ContentRepository(
             throw problem
         }
     }
-    /** 远程模式取址期间并行探测本地（实时嗅探）；连续两次成功才切回，只影响下一次取址。 */
-    private fun startLocalProbe(id: String, level: Int, preferAlt: Boolean, albumEpisode: Boolean, policy: PlaybackAlgorithmPolicy): java.util.concurrent.Future<*>? =
-        localProbeExecutor.submit {
-            if (!Thread.currentThread().isInterrupted) {
-                runCatching {
-                    policy.probeLocal { localSigner ->
-                        val localRepo = ContentRepository(http, clock, localSigner, PlaybackModelCache(), null)
-                        localRepo.fetchVideoModel(id, level, preferAlt, albumEpisode)
-                        policy.localProbeSucceeded()
-                        true
-                    }
-                }
+    /** 使用已有本地 V5 GET/POST 寻找兼容源，只有成功解析视频和密钥才算探测成功。 */
+    private fun localCompatiblePlayback(id: String, maxQuality: Int, albumEpisode: Boolean): CompatiblePlayback? {
+        val candidates=buildList<() -> JSONObject?> {
+            // 当前 GET 路由比空体 POST 扫描更直接；即使 GET 返回全 ByteVC2，也继续尝试 POST。
+            if(!albumEpisode) add { videoTabModelV5(id) }
+            add { mobilePlaybackModel(id,if(albumEpisode) MobilePlayback.GROUP_PUGC else MobilePlayback.GROUP_SHORT).model }
+        }
+        for(candidate in candidates) {
+            RequestScope.ensureActive()
+            try {
+                val model=candidate()?.put(LEVEL_KEY,1) ?: continue
+                val stream=streamFromModel(model,maxQuality)
+                return CompatiblePlayback(model,stream)
+            } catch (cancel: java.io.InterruptedIOException) {
+                throw cancel
+            } catch (_: IOException) {
+                // 空体、无兼容编码或无效密钥都不能作为自动切回本地的依据。
+            } catch (_: org.json.JSONException) {
+                // 模型结构不完整时继续另一条现有路由。
+            } catch (_: IllegalArgumentException) {
+                // 密钥材料或地址格式错误时不得把本地算法误判为可用。
             }
         }
+        return null
+    }
+
+    /** 每个取流意图共用一次本地探测；子线程显式继承取消作用域和总预算。 */
+    private fun startLocalProbe(id: String, maxQuality: Int, albumEpisode: Boolean, policy: PlaybackAlgorithmPolicy): Future<CompatiblePlayback?> {
+        val attempt=policy.beginAddress()
+        val scope=RequestScope.current()?.child(LOCAL_PROBE_TIMEOUT_MS) ?: RequestScope(LOCAL_PROBE_TIMEOUT_MS)
+        val deadline=RequestScope.deadlineAtMost(System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(LOCAL_PROBE_TIMEOUT_MS))
+        val task=object : FutureTask<CompatiblePlayback?>(Callable {
+            scope.run {
+                RequestScope.withDeadline(deadline) {
+                    var compatible: CompatiblePlayback?=null
+                    val succeeded=policy.probeLocal(revision=attempt) { localSigner ->
+                        val localRepo=ContentRepository(http,clock,localSigner,PlaybackModelCache(),null)
+                        compatible=localRepo.localCompatiblePlayback(id,maxQuality,albumEpisode)
+                        if(compatible!=null) policy.localProbeSucceeded(attempt=attempt)
+                        compatible!=null
+                    }
+                    if(succeeded) compatible else null
+                }
+            }
+        }) {
+            override fun cancel(mayInterruptIfRunning: Boolean): Boolean {
+                scope.cancel()
+                return super.cancel(mayInterruptIfRunning)
+            }
+        }
+        localProbeExecutor.execute(task)
+        return task
+    }
     /** 远程探测并发执行，避免每次播放都要等两套算法串行完成。 */
     private val localProbeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { action ->
         Thread(action, "playback-local-probe").apply { isDaemon = true }
@@ -1683,7 +1767,9 @@ open class ContentRepository(
         // 降级模型按请求间歇出现（实测约 1/3），一次取址失败后最多再赌两轮正常模型；仍降级才报不兼容。
         private const val PLAYBACK_RETRY_ROUNDS=3
         private const val RETRY_BACKOFF_MS=400L
-        // 电视兼容重试：先固定 device_level=1，再换备用主机；最后才用 3 做诊断兜底。
+        /** 本地兼容源探测最多三秒，并受前台八秒、预取两秒的外层预算约束。 */
+        private const val LOCAL_PROBE_TIMEOUT_MS=3_000L
+        // 电视兼容重试：固定 device_level=1，只轮换主机，所有轮次都不升到 3。
         // 平台在 level=3 下会把整集下发成 bytevc2，电视无法解码，不能作为首轮参数。
         private val RETRY_PLANS=listOf(1 to true, 1 to false)
         private const val LEVEL_KEY="__level"

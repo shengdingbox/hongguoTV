@@ -73,15 +73,21 @@ class PlaybackAlgorithmPolicy(
     }
 
     /** 使用隔离的本地签名器试取一次；探测失败不得替换正式设备身份，并清零连续成功计数。 */
-    fun probeLocal(attempt: (RemoteSigner) -> Boolean): Boolean =
+    fun probeLocal(revision: PlaybackAlgorithmAttempt? = null, attempt: (RemoteSigner) -> Boolean): Boolean =
         runCatching { attempt(localProbeFactory()) }.getOrDefault(false).also { succeeded ->
-            if (!succeeded) synchronized(lock) { probeSuccessCount = 0 }
+            if (!succeeded) synchronized(lock) {
+                if (revision == null || revision.revision == this.revision) probeSuccessCount = 0
+            }
         }
 
     /** 本地探测成功一次：连续 [PROBE_SUCCESS_LIMIT] 次成功才真正切回本地。 */
-    fun localProbeSucceeded(reason: String = "本地算法连续 ${PROBE_SUCCESS_LIMIT} 次探测成功") {
-        val ready = synchronized(lock) { ++probeSuccessCount >= PROBE_SUCCESS_LIMIT }
-        if (ready) switchTo(PlaybackAlgorithm.LOCAL, reason)
+    fun localProbeSucceeded(reason: String = "本地算法连续 ${PROBE_SUCCESS_LIMIT} 次探测成功", attempt: PlaybackAlgorithmAttempt? = null) {
+        val ready = synchronized(lock) {
+            // 用户已切换算法时，旧探测不能再覆盖新选择。
+            if (attempt != null && attempt.revision != revision) return
+            ++probeSuccessCount >= PROBE_SUCCESS_LIMIT
+        }
+        if (ready) switchTo(PlaybackAlgorithm.LOCAL, reason, attempt)
     }
 
     /**
@@ -134,8 +140,9 @@ class PlaybackAlgorithmPolicy(
         notify(PlaybackAlgorithmChange(from, next, "用户选择"))
     }
 
-    private fun switchTo(next: PlaybackAlgorithm, reason: String) {
+    private fun switchTo(next: PlaybackAlgorithm, reason: String, attempt: PlaybackAlgorithmAttempt? = null) {
         val from = synchronized(lock) {
+            if (attempt != null && attempt.revision != revision) return
             if (selected == next) return
             val old = selected
             selected = next

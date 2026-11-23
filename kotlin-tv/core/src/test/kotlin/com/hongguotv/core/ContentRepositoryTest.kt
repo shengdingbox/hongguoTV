@@ -50,8 +50,8 @@ class ContentRepositoryTest {
             } else """{"data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}"""
         }
         val error=assertThrows(UnplayableVideoException::class.java) { repo.stream("123",1080) }
-        // 优先 POST 路由随模型进入诊断；最终重试轮的 level=3 也应保留。
-        assertEquals("route=$playerPath lvl=3 video_list=video_1:bytevc2:1080:enc/enc;video_5:bytevc2:720:enc/empty",error.diagnostic)
+        // 优先 POST 路由随模型进入诊断；所有重试轮均固定为电视兼容档位 1。
+        assertEquals("route=$playerPath lvl=1 video_list=video_1:bytevc2:1080:enc/enc;video_5:bytevc2:720:enc/empty",error.diagnostic)
     }
 
     @Test fun tabRouteTagRidesAlongInIncompatibleDiagnostic() {

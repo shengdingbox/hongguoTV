@@ -161,10 +161,11 @@ object TvDialog {
         extra: String? = null,
         onExtra: () -> Unit = {},
         focusIndex: Int = -1,
-        anchorView: View? = null
+        anchorView: View? = null,
+        message: String? = null
     ): AlertDialog {
         if (PhoneDialog.shouldUse(activity)) return PhoneDialog.choose(
-            activity, title, labels, onChoice, extra, onExtra, focusIndex, anchorView)
+            activity, title, labels, onChoice, extra, onExtra, focusIndex, anchorView, message)
         val dialog = AlertDialog.Builder(activity).create()
         // 标题钉在卡片顶部，不进滚动区：特大/极大档选项行变高放不下时只滚选项，标题始终可见
         val heading = title(activity, title)
@@ -218,6 +219,9 @@ object TvDialog {
         } else (activity.resources.displayMetrics.heightPixels * 0.6f).toInt()
         val root = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         root.addView(heading)
+        if(!message.isNullOrBlank()) root.addView(body(activity,message).apply {
+            maxWidth = dp(activity, 480)
+        })
         root.addView(scroll)
         // 不设取消按钮：返回键就能关。extra（如搜索历史的「清空历史」）是功能入口，保留
         if(extra != null) {

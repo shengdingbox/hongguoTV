@@ -8,7 +8,7 @@ enum class PlaybackAlgorithm {
     FRIDA,
 }
 
-/** 自动算法切换通知；界面据此同步设置并提示用户。 */
+/** 用户手动切换算法的通知；界面据此同步设置。 */
 data class PlaybackAlgorithmChange(
     val from: PlaybackAlgorithm?,
     val to: PlaybackAlgorithm,
@@ -20,108 +20,63 @@ data class PlaybackAlgorithmAttempt internal constructor(
     internal val revision: Long,
 )
 
-/**
- * 播放取址算法策略：本地优先，实在不行才降级远程。
- *
- * - 网络类失败（连接失败/超时）与算法无关，不计数不切换，避免网络抖动来回切；
- * - 本地算法类失败（空体/错误码）连续 [FAILURE_LIMIT] 次才切到 unidbg；
- * - 远程算法失败不自动切回本地——本地当初正是失败才被切走的，盲切只会来回震荡；
- * - 远程模式每次取址并行探测本地（实时嗅探），但需连续 [PROBE_SUCCESS_LIMIT] 次
- *   探测成功才切回，防止半坏的本地算法被偶发成功拉回；
- * - 探测使用独立设备档案副本，失败时的重新注册不会污染正在使用的身份。
- */
+/** 当前模式连续三次取址失败；每轮失败独立通知，界面可据此避免重复弹窗。 */
+class PlaybackAlgorithmUnavailable internal constructor(val algorithm: PlaybackAlgorithm)
+
+/** 播放算法只由用户选择；连续取址失败时通知界面，不自动更换算法或签名器。 */
 class PlaybackAlgorithmPolicy(
     initial: PlaybackAlgorithm?,
     private val localFactory: () -> RemoteSigner = { RemoteSigner() },
-    private val localProbeFactory: () -> RemoteSigner = localFactory,
     private val unidbgFactory: () -> RemoteSigner = { UnidbgSigner() },
     private val fridaFactory: () -> RemoteSigner = { FridaSigner() },
-    private val onChange: ((PlaybackAlgorithmChange) -> Unit)? = null,
+    onChange: ((PlaybackAlgorithmChange) -> Unit)? = null,
+    onUnavailable: ((PlaybackAlgorithmUnavailable) -> Unit)? = null,
 ) {
     private val listeners = java.util.concurrent.CopyOnWriteArrayList<(PlaybackAlgorithmChange) -> Unit>().apply {
         onChange?.let(::add)
+    }
+    private val unavailableListeners = java.util.concurrent.CopyOnWriteArrayList<(PlaybackAlgorithmUnavailable) -> Unit>().apply {
+        onUnavailable?.let(::add)
     }
 
     private val lock = Any()
     private var selected = initial
     private var current = create(initial)
     private var failureCount = 0
-    private var probeSuccessCount = 0
     private var revision = 0L
+    private var currentUnavailable: PlaybackAlgorithmUnavailable? = null
 
     /** 当前实际用于播放取址的签名器。 */
     val signer: RemoteSigner get() = synchronized(lock) { current }
     val algorithm: PlaybackAlgorithm? get() = synchronized(lock) { selected }
+    /** 保留尚未恢复的失败状态，应用回到前台时仍可提示用户。 */
+    val unavailable: PlaybackAlgorithmUnavailable? get() = synchronized(lock) { currentUnavailable }
 
     /** 在真正发起取址前记录当前选择版本。 */
     fun beginAddress(): PlaybackAlgorithmAttempt = synchronized(lock) {
         PlaybackAlgorithmAttempt(revision)
     }
 
-    /** 只在远程模式需要并行探测本地。 */
-    fun needsLocalProbe(): Boolean = synchronized(lock) {
-        selected == PlaybackAlgorithm.UNIDBG || selected == PlaybackAlgorithm.FRIDA
-    }
-
-    /**
-     * 正式播放的请求级兜底签名器：本地算法首次算法类失败时，不等切换阈值
-     * 先用 unidbg 救当前这一次取址。只救本次请求，不改变全局选择。
-     * 非本地模式没有更进一步的兜底，返回 null。
-     */
-    fun playbackFallbackSigner(): RemoteSigner? = synchronized(lock) {
-        if (selected == PlaybackAlgorithm.LOCAL) unidbgFactory() else null
-    }
-
-    /** 使用隔离的本地签名器试取一次；探测失败不得替换正式设备身份，并清零连续成功计数。 */
-    fun probeLocal(revision: PlaybackAlgorithmAttempt? = null, attempt: (RemoteSigner) -> Boolean): Boolean =
-        runCatching { attempt(localProbeFactory()) }.getOrDefault(false).also { succeeded ->
-            if (!succeeded) synchronized(lock) {
-                if (revision == null || revision.revision == this.revision) probeSuccessCount = 0
-            }
-        }
-
-    /** 本地探测成功一次：连续 [PROBE_SUCCESS_LIMIT] 次成功才真正切回本地。 */
-    fun localProbeSucceeded(reason: String = "本地算法连续 ${PROBE_SUCCESS_LIMIT} 次探测成功", attempt: PlaybackAlgorithmAttempt? = null) {
-        val ready = synchronized(lock) {
-            // 用户已切换算法时，旧探测不能再覆盖新选择。
-            if (attempt != null && attempt.revision != revision) return
-            ++probeSuccessCount >= PROBE_SUCCESS_LIMIT
-        }
-        if (ready) switchTo(PlaybackAlgorithm.LOCAL, reason, attempt)
-    }
-
-    /**
-     * 记录一次实际取址失败；返回本次是否自动切换到了备用算法。
-     *
-     * - [network] 为 true 表示纯网络故障（连接失败/超时）：换算法无济于事（取址请求
-     *   始终由本机发出），既不计数也不切换；
-     * - 算法类失败只有本地会计数：远程失败不自动切回本地，本地可用性由探测决定。
-     */
-    fun addressFailed(attempt: PlaybackAlgorithmAttempt? = null, network: Boolean = false): Boolean {
-        val changed = synchronized(lock) {
+    /** 记录一次完整取址失败；每段连续失败只在第三次通知，不自动切换算法。 */
+    fun addressFailed(attempt: PlaybackAlgorithmAttempt? = null): Boolean {
+        val failure = synchronized(lock) {
             if (attempt != null && attempt.revision != revision) return false
-            if (network) return false
-            if (selected != PlaybackAlgorithm.LOCAL) return false
+            val algorithm = selected ?: return false
+            if (currentUnavailable != null) return false
             failureCount++
             if (failureCount < FAILURE_LIMIT) return false
-            failureCount = 0
-            selected = PlaybackAlgorithm.UNIDBG
-            current = create(PlaybackAlgorithm.UNIDBG)
-            revision++
-            PlaybackAlgorithm.LOCAL to PlaybackAlgorithm.UNIDBG
+            PlaybackAlgorithmUnavailable(algorithm).also { currentUnavailable = it }
         }
-        notify(PlaybackAlgorithmChange(
-            changed.first,
-            changed.second,
-            "本地算法连续 $FAILURE_LIMIT 次取址失败",
-        ))
+        unavailableListeners.forEach { runCatching { it(failure) } }
         return true
     }
 
+    /** 成功获取播放地址后，重新累计下一段连续失败。 */
     fun addressSucceeded(attempt: PlaybackAlgorithmAttempt? = null) {
         synchronized(lock) {
             if (attempt != null && attempt.revision != revision) return
             failureCount = 0
+            currentUnavailable = null
         }
     }
 
@@ -130,37 +85,22 @@ class PlaybackAlgorithmPolicy(
         val from = synchronized(lock) {
             if (selected == next) return
             val old = selected
+            val signer = create(next)
             selected = next
-            current = create(next)
+            current = signer
             failureCount = 0
-            probeSuccessCount = 0
+            currentUnavailable = null
             revision++
             old
         }
-        notify(PlaybackAlgorithmChange(from, next, "用户选择"))
-    }
-
-    private fun switchTo(next: PlaybackAlgorithm, reason: String, attempt: PlaybackAlgorithmAttempt? = null) {
-        val from = synchronized(lock) {
-            if (attempt != null && attempt.revision != revision) return
-            if (selected == next) return
-            val old = selected
-            selected = next
-            current = create(next)
-            failureCount = 0
-            probeSuccessCount = 0
-            revision++
-            old
-        }
-        notify(PlaybackAlgorithmChange(from, next, reason))
+        val change = PlaybackAlgorithmChange(from, next, "用户选择")
+        listeners.forEach { runCatching { it(change) } }
     }
 
     fun addListener(listener: (PlaybackAlgorithmChange) -> Unit) { if (listener !in listeners) listeners += listener }
     fun removeListener(listener: (PlaybackAlgorithmChange) -> Unit) { listeners -= listener }
-
-    private fun notify(change: PlaybackAlgorithmChange) {
-        listeners.forEach { runCatching { it(change) } }
-    }
+    fun addUnavailableListener(listener: (PlaybackAlgorithmUnavailable) -> Unit) { if (listener !in unavailableListeners) unavailableListeners += listener }
+    fun removeUnavailableListener(listener: (PlaybackAlgorithmUnavailable) -> Unit) { unavailableListeners -= listener }
 
     private fun create(algorithm: PlaybackAlgorithm?): RemoteSigner = when (algorithm) {
         PlaybackAlgorithm.LOCAL -> localFactory()
@@ -170,9 +110,6 @@ class PlaybackAlgorithmPolicy(
     }
 
     private companion object {
-        /** 本地算法类失败连续这么多次才降级远程；网络失败不算。 */
         const val FAILURE_LIMIT = 3
-        /** 本地探测需连续成功这么多次才切回，防半坏算法被偶发成功拉回。 */
-        const val PROBE_SUCCESS_LIMIT = 2
     }
 }

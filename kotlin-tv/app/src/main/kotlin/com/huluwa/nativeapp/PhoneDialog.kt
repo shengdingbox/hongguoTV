@@ -187,7 +187,7 @@ object PhoneDialog {
     /** 当前值以系统 Picker 的勾选展示，不保留电视文案中的“· 当前”。 */
     fun choose(activity: Activity, title: String, labels: List<String>, onChoice: (Int) -> Unit,
         extra: String? = null, onExtra: () -> Unit = {}, focusIndex: Int = -1,
-        anchorView: View? = null): AlertDialog {
+        anchorView: View? = null, message: String? = null): AlertDialog {
         PortraitStyle.refresh(activity)
         val content = PhoneUi.column(activity)
         val group = PhoneUi.column(activity).apply {
@@ -224,7 +224,7 @@ object PhoneDialog {
         content.addView(group, lp())
         if (extra != null) content.addView(button(activity, extra) { onExtra() }, lp().apply { topMargin = dp(activity, 12) })
         content.addView(button(activity, "取消") { dialog.dismiss() }, lp().apply { topMargin = dp(activity, 12) })
-        dialog = sheet(activity, title, content = content)
+        dialog = sheet(activity, title, subtitle = message, content = content)
         if (focusIndex in rows.indices) rows[focusIndex].post {
             rows[focusIndex].requestRectangleOnScreen(android.graphics.Rect(0, 0, rows[focusIndex].width, rows[focusIndex].height), true)
         }

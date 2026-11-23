@@ -3,148 +3,82 @@ package com.hongguotv.core
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaybackAlgorithmPolicyTest {
-    @Test fun localSwitchesOnlyAfterThreeConsecutiveAlgorithmicFailures() {
-        val changes = mutableListOf<PlaybackAlgorithmChange>()
-        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL, onChange = { changes += it })
-        assertFalse(policy.addressFailed(attempt = policy.beginAddress()))
-        assertFalse(policy.addressFailed(attempt = policy.beginAddress()))
-        assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
-        assertTrue(policy.addressFailed(attempt = policy.beginAddress()))
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
-        assertEquals(1, changes.size)
-    }
-
-    @Test fun networkFailuresNeverCountNorSwitch() {
-        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL)
-        repeat(10) {
-            assertFalse(policy.addressFailed(attempt = policy.beginAddress(), network = true))
+    @Test fun everyModeNotifiesAfterThreeFailuresWithoutSwitching() {
+        for (algorithm in PlaybackAlgorithm.values()) {
+            val changes = mutableListOf<PlaybackAlgorithmChange>()
+            val failures = mutableListOf<PlaybackAlgorithmUnavailable>()
+            val policy = PlaybackAlgorithmPolicy(algorithm,
+                onChange = { changes += it }, onUnavailable = { failures += it })
+            val signer = policy.signer
+            repeat(2) { assertFalse(policy.addressFailed(policy.beginAddress())) }
+            assertNull(policy.unavailable)
+            assertTrue(policy.addressFailed(policy.beginAddress()))
+            assertEquals(algorithm, policy.algorithm)
+            assertSame(signer, policy.signer)
+            assertEquals(algorithm, failures.single().algorithm)
+            assertSame(failures.single(), policy.unavailable)
+            assertTrue(changes.isEmpty())
+            // 同一段连续失败只提示一次，避免并发预取反复打开对话框。
+            repeat(5) { assertFalse(policy.addressFailed(policy.beginAddress())) }
+            assertEquals(1, failures.size)
         }
-        // 网络失败不计入连续失败：随后的算法失败仍需满三次才切换。
-        assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
-        assertFalse(policy.addressFailed(attempt = policy.beginAddress()))
-        assertFalse(policy.addressFailed(attempt = policy.beginAddress()))
-        assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
-        assertTrue(policy.addressFailed(attempt = policy.beginAddress()))
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
     }
 
     @Test fun successfulAddressResetsConsecutiveFailureCount() {
-        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL)
-        assertFalse(policy.addressFailed(attempt = policy.beginAddress()))
+        val failures = mutableListOf<PlaybackAlgorithmUnavailable>()
+        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL, onUnavailable = { failures += it })
+        repeat(2) { assertFalse(policy.addressFailed(policy.beginAddress())) }
         policy.addressSucceeded(policy.beginAddress())
-        assertFalse(policy.addressFailed(attempt = policy.beginAddress()))
-        assertFalse(policy.addressFailed(attempt = policy.beginAddress()))
+        repeat(2) { assertFalse(policy.addressFailed(policy.beginAddress())) }
+        assertTrue(policy.addressFailed(policy.beginAddress()))
+        policy.addressSucceeded(policy.beginAddress())
+        assertNull(policy.unavailable)
+        repeat(2) { assertFalse(policy.addressFailed(policy.beginAddress())) }
+        assertTrue(policy.addressFailed(policy.beginAddress()))
+        assertEquals(2, failures.size)
+        assertFalse(failures[0] === failures[1])
         assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
-        assertTrue(policy.addressFailed(attempt = policy.beginAddress()))
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
     }
 
-    @Test fun remoteFailureDoesNotBlindSwitchBackToLocal() {
-        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.UNIDBG)
-        repeat(5) {
-            assertFalse(policy.addressFailed(attempt = policy.beginAddress()))
-            assertFalse(policy.addressFailed(attempt = policy.beginAddress(), network = true))
-        }
-        // 远程失败不自动切回本地：本地可用性由探测决定，避免两边都坏时来回震荡。
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
+    @Test fun manualSelectionResetsFailuresAndNotifiesChange() {
+        val changes = mutableListOf<PlaybackAlgorithmChange>()
+        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL, onChange = { changes += it })
+        repeat(3) { policy.addressFailed(policy.beginAddress()) }
+        policy.select(PlaybackAlgorithm.FRIDA)
+        assertNull(policy.unavailable)
+        assertEquals(PlaybackAlgorithm.FRIDA, policy.algorithm)
+        assertEquals(PlaybackAlgorithm.FRIDA, changes.single().to)
+        repeat(2) { assertFalse(policy.addressFailed(policy.beginAddress())) }
+        assertTrue(policy.addressFailed(policy.beginAddress()))
+        assertEquals(PlaybackAlgorithm.FRIDA, policy.algorithm)
     }
 
-    @Test fun staleAttemptAfterManualSwitchIsIgnored() {
+    @Test fun staleResultsAfterManualSwitchAreIgnored() {
         val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL)
         val stale = policy.beginAddress()
-        assertFalse(policy.addressFailed(attempt = policy.beginAddress()))
-        assertFalse(policy.addressFailed(attempt = policy.beginAddress()))
+        repeat(2) { assertFalse(policy.addressFailed(policy.beginAddress())) }
         policy.select(PlaybackAlgorithm.UNIDBG)
         policy.select(PlaybackAlgorithm.LOCAL)
-        // 切换前发出的旧请求失败不得计入新选择，否则会被提前降级。
-        assertFalse(policy.addressFailed(attempt = stale))
-        assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
-        assertFalse(policy.addressFailed(attempt = policy.beginAddress()))
-        assertFalse(policy.addressFailed(attempt = policy.beginAddress()))
-        assertTrue(policy.addressFailed(attempt = policy.beginAddress()))
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
-    }
-
-    @Test fun probeSwitchesBackOnlyAfterTwoConsecutiveSuccesses() {
-        val changes = mutableListOf<PlaybackAlgorithmChange>()
-        val policy = PlaybackAlgorithmPolicy(
-            PlaybackAlgorithm.UNIDBG,
-            localProbeFactory = { object : RemoteSigner() {} },
-            onChange = { changes += it },
-        )
-        assertTrue(policy.needsLocalProbe())
-        assertTrue(policy.probeLocal { true })
-        policy.localProbeSucceeded()
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
-        assertTrue(policy.probeLocal { true })
-        policy.localProbeSucceeded()
-        assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
-        assertEquals(1, changes.size)
-        assertFalse(policy.needsLocalProbe())
-    }
-
-    @Test fun probeFailureResetsConsecutiveSuccessCount() {
-        val policy = PlaybackAlgorithmPolicy(
-            PlaybackAlgorithm.UNIDBG,
-            localProbeFactory = { object : RemoteSigner() {} },
-        )
-        assertTrue(policy.probeLocal { true })
-        policy.localProbeSucceeded()
-        assertFalse(policy.probeLocal { false })
-        assertTrue(policy.probeLocal { true })
-        policy.localProbeSucceeded()
-        // 成功-失败-成功只算连续一次，尚未切回。
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
-        assertTrue(policy.probeLocal { true })
-        policy.localProbeSucceeded()
+        // 即使切回相同模式，旧请求也不能提前触发新模式的失败提示。
+        assertFalse(policy.addressFailed(stale))
+        repeat(2) { assertFalse(policy.addressFailed(policy.beginAddress())) }
+        policy.addressSucceeded(stale)
+        assertTrue(policy.addressFailed(policy.beginAddress()))
         assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
     }
 
-    @Test fun failedProbeNeverSwitchesAlgorithm() {
-        val policy = PlaybackAlgorithmPolicy(
-            PlaybackAlgorithm.UNIDBG,
-            localProbeFactory = { object : RemoteSigner() {} },
-        )
-        assertFalse(policy.probeLocal { false })
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
-    }
-
-    @Test fun staleSuccessfulProbeDoesNotOverrideManualSelection() {
-        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.FRIDA)
-        val stale = policy.beginAddress()
-        policy.localProbeSucceeded(attempt = stale)
-        policy.select(PlaybackAlgorithm.UNIDBG)
-        repeat(2) { policy.localProbeSucceeded(attempt = stale) }
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
-    }
-
-    @Test fun staleFailedProbeDoesNotEraseCurrentSuccessfulProbe() {
-        val policy = PlaybackAlgorithmPolicy(
-            PlaybackAlgorithm.FRIDA,
-            localProbeFactory = { FakeSigner() },
-        )
-        val stale = policy.beginAddress()
-        policy.select(PlaybackAlgorithm.UNIDBG)
-        val current = policy.beginAddress()
-        policy.localProbeSucceeded(attempt = current)
-        assertFalse(policy.probeLocal(revision = stale) { false })
-        policy.localProbeSucceeded(attempt = current)
-        assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
-    }
-
-    @Test fun playbackFallbackOnlyAvailableUnderLocalAlgorithm() {
-        val policy = PlaybackAlgorithmPolicy(
-            PlaybackAlgorithm.LOCAL,
-            unidbgFactory = { object : RemoteSigner() {} },
-        )
-        assertNotNull(policy.playbackFallbackSigner())
-        policy.select(PlaybackAlgorithm.UNIDBG)
-        assertNull(policy.playbackFallbackSigner())
+    @Test fun sameModeSelectionKeepsSignerAndFailureCount() {
+        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL)
+        val signer = policy.signer
+        repeat(2) { assertFalse(policy.addressFailed(policy.beginAddress())) }
+        policy.select(PlaybackAlgorithm.LOCAL)
+        assertSame(signer, policy.signer)
+        assertTrue(policy.addressFailed(policy.beginAddress()))
     }
 }

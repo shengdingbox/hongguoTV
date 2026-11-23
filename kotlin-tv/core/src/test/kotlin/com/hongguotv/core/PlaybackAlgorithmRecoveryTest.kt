@@ -7,16 +7,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaybackAlgorithmRecoveryTest {
-    @Test fun thirdAlgorithmicFailureReportsSwitchForPlaybackRetry() {
+    @Test fun thirdConcurrentFailureRequestsManualSelectionWithoutRetrySwitch() {
         val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL)
         val first = policy.beginAddress()
         val second = policy.beginAddress()
         val third = policy.beginAddress()
-        assertFalse(policy.addressFailed(attempt = first))
+        assertFalse(policy.addressFailed(first))
+        assertFalse(policy.addressFailed(second))
+        assertTrue(policy.addressFailed(third))
         assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
-        assertFalse(policy.addressFailed(attempt = second))
-        assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
-        assertTrue(policy.addressFailed(attempt = third))
-        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
+        assertEquals(PlaybackAlgorithm.LOCAL, policy.unavailable?.algorithm)
     }
 }

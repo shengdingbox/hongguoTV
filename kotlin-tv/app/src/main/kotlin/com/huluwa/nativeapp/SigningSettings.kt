@@ -57,7 +57,7 @@ object SigningSettings {
 
     fun createSigner(store: SignerProfileStore): RemoteSigner = createSigner(mode, store)
 
-    /** 按指定模式创建签名器，自动切换和设置页共用同一套构造规则。 */
+    /** 按用户指定模式创建签名器，播放取址和设置页共用同一套构造规则。 */
     fun createSigner(target: Mode, store: SignerProfileStore): RemoteSigner = when (target) {
         Mode.LOCAL -> RemoteSigner(store = store)
         // 与本地算法共用同一份匿名设备档案。
@@ -72,7 +72,7 @@ object SigningSettings {
         Mode.FRIDA -> PlaybackAlgorithm.FRIDA
     }
 
-    /** 设置页仍保存模式名；自动切换时同步写回，下次启动沿用。 */
+    /** 设置页保存用户选择的模式名，下次启动继续沿用。 */
     fun modeOf(algorithm: PlaybackAlgorithm): Mode = when (algorithm) {
         PlaybackAlgorithm.LOCAL -> Mode.LOCAL
         PlaybackAlgorithm.UNIDBG -> Mode.UNIDBG

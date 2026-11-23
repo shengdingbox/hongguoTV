@@ -112,6 +112,10 @@ class MainActivity: Activity() {
     /** 播放页、首页预览与离线下载共用同一份算法策略与设备档案。 */
     private val playbackAlgorithms by lazy { PlaybackAlgorithms.shared(this, signerStore) }
     private val playbackAlgorithmListener: (PlaybackAlgorithmChange) -> Unit = ::applyPlaybackAlgorithm
+    private val playbackAlgorithmUnavailableListener: (PlaybackAlgorithmUnavailable) -> Unit = { failure ->
+        main.post { if(playbackAlgorithms.unavailable===failure) showUnavailablePlaybackAlgorithm() }
+    }
+    private var shownUnavailableAlgorithm: PlaybackAlgorithmUnavailable? = null
     private val repository by lazy { ContentRepository(signer = playbackAlgorithms.signer, playbackAlgorithms = playbackAlgorithms) }
     val offlineDownloads by lazy { OfflineDownloads.get(this) }
     @Volatile private var offlineOnly = false
@@ -688,7 +692,6 @@ class MainActivity: Activity() {
                 else { status?.text="正在读取本机设置…"; status?.setOnClickListener(null) }
                 StartupSettings.loadAsync(this) { result ->
                     if(!isDestroyed && !isFinishing) result.onSuccess {
-                        playbackAlgorithms.addListener(playbackAlgorithmListener)
                         recreate()
                     }.onFailure { problem ->
                         if(tvStartup) {
@@ -762,6 +765,8 @@ class MainActivity: Activity() {
         favoriteMonitor=FavoriteMonitor(library,repository) { refreshFavoriteLabels() }
         mediaSession=TvMediaSession(this,{ if(foreground && screen=="player") requestPlayback(true) },{ if(foreground && screen=="player") requestPlayback(false) },{ position -> if(foreground && screen=="player") seekTo(position) },{ direction -> skipEpisode(direction) },{ if(foreground && screen=="player") returnToDetail() })
         activityInitialized=true
+        playbackAlgorithms.addListener(playbackAlgorithmListener)
+        playbackAlgorithms.addUnavailableListener(playbackAlgorithmUnavailableListener)
         if(phoneLayout()) phoneLibraryLoading() else showTvStartupHome()
         // 更新检查已在 Application 中立即发起。发布即弹：结果一落地就尝试消费，
         // 页面未就绪时结果保留在中转站，由 markPageShown()/showCatalog() 等就绪点补弹。
@@ -7581,7 +7586,7 @@ class MainActivity: Activity() {
     val phoneSigningModeLabel get() = SigningSettings.algorithmLabel
     fun phoneSigningModePicker() = showSigningModePicker(pickerAnchor)
 
-    private fun showSigningModePicker(anchor: View?) {
+    private fun showSigningModePicker(anchor: View?, message: String? = null) {
         val modes=SigningSettings.modes
         val selected=modes.indexOf(SigningSettings.mode).coerceAtLeast(0)
         val labels=modes.mapIndexed { index, mode ->
@@ -7589,7 +7594,7 @@ class MainActivity: Activity() {
         }
         tvTools.choose("算法模式",labels,anchor,{ choice ->
             modes.getOrNull(choice)?.let(::setSigningMode)
-        },focusIndex=selected)
+        },focusIndex=selected,message=message)
     }
 
     private fun setSigningMode(mode: SigningSettings.Mode) {
@@ -7602,16 +7607,23 @@ class MainActivity: Activity() {
         recreateKeepingPage("算法模式")
     }
 
-    /** 自动切换由播放线程触发；设置、缓存与提示都回主线程。 */
+    /** 连续失败只提示用户选择；后台到达的失败状态在回到前台后补弹。 */
+    private fun showUnavailablePlaybackAlgorithm() {
+        if(!activityInitialized || !foreground || isFinishing || isDestroyed) return
+        val failure=playbackAlgorithms.unavailable ?: return
+        if(shownUnavailableAlgorithm===failure) return
+        shownUnavailableAlgorithm=failure
+        RuntimeLog.add("算法连续三次取址失败: " + failure.algorithm.name)
+        showSigningModePicker(currentFocus ?: pickerAnchor, "当前算法模式完全不可用 请选择其他算法模式")
+    }
+
+    /** 用户选择算法后，同步主线程上的设置与播放仓库。 */
     private fun applyPlaybackAlgorithm(change: PlaybackAlgorithmChange) {
         main.post {
+            if(isFinishing || isDestroyed) return@post
             SigningSettings.mode = SigningSettings.modeOf(change.to)
             rebuildPlaybackCacheForAlgorithm()
-            if(!isFinishing && !isDestroyed && change.reason != "用户选择") {
-                Toast.makeText(this, "已自动切换到" + SigningSettings.algorithmLabel, Toast.LENGTH_SHORT).show()
-                RuntimeLog.add("算法自动切换 " + (change.from?.name ?: "未知") + " -> " + change.to.name + ": " + change.reason)
-                if(screen=="settings") phoneRefreshSettingsValues()
-            }
+            if(screen=="settings") phoneRefreshSettingsValues()
         }
     }
 
@@ -7965,6 +7977,7 @@ class MainActivity: Activity() {
         maybePromptCrash()
         // 后台期间到达的更新结果（发布即弹时不在前台被跳过），回前台时页面已就绪，补弹。
         main.post { drainPendingUpdate() }
+        main.post { showUnavailablePlaybackAlgorithm() }
         // 升级弹框跳「允许安装未知应用」设置页后返回：已授权则直接续装，
         // 并把弹框从「正在安装…」恢复成「升级」（用户取消安装时可再点，APK 已落盘复用）。
         main.post {
@@ -8075,6 +8088,7 @@ class MainActivity: Activity() {
         }
         stopTvHomePlayback()
         playbackAlgorithms.removeListener(playbackAlgorithmListener)
+        playbackAlgorithms.removeUnavailableListener(playbackAlgorithmUnavailableListener)
         generation++; cancelWork(); cancelDetailExtras()
         exitDialog?.dismiss(); exitDialog=null
         phoneExitArtwork?.close(); phoneExitArtwork=null

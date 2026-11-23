@@ -255,6 +255,47 @@ class ContentRepositoryTest {
             "/novel/player/multi_video_model/v1/","/novel/player/multi_video_model/v1/",preloadPath),postRoutes)
     }
 
+    @Test fun v5EmptyHostFallsBackToNextHealthyHostBeforeIdentityRotation() {
+        val hosts = mutableListOf<String>()
+        val repo = repository { request ->
+            when {
+                request.url.encodedPath == MobilePlayback.MODEL_PATH -> {
+                    hosts += request.url.host
+                    if (request.url.host == PlayRetryPlan.host(0)) ""
+                    else """{"code":0,"data":{"1004":{"123":{"video_model":{"video_list":[{"main_url":"https://example.com/v5.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
+                }
+                else -> ""
+            }
+        }
+        assertEquals("https://example.com/v5.mp4", repo.stream("123").url)
+        assertTrue(hosts.contains(PlayRetryPlan.host(0)))
+        assertTrue(hosts.drop(1).any { it in PlayRetryPlan.hosts })
+    }
+
+    @Test fun exhaustedV5HostsRotateOnlyAfterTwoRoundsAndOnlyOncePerAttempt() {
+        var rotations = 0
+        val signer = object : FakeSigner() {
+            override fun renew(): SignerProfile {
+                rotations++
+                throw IOException("device register unavailable")
+            }
+        }
+        val repo = ContentRepository(
+            OkHttpClient.Builder().addInterceptor { chain ->
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                    .code(200).message("OK").body("".toResponseBody()).build()
+            }.build(),
+            System::currentTimeMillis,
+            signer,
+        )
+        assertThrows(IOException::class.java) { repo.stream("123") }
+        // 第一轮只记空轮次，不替换仍在被其他接口复用的匿名身份。
+        assertEquals(0, rotations)
+        assertThrows(IOException::class.java) { repo.stream("124") }
+        // 第二轮达到阈值才轮换；注册失败后冷却，后续重试不能无限注册。
+        assertEquals(1, rotations)
+    }
+
     private fun repository(clock: () -> Long = System::currentTimeMillis, respond: (Request) -> String) = ContentRepository(
         OkHttpClient.Builder().addInterceptor { chain ->
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)

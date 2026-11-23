@@ -7,7 +7,7 @@ package com.hongguotv.core
  * 真实签名算法与设备注册在 [LocalSignerTest] 里用官方测试向量单独校验；
  * 其他单测只关心「参数怎么拼、URL 怎么发」，用这个替身即可。
  */
-class FakeSigner(
+open class FakeSigner(
     private val identity: Map<String, String> =
         linkedMapOf("device_id" to "1905892595378490", "iid" to "1905892595382586"),
     private val agent: String = "com.phoenix.read/73932 (Linux; U; Android 14; zh_CN; 23127PN0CC)",
@@ -19,6 +19,8 @@ class FakeSigner(
     override fun profile(): SignerProfile = SignerProfile(identity + ("version_name" to "7.3.9.32"), agent, mapOf("ttreq" to "fixture-guest"))
 
     override fun recover() = Unit
+
+    override fun renew(): SignerProfile = profile()
 
     override fun sign(url: String, values: Map<String, String>, body: ByteArray?): SignedRequest {
         val merged = linkedMapOf<String, String>()

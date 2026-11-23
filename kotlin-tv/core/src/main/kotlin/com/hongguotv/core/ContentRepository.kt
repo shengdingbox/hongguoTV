@@ -94,16 +94,18 @@ open class ContentRepository(
     private val modelCache: PlaybackModelCache = PlaybackModelCache(),
     /** 播放算法热切换策略；为空时只使用传入的 [signer]，兼容纯内容请求和旧测试。 */
     private val playbackAlgorithms: PlaybackAlgorithmPolicy? = null,
+    /** 播放恢复状态；预取与正式播放的子仓库必须共享同一份，避免各自重复撞域名。 */
+    private val playbackRecovery: PlaybackRecovery = PlaybackRecovery(),
 ) {
     /** 自动切换后的当前签名器；普通内容接口与播放取址共用。 */
     val activeSigner: RemoteSigner get() = playbackAlgorithms?.signer ?: signer
     /** 同一份取址缓存、另一套传输：预取需要更短的超时，但必须和正式播放看到同一个缓存。 */
-    fun childTransport(http: OkHttpClient) = ContentRepository(http, clock, signer, modelCache, playbackAlgorithms)
+    fun childTransport(http: OkHttpClient) = ContentRepository(http, clock, signer, modelCache, playbackAlgorithms, playbackRecovery)
     /** 设置页在当前 Activity 内显式切换，不必等待 Activity 重建。 */
     fun selectPlaybackAlgorithm(algorithm: PlaybackAlgorithm) { playbackAlgorithms?.select(algorithm) }
     /** 播放缓存重建时替换 repository；新缓存会自动绑定最新算法。 */
     fun rebind(signer: RemoteSigner, algorithms: PlaybackAlgorithmPolicy?): ContentRepository =
-        ContentRepository(http, clock, signer, modelCache, algorithms)
+        ContentRepository(http, clock, signer, modelCache, algorithms, playbackRecovery)
     /** 当前播放算法；纯内容请求为空。 */
     val playbackAlgorithm: PlaybackAlgorithm? get() = playbackAlgorithms?.algorithm
     private val site = "https://hongguoduanju.com"
@@ -1320,6 +1322,40 @@ open class ContentRepository(
         }
         return null
     }
+    /** V5 GET video_tab 回退（对齐参考项目 0.16.13 的修复）：本机 V5 POST 空体后的第一条回退。
+     *  与 [videoTabModel] 的老签名口径不同，这里用本机 V5 三头签 MD5(空字节)；
+     *  失败一律返回 null，由调用方继续后续兼容路由。 */
+    private fun videoTabModelV5(id: String): JSONObject? {
+        // 参考项目只打族内首选域一次：该路由按签名口径放行，与域名轮换无关。
+        val host = "api5-normal-sinfonlineb.fqnovel.com"
+        val request = try {
+            MobilePlayback.videoTabRequest(id, activeSigner.profile(), clock(), host)
+        } catch (_: Exception) {
+            return null
+        }
+        val body = try {
+            RequestScope.execute(playbackTransport().newCall(request)) { response ->
+                if (!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
+                response.body?.string().orEmpty()
+            }
+        } catch (problem: java.io.InterruptedIOException) {
+            throw problem
+        } catch (_: IOException) {
+            return null
+        } catch (_: RuntimeException) {
+            return null
+        }
+        if (body.isBlank()) return null
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return null
+        if (root.optInt("code", root.optInt("Code", -1)) != 0) return null
+        val data = root.optJSONObject("data") ?: return null
+        val rows = data.optJSONObject("video_model_data") ?: data
+        val row = rows.optJSONObject(id)
+            ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
+            ?: return null
+        val model = modelOf(row.opt("video_model")) ?: return null
+        return model.put(ROUTE_KEY, "v5get|$host")
+    }
     /** 播放取址入口：缓存命中不算一次取址；真实失败交给算法策略计数和自动切换。
      *  [ahead] 是顺带预取的相邻集：V5 批量请求一次带回，切集时零请求命中模型缓存。 */
     private fun addressModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false, playback: Boolean = false, ahead: List<String> = emptyList()): JSONObject {
@@ -1424,7 +1460,13 @@ open class ContentRepository(
         // 远程签名服务（frida / unidbg）不适用，直接跳过这一路由。
         val mobile = if (activeSigner.usesLocalPlaybackAlgorithm) mobilePlaybackModel(id, group, ahead) else Sweep(null, null, false, null)
         mobile.model?.let { return it }
-        val primaryPayload = """{"video_id":"$id","biz_param":{"video_id_type":$idType,"need_all_video_definition":true,"video_platform":3}}""".toByteArray(Charsets.UTF_8)
+        // V5 GET video_tab 回退（对齐参考项目 0.16.13）：POST 空体后先用 V5 签名 GET 取模型，
+        // 服务端当前对该签名口径放行。同为本地算法专属口径，远程签名模式跳过；
+        // 合集分集在该路由固定回 ILLEGAL_ACCESS，跳过。
+        if (activeSigner.usesLocalPlaybackAlgorithm && !albumEpisode) {
+            videoTabModelV5(id)?.let { return it }
+        }
+        val primaryPayload ="""{"video_id":"$id","biz_param":{"video_id_type":$idType,"need_all_video_definition":true,"video_platform":3}}""".toByteArray(Charsets.UTF_8)
         val primary = try {
             sweepRoutes(listOf(PLAYER_PATH to primaryPayload))
         } catch (problem: java.io.InterruptedIOException) {
@@ -1455,43 +1497,109 @@ open class ContentRepository(
         }
         val first = sweepRoutes(ordered)
         first.model?.let { model -> goodRoute = first.path; return model }
-        // V5 与所有兼容路由都返回空体时，才有限次更换匿名身份。
+        // V5 身份轮换已由 mobilePlaybackModel() 按域名耗尽状态与冷却处理；
+        // 这里只在兼容路由仍全部为空时，再扫一轮旧的 POST 兼容路由。
         val allBlank = mobile.allBlank && primary.allBlank && first.allBlank && singleTab.blank && multiTab == null
-        // 空体基本都发生在「当前匿名身份已经被站方用尽」之后：只在这种情况下换一台匿名设备再扫一轮。
-        // 非空体（有明确错误码）重扫没有意义，直接快速失败，避免界面上长时间停在「正在获取播放地址」。
         if (!allBlank) throw mobile.failure ?: first.failure ?: primary.failure ?: IOException("播放信息为空")
-        activeSigner.recover()
-        val healedMobile = if (activeSigner.usesLocalPlaybackAlgorithm) mobilePlaybackModel(id, group, ahead) else Sweep(null, null, false, null)
-        healedMobile.model?.let { return it }
         val healed = sweepRoutes(listOf(PLAYER_PATH to primaryPayload) + ordered)
         healed.model?.let { model -> goodRoute = healed.path; return model }
-        if (healedMobile.allBlank && healed.allBlank) throw EmptyPlaybackResponseException()
-        throw healedMobile.failure ?: healed.failure ?: IOException("播放信息为空")
+        if (healed.allBlank) throw EmptyPlaybackResponseException()
+        throw healed.failure ?: mobile.failure ?: IOException("播放信息为空")
     }
-    /** V5 单集请求；先重读空响应，再交给旧路由及整轮身份恢复。
+    /** V5 单集请求；先按域名健康度轮换，只有全部域名都空时才轮换匿名身份并重扫一次。
      *  [ahead] 里的相邻集随同一次 POST 顺带取回并写入模型缓存，切集时不再取址。 */
     private fun mobilePlaybackModel(id: String, group: String = MobilePlayback.GROUP_SHORT, ahead: List<String> = emptyList()): Sweep {
-        for(attempt in 0 until BLANK_RETRIES) {
-            if(Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
+        val wanted = (listOf(id) + ahead)
+            .filter { it.matches(Regex("[0-9]{1,30}")) }
+            .distinct()
+            .take(3)
+        // 与参考项目一致：开始取址前，若上一轮已耗尽全部 V5 域名且连续空响应达到阈值，
+        // 先替换匿名身份，再用新身份重新规划域名；不把恢复动作全部堆到失败返回之后。
+        var identityRefreshedBeforeScan = false
+        if (playbackRecovery.emptyRoundsAtLeast(IDENTITY_ROTATE_ROUNDS) &&
+            playbackRecovery.lastEmptyRound() && playbackRecovery.routes.exhausted(clock()) &&
+            rotatePlaybackIdentity()
+        ) {
+            identityRefreshedBeforeScan = true
+            playbackRecovery.resetEmptyRounds()
+            playbackRecovery.resetRotationCooldown()
+        }
+        val first = sweepMobilePlayback(wanted, group)
+        if (first.model != null) return first
+        // 单集/旧 POST 路由仍然在调用方按原顺序回退；这里只处理 V5 域名层的恢复，
+        // 不能因为 V5 失败就阻断 video_tab 等兼容路径。
+        if (!first.allBlank) return first
+        if (!first.attempted) {
+            playbackRecovery.markNonEmptyRound()
+            return first
+        }
+        playbackRecovery.markEmptyRound()
+        if (identityRefreshedBeforeScan) return first
+        return first
+    }
+
+    /** 按域名健康度扫描 V5 模型；失败只更新路由状态，不直接更换匿名身份。 */
+    private fun sweepMobilePlayback(wanted: List<String>, group: String): Sweep {
+        var allBlank = true
+        var sawResponse = false
+        var lastFailure: IOException? = null
+        var tried = 0
+        val now = clock()
+        // 所有域名都在冷却时不要假装“刚刚又空了一轮”，直接交给调用方走兼容路由；
+        // 兼容路由也失败后，上层再按冷却窗口恢复。
+        if (playbackRecovery.routes.exhausted(now) &&
+            !playbackRecovery.emptyRoundsAtLeast(IDENTITY_ROTATE_ROUNDS)
+        ) {
+            return Sweep(null, null, true, EmptyPlaybackResponseException(), false, false)
+        }
+        val pending = java.util.ArrayDeque(playbackRecovery.routes.plan(clock(), speculative = false))
+        while (tried < MAX_PLAYBACK_ROUTES && pending.isNotEmpty()) {
+            if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
+            val route = pending.removeFirst()
+            tried++
             try {
-                val profile=activeSigner.profile()
-                val wanted=(listOf(id)+ahead).filter { it.matches(Regex("[0-9]{1,30}")) }.distinct().take(3)
-                val results=MobilePlayback.models(wanted,profile,http,clock(),group)
-                // 顺带集先进缓存；当前集由上层 addressModel 统一入缓（带 LEVEL_KEY）。
-                for((episodeId,model) in results) {
-                    if(episodeId!=id) modelCache.put(episodeId,model.put(LEVEL_KEY,1).put(ROUTE_KEY,MobilePlayback.MODEL_PATH),clock())
+                val results = MobilePlayback.models(
+                    wanted, activeSigner.profile(), http, clock(), group, route.host,
+                )
+                playbackRecovery.routes.success(route, clock())
+                playbackRecovery.resetEmptyRounds()
+                val routeTag = "v5|${PlayRetryPlan.tag(route.host)}"
+                // 顺带集先进缓存；当前集由上层 addressModel 统一入缓存（带 LEVEL_KEY）。
+                for ((episodeId, model) in results) {
+                    if (episodeId != wanted.first()) {
+                        modelCache.put(episodeId, model.put(LEVEL_KEY, 1).put(ROUTE_KEY, routeTag), clock())
+                    }
                 }
-                val model=results.getValue(id).put(ROUTE_KEY,MobilePlayback.MODEL_PATH)
-                return Sweep(model,MobilePlayback.MODEL_PATH,false,null)
-            } catch(problem: java.io.InterruptedIOException) {
+                return Sweep(
+                    results.getValue(wanted.first()).put(ROUTE_KEY, routeTag),
+                    MobilePlayback.MODEL_PATH,
+                    allBlank = false,
+                    failure = null,
+                    sawResponse = true,
+                    attempted = true,
+                )
+            } catch (problem: java.io.InterruptedIOException) {
                 throw problem
-            } catch(_: EmptyPlaybackResponseException) {
-                if(attempt+1<BLANK_RETRIES) Thread.sleep(BLANK_BACKOFF_MS)
-            } catch(problem: IOException) {
-                return Sweep(null,null,false,problem)
+            } catch (problem: EmptyPlaybackResponseException) {
+                playbackRecovery.routes.failed(route, clock(), empty = true)
+                lastFailure = problem
+            } catch (problem: IOException) {
+                // 有响应但模型无效属于明确失败；只有真正的空体才累计“全部域名空”。
+                sawResponse = true
+                allBlank = false
+                lastFailure = problem
+                playbackRecovery.routes.failed(route, clock(), empty = false)
             }
         }
-        return Sweep(null,null,true,null)
+        return Sweep(null, null, allBlank, lastFailure, sawResponse, tried > 0)
+    }
+
+    /** 匿名身份轮换只在前台取址且路由全部为空时触发，并限制失败/成功后的冷却。 */
+    private fun rotatePlaybackIdentity(): Boolean {
+        if (!playbackRecovery.allowsRotation(clock())) return false
+        val succeeded = runCatching { activeSigner.renew() }.isSuccess
+        playbackRecovery.recordRotation(succeeded)
+        return succeeded
     }
     /** 一轮路由扫描：首条路由原地重发一次，其余路由各发一次，尽量少的请求量覆盖所有候选。
      *  返回后 [Sweep.allBlank] 才是 true 才代表「所有路由都空体」；有非空错误码时会立即返回，不再空转。 */
@@ -1524,7 +1632,14 @@ open class ContentRepository(
         }
         return Sweep(null,null,allBlank,null)
     }
-    private data class Sweep(val model: JSONObject?, val path: String?, val allBlank: Boolean, val failure: IOException?)
+    private data class Sweep(
+        val model: JSONObject?,
+        val path: String?,
+        val allBlank: Boolean,
+        val failure: IOException?,
+        val sawResponse: Boolean = false,
+        val attempted: Boolean = false,
+    )
     /** 新路由的播放模型在 `data.video_model`，旧路由在 `data[<vid>].video_model`；两种都可能被序列化成字符串。 */
     private fun videoModelOf(data: JSONObject): JSONObject? {
         val root=data.optJSONObject("data") ?: return null
@@ -1549,6 +1664,10 @@ open class ContentRepository(
         // （2026-10-13 用站点自带的漫剧热播榜与短剧分类列表逐条核对确认）。
         // 首条路由的空响应重发次数与退避：网关抖动时先原地重试，再换下一条路由。
         private const val BLANK_RETRIES=2
+        /** 一次前台 V5 取址最多尝试的同族域名数。 */
+        private const val MAX_PLAYBACK_ROUTES=4
+        /** 连续整轮空响应达到此值才替换匿名身份；避免一次网关抖动就丢身份。 */
+        private const val IDENTITY_ROTATE_ROUNDS=2
         /** 空体原地重试不再等待：参考项目同场景零等待快扫，400ms 退避会在失败链上累计出约 2 秒纯等待。 */
         private const val BLANK_BACKOFF_MS=0L
         // 预热上限：单集接口一次一集，取 8 集足够覆盖相邻窗口，又不会把请求量放大。

@@ -118,7 +118,7 @@ open class RemoteSigner(
 
     /** [recover] 的显式版本：注册失败会抛出，便于调用方决定是否继续。 */
     @Synchronized
-    fun renew(): SignerProfile {
+    open fun renew(): SignerProfile {
         profileCache = null
         store.clear()
         return register()

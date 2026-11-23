@@ -34,7 +34,14 @@ internal object MobilePlayback {
      *  mixed_video_id_map 原生支持多 ID，一次 POST 的响应里每集各有一份模型，
      *  调用方把顺带集写入模型缓存后，切集即可零请求命中。返回映射至少包含首项；
      *  顺带集缺失或结构不合格时直接略过，不影响当前集。 */
-    fun models(wanted: List<String>, profile: SignerProfile, http: OkHttpClient, now: Long, group: String = GROUP_SHORT): Map<String, JSONObject> {
+    fun models(
+        wanted: List<String>,
+        profile: SignerProfile,
+        http: OkHttpClient,
+        now: Long,
+        group: String = GROUP_SHORT,
+        host: String = MODEL_BASE.removePrefix("https://"),
+    ): Map<String, JSONObject> {
         // 首项是当前集；上限 3 集与参考实现的顺带窗口一致，防止调用方传入整窗拖大请求体。
         val ids = wanted.filter { it.matches(Regex("[0-9]{1,30}")) }.distinct().take(3)
         require(ids.isNotEmpty()) { "没有可请求的剧集 ID" }
@@ -56,7 +63,8 @@ internal object MobilePlayback {
         val output = ByteArrayOutputStream()
         GZIPOutputStream(output).use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
         val body = output.toByteArray()
-        val signed = PlaybackV5Signer.shared.sign("$MODEL_BASE$MODEL_PATH", query, body, now)
+        // 参考项目会按会话健康度在同族播放域名之间轮换；签名覆盖最终请求地址，不能先签名再改 host。
+        val signed = PlaybackV5Signer.shared.sign("https://$host$MODEL_PATH", query, body, now)
         val request = Request.Builder().url(signed.url)
             .header("User-Agent", PLAYBACK_UA)
             .header("Accept", "application/json")
@@ -77,7 +85,7 @@ internal object MobilePlayback {
             }
         }.build()
         return RequestScope.execute(transport.newCall(request)) { response ->
-            if (!response.isSuccessful) throw IOException("播放接口请求失败（HTTP ${response.code}）")
+            if (!response.isSuccessful) throw ContentHttpException(response.code)
             val responseBody = response.body ?: throw IOException("播放信息格式异常")
             val limit = 2 * 1024 * 1024L
             if (responseBody.contentLength() > limit) throw IOException("播放信息过大")
@@ -106,6 +114,55 @@ internal object MobilePlayback {
                 throw IOException("播放信息格式异常", problem)
             }
         }
+    }
+
+    /** V5 GET 取址的固定 UA（对齐参考项目实测口径；查询串身份仍是 PGT-AN10，两者不必一致）。 */
+    private const val VIDEO_TAB_UA =
+        "com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; " +
+            "Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
+
+    /** V5 GET video_tab 取址请求（对齐参考项目 0.16.13 的 videoTabRequest）：
+     *  本机 V5 POST 空体后的回退路由。签名输入是 MD5(空字节)——空字节只进签名，
+     *  GET 本身无 body；x-ss-stub / Content-Type / Content-Encoding 必须移除，
+     *  否则服务端会按 POST 形态校验并直接拒绝。只构造请求，网络发送由调用方负责。 */
+    fun videoTabRequest(
+        id: String,
+        profile: SignerProfile,
+        now: Long,
+        host: String = "api5-normal-sinfonlineb.fqnovel.com",
+    ): Request {
+        require(id.matches(Regex("[0-9]{1,30}")))
+        if (!profile.available || profile.params["cdid"].isNullOrBlank()) {
+            throw SignatureException("本机匿名设备尚未就绪")
+        }
+        // 键序与签名对字节级敏感：身份键 + 业务键在前，_rticket 由签名器追加在末尾。
+        val values = linkedMapOf(
+            "aid" to "8662", "app_name" to "novelread",
+            "version_code" to "74332", "version_name" to "7.4.3.32",
+            "channel" to "vivo_8662_64", "device_platform" to "android",
+            "device_type" to "PGT-AN10", "os_version" to "12", "update_version_code" to "74332",
+            "iid" to profile.installId, "cdid" to profile.params.getValue("cdid"),
+            "device_id" to profile.deviceId,
+            "video_id" to id, "video_id_type" to "0", "device_level" to "1",
+            "need_all_video_definition" to "1", "need_mp4_align" to "0",
+            "use_os_player" to "0", "video_platform" to "1024", "source" to "0",
+            "from_video_id" to "",
+        )
+        val signed = PlaybackV5Signer.shared.sign(
+            "https://$host/reading/bookapi/video_tab/multi_video_model/v1/", values, ByteArray(0), now,
+        )
+        return Request.Builder().url(signed.url).get()
+            .header("User-Agent", VIDEO_TAB_UA)
+            .header("Accept", "application/json; charset=utf-8")
+            .header("Accept-Language", "zh-CN,zh;q=0.9")
+            .apply {
+                signed.headers.forEach { (key, value) -> header(key, value) }
+                // 空字节只是签名输入：GET 没有 body，也不带 POST 的完整性校验头。
+                removeHeader("x-ss-stub")
+                removeHeader("Content-Type")
+                removeHeader("Content-Encoding")
+            }
+            .build()
     }
 
     /** 解析单集条目：模型提取、可用性检查与过期时间补齐。

@@ -41,7 +41,7 @@ class ContentRepositoryTest {
     @Test fun incompatibleSourceDiagnosticCarriesRouteAndEveryVideoListEntry() {
         // 模拟站方降级模型：全部条目 main_url 都是加密 blob（非 http 开头），应逐条出现在诊断里且带路由。
         // 模拟优先播放 POST 返回带 fallback_api 的兼容模型。
-        val repo=repository { request ->
+        val repo=repository(signer = LegacyFakeSigner()) { request ->
             if(request.url.host=="example.com") {
                 val rows=JSONObject()
                     .put("video_1",JSONObject().put("vheight",1080).put("codec_type","bytevc2").put("main_url","qAABAGXlCAY==").put("backup_url_1","qAABAFoQKf1K=="))
@@ -118,7 +118,7 @@ class ContentRepositoryTest {
 
     @Test fun playerPostIsPreferredAndReturnsDirectStreamWithoutFallbackRequest() {
         val requests=mutableListOf<Request>()
-        val repo=repository { request ->
+        val repo=repository(signer = LegacyFakeSigner()) { request ->
             requests += request
             assertEquals(playerPath,request.url.encodedPath)
             assertEquals("api5-normal-sinfonlinea.fqnovel.com",request.url.host)
@@ -142,7 +142,7 @@ class ContentRepositoryTest {
 
     @Test fun legacySingleEpisodeRouteIsPreferredOverMultiWhenPlayerIsBlank() {
         val paths=mutableListOf<String>()
-        val repo=repository { request ->
+        val repo=repository(signer = LegacyFakeSigner()) { request ->
             paths += request.url.encodedPath
             when {
                 request.url.host=="example.com" -> videoInfo()
@@ -161,7 +161,7 @@ class ContentRepositoryTest {
 
     @Test fun multiRouteStillWorksWhenSingleRouteIsBlank() {
         val paths=mutableListOf<String>()
-        val repo=repository { request ->
+        val repo=repository(signer = LegacyFakeSigner()) { request ->
             paths += request.url.encodedPath
             when {
                 request.url.host=="example.com" -> videoInfo()
@@ -180,7 +180,7 @@ class ContentRepositoryTest {
         // 非空体表示站方明确拒绝（有错误码），换设备重扫没有意义：
         // 优先 POST 拒绝后仍允许兼容回退；首条旧 POST 也明确拒绝时立即失败，不再换设备重扫。
         val postRoutes=mutableListOf<String>()
-        val repo=repository { request ->
+        val repo=repository(signer = LegacyFakeSigner()) { request ->
             when {
                 request.url.host=="example.com" -> videoInfo()
                 request.url.encodedPath.startsWith("/novel/player/") -> {
@@ -196,7 +196,7 @@ class ContentRepositoryTest {
 
     @Test fun videoTabRouteSuppliesPlaybackModel() {
         val paths=mutableListOf<String>()
-        val repo=repository { request ->
+        val repo=repository(signer = LegacyFakeSigner()) { request ->
             paths += request.url.encodedPath
             when {
                 request.url.host=="example.com" -> videoInfo()
@@ -222,7 +222,7 @@ class ContentRepositoryTest {
 
     @Test fun warmAndPlaybackSharePlayerPostModelsWithoutRefetching() {
         val modelRequests=mutableListOf<String>()
-        val repo=repository { request ->
+        val repo=repository(signer = LegacyFakeSigner()) { request ->
             assertEquals(playerPath,request.url.encodedPath)
             assertEquals("POST",request.method)
             val payload=okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8()
@@ -241,7 +241,7 @@ class ContentRepositoryTest {
     @Test fun blankRoutesFallBackToNextLegacyPostRoute() {
         val postRoutes=mutableListOf<String>()
         val preloadPath="/novel/player/multi_video_model/preload/v1/"
-        val repo=repository { request ->
+        val repo=repository(signer = LegacyFakeSigner()) { request ->
             if(request.method=="POST") postRoutes += request.url.encodedPath
             when {
                 request.url.host=="example.com" -> videoInfo()
@@ -292,17 +292,23 @@ class ContentRepositoryTest {
         // 第一轮只记空轮次，不替换仍在被其他接口复用的匿名身份。
         assertEquals(0, rotations)
         assertThrows(IOException::class.java) { repo.stream("124") }
-        // 第二轮达到阈值才轮换；注册失败后冷却，后续重试不能无限注册。
+        // 第二轮把空轮计数推到阈值，本轮仍未轮换。
+        assertEquals(0, rotations)
+        assertThrows(IOException::class.java) { repo.stream("125") }
+        // 第三轮取址开头才轮换；注册失败后冷却，后续重试不能无限注册。
+        assertEquals(1, rotations)
+        assertThrows(IOException::class.java) { repo.stream("126") }
         assertEquals(1, rotations)
     }
 
-    private fun repository(clock: () -> Long = System::currentTimeMillis, respond: (Request) -> String) = ContentRepository(
+    private fun repository(clock: () -> Long = System::currentTimeMillis, signer: FakeSigner = FakeSigner(), respond: (Request) -> String) = ContentRepository(
         OkHttpClient.Builder().addInterceptor { chain ->
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
                 .code(200).message("OK").body(respond(chain.request()).toResponseBody()).build()
         }.build(),clock,
-        // 签名服务用进程内替身，测试不连局域网服务，身份保持固定。
-        FakeSigner()
+        // 签名服务用进程内替身，测试不连局域网服务，身份保持固定；
+        // 验证老链路编排时传入 LegacyFakeSigner 关闭本机 V5 播放路由。
+        signer
     )
 
     @Test fun comicSearchCarriesCursorAndKeepsTypesAndQueriesSeparate() {

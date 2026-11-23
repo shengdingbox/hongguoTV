@@ -1370,11 +1370,15 @@ open class ContentRepository(
         try {
             val model = fetchVideoModel(id,level,preferAlt,albumEpisode,ahead)
             policy?.addressSucceeded(attempt)
+            // 真实取址成功：连续空轮清零，匿名身份不需要恢复。
+            playbackRecovery.markNonEmptyRound()
             modelCache.put(id,model.put(LEVEL_KEY,level),clock())
             probe
             return model
         } catch (problem: IOException) {
             probe?.cancel(false)
+            // 整次取址以空体收场才累计「连续空轮」；网络异常不算（域名健康度另行记录）。
+            if (problem is EmptyPlaybackResponseException) playbackRecovery.markEmptyRound()
             // 空体/错误码是签名口径失效的确定性信号，换算法才有意义；
             // 连接失败/超时换算法无济于事（取址请求始终由本机发出），不触发切换。
             val algorithmic = problem is ServiceException || problem is EmptyPlaybackResponseException
@@ -1383,6 +1387,7 @@ open class ContentRepository(
                 val retry = policy.beginAddress()
                 val model = fetchVideoModel(id,level,preferAlt,albumEpisode,ahead)
                 policy.addressSucceeded(retry)
+                playbackRecovery.markNonEmptyRound()
                 modelCache.put(id,model.put(LEVEL_KEY,level),clock())
                 return model
             }
@@ -1399,6 +1404,7 @@ open class ContentRepository(
                         null
                     }
                     if (rescued!=null) {
+                        playbackRecovery.markNonEmptyRound()
                         modelCache.put(id,rescued.put(LEVEL_KEY,level),clock())
                         return rescued
                     }
@@ -1515,27 +1521,17 @@ open class ContentRepository(
             .take(3)
         // 与参考项目一致：开始取址前，若上一轮已耗尽全部 V5 域名且连续空响应达到阈值，
         // 先替换匿名身份，再用新身份重新规划域名；不把恢复动作全部堆到失败返回之后。
-        var identityRefreshedBeforeScan = false
         if (playbackRecovery.emptyRoundsAtLeast(IDENTITY_ROTATE_ROUNDS) &&
             playbackRecovery.lastEmptyRound() && playbackRecovery.routes.exhausted(clock()) &&
             rotatePlaybackIdentity()
         ) {
-            identityRefreshedBeforeScan = true
             playbackRecovery.resetEmptyRounds()
             playbackRecovery.resetRotationCooldown()
         }
-        val first = sweepMobilePlayback(wanted, group)
-        if (first.model != null) return first
-        // 单集/旧 POST 路由仍然在调用方按原顺序回退；这里只处理 V5 域名层的恢复，
-        // 不能因为 V5 失败就阻断 video_tab 等兼容路径。
-        if (!first.allBlank) return first
-        if (!first.attempted) {
-            playbackRecovery.markNonEmptyRound()
-            return first
-        }
-        playbackRecovery.markEmptyRound()
-        if (identityRefreshedBeforeScan) return first
-        return first
+        // 空轮计数由 addressModel 按整次取址的最终结果统一维护：V5 域名全冷却时
+        // 本轮没有真正尝试 V5，这里既不累加也不清零，避免冷却窗口内的取址把
+        // 「连续空轮」计数意外清掉，导致身份轮换阈值永远达不到。
+        return sweepMobilePlayback(wanted, group)
     }
 
     /** 按域名健康度扫描 V5 模型；失败只更新路由状态，不直接更换匿名身份。 */

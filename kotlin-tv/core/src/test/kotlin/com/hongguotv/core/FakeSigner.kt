@@ -48,3 +48,9 @@ open class FakeSigner(
         )
     }
 }
+
+/** 老链路专用替身：关闭本机 V5 播放路由（POST 与 GET video_tab），
+ *  供旧 POST/GET 兜底编排的测试使用；V5 链路行为由专门的测试覆盖。 */
+class LegacyFakeSigner : FakeSigner() {
+    override val usesLocalPlaybackAlgorithm get() = false
+}

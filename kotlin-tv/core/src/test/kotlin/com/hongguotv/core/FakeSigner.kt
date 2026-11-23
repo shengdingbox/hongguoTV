@@ -9,7 +9,12 @@ package com.hongguotv.core
  */
 open class FakeSigner(
     private val identity: Map<String, String> =
-        linkedMapOf("device_id" to "1905892595378490", "iid" to "1905892595382586"),
+        linkedMapOf(
+            "device_id" to "1905892595378490",
+            "iid" to "1905892595382586",
+            // V5 取址（POST 与 GET video_tab）都要求档案里有 cdid，缺失会抛 SignatureException。
+            "cdid" to "530e9d5a2b7c4f18a9603d1ce74b82f6",
+        ),
     private val agent: String = "com.phoenix.read/73932 (Linux; U; Android 14; zh_CN; 23127PN0CC)",
 ) : RemoteSigner() {
 

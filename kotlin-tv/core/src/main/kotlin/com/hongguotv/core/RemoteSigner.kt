@@ -93,21 +93,8 @@ open class RemoteSigner(
     /** 当前设备档案；首次访问时从 [store] 读取，缺失则注册一台新设备。 */
     @Volatile private var profileCache: SignerProfile? = null
 
-    /** 本机安装标识；每次主动更换匿名设备时都必须整套更换，不能复用旧 cdid。 */
-    @Volatile private var cdid = UUID.randomUUID().toString()
-    @Volatile private var openudid = UUID.randomUUID().toString().replace("-", "").take(16)
-    @Volatile private var clientudid = UUID.randomUUID().toString()
-    @Volatile private var oaid = UUID.randomUUID().toString()
-    @Volatile private var reqId = UUID.randomUUID().toString()
-
-    /** 新建一套安装标识，避免平台把多次注册识别为同一安装。 */
-    private fun newInstallIdentity() {
-        cdid = UUID.randomUUID().toString()
-        openudid = UUID.randomUUID().toString().replace("-", "").take(16)
-        clientudid = UUID.randomUUID().toString()
-        oaid = UUID.randomUUID().toString()
-        reqId = UUID.randomUUID().toString()
-    }
+    /** 本机生成的安装标识；注册时上报，平台不校验其与真实安装一致。 */
+    private val cdid = UUID.randomUUID().toString()
 
     @Synchronized
     open fun profile(): SignerProfile {
@@ -277,16 +264,8 @@ open class RemoteSigner(
     @Synchronized
     private fun register(): SignerProfile {
         if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
-        newInstallIdentity()
-        val install = mapOf(
-            "cdid" to cdid,
-            "openudid" to openudid,
-            "clientudid" to clientudid,
-            "oaid" to oaid,
-            "req_id" to reqId,
-        )
-        val device = VendorConstants.device + install
-        val body = DeviceRegister.payload(device, clock())
+        val device = VendorConstants.device + mapOf("openudid" to UUID.randomUUID().toString().replace("-", "").take(16))
+        val body = DeviceRegister.payload(device + mapOf("cdid" to cdid), clock())
         val request = Request.Builder().url(REGISTER_URL).apply {
             DeviceRegister.headers(body, device, clock()).forEach { (key, value) -> header(key, value) }
         }.post(body.toRequestBody("application/octet-stream".toMediaType())).build()

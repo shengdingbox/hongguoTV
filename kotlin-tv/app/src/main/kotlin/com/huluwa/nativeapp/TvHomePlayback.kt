@@ -12,6 +12,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MediaSource
@@ -67,6 +68,8 @@ internal class TvHomePlayback(
     private var pendingStart: Runnable? = null
     private var pendingEpisode: Pair<Int, Long>? = null
     private var currentState: State? = null
+    /** 当前首页试看是否为横屏；未收到新视频尺寸前先按完整画面显示。 */
+    private var landscapeVideo = false
     /** 换剧预取池：prepare 完成的下一部剧（流 + 详情），按右命中即零网络切换。 */
     private class Prepared(val remote: RemoteVideo, val data: Detail, val episodeId: String) {
         var mediaItem: MediaItem? = null
@@ -542,10 +545,11 @@ internal class TvHomePlayback(
         video = remote; firstFrame = false; failed = false; ended = false
         frameFrom = if (preloaded != null) "pool" else "load"
         coverOff = false
+        landscapeVideo = false
         val p = player ?: createPlayer().also { player = it; surface.player = it }
         surface.setKeepContentOnPlayerReset(true)
-        // 首页只做试看预览：固定等比铺满，避免非 16:9 的卡片左右露底；播放器的画面模式偏好不变。
-        surface.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        // 视频尺寸到达前保持完整画面；随后横屏铺满，竖屏与方形保持原始比例。
+        surface.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
         p.setPlaybackSpeed(speed())
         val item = preloaded?.mediaItem ?: MediaItem.Builder().setMediaId(episodeId)
             .setUri("hongguotv://home/$episodeId").setMimeType(MimeTypes.VIDEO_MP4).build()
@@ -620,6 +624,16 @@ internal class TvHomePlayback(
             setHandleAudioBecomingNoisy(true)
             addListener(object : Player.Listener {
                 private fun owns() = !closed && video != null && currentMediaItem?.mediaId == episodeId
+                override fun onVideoSizeChanged(videoSize: VideoSize) {
+                    if (!owns()) return
+                    // 首页横屏试看铺满卡片；竖屏和方形视频保持原始比例完整显示，不裁剪、不拉伸。
+                    landscapeVideo = if (videoSize.unappliedRotationDegrees % 180 == 0)
+                        videoSize.width > videoSize.height
+                    else videoSize.height > videoSize.width
+                    surface.resizeMode =
+                        if (landscapeVideo) AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        else AspectRatioFrameLayout.RESIZE_MODE_FIT
+                }
                 override fun onRenderedFirstFrame() {
                     if (!owns()) return
                     firstFrame = true

@@ -101,24 +101,7 @@ class HomeScreen(
     private val selectorLine=LinearLayout(context).apply { gravity=Gravity.CENTER_VERTICAL }
     private val selectors=HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled=false; addView(selectorLine) }
     private val feedTabs=mutableListOf<TextView>()
-    /** 按可用空间计算卡片矩形；高度受限时同步收窄宽度，始终保持 16:9。 */
-    private fun heroBounds(availableWidth: Int): Triple<Int,Int,Int> {
-        val edge=if(availableWidth<dp(700)) dp(42) else dp(76)
-        val width=(availableWidth-edge*2).coerceAtLeast(1)
-        val heightLimit=resources.displayMetrics.heightPixels*2/3
-        if(width*9/16<=heightLimit) return Triple(edge,width,width*9/16)
-        val limitedWidth=(heightLimit*16/9).coerceAtLeast(1)
-        return Triple((availableWidth-limitedWidth)/2,limitedWidth,heightLimit)
-    }
-    private val carousel=object: FrameLayout(context) {
-        override fun onMeasure(widthMeasureSpec: Int,heightMeasureSpec: Int) {
-            val width=MeasureSpec.getSize(widthMeasureSpec)
-            val (_,_,height)=heroBounds(width)
-            val maxHeight=MeasureSpec.getSize(heightMeasureSpec).takeIf { MeasureSpec.getMode(heightMeasureSpec)!=MeasureSpec.UNSPECIFIED }
-            super.onMeasure(widthMeasureSpec,MeasureSpec.makeMeasureSpec(
-                if(maxHeight!=null) minOf(height+dp(8),maxHeight) else height+dp(8),MeasureSpec.EXACTLY))
-        }
-    }.apply { clipChildren=false; clipToPadding=false }
+    private val carousel=FrameLayout(context).apply { clipChildren=false; clipToPadding=false }
     private val heroBorder=TvCardBorder(context,16)
     private val hero=LinearLayout(context).apply {
         orientation=VERTICAL
@@ -130,7 +113,7 @@ class HomeScreen(
         // 不再自带 panel 背景：卡片外形、描边与圆角裁剪统一交给外层 hero，避免两层圆角错位露缝
     }
     private val backdrop=cover().apply { alpha=.3f }
-    private val poster=cover().apply { scaleType=ImageView.ScaleType.FIT_CENTER; setBackgroundColor(TvStyle.background) }
+    private val poster=cover().apply { scaleType=ImageView.ScaleType.CENTER_CROP; setBackgroundColor(TvStyle.background) }
     private val previousCover=cover()
     private val nextCover=cover()
     private val previousTitle=label("",14f)
@@ -224,10 +207,9 @@ class HomeScreen(
         resume.nextFocusLeftId=manage.id; resume.nextFocusRightId=resume.id
         stage.addView(actionLine,FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM))
         carousel.addView(hero,FrameLayout.LayoutParams(-1,-1).apply {
-            val (edge,_,_)=heroBounds(resources.displayMetrics.widthPixels)
-            leftMargin=edge; rightMargin=edge; topMargin=dp(4); bottomMargin=dp(4)
+            leftMargin=dp(76); rightMargin=dp(76); topMargin=dp(4); bottomMargin=dp(4)
         })
-        addView(carousel,LayoutParams(-1,-2))
+        addView(carousel,LayoutParams(-1,0,1f))
         stage.nextFocusLeftId=stage.id; stage.nextFocusRightId=stage.id
         stage.nextFocusUpId=top.id; stage.nextFocusDownId=play.id
         stage.setOnFocusChangeListener { _,focused ->
@@ -509,7 +491,7 @@ class HomeScreen(
         super.onSizeChanged(w,h,oldw,oldh)
         if(w==oldw && h==oldh) return
         val compact=w<dp(700)
-        val (edge,_,_)=heroBounds(w)
+        val edge=if(compact) dp(42) else dp(76)
         (hero.layoutParams as FrameLayout.LayoutParams).apply { leftMargin=edge; rightMargin=edge }.also { hero.layoutParams=it }
         val sideWidth=if(compact) dp(70) else dp(112)
         listOf(previousCard,nextCard).forEach { it.layoutParams=it.layoutParams.apply { width=sideWidth } }

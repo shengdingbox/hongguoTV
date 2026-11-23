@@ -2305,7 +2305,7 @@ class MainActivity: Activity() {
     private fun startTvHomePlayback(home: HomeScreen) {
         stopTvHomePlayback()
         val playback=TvHomePlayback(this,{ repository },
-            quality={ library.maxQuality },speed={ library.playbackSpeed },frame={ library.frameMode },autoNext={ library.autoNext },
+            quality={ library.maxQuality },speed={ library.playbackSpeed },autoNext={ library.autoNext },
             progress=library::progress,save={ if(library.isLoaded) library.save(it) },
             status={ state -> if(homeScreen===home) home.showPreview(state.seriesId,state.label,state.showCover,state.playing,state.failed) },
             screenOn={ playing -> homePreviewScreenOn=playing && foreground; refreshScreenOn() },

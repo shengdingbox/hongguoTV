@@ -24,7 +24,6 @@ import com.hongguotv.core.Detail
 import com.hongguotv.core.RemoteVideo
 import com.hongguotv.core.RequestScope
 import com.hongguotv.core.Series
-import com.hongguotv.core.VideoFrameMode
 import java.io.Closeable
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -36,7 +35,6 @@ internal class TvHomePlayback(
     private val repository: () -> ContentRepository,
     private val quality: () -> Int,
     private val speed: () -> Float,
-    private val frame: () -> VideoFrameMode,
     private val autoNext: () -> Boolean,
     private val progress: (String) -> WatchProgress?,
     private val save: (WatchProgress) -> Unit,
@@ -546,11 +544,8 @@ internal class TvHomePlayback(
         coverOff = false
         val p = player ?: createPlayer().also { player = it; surface.player = it }
         surface.setKeepContentOnPlayerReset(true)
-        surface.resizeMode = when (frame()) {
-            VideoFrameMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-            VideoFrameMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-            VideoFrameMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-        }
+        // 首页只做试看预览：固定等比铺满，避免非 16:9 的卡片左右露底；播放器的画面模式偏好不变。
+        surface.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
         p.setPlaybackSpeed(speed())
         val item = preloaded?.mediaItem ?: MediaItem.Builder().setMediaId(episodeId)
             .setUri("hongguotv://home/$episodeId").setMimeType(MimeTypes.VIDEO_MP4).build()

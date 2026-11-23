@@ -19,7 +19,9 @@ import org.json.JSONObject
  *
  * 与 [FridaSigner] 的区别在服务和协议，不在设备身份：
  * - 设备档案仍由本机 [RemoteSigner] 注册并持久化，[sign] 会先补全身份字段再送去签名；
- * - 签名服务只负责把完整的 URL（含查询串）与请求体字节换成六个签名头。
+ * - 签名服务负责把完整的 URL（含查询串）与请求体字节换成六个签名头；
+ * - 播放 GET 交给远程签名服务；带请求体的播放 POST 使用本机专用 V5 口径，
+ *   避免把通用六头混入播放接口。
  *
  * 服务接口见 openhongguo-signer：`POST /feature-hash`
  * 请求 `{"url": "...", "body_hex": "..."}`，返回 `{"headers": {...}}`。
@@ -60,13 +62,15 @@ open class UnidbgSigner(
         ?: throw IllegalArgumentException("unidbg 签名服务地址无效")
 
     /**
-     * 播放取址优先走 video_tab GET：
-     * unidbg 返回的是通用六头签名，本机 V5 的 Helios/Medusa 专用口径不适用。
-     * 这条路由与「远程计算-frida」一致，也是平台对匿名设备更宽容的一条。
+     * 播放取址优先走 `video_tab` GET，与远程计算-frida 一致。
+     *
+     * `/feature-hash` 返回的是通用六头，而播放 POST 使用另一套 V5 签名口径；
+     * 把通用六头直接发给播放 POST 会得到 HTTP 200 空体，因此播放链路改走
+     * 当前对远程设备档案更宽容的 GET 路由。
      */
     override val prefersVideoTab get() = true
 
-    /** 与远程计算一致：V5 单集路由的签名口径只适用于本机算法。 */
+    /** GET 路由由远程签名的最终 URL 与通用签名头放行，不使用本机 V5 单集路由。 */
     override val usesLocalPlaybackAlgorithm get() = false
 
     /**
@@ -79,6 +83,10 @@ open class UnidbgSigner(
         val profile = profile()
         if (!profile.available) throw SignatureException("本机匿名设备尚未就绪")
         val target = url.toHttpUrlOrNull() ?: throw SignatureException("请求地址无效")
+        if (PlaybackSigning.isPlayerPath(target.encodedPath) && body != null) {
+            // 播放 POST 必须使用专用 V5 口径；GET 没有请求体，仍走远程通用签名。
+            return super.sign(url, values, body)
+        }
 
         // 与 RemoteSigner 一致：业务参数本机优先，身份字段一律以设备档案为准。
         val params = linkedMapOf<String, String>()
@@ -105,12 +113,23 @@ open class UnidbgSigner(
             "passport-sdk-version" to "50561",
             "x-vc-bdturing-sdk-version" to "3.7.2.cn",
         )
+        headers.putAll(playbackGetHeaders(target, profile))
         headers.putAll(signatures)
         if (body != null) {
             headers["Content-Type"] = "application/json; charset=UTF-8"
             headers["x-ss-stub"] = digest("MD5", body).hex().uppercase(Locale.ROOT)
         }
         return SignedRequest(signedUrl, headers, body)
+    }
+
+    /** 播放 GET 需要与远程签名一致的阅读端头部；不携带任何账号 Cookie。 */
+    private fun playbackGetHeaders(target: okhttp3.HttpUrl, profile: SignerProfile): Map<String, String> {
+        if (!target.encodedPath.startsWith("/reading/bookapi/video_tab/")) return emptyMap()
+        return linkedMapOf(
+            "lc" to "101",
+            "x-ss-dp" to profile.params["aid"].orEmpty().ifBlank { "8662" },
+            "x-reading-request" to "${clock()}-0",
+        )
     }
 
     /** 书城推荐：透明六头签名之外，还要按 iOS SDK 的约定补上游客票据与统计头。 */

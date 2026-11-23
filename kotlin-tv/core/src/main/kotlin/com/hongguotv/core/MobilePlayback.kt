@@ -69,6 +69,7 @@ internal object MobilePlayback {
             .header("User-Agent", PLAYBACK_UA)
             .header("Accept", "application/json")
             .header("Content-Encoding", "gzip")
+            .header("x-xs-from-web", "0")
             // 与参考实现一致：网关用 gzip 字节的 MD5 校验请求体完整性。
             .header("x-ss-stub", java.security.MessageDigest.getInstance("MD5").digest(body)
                 .joinToString("") { "%02X".format(it) })

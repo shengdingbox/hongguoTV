@@ -105,12 +105,27 @@ class UnidbgSignerTest {
         assertEquals(true, problem?.message.orEmpty().contains("-7"))
     }
 
-    /** 远程模式必须跳过本机 V5 播放取址路由。 */
-    @Test fun `remote modes do not use the local playback route`() {
+    /** 远程模式优先走 GET；GET 交给 unidbg，播放 POST 不混用通用六头。 */
+    @Test fun `unidbg mode prefers playback get without mixing remote post signing`() {
         val remote = FixtureSigner(server.url("/").toString().trimEnd('/'))
         assertTrue(remote.usesLocalPlaybackAlgorithm.not())
         assertTrue(remote.prefersVideoTab)
-        // 本地算法保持原行为。
+
+        // GET 没有请求体，必须继续送远程签名服务，不能误回退本机 V5。
+        server.enqueue(signatureResponse())
+        val get = remote.sign(
+            "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/" +
+                "?video_id=7675424396831378456",
+            emptyMap(), null,
+        )
+        val recorded = server.takeRequest()
+        assertEquals("/feature-hash", recorded.path)
+        assertTrue(recorded.body.readUtf8().contains("\"video_id=7675424396831378456"))
+        assertEquals("101", get.headers["lc"])
+        assertEquals("8662", get.headers["x-ss-dp"])
+        assertTrue(get.headers.containsKey("x-reading-request"))
+
+        // 本地算法保持原行为；播放 POST 由代码中的 body != null 分支留在本机签名器。
         assertTrue(RemoteSigner().usesLocalPlaybackAlgorithm)
         assertTrue(RemoteSigner().prefersVideoTab.not())
     }

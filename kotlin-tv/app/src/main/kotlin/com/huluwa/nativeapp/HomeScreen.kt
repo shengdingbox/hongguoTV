@@ -102,10 +102,11 @@ class HomeScreen(
     private val selectors=HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled=false; addView(selectorLine) }
     private val feedTabs=mutableListOf<TextView>()
     private val carousel=FrameLayout(context).apply { clipChildren=false; clipToPadding=false }
+    private val heroBorder=TvCardBorder(context,16)
     private val hero=LinearLayout(context).apply {
         orientation=VERTICAL
         // 去掉内边距：画面与操作条直接贴到面板边缘，操作条才能真正贴住底部
-        background=TvVisual.panel(context); clipToOutline=true
+        background=TvVisual.panel(context); clipToOutline=true; foreground=heroBorder
     }
     private val stage=FrameLayout(context).apply {
         id=View.generateViewId(); isFocusable=true; isFocusableInTouchMode=true; isClickable=true
@@ -212,8 +213,9 @@ class HomeScreen(
         stage.nextFocusLeftId=stage.id; stage.nextFocusRightId=stage.id
         stage.nextFocusUpId=top.id; stage.nextFocusDownId=play.id
         stage.setOnFocusChangeListener { _,focused ->
-            // 聚焦/非聚焦统一 16dp 圆角，深红描边与卡片外形一致，不再跳角
+            // 聚焦/非聚焦统一 16dp 圆角，最上层描边保证播放画面不会遮住上下边框
             hero.background=if(focused) TvVisual.card(context,true,radius=16) else TvVisual.panel(context)
+            heroBorder.focused=focused
             if(focused) rememberCurrent()
         }
         stage.setOnClickListener { togglePreview() }

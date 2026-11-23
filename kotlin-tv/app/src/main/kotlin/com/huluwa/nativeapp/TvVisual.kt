@@ -153,3 +153,54 @@ internal object TvVisual {
 
     private fun withAlpha(color: Int, alpha: Int) = (color and 0x00ffffff) or (alpha shl 24)
 }
+
+/** 独立绘制在最上层的圆角描边，避免播放画面遮住卡片四周的边框。 */
+internal class TvCardBorder(context: Context, private val radius: Int = 16) : Drawable() {
+    private val density = context.resources.displayMetrics.density
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val rect = RectF()
+    private var drawableAlpha = 255
+
+    var focused = false
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidateSelf()
+        }
+
+    override fun onBoundsChange(bounds: Rect) {
+        rect.set(bounds)
+    }
+
+    override fun draw(canvas: Canvas) {
+        if (rect.isEmpty) return
+        // 线宽按半像素内缩，四边都完整落在卡片内部，避免上下沿被圆角裁剪。
+        val stroke = (if (focused) 2.5f else 1.25f) * density
+        val inset = stroke / 2f
+        paint.strokeWidth = stroke
+        paint.color = when {
+            focused && TvStyle.theme == TvStyle.Theme.NIGHT -> Color.rgb(255, 172, 123)
+            focused -> TvStyle.accent
+            TvStyle.theme == TvStyle.Theme.NIGHT -> Color.argb(96, 255, 255, 255)
+            else -> Color.argb(76, 100, 76, 49)
+        }
+        paint.alpha = Color.alpha(paint.color) * drawableAlpha / 255
+        val corner = (radius * density - inset).coerceAtLeast(0f)
+        canvas.drawRoundRect(
+            rect.left + inset, rect.top + inset, rect.right - inset, rect.bottom - inset,
+            corner, corner, paint,
+        )
+    }
+
+    override fun setAlpha(alpha: Int) {
+        drawableAlpha = alpha
+        invalidateSelf()
+    }
+
+    override fun setColorFilter(colorFilter: ColorFilter?) {
+        paint.colorFilter = colorFilter
+        invalidateSelf()
+    }
+
+    @Deprecated("Deprecated in Android") override fun getOpacity() = PixelFormat.TRANSLUCENT
+}

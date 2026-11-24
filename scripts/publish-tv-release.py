@@ -219,7 +219,8 @@ def prepare_assets(directory, result, output, single_apk=False):
             raise ReleaseError("构建记录中的 APK 大小或 SHA-256 无效。")
         is_legacy = record["minSdk"] <= 22
         label = "Android 5 兼容版" if is_legacy else "标准版"
-        apk_name = f"hongguotv-kotlin-{version}{'-android5' if is_legacy else ''}.apk"
+        # GitHub 按附件文件名升序展示；标准版带 standard 后缀可稳定排在 android5 前。
+        apk_name = f"hongguotv-kotlin-{version}-{'android5' if is_legacy else 'standard'}.apk"
         source = directory / source_name
         if source.is_symlink() or not source.is_file():
             raise ReleaseError(f"构建任务 {directory.name} 的{label} APK 已不存在：{source_name}")
@@ -236,9 +237,9 @@ def prepare_assets(directory, result, output, single_apk=False):
     metadata.update(
         artifactName=artifacts[0]["artifactName"], sourceArtifactName=name, artifacts=artifacts,
     )
-    # GitHub Release Assets 按较早创建的附件显示在前。先上传标准版、最后上传兼容版，
-    # 让通用标准包显示在 Assets 顶部；发布说明也保持标准版在前的顺序。
-    return sorted(assets, key=lambda path: path.name.endswith("-android5.apk")), metadata
+    # GitHub Release Assets 按文件名升序展示。上传顺序不影响页面顺序，
+    # 标准版命名中的 standard 会稳定排在 android5 之前。
+    return assets, metadata
 
 
 def tag_commit(github, tag):

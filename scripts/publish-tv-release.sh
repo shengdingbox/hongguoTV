@@ -13,7 +13,7 @@ usage() {
 用法：bash scripts/publish-tv-release.sh [--local] [发布参数]
 
 默认连接 Debian 打包服务器，将最新成功构建的两个 APK 上传到同一个 GitHub Release，并设为 Latest。
-标准版为 hongguotv-kotlin-<版本号>.apk，兼容版为 hongguotv-kotlin-<版本号>-android5.apk。
+标准版为 hongguotv-kotlin-<版本号>-standard.apk，兼容版为 hongguotv-kotlin-<版本号>-android5.apk。
 从同一任务目录的 dual-apks.json 读取兼容包，校验版本、提交、签名记录及两包文件大小、SHA-256。
 默认缺少任何一个包都会停止；需要沿用单包发布时显式添加 --single-apk。
 发布流程为创建 Release 草稿、上传附件、正式发布；所需 tag 由 GitHub 随发布自动创建。

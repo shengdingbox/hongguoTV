@@ -14,7 +14,7 @@
 
 | 安装包 | 系统要求 |
 | --- | --- |
-| 标准版 `hongguotv-kotlin-<版本号>.apk` | Android 7.0（API 24）及以上，沿用当前配置 |
+| 标准版 `hongguotv-kotlin-<版本号>-standard.apk` | Android 7.0（API 24）及以上，沿用当前配置 |
 | 兼容版 `hongguotv-kotlin-<版本号>-android5.apk` | Android 5.0（API 21）及以上，仅 ARM32 / ARM64 |
 | 历史版本中以 `-android8.apk` 结尾的文件 | 历史 Android 8.0 及以上版本 |
 
@@ -31,7 +31,7 @@
 3. **ADB 安装或覆盖安装**：
 
 ```bash
-adb install -r hongguotv-kotlin-<版本号>.apk
+adb install -r hongguotv-kotlin-<版本号>-standard.apk
 ```
 
 更新时下载新版 APK 手动覆盖安装，覆盖安装需保持包名与签名一致。从开发包切换到正式包，或卸载后重新安装，需要先卸载旧版；卸载会清除本机的收藏、观看记录、设置和离线内容。当前版本已移除应用内检查、下载与安装更新功能。
@@ -199,7 +199,7 @@ libde265 软件解码，结果继续复用 Glide 位图池和磁盘缓存。为�
 bash scripts/publish-tv-release.sh
 ```
 
-也可以在 [GitHub Actions](https://github.com/superhuluwa/hongguoTV/actions/workflows/release.yml) 点击 **Run workflow** 发布。该流程读取已经完成的构建，不重新编译或修改签名；按同一任务的构建记录和 `dual-apks.json`，将标准版 `hongguotv-kotlin-<版本号>.apk` 与兼容版 `hongguotv-kotlin-<版本号>-android5.apk` 一起上传到 Assets；缺包时停止，旧构建可用 `--single-apk` 仅发布当前 APK，标签为 `build-v<versionName>-<versionCode>` 并指向实际构建的源码提交。推送代码不会自动发版。
+也可以在 [GitHub Actions](https://github.com/superhuluwa/hongguoTV/actions/workflows/release.yml) 点击 **Run workflow** 发布。该流程读取已经完成的构建，不重新编译或修改签名；按同一任务的构建记录和 `dual-apks.json`，将标准版 `hongguotv-kotlin-<版本号>-standard.apk` 与兼容版 `hongguotv-kotlin-<版本号>-android5.apk` 一起上传到 Assets；缺包时停止，旧构建可用 `--single-apk` 仅发布当前 APK，标签为 `build-v<versionName>-<versionCode>` 并指向实际构建的源码提交。推送代码不会自动发版。
 
 认证、指定构建任务、模拟执行、断线恢复和 self-hosted runner 配置见 [发布说明](docs/GITHUB_RELEASE.md)。
 

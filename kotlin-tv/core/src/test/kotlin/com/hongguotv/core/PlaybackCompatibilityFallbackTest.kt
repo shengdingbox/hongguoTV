@@ -83,7 +83,8 @@ class PlaybackCompatibilityFallbackTest {
         assertThrows(UnplayableVideoException::class.java) { repo.stream(episodeId) }
         assertEquals(PlaybackAlgorithm.FRIDA, policy.unavailable?.algorithm)
         assertEquals(PlaybackAlgorithm.FRIDA, policy.algorithm)
-        assertEquals(3, requests.size)
+        // 每次完整取址内部有 3 轮不兼容重试，三次 stream 共 9 个请求。
+        assertEquals(9, requests.size)
         assertTrue(requests.all { it.url.queryParameter("device_level") == "1" })
         // 主路径已命中多集模型，不应再消耗单集 GET 或旧 POST 路由的配额。
         assertTrue(requests.none { it.url.encodedPath == singlePath })

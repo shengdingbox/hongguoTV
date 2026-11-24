@@ -15,7 +15,7 @@ data class PlaybackAlgorithmChange(
     val reason: String,
 )
 
-/** 一次取址开始时绑定的算法版本；切换前发出的旧请求不能把结果记到新算法上。 */
+/** 一次取址开始时绑定的算法与播放版本；切换前的旧请求不能影响新选择或新剧集。 */
 data class PlaybackAlgorithmAttempt internal constructor(
     internal val revision: Long,
 )
@@ -44,6 +44,7 @@ class PlaybackAlgorithmPolicy(
     private var current = create(initial)
     private var failureCount = 0
     private var revision = 0L
+    private var playbackSeriesId: String? = null
     private var currentUnavailable: PlaybackAlgorithmUnavailable? = null
 
     /** 当前实际用于播放取址的签名器。 */
@@ -51,6 +52,17 @@ class PlaybackAlgorithmPolicy(
     val algorithm: PlaybackAlgorithm? get() = synchronized(lock) { selected }
     /** 保留尚未恢复的失败状态，应用回到前台时仍可提示用户。 */
     val unavailable: PlaybackAlgorithmUnavailable? get() = synchronized(lock) { currentUnavailable }
+
+    /** 换剧或确认重播后重新累计失败，旧剧集的在途请求不能压住新一轮提示。 */
+    fun beginPlayback(seriesId: String, restart: Boolean = false) {
+        synchronized(lock) {
+            if (playbackSeriesId == seriesId && !restart) return
+            playbackSeriesId = seriesId
+            failureCount = 0
+            currentUnavailable = null
+            revision++
+        }
+    }
 
     /** 在真正发起取址前记录当前选择版本。 */
     fun beginAddress(): PlaybackAlgorithmAttempt = synchronized(lock) {

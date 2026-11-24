@@ -171,7 +171,7 @@ class MainActivity: Activity() {
      */
     private var navTight=false
     // 复用同一台设备身份：弹幕与内容/播放必须签同一份档案，否则平台会当成两台设备。
-    private val danmakuRepo by lazy { DanmakuRepository(repository.http, signer=repository.activeSigner) }
+    private var danmakuRepo: DanmakuRepository? = null
     private var playbackCache: EpisodePlaybackCache? = null
     private fun ensurePlaybackCache(): EpisodePlaybackCache = playbackCache ?: run {
         val current = repositoryForPlayback()
@@ -3603,6 +3603,7 @@ class MainActivity: Activity() {
      */
     private fun openDetail(series: Series,resume: Boolean=false,autoplay: Boolean=true,cloud: CloudProgress?=null,preloaded: Detail?=null,trial: TvHomePlayback.TrialHandoff?=null) {
         offlineOnly = false
+        playbackAlgorithms.beginPlayback(series.id)
         favoriteMonitor.stop()
         pendingDetail=series; detailAutoplay=autoplay; pendingCloudResume=cloud
         invalidatePage(); releaseCatalogViews(); screen="detail"; directPlayback=resume; detail=null; synopsisExpanded=false; detailEpisodePage=-1
@@ -4054,6 +4055,7 @@ class MainActivity: Activity() {
             PhoneUi.toast(this, "该集尚未离线，请在离线缓存中下载")
             return
         }
+        if(!offlineOnly) playbackAlgorithms.beginPlayback(data.series.id)
         cancelSkipUnplayable()
         val playbackStarted=android.os.SystemClock.elapsedRealtime()
         // 切集先撤掉后台整集下载的带宽占用，首帧和当前集缓冲就绪后逐步恢复。
@@ -4748,7 +4750,7 @@ class MainActivity: Activity() {
     private fun currentPosition(): Long = pendingSeek ?: player?.currentPosition?.takeIf { playbackReady } ?: startPosition
     private fun cancelRecovery() { main.removeCallbacks(retryRunnable); retryPending=false; autoRecovery=false }
     private fun scheduleRecovery() {
-        if(!foreground || !playError || !autoRecovery || retryPending) return
+        if(!foreground || !playError || !autoRecovery || retryPending || tvTools.algorithmPickerShowing) return
         // 预算耗尽：自动重试彻底走不通，把手动面板摆出来让用户决定。
         if(!recovery.remaining) {
             autoRecovery=false
@@ -4806,16 +4808,16 @@ class MainActivity: Activity() {
             else -> "播放失败，可重试或切换清晰度。"
         }
         // 解码失败同档重试没有意义，同档重试预算又已用尽时也不该再空转：两种情况都自动退一档。
-        val lower=if(incompatible || sleepStopped) null else autoDowngradeTarget(decoding,retryable)
+        val lower=if(incompatible || sleepStopped || tvTools.algorithmPickerShowing) null else autoDowngradeTarget(decoding,retryable)
         when {
             lower!=null -> {
                 // 自动降档：600ms 后直接换清晰度重放，期间用转圈提示，不打扰用户。
                 playbackText.text="当前清晰度无法播放，正在自动切换到 ${lower}P"
                 recoverySpinner?.visibility=View.VISIBLE
                 autoRecovery=false
-                main.postDelayed({ if(foreground && screen=="player" && playError) applySessionDowngrade(lower) },600)
+                main.postDelayed({ if(foreground && screen=="player" && playError && !tvTools.algorithmPickerShowing) applySessionDowngrade(lower) },600)
             }
-            retryable && !sleepStopped -> {
+            retryable && !sleepStopped && !tvTools.algorithmPickerShowing -> {
                 // 可重试：静默自动重试，界面只显示转圈 + 倒计时，不弹按钮。
                 // 用户按确认键可随时取消并切到手动面板（见 dispatchKeyEvent）。
                 playbackText.text="准备恢复播放…"
@@ -4837,7 +4839,7 @@ class MainActivity: Activity() {
             // 本集放不出来时用户最想做的往往是退回上一集，只给「下一集」等于把人往前逼。
             // 上一集按钮放在最前：点错了也能原路退回去，自动跳集期间同样可用来打断。
             val prev=if(hasPrev) addButton(actions,"播放上一集") { playEpisode(episodeIndex-1,savedPosition(episodeIndex-1)) } else null
-            if(hasNext && extras.autoSkipUnplayable && incompatibleSkips<5) {
+            if(hasNext && extras.autoSkipUnplayable && incompatibleSkips<5 && !tvTools.algorithmPickerShowing) {
                 // 整批集数可能都是不可解码片源：最多连跳 5 集，避免无限空转
                 incompatibleSkips++
                 playbackText.text="本集片源暂不兼容，自动跳过 · 已跳过 $incompatibleSkips 集"
@@ -5984,7 +5986,8 @@ class MainActivity: Activity() {
         val p=player
         if(!library.danmaku || p==null || !playbackReady || playError || p.duration<=0) return
         danmakuLoader=null
-        val loader=DanmakuLoader(danmakuRepo,data.series.id,data.episodes[episodeIndex],p.duration)
+        val source=danmakuRepo ?: DanmakuRepository(repository.http,signer=repository.activeSigner).also { danmakuRepo=it }
+        val loader=DanmakuLoader(source,data.series.id,data.episodes[episodeIndex],p.duration)
         danmakuLoader=loader
         layer.setBlockedFilter { text -> extras.blocks(text) }
         layer.bind(loader,{ currentPosition() })
@@ -7113,6 +7116,7 @@ class MainActivity: Activity() {
     /** 手机详情入口：复用 openDetail 的数据流，统一由 PortraitDetail 渲染。 */
     fun openDetailPhone(series: com.hongguotv.core.Series,resume: Boolean=false,cover: ImageView?=null) {
         offlineOnly = false
+        playbackAlgorithms.beginPlayback(series.id)
         if(!phoneLayout()) { openDetail(series,resume); return }
         phoneCoverTransition?.cancel(); phoneCoverTransition=null
         val sharedCover=if(!resume && cover!=null) PosterSharedTransition.capture(root,cover) else null
@@ -7586,7 +7590,7 @@ class MainActivity: Activity() {
     val phoneSigningModeLabel get() = SigningSettings.algorithmLabel
     fun phoneSigningModePicker() = showSigningModePicker(pickerAnchor)
 
-    private fun showSigningModePicker(anchor: View?, message: String? = null) {
+    private fun showSigningModePicker(anchor: View?, message: String? = null, autoCheck: Boolean = false) {
         val recent=if(library.isLoaded) library.history().firstOrNull() else null
         val episodeId=detail?.episodes?.getOrNull(episodeIndex) ?: detail?.episodes?.firstOrNull() ?: recent?.episodeId
         val seriesId=pendingDetail?.id ?: recent?.series?.id ?: phoneRecommendationItems.firstOrNull()?.id ?: catalog.firstOrNull()?.id
@@ -7600,7 +7604,7 @@ class MainActivity: Activity() {
             profile?.let(store::save)
             return ContentRepository(http=http,signer=SigningSettings.createSigner(mode,store))
         }
-        tvTools.algorithmPicker(anchor,message,resolveEpisode={
+        tvTools.algorithmPicker(anchor,message,autoCheck,resolveEpisode={
             episodeId ?: run {
                 // 没有播放记录时，先从当前剧集或首页准备一个共同分集，准备耗时不计入算法延迟。
                 val sample=probeRepository(SigningSettings.Mode.LOCAL)
@@ -7611,15 +7615,36 @@ class MainActivity: Activity() {
             }
         },probe={ mode,id ->
             probeRepository(mode).stream(id,quality,refreshModel=true,playback=true)
-        },onChoice=::setSigningMode)
+        },onChoice={ mode -> setSigningMode(mode,playAfterChange=autoCheck) })
     }
 
-    private fun setSigningMode(mode: SigningSettings.Mode) {
-        if(mode==SigningSettings.mode) return
+    private fun setSigningMode(mode: SigningSettings.Mode, playAfterChange: Boolean = false) {
+        val changed=mode!=SigningSettings.mode
+        val replay=!detail?.episodes.isNullOrEmpty() && !offlineOnly &&
+            (screen=="player" || playAfterChange && screen=="detail")
+        if(!changed && !replay) return
+        val position=if(screen=="player" && replay) currentPosition() else if(replay) savedPosition(episodeIndex) else 0L
+        val index=episodeIndex
+        runCatching { playbackAlgorithms.select(SigningSettings.toPlaybackAlgorithm(mode)) }.onFailure {
+            PhoneUi.toast(this,"切换算法失败，请重试")
+            return
+        }
         SigningSettings.mode=mode
-        // 当前 Activity 立即换用新签名器；重建让内容、弹幕、云账号也同步到新身份。
-        runCatching { playbackAlgorithms.select(SigningSettings.toPlaybackAlgorithm(mode)) }
+        danmakuRepo=null
         rebuildPlaybackCacheForAlgorithm()
+        if(replay) {
+            val data=detail ?: return
+            // 确认后撤销旧算法的请求、重试和预取，当前集必须按新算法重新取址。
+            cancelWork(); cancelRecovery(); cancelSkipUnplayable(); cancelPrefetch()
+            playbackCache?.clear()
+            data.episodes.forEach(repository::invalidatePlayback)
+            playbackAlgorithms.beginPlayback(data.series.id,restart=true)
+            shownUnavailableAlgorithm=null
+            recovery.reset()
+            playEpisode(index,position,autoplay=true,recovering=true)
+            return
+        }
+        // 设置页仍按原流程重建，让内容与账号等页面同步到新模式。
         if(screen=="settings") PageRestore.phoneSettings=true
         recreateKeepingPage("算法模式")
     }
@@ -7630,8 +7655,10 @@ class MainActivity: Activity() {
         val failure=playbackAlgorithms.unavailable ?: return
         if(shownUnavailableAlgorithm===failure) return
         shownUnavailableAlgorithm=failure
+        // 检测和确认期间保留当前集，避免自动重试、降档或跳集改变检测对象。
+        cancelRecovery(); cancelSkipUnplayable(); cancelPrefetch()
         RuntimeLog.add("算法连续三次取址失败: " + failure.algorithm.name)
-        showSigningModePicker(currentFocus ?: pickerAnchor, "当前算法模式完全不可用 请选择其他算法模式")
+        showSigningModePicker(currentFocus ?: pickerAnchor, "当前算法模式完全不可用 请选择其他算法模式", autoCheck=true)
     }
 
     /** 用户选择算法后，同步主线程上的设置与播放仓库。 */

@@ -81,4 +81,44 @@ class PlaybackAlgorithmPolicyTest {
         assertSame(signer, policy.signer)
         assertTrue(policy.addressFailed(policy.beginAddress()))
     }
+
+    @Test fun changingSeriesAllowsAnotherFailurePromptAndIgnoresOldResults() {
+        val failures = mutableListOf<PlaybackAlgorithmUnavailable>()
+        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL, onUnavailable = { failures += it })
+        policy.beginPlayback("first")
+        val old = policy.beginAddress()
+        repeat(3) { policy.addressFailed(policy.beginAddress()) }
+        val first = policy.unavailable
+        policy.beginPlayback("second")
+        assertNull(policy.unavailable)
+        assertFalse(policy.addressFailed(old))
+        repeat(2) { assertFalse(policy.addressFailed(policy.beginAddress())) }
+        // 旧剧取址成功不能清空新剧的连续失败，否则换剧后仍会迟迟不弹。
+        policy.addressSucceeded(old)
+        assertTrue(policy.addressFailed(policy.beginAddress()))
+        assertEquals(2, failures.size)
+        assertFalse(first === policy.unavailable)
+        assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
+    }
+
+    @Test fun continuingSameSeriesKeepsFailureCount() {
+        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL)
+        policy.beginPlayback("series")
+        repeat(2) { assertFalse(policy.addressFailed(policy.beginAddress())) }
+        policy.beginPlayback("series")
+        assertTrue(policy.addressFailed(policy.beginAddress()))
+    }
+
+    @Test fun confirmedReplayStartsNewFailureSequenceForSameSeries() {
+        val policy = PlaybackAlgorithmPolicy(PlaybackAlgorithm.LOCAL)
+        policy.beginPlayback("series")
+        val old = policy.beginAddress()
+        repeat(3) { policy.addressFailed(policy.beginAddress()) }
+        policy.beginPlayback("series", restart = true)
+        assertNull(policy.unavailable)
+        assertFalse(policy.addressFailed(old))
+        repeat(2) { assertFalse(policy.addressFailed(policy.beginAddress())) }
+        assertTrue(policy.addressFailed(policy.beginAddress()))
+    }
+
 }

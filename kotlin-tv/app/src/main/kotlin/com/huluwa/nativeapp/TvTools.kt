@@ -13,6 +13,8 @@ import com.hongguotv.core.EpisodeTarget
 /** Native modal controls kept separate from catalog/player navigation. */
 class TvTools(private val activity: Activity) {
     private var dialog: AlertDialog?=null
+    private var algorithmDialog: PlaybackAlgorithmDialog?=null
+    val algorithmPickerShowing: Boolean get()=algorithmDialog?.dialog?.isShowing==true
     val showing: Boolean get()=dialog?.isShowing==true
     private fun dp(value: Int)=(value*activity.resources.displayMetrics.density).toInt()
     private fun label(value: String,size: Float=17f)=TextView(activity).apply { text=value; textSize=size; setTextColor(TvStyle.text); setPadding(dp(8),dp(4),dp(8),dp(4)) }
@@ -34,11 +36,16 @@ class TvTools(private val activity: Activity) {
         open(next,anchor)
     }
     /** 算法检测随弹框关闭一起取消，避免页面离开后继续占用取址请求。 */
-    fun algorithmPicker(anchor: View?,message: String?,resolveEpisode: ()->String,
+    fun algorithmPicker(anchor: View?,message: String?,autoCheck: Boolean,resolveEpisode: ()->String,
         probe: (SigningSettings.Mode,String)->com.hongguotv.core.StreamInfo,
         onChoice: (SigningSettings.Mode)->Unit) {
-        val picker=PlaybackAlgorithmDialog(activity,message,resolveEpisode,probe,onChoice)
-        open(picker.dialog,anchor,picker::cancel)
+        val picker=PlaybackAlgorithmDialog(activity,message,autoCheck,resolveEpisode,probe,onChoice)
+        algorithmDialog=picker
+        open(picker.dialog,anchor) {
+            if(algorithmDialog===picker) algorithmDialog=null
+            picker.cancel()
+        }
+        picker.start()
     }
     fun episodePicker(count: Int,current: Int,anchor: View?,select: (Int)->Unit) {
         val content=column()

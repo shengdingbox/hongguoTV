@@ -19,6 +19,21 @@ ABIS = {
 }
 
 
+
+def extract_archive(archive, directory):
+    """校验归档成员路径后解压，兼容 Python 3.11 与 3.12 的 tarfile 接口。"""
+    with tarfile.open(archive) as tar:
+        root = directory.resolve()
+        for member in tar.getmembers():
+            target = (directory / member.name).resolve()
+            if target != root and root not in target.parents:
+                raise ValueError(f"归档成员路径不安全：{member.name}")
+        if "filter" in tarfile.TarFile.extractall.__code__.co_varnames:
+            tar.extractall(directory, filter="data")
+        else:
+            tar.extractall(directory)
+
+
 def source_archive():
     archive = MODULE / "build" / f"ffmpeg-{VERSION}.tar.xz"
     archive.parent.mkdir(parents=True, exist_ok=True)
@@ -50,8 +65,7 @@ def build(ndk):
     archive = source_archive()
     source = MODULE / "build" / f"ffmpeg-{VERSION}"
     if not source.exists():
-        with tarfile.open(archive) as tar:
-            tar.extractall(archive.parent, filter="data")
+        extract_archive(archive, archive.parent)
     jni = MODULE / "src/main/jni/ffmpeg_jni.cc"
     stamp = hashlib.sha256(
         Path(__file__).read_bytes() + jni.read_bytes() + SHA256.encode() + NDK_VERSION.encode()

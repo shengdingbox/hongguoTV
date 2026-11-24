@@ -18,7 +18,6 @@ import org.junit.Test
 
 /** 取址只使用用户选择的算法，兼容性重试不跨算法，完整失败统一累计一次。 */
 class PlaybackCompatibilityFallbackTest {
-    private val multiPath = "/reading/bookapi/video_tab/multi_video_model/v1/"
     private val singlePath = "/reading/bookapi/video_tab/video_model/v"
     private val episodeId = "123"
 
@@ -34,10 +33,8 @@ class PlaybackCompatibilityFallbackTest {
             .put("main_url", "https://example.com/$codec.mp4")
             .put("video_meta", JSONObject().put("codec_type", codec).put("definition", "720p"))))
 
-    /** 当前主路径是多集 GET，响应按分集 ID 给出模型。 */
-    private fun multiResponse(model: JSONObject) = JSONObject().put("code", 0)
-        .put("data", JSONObject().put("video_model_data",
-            JSONObject().put(episodeId, JSONObject().put("video_model", model)))).toString()
+    private fun singleResponse(model: JSONObject) = JSONObject().put("code", 0)
+        .put("data", JSONObject().put("video_model", model)).toString()
 
     private fun repository(policy: PlaybackAlgorithmPolicy, respond: (Request) -> String) = ContentRepository(
         http = OkHttpClient.Builder().addInterceptor { chain ->
@@ -59,8 +56,8 @@ class PlaybackCompatibilityFallbackTest {
         val policy = policy()
         val repo = repository(policy) { request ->
             requests += request
-            assertEquals(multiPath, request.url.encodedPath)
-            multiResponse(model("h264"))
+            assertEquals(singlePath, request.url.encodedPath)
+            singleResponse(model("h264"))
         }
         repeat(2) { assertEquals("https://example.com/h264.mp4", repo.stream(episodeId).url) }
         assertEquals(1, requests.size)
@@ -73,8 +70,8 @@ class PlaybackCompatibilityFallbackTest {
         val requests = mutableListOf<Request>()
         val repo = repository(policy) { request ->
             requests += request
-            assertEquals(multiPath, request.url.encodedPath)
-            multiResponse(model("bytevc2"))
+            assertEquals(singlePath, request.url.encodedPath)
+            singleResponse(model("bytevc2"))
         }
         repeat(2) {
             assertThrows(UnplayableVideoException::class.java) { repo.stream(episodeId) }
@@ -83,11 +80,8 @@ class PlaybackCompatibilityFallbackTest {
         assertThrows(UnplayableVideoException::class.java) { repo.stream(episodeId) }
         assertEquals(PlaybackAlgorithm.FRIDA, policy.unavailable?.algorithm)
         assertEquals(PlaybackAlgorithm.FRIDA, policy.algorithm)
-        // 每次完整取址内部有 3 轮不兼容重试，三次 stream 共 9 个请求。
         assertEquals(9, requests.size)
         assertTrue(requests.all { it.url.queryParameter("device_level") == "1" })
-        // 主路径已命中多集模型，不应再消耗单集 GET 或旧 POST 路由的配额。
-        assertTrue(requests.none { it.url.encodedPath == singlePath })
     }
 
     @Test fun networkFailuresAlsoRequestManualSelectionAfterThreeAttempts() {

@@ -20,6 +20,7 @@ import org.junit.Test
 class PlaybackCompatibilityFallbackTest {
     private val multiPath = "/reading/bookapi/video_tab/multi_video_model/v1/"
     private val singlePath = "/reading/bookapi/video_tab/video_model/v"
+    private val playerPath = "/novel/player/video_model/v1/"
     private val episodeId = "123"
 
     private class FridaFakeSigner : FakeSigner(mapOf(
@@ -39,12 +40,16 @@ class PlaybackCompatibilityFallbackTest {
         .put("data", JSONObject().put("video_model_data",
             JSONObject().put(id, JSONObject().put("video_model", model)))).toString()
 
-    private fun repository(policy: PlaybackAlgorithmPolicy, respond: (Request) -> String) = ContentRepository(
+    private fun playerResponse() = JSONObject().put("code", 0)
+        .put("data", JSONObject().put("video_model", model("h264"))).toString()
+
+    private fun repository(policy: PlaybackAlgorithmPolicy, clock: () -> Long = System::currentTimeMillis, respond: (Request) -> String) = ContentRepository(
         http = OkHttpClient.Builder().addInterceptor { chain ->
             Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
                 .code(200).message("OK").body(respond(chain.request()).toResponseBody()).build()
         }.build(),
         playbackAlgorithms = policy,
+        clock = clock,
     )
 
     private fun policy() = PlaybackAlgorithmPolicy(
@@ -97,6 +102,108 @@ class PlaybackCompatibilityFallbackTest {
         repeat(2) { assertEquals("https://example.com/h264.mp4", repo.stream(episodeId).url) }
         // 错集响应不能终止回退；第二次播放复用真正目标集的缓存。
         assertEquals(1, requests.count { it.method == "POST" })
+    }
+
+    @Test fun warmPostSuccessIsSharedWithPlaybackTransportsAndReboundRepositories() {
+        val requests = mutableListOf<Request>()
+        val policy = policy()
+        val repo = repository(policy) { request ->
+            requests += request
+            if (request.url.encodedPath == playerPath) playerResponse() else ""
+        }
+        assertEquals(1, repo.warm(listOf(episodeId)).cached)
+        assertEquals(listOf(multiPath, multiPath, singlePath, singlePath, playerPath), requests.map { it.url.encodedPath })
+        val children = listOf(repo.childTransport(repo.http), repo.rebind(policy.signer, policy))
+        for ((index, child) in children.withIndex()) {
+            requests.clear()
+            assertEquals("https://example.com/h264.mp4", child.stream((124 + index).toString()).url)
+            // 使用未缓存的新分集，确认省掉的是探路请求，而非恰好命中模型缓存。
+            assertEquals(listOf(playerPath), requests.map { it.url.encodedPath })
+        }
+    }
+
+    @Test fun rememberedBackupGetHostIsTriedFirstForAnotherEpisode() {
+        val requests = mutableListOf<Request>()
+        val repo = repository(policy()) { request ->
+            requests += request
+            if (request.url.encodedPath == multiPath && request.url.host == "reading.snssdk.com") {
+                multiResponse(model("h264"), request.url.queryParameter("video_id")!!)
+            } else ""
+        }
+        repo.stream(episodeId)
+        assertEquals(2, requests.size)
+        requests.clear()
+        assertEquals("https://example.com/h264.mp4", repo.stream("124").url)
+        assertEquals(1, requests.size)
+        assertEquals("reading.snssdk.com", requests.single().url.host)
+        assertEquals(multiPath, requests.single().url.encodedPath)
+    }
+
+    @Test fun failedRememberedPostFallsBackAndLearnsNewSuccessfulRoute() {
+        for (failure in listOf("", """{"code":100103}""", "invalid-json", "socket-timeout")) {
+            var postAvailable = true
+            val requests = mutableListOf<Request>()
+            val repo = repository(policy()) { request ->
+                requests += request
+                when {
+                    request.url.encodedPath == playerPath -> when {
+                        postAvailable -> playerResponse()
+                        failure == "socket-timeout" -> throw java.net.SocketTimeoutException("接口超时")
+                        else -> failure
+                    }
+                    request.url.encodedPath == multiPath && !postAvailable ->
+                        multiResponse(model("h264"), request.url.queryParameter("video_id")!!)
+                    else -> ""
+                }
+            }
+            repo.stream(episodeId)
+            postAvailable = false
+            requests.clear()
+            assertEquals("https://example.com/h264.mp4", repo.stream("124").url)
+            assertEquals(playerPath, requests.first().url.encodedPath)
+            assertEquals(multiPath, requests.last().url.encodedPath)
+            requests.clear()
+            repo.stream("125")
+            assertEquals(listOf(multiPath), requests.map { it.url.encodedPath })
+        }
+    }
+
+    @Test fun expiredSuccessUsesDefaultRouteOrderAgain() {
+        var now = 1_000L
+        val requests = mutableListOf<Request>()
+        val repo = repository(policy(), clock = { now }) { request ->
+            requests += request
+            if (request.url.encodedPath == playerPath) playerResponse() else ""
+        }
+        repo.stream(episodeId)
+        now += 10 * 60 * 1000L
+        requests.clear()
+        repo.stream("124")
+        assertEquals(multiPath, requests.first().url.encodedPath)
+        assertEquals(playerPath, requests.last().url.encodedPath)
+    }
+
+    @Test fun switchingAlgorithmDoesNotReuseAnotherSignersPreferredPost() {
+        val policy = PlaybackAlgorithmPolicy(
+            PlaybackAlgorithm.FRIDA,
+            fridaFactory = { FridaFakeSigner() },
+            unidbgFactory = { FridaFakeSigner() },
+        )
+        val requests = mutableListOf<Request>()
+        val repo = repository(policy) { request ->
+            requests += request
+            when {
+                request.url.encodedPath == playerPath -> playerResponse()
+                request.url.encodedPath == multiPath && policy.algorithm == PlaybackAlgorithm.UNIDBG ->
+                    multiResponse(model("h264"), request.url.queryParameter("video_id")!!)
+                else -> ""
+            }
+        }
+        repo.stream(episodeId)
+        policy.select(PlaybackAlgorithm.UNIDBG)
+        requests.clear()
+        repo.stream("124")
+        assertEquals(listOf(multiPath), requests.map { it.url.encodedPath })
     }
 
     @Test fun incompatibleSourcesCountOneFailurePerStreamAndNeverUseOtherAlgorithms() {

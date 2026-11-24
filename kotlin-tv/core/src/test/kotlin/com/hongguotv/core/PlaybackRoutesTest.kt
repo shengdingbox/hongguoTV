@@ -3,6 +3,7 @@ package com.hongguotv.core
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -60,6 +61,31 @@ class PlaybackRoutesTest {
         recovery.resetRotationCooldown()
         assertFalse(recovery.routes.exhausted(1001))
         assertEquals(4, recovery.routes.plan(1001, false).size)
+    }
+
+    @Test fun successMemorySeparatesAlbumEpisodesAndKeepsNewerConcurrentSuccess() {
+        val memory = PlaybackRouteMemory()
+        val signer = FakeSigner()
+        memory.remember(signer, MobilePlayback.GROUP_SHORT, PlaybackRouteKind.PLAYER, "/single", 1_000L)
+        val previous = memory.last(signer, MobilePlayback.GROUP_SHORT, 1_001L)!!
+        assertNull(memory.last(signer, MobilePlayback.GROUP_PUGC, 1_001L))
+        memory.remember(signer, MobilePlayback.GROUP_PUGC, PlaybackRouteKind.LEGACY, "/album", 1_001L)
+        memory.remember(signer, MobilePlayback.GROUP_SHORT, PlaybackRouteKind.VIDEO_TAB_MULTI, "/multi", 1_002L)
+        memory.failed(signer, MobilePlayback.GROUP_SHORT, previous)
+        assertEquals("/multi", memory.last(signer, MobilePlayback.GROUP_SHORT, 1_003L)?.endpoint)
+        assertEquals("/album", memory.last(signer, MobilePlayback.GROUP_PUGC, 1_003L)?.endpoint)
+        val current = memory.last(signer, MobilePlayback.GROUP_SHORT, 1_003L)!!
+        memory.failed(signer, MobilePlayback.GROUP_SHORT, current)
+        assertNull(memory.last(signer, MobilePlayback.GROUP_SHORT, 1_004L))
+        assertEquals("/album", memory.last(signer, MobilePlayback.GROUP_PUGC, 1_004L)?.endpoint)
+    }
+
+    @Test fun identityRotationAlsoClearsSuccessfulInterfaceMemory() {
+        val recovery = PlaybackRecovery()
+        val signer = FakeSigner()
+        recovery.successfulRoutes.remember(signer, MobilePlayback.GROUP_SHORT, PlaybackRouteKind.PLAYER, "/single", 1_000L)
+        recovery.resetRotationCooldown()
+        assertNull(recovery.successfulRoutes.last(signer, MobilePlayback.GROUP_SHORT, 1_001L))
     }
 
     @Test fun onlyEmptyResponsesCountAsIdentityRotationRounds() {

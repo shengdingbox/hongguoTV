@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.core
 
-/** 播放恢复会话：域名健康度、空响应轮次与匿名身份轮换冷却跨子仓库共享。 */
+/** 播放恢复会话：成功路径、域名健康度、空响应轮次与身份轮换冷却跨子仓库共享。 */
 class PlaybackRecovery {
     val routes = PlaybackRoutes()
+    internal val successfulRoutes = PlaybackRouteMemory()
     private val lock = Any()
     private var rotated = false
     private var rotatedAt = 0L
@@ -55,6 +56,7 @@ class PlaybackRecovery {
             rotatedAt = 0L
             rotationSucceeded = null
             routes.reset()
+            successfulRoutes.clear()
         }
     }
 

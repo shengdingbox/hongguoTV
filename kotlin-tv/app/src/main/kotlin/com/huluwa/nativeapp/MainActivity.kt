@@ -7587,14 +7587,31 @@ class MainActivity: Activity() {
     fun phoneSigningModePicker() = showSigningModePicker(pickerAnchor)
 
     private fun showSigningModePicker(anchor: View?, message: String? = null) {
-        val modes=SigningSettings.modes
-        val selected=modes.indexOf(SigningSettings.mode).coerceAtLeast(0)
-        val labels=modes.mapIndexed { index, mode ->
-            mode.label+if(index==selected) "   ·   当前" else ""
+        val recent=if(library.isLoaded) library.history().firstOrNull() else null
+        val episodeId=detail?.episodes?.getOrNull(episodeIndex) ?: detail?.episodes?.firstOrNull() ?: recent?.episodeId
+        val seriesId=pendingDetail?.id ?: recent?.series?.id ?: phoneRecommendationItems.firstOrNull()?.id ?: catalog.firstOrNull()?.id
+        val quality=if(library.isLoaded) library.maxQuality else 1080
+        val type=if(library.isLoaded) library.contentType else ContentType.SHORT
+        val profile=signerStore.load()
+        val http=repository.http.newBuilder().cookieJar(okhttp3.CookieJar.NO_COOKIES).build()
+        fun probeRepository(mode: SigningSettings.Mode): ContentRepository {
+            // 每种算法只使用独立内存档案和空缓存，检测不改正式设备身份、算法选择与失败计数。
+            val store=InMemorySignerProfileStore()
+            profile?.let(store::save)
+            return ContentRepository(http=http,signer=SigningSettings.createSigner(mode,store))
         }
-        tvTools.choose("算法模式",labels,anchor,{ choice ->
-            modes.getOrNull(choice)?.let(::setSigningMode)
-        },focusIndex=selected,message=message)
+        tvTools.algorithmPicker(anchor,message,resolveEpisode={
+            episodeId ?: run {
+                // 没有播放记录时，先从当前剧集或首页准备一个共同分集，准备耗时不计入算法延迟。
+                val sample=probeRepository(SigningSettings.Mode.LOCAL)
+                val id=seriesId ?: sample.home(type=type).items.firstOrNull()?.id
+                    ?: throw java.io.IOException("暂无可检测剧集，请先打开一部剧集")
+                sample.seriesDetail(id).episodes.firstOrNull()
+                    ?: throw java.io.IOException("该剧暂无分集，请打开其他剧集后重试")
+            }
+        },probe={ mode,id ->
+            probeRepository(mode).stream(id,quality,refreshModel=true,playback=true)
+        },onChoice=::setSigningMode)
     }
 
     private fun setSigningMode(mode: SigningSettings.Mode) {

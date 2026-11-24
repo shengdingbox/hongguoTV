@@ -33,6 +33,13 @@ class TvTools(private val activity: Activity) {
         val next=TvDialog.choose(activity,title,labels,onChoice,extra,onExtra,focusIndex,anchorView=if(anchorToButton) anchor else null,message=message)
         open(next,anchor)
     }
+    /** 算法检测随弹框关闭一起取消，避免页面离开后继续占用取址请求。 */
+    fun algorithmPicker(anchor: View?,message: String?,resolveEpisode: ()->String,
+        probe: (SigningSettings.Mode,String)->com.hongguotv.core.StreamInfo,
+        onChoice: (SigningSettings.Mode)->Unit) {
+        val picker=PlaybackAlgorithmDialog(activity,message,resolveEpisode,probe,onChoice)
+        open(picker.dialog,anchor,picker::cancel)
+    }
     fun episodePicker(count: Int,current: Int,anchor: View?,select: (Int)->Unit) {
         val content=column()
         var digits=(current+1).toString(); var replace=true

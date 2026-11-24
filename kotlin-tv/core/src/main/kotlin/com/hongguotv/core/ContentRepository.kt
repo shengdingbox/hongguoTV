@@ -1265,6 +1265,11 @@ open class ContentRepository(
             "video_id" to id, "source" to "0", "need_all_video_definition" to "true",
             // 电视端的兼容档：服务端在 3 下可能整集改成 VVC，Media3 的 MP4 提取器读不出视频轨。
             "device_level" to "1",
+            // 与多集接口保持同一请求口径：缺 video_platform 会回 PARAM_INVALID(100103)，
+            // 其余几项在部分环境下也会导致空体，统一补齐避免换环境后再次失败。
+            "video_id_type" to "0", "need_mp4_align" to "0",
+            "use_os_player" to "0", "video_platform" to "1024",
+            "from_video_id" to "",
         )
         val hosts=listOf(
             "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/video_model/v",
@@ -1415,16 +1420,18 @@ open class ContentRepository(
         // 普通短剧的 ID 语义相反，传 1 会回 101000，所以两者必须分开。
         val idType = if (albumEpisode) 1 else 0
         val group = if (albumEpisode) MobilePlayback.GROUP_PUGC else MobilePlayback.GROUP_SHORT
-        // video_tab 的两条 GET 路由仍先试（部分环境仍是唯一可用入口），
-        // 但 2026-11-24 起服务端对它们恒回空体。若此处直接抛异常，
-        // 会跳过后面唯一可用的 PLAYER_PATH（POST video_model），
-        // 因此空体时继续往下走，只把明确的错误码留到最终失败时再抛。
+        // 2026-11-24 实测（unidbg 签名，5.0.0 线上）：
+        //   GET  video_tab/multi_video_model/v1/   ✅ 5 档  ← 多集，一次拿全，最省请求
+        //   POST novel/player/video_model/v1/      ✅ 5 档  ← 单集，兜底
+        //   GET  video_tab/video_model/v           ❌ 恒 0 字节（补全参数也无效，接口已下线）
+        // 所以优先多集 GET；单集 GET 仅在偏好开关下作为次选（保留以兼容其它环境）。
         var videoTabFailure: IOException? = null
         if (activeSigner.prefersVideoTab && !albumEpisode) {
-            // 复用 Android 红果已可用的 GET 路径，避免先等待本机算法使用的 POST 路由。
+            // 多集接口：一次请求即可拿到该集模型，是当前最稳的主路径。
+            videoTabModel(id, level, preferAlt)?.let { return it }
+            // 单集接口：线上已恒空，但部分环境仍是唯一入口，保留为次选。
             val single = videoTabSingle(id, preferAlt)
             single.model?.let { return it }
-            videoTabModel(id, level, preferAlt)?.let { return it }
             // 空体交给后续 POST 路由兜底；有明确错误码（如合集分集的 110）则先记下，
             // 待所有路由都失败后按原语义抛出，便于上层识别合集场景。
             if (!single.blank) videoTabFailure = ServiceException(single.code)
@@ -1439,7 +1446,10 @@ open class ContentRepository(
         if (activeSigner.usesLocalPlaybackAlgorithm && !albumEpisode) {
             videoTabModelV5(id)?.let { return it }
         }
-        val primaryPayload ="""{"video_id":"$id","biz_param":{"video_id_type":$idType,"need_all_video_definition":true,"video_platform":3}}""".toByteArray(Charsets.UTF_8)
+        // video_platform=3 与 1024 实测都能返回 5 档，沿用 3；
+        // device_level 与 video_tab 保持一致（电视端必须 1，3 会整集下发 bytevc2/VVC）；
+        // need_mp4_align / use_os_player 与其它路由统一，避免服务端按不同口径处理。
+        val primaryPayload ="""{"video_id":"$id","biz_param":{"video_id_type":$idType,"need_all_video_definition":true,"video_platform":3,"device_level":$level,"need_mp4_align":false,"use_os_player":false}}""".toByteArray(Charsets.UTF_8)
         val primary = try {
             sweepRoutes(listOf(PLAYER_PATH to primaryPayload))
         } catch (problem: java.io.InterruptedIOException) {

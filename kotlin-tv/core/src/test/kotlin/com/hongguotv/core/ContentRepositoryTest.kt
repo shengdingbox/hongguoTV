@@ -194,6 +194,55 @@ class ContentRepositoryTest {
         assertEquals(listOf(playerPath,"/novel/player/multi_video_model/v1/"),postRoutes)
     }
 
+    @Test fun v5PlaybackQueriesUseTheRegisteredDeviceProfile() {
+        // 2026-11-23 起服务端会把匿名身份和查询串里的设备字段一起校验。
+        // 这里固定成与注册档案不同的机型，若实现又写死 PGT-AN10/HONOR 就会失败。
+        val identity = linkedMapOf(
+            "device_id" to "1905892595378490",
+            "iid" to "1905892595382586",
+            "cdid" to "530e9d5a2b7c4f18a9603d1ce74b82f6",
+            "device_type" to "23127PN0CC",
+            "device_brand" to "Xiaomi",
+            "os_version" to "14",
+            "os_api" to "34",
+            "resolution" to "1200*2670",
+            "dpi" to "460",
+            "channel" to "xiaomi_8662_64",
+            "openudid" to "3ec08825b7ccd3d5",
+        )
+        val signer = FakeSigner(identity)
+        val requests = mutableListOf<Request>()
+        val repo = repository(signer = signer) { request ->
+            requests += request
+            when (request.url.encodedPath) {
+                "/novel/player/multi_video_model/v1/" ->
+                    """{"code":0,"data":{"1004":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}}"""
+                else -> videoInfo()
+            }
+        }
+
+        assertEquals("1080P", repo.stream("123").quality)
+
+        val playbackUrl = requests.first { it.url.encodedPath == "/novel/player/multi_video_model/v1/" }.url
+        // POST 查询串保留了手机端标准字段，并且设备身份来自注册档案。
+        assertEquals("23127PN0CC", playbackUrl.queryParameter("device_type"))
+        assertEquals("Xiaomi", playbackUrl.queryParameter("device_brand"))
+        assertEquals("14", playbackUrl.queryParameter("os_version"))
+        assertEquals("34", playbackUrl.queryParameter("os_api"))
+        assertEquals("1200*2670", playbackUrl.queryParameter("resolution"))
+        assertEquals("460", playbackUrl.queryParameter("dpi"))
+        assertEquals("xiaomi_8662_64", playbackUrl.queryParameter("channel"))
+        assertNotNull(playbackUrl.queryParameter("ts"))
+
+        val getRequest = MobilePlayback.videoTabRequest("123", signer.profile(), 1_700_000_000_000L)
+        assertEquals("23127PN0CC", getRequest.url.queryParameter("device_type"))
+        assertEquals("Xiaomi", getRequest.url.queryParameter("device_brand"))
+        assertEquals("14", getRequest.url.queryParameter("os_version"))
+        assertEquals("34", getRequest.url.queryParameter("os_api"))
+        assertEquals("1700000000", getRequest.url.queryParameter("ts"))
+        assertEquals("1700000000", getRequest.header("x-khronos"))
+    }
+
     @Test fun videoTabRouteSuppliesPlaybackModel() {
         val paths=mutableListOf<String>()
         val repo=repository(signer = LegacyFakeSigner()) { request ->

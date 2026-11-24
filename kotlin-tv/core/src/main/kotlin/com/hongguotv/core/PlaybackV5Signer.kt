@@ -6,7 +6,7 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/** 播放专用 v04.10.03 签名；进程启动时间和 nonce 在所有取址请求间保持稳定。 */
+/** 播放专用 v04.06.04 签名；进程启动时间和 nonce 在所有取址请求间保持稳定。 */
 internal class PlaybackV5Signer private constructor(
     private val clock: () -> Long = System::currentTimeMillis,
     private val random: () -> Double = Math::random,
@@ -120,21 +120,21 @@ internal class PlaybackV5Signer private constructor(
         val version = v("version_name", "7.4.3.32")
         val deviceInfo = proto(
             f(1,1,"sint"), f(2,2,"sint"), f(3,"8662"), f(4, v("device_id", "0")),
-            f(5, processNonce), f(6,"!noperm!"), f(12,"Asia/Shanghai,8"), f(13,"zh_CN"),
+            f(5, processNonce), f(6,"!noperm!"), f(7,"!notset!"), f(12,"Asia/Shanghai,8"), f(13,"zh_CN"),
             f(22, v("os_version", "16")), f(25, processStarted,"sint"),
             f(30, v("device_type", "25053RT47C")), f(31,"HONOR"),
             f(32, v("device_type", "25053RT47C")), f(34,"HONOR"),
         )
-        val env = proto(f(6,"v04.10.03.04-bugfix"), f(8, v("channel", "update_64")),
+        val env = proto(f(6,"v04.06.04.03-bugfix"), f(8, v("channel", "update_64")),
             f(12, deviceInfo), f(14, version))
         val message = proto(
             f(1, PlaybackV5Constants.magic), f(2,5,"sint"), f(3, unsigned(rand()),"sint"),
             f(4,"8662"), f(5, v("device_id", "0")), f(6, PlaybackV5Constants.license),
-            f(7, version), f(8,"v04.10.03-ml-android"), f(9, 0x040a0300,"sint"),
+            f(7, version), f(8,"v04.06.04-ml-android"), f(9, 0x04060400,"sint"),
             f(10, flags), f(12, ts,"sint"), f(13, f13), f(14, query.copyOf(6)),
             f(15, proto(f(1,1,"sint"),f(2,1,"sint"),f(3,1,"sint"),f(5,1,"sint"))),
             f(17, ts,"sint"), f(20,"none"), f(21,377,"sint"), f(23, env),
-            f(24, """{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}"""),
+            f(24, """{"cmr":16777216,"cmr2":16777216,"un_h":1879194040,"vpn":0,"kd":0,"fkd":3672518972,"pd":-1872573247,"dyn":"","do":0,"tk":true}"""),
         )
         val nonce = rand()
         val key = PlaybackV5Constants.signKey
@@ -161,7 +161,7 @@ internal class PlaybackV5Signer private constructor(
             var x8 = (java.lang.Long.rotateRight(b8,8)+b0) xor i.toLong()
             words.add(x8); x8 = x8 xor java.lang.Long.rotateRight(b0,61); table.add(x8); b0=x8; b8=words.removeAt(0)
         }
-        // v5 协议的内嵌 license 换成 PlaybackV5Constants.license（官方 v04.10.03 的值）。
+        // v5 协议的内嵌 license 使用 PlaybackV5Constants.license（官方 v04.06.04 的值）。
         val text = ("$ts-" + PlaybackV5Constants.license + "-8662").toByteArray()
         val padding = 16 - text.size % 16
         val data = text+ByteArray(padding) { padding.toByte() }
@@ -175,15 +175,21 @@ internal class PlaybackV5Signer private constructor(
     }
     fun sign(base: String, values: Map<String,String>, body: ByteArray?, now: Long = clock()): SignedRequest {
         val ts = (now / 1000).toInt()
+        // 旧版播放协议要求查询串带 ts（秒），且必须与 x-khronos 完全一致。
+        // 先复制调用方参数再补字段，既不改变调用方的 Map，也能让签名与实际 URL 使用同一份值。
+        val signedValues = linkedMapOf<String, String>().apply {
+            putAll(values)
+            put("ts", ts.toString())
+        }
         for (offset in 0..1023) {
             val ticket = now + offset
-            val query = encodeQuery(values + ("_rticket" to ticket.toString()))
+            val query = encodeQuery(signedValues + ("_rticket" to ticket.toString()))
             if (branch(query, body, ts) != 0) continue
             val url = "$base?$query"
             val headers = linkedMapOf(
                 "x-khronos" to ts.toString(),
                 "x-helios" to helios(ts),
-                "x-medusa" to medusaV5(url, body, ts, values),
+                "x-medusa" to medusaV5(url, body, ts, signedValues),
             )
             if (body != null) {
                 headers["Content-Type"] = "application/json; charset=utf-8"

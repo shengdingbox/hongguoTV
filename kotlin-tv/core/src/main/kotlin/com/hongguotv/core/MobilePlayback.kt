@@ -2,11 +2,9 @@
 // GPL-3.0-only derived; see the README 来源与声明 section.
 package com.hongguotv.core
 
-import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.util.concurrent.TimeUnit
-import java.util.zip.GZIPOutputStream
 import okhttp3.CookieJar
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -16,12 +14,11 @@ import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 
-/** 原生算法的 V5 取址通道；使用共用匿名身份，签名覆盖实际发送的 gzip 字节。 */
+/** 原生算法的 V5 取址通道；使用共用匿名身份，签名覆盖实际发送的明文 JSON 字节。 */
 internal object MobilePlayback {
     const val MODEL_BASE = "https://api5-normal-sinfonlinea.fqnovel.com"
-    // 与参考实现一致：dr_scene 保留在路径段（player/v1），请求体里同时携带；
-    // 服务端对两种形态都兼容，但参考实测的路径段形态响应更快更稳。
-    const val MODEL_PATH = "/novel/player/multi_video_model/player/v1"
+    // 旧版播放协议使用无场景后缀的路径，且请求体不再携带 dr_scene。
+    const val MODEL_PATH = "/novel/player/multi_video_model/v1/"
     const val GROUP_SHORT = "1004"
     const val GROUP_PUGC = "1001"
     // 沿用新协议的原始 UA；查询串中的版本按手机端模板使用 74332。
@@ -49,27 +46,39 @@ internal object MobilePlayback {
         if (!profile.available || profile.params["cdid"].isNullOrBlank()) {
             throw SignatureException("本机匿名设备尚未就绪")
         }
+        // 设备字段优先取注册档案，未录入的旧档案再回退到匿名模板。
+        fun identity(key: String, fallback: String) = profile.params[key]?.takeIf { it.isNotBlank() } ?: fallback
         val query = linkedMapOf(
-            "aid" to "8662", "app_name" to "novelread",
+            "device_platform" to "android", "os" to "android", "ssmix" to "a",
+            "_rticket" to now.toString(),
+            "cdid" to profile.params.getValue("cdid"),
+            "channel" to identity("channel", "vivo_8662_64"),
+            "aid" to identity("aid", "8662"), "app_name" to identity("app_name", "novelread"),
             "version_code" to "74332", "version_name" to "7.4.3.32",
-            "channel" to "vivo_8662_64", "device_platform" to "android",
-            "device_type" to "PGT-AN10", "os_version" to "12", "update_version_code" to "74332",
-            "iid" to profile.installId, "cdid" to profile.params.getValue("cdid"),
-            "device_id" to profile.deviceId, "_rticket" to now.toString(),
+            "manifest_version_code" to "74332", "update_version_code" to "74332",
+            "resolution" to identity("resolution", "1260*2800"), "dpi" to identity("dpi", "480"),
+            "device_type" to identity("device_type", "PGT-AN10"),
+            "device_brand" to identity("device_brand", "HONOR"),
+            "language" to identity("language", "zh"), "os_api" to identity("os_api", "31"),
+            "os_version" to identity("os_version", "12"), "ac" to identity("ac", "wifi"),
+            "host_abi" to "arm64-v8a", "dragon_device_type" to "phone",
+            "pv_player" to "74332", "compliance_status" to "0",
+            "need_personal_recommend" to "1", "player_so_load" to "1",
+            "is_android_pad_screen" to "0",
+            "iid" to profile.installId, "device_id" to profile.deviceId,
         )
-        val payload = JSONObject(
-            """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"$group":${JSONArray(ids)}},"dr_scene":"player"}"""
-        )
-        val output = ByteArrayOutputStream()
-        GZIPOutputStream(output).use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
-        val body = output.toByteArray()
+        // 旧版播放协议按明文 JSON 计算 MD5 和签名，不能再额外 gzip。
+        // device_level 继续固定为 1：电视端在 3 下会收到无法解码的 bytevc2。
+        val body = JSONObject(
+            """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"$group":${JSONArray(ids)}}}"""
+        ).toString().toByteArray(Charsets.UTF_8)
         // 参考项目会按会话健康度在同族播放域名之间轮换；签名覆盖最终请求地址，不能先签名再改 host。
         val signed = PlaybackV5Signer.shared.sign("https://$host$MODEL_PATH", query, body, now)
         val request = Request.Builder().url(signed.url)
             .header("User-Agent", PLAYBACK_UA)
-            .header("Accept", "application/json")
-            .header("Content-Encoding", "gzip")
-            // 与参考实现一致：网关用 gzip 字节的 MD5 校验请求体完整性。
+            .header("Accept", "application/json; charset=utf-8,application/x-protobuf")
+            .header("x-xs-from-web", "0")
+            // 网关按实际发送的明文 JSON 字节校验请求体完整性。
             .header("x-ss-stub", java.security.MessageDigest.getInstance("MD5").digest(body)
                 .joinToString("") { "%02X".format(it) })
             .apply { signed.headers.forEach { (key, value) -> header(key, value) } }
@@ -136,13 +145,25 @@ internal object MobilePlayback {
             throw SignatureException("本机匿名设备尚未就绪")
         }
         // 键序与签名对字节级敏感：身份键 + 业务键在前，_rticket 由签名器追加在末尾。
+        // 设备字段必须与匿名注册档案一致，不能写死成另一台机型，否则服务端会回 200 + 空体。
+        fun identity(key: String, fallback: String) = profile.params[key]?.takeIf { it.isNotBlank() } ?: fallback
         val values = linkedMapOf(
-            "aid" to "8662", "app_name" to "novelread",
+            "device_platform" to "android", "os" to "android", "ssmix" to "a",
+            "cdid" to profile.params.getValue("cdid"),
+            "channel" to identity("channel", "vivo_8662_64"),
+            "aid" to identity("aid", "8662"), "app_name" to identity("app_name", "novelread"),
             "version_code" to "74332", "version_name" to "7.4.3.32",
-            "channel" to "vivo_8662_64", "device_platform" to "android",
-            "device_type" to "PGT-AN10", "os_version" to "12", "update_version_code" to "74332",
-            "iid" to profile.installId, "cdid" to profile.params.getValue("cdid"),
-            "device_id" to profile.deviceId,
+            "manifest_version_code" to "74332", "update_version_code" to "74332",
+            "resolution" to identity("resolution", "1260*2800"), "dpi" to identity("dpi", "480"),
+            "device_type" to identity("device_type", "PGT-AN10"),
+            "device_brand" to identity("device_brand", "HONOR"),
+            "language" to identity("language", "zh"), "os_api" to identity("os_api", "31"),
+            "os_version" to identity("os_version", "12"), "ac" to identity("ac", "wifi"),
+            "host_abi" to "arm64-v8a", "dragon_device_type" to "phone",
+            "pv_player" to "74332", "compliance_status" to "0",
+            "need_personal_recommend" to "1", "player_so_load" to "1",
+            "is_android_pad_screen" to "0",
+            "iid" to profile.installId, "device_id" to profile.deviceId,
             "video_id" to id, "video_id_type" to "0", "device_level" to "1",
             "need_all_video_definition" to "1", "need_mp4_align" to "0",
             "use_os_player" to "0", "video_platform" to "1024", "source" to "0",

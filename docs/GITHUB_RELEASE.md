@@ -10,7 +10,7 @@ bash scripts/publish-tv-release.sh
 
 也可以使用 [GitHub Actions → 发布打包服务器最新版](https://github.com/superhuluwa/hongguoTV/actions/workflows/release.yml)，选择 `main`，点击 **Run workflow** 发布。
 
-- `task_id` 留空：按构建任务 ID 从新到旧选择最新成功的 APK，跳过更新源码、失败、取消和未完成的任务。
+- `task_id` 留空：按构建任务 ID 从新到旧选择最新成功的构建，跳过更新源码、失败、取消和未完成的任务；所选任务还须具有配套的双包清单。
 - `task_id` 填写任务 ID：发布指定的成功构建。
 - `notes`：可选补充说明，会放在发布说明开头；不填时只有「本次更新」和「构建信息」两节。
 
@@ -19,14 +19,22 @@ bash scripts/publish-tv-release.sh
 在已经准备好 NDK 27.1.12297006、CMake 3.22.1、Python 3.12+、curl 和 make 的环境中，为 Gradle 增加
 `-PHONGGUOTV_BUILD_ANDROID5=true` 可同时生成标准版与 Android 5 兼容版；也可指定
 `:app:assembleAndroid5Release` 只生成兼容版。这个开关不会改变标准版的最低系统和依赖。
-发布任务仍按所选构建记录读取单个 APK，不会自动收集同目录下另一变体；发布说明中的最低系统
-以构建记录 `minSdk` 为准。
+发布任务默认读取标准构建的 `result.json` 和同目录的 `dual-apks.json`，把标准包与 Android 5
+兼容包一起上传到同一个 Release。清单根节点的版本、版本代码、提交、签名、标准 APK 及校验值
+必须与成功构建一致；`android5` 字段记录兼容包的 `artifactName`、`minSdk`（21 或 22）、
+`apkSize` 和 `sha256`，其他共用信息继承根节点。若兼容包另外记录版本、提交、包名或签名，
+也必须与标准包一致。归档阶段应确保两包来自同一提交、使用同一版本和证书。
 
-脚本创建的是正式 GitHub Release：先创建草稿，将所选构建的 APK 上传到该 Release 的 **Assets**，确认 APK 完整后再正式发布并设为 Latest。标准版使用 `hongguotv-kotlin-<版本号>.apk`，例如 `hongguotv-kotlin-1.1.70.apk`；最低系统为 API 21/22 的兼容包使用 `hongguotv-kotlin-<版本号>-android5.apk`，与标准版附件分开命名；不生成或上传 `build-info.json`、`SHA256SUMS`。发布成功会输出 APK 的直接下载地址。APK 的大小和 SHA-256 必须与构建记录一致。Release 使用 `build-v<versionName>-<versionCode>` 标签，指向该 APK 构建记录中的完整源码提交，而非运行脚本或工作流时的最新源码。对应提交须已同步到 GitHub；已有标签必须指向同一提交，缺少标签时由 GitHub 在发布 Release 时自动生成，脚本不再提前单独创建 tag。
+脚本校验两个实际文件的大小与 SHA-256，拒绝缺包、混用不同构建记录或把标准包复制成兼容包。
+例如任务 327 已包含 `dual-apks.json` 和两个签名 APK，可直接使用 `--task-id 327` 发布。
+当前构建缺少兼容包时不会自动拼接旧版本，也不会重新编译；需要沿用单包发布时显式指定
+`--single-apk`。
+
+脚本创建的是正式 GitHub Release：先创建草稿，将所选构建的两个 APK 上传到该 Release 的 **Assets**，确认附件齐全后再正式发布并设为 Latest。标准版使用 `hongguotv-kotlin-<版本号>.apk`，例如 `hongguotv-kotlin-1.1.70.apk`；最低系统为 API 21/22 的兼容包使用 `hongguotv-kotlin-<版本号>-android5.apk`，与标准版附件分开命名；不生成或上传 `build-info.json`、`SHA256SUMS`。发布成功会输出 APK 的直接下载地址。APK 的大小和 SHA-256 必须与构建记录一致。Release 使用 `build-v<versionName>-<versionCode>` 标签，指向该 APK 构建记录中的完整源码提交，而非运行脚本或工作流时的最新源码。对应提交须已同步到 GitHub；已有标签必须指向同一提交，缺少标签时由 GitHub 在发布 Release 时自动生成，脚本不再提前单独创建 tag。
 
 发布说明由脚本自动生成，不再是只取本次构建那一条提交信息。「本次更新」一节会以**上一个正式 Release** 的标签为基准，通过 GitHub 的 compare 接口取出两个版本之间新增的提交，直接逐条列出（`<短哈希> 提交标题`），不再额外写一行「对比上一版本 …」的说明；合并提交（多父提交或以 `Merge ` 开头的）不计入，最多列出 50 条，超出时注明剩余数量。没有提交可列时显示「没有新增的功能改动」。找不到可对比的上一版本时（例如首个版本，或两个版本没有共同祖先），退化为列出本次提交之前的历史。补发旧构建时会挑选仍是本次提交祖先的版本作为基准，不会误用更新的版本。`--dry-run` 会打印完整的发布说明预览。
 
-重复运行会检查原 Release 的 Assets，补传缺失或不完整的 APK，保留已上传完整的 APK；已有正式 Release 会保持发布状态，确认 APK 完整后才报告完成。之前只有 tag 时会为其创建 Release。脚本会输出草稿链接，上传失败时保留草稿，重新运行会通过 Release 列表查找并复用同名草稿，继续发布。遇到连接重置、超时或 GitHub 临时服务错误时，每个请求最多尝试 4 次，重试间隔依次为 2、4、8 秒。创建草稿或上传附件的响应中断后，会先查询 GitHub 上的状态，复用已完成的结果，并清理未完成的附件后补传。
+重复运行会逐个检查两个 APK 的 Assets，补传缺失或不完整的附件，保留已上传完整的 APK；已有正式 Release 会保持发布状态，确认 APK 完整后才报告完成。之前只有 tag 时会为其创建 Release。脚本会输出草稿链接，上传失败时保留草稿，重新运行会通过 Release 列表查找并复用同名草稿，继续发布。遇到连接重置、超时或 GitHub 临时服务错误时，每个请求最多尝试 4 次，重试间隔依次为 2、4、8 秒。创建草稿或上传附件的响应中断后，会先查询 GitHub 上的状态，复用已完成的结果，并清理未完成的附件后补传。
 
 ## Shell 一键发布
 
@@ -42,8 +50,11 @@ GitHub 认证复用**执行命令的机器**上的 `GH_TOKEN` / `GITHUB_TOKEN`�
 # 模拟执行：实际连接 Debian、校验 APK 并查询 GitHub，不创建标签或发布
 bash scripts/publish-tv-release.sh --dry-run
 
-# 指定构建任务与发布说明
-bash scripts/publish-tv-release.sh --task-id 165 --notes '本次更新说明'
+# 指定已有双包归档的构建任务与发布说明
+bash scripts/publish-tv-release.sh --task-id 327 --notes '本次更新说明'
+
+# 仅发布当前 APK，适用于没有配套兼容包的旧构建
+bash scripts/publish-tv-release.sh --task-id 165 --single-apk
 
 # 如果已在 Debian 打包机上，直接读取本机构建产物并使用该机的 GitHub 凭据
 bash scripts/publish-tv-release.sh --local

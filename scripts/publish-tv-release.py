@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish a completed APK from the Debian build server without rebuilding it."""
+"""发布打包服务器已完成的标准版与 Android 5 兼容版 APK，不重新编译应用。"""
 
 import argparse
 import hashlib
@@ -145,7 +145,7 @@ def digest(path):
     return sha256.hexdigest()
 
 
-def prepare_assets(directory, result, output):
+def prepare_assets(directory, result, output, single_apk=False):
     name = result.get("artifactName", "")
     version = result.get("versionName", "")
     code = result.get("versionCode")
@@ -163,24 +163,80 @@ def prepare_assets(directory, result, output):
     minimum_sdk = result.get("minSdk")
     if type(minimum_sdk) is not int or minimum_sdk < 21:
         raise ReleaseError("构建记录中的最低 Android SDK 无效。")
-    # Android 5 兼容包单独命名，避免与同版本标准包互相覆盖。
-    suffix = "-android5" if minimum_sdk <= 22 else ""
-    apk_name = f"hongguotv-kotlin-{version}{suffix}.apk"
-    source = directory / name
-    if source.is_symlink() or not source.is_file():
-        raise ReleaseError(f"构建任务 {directory.name} 的 APK 已不存在。")
-    apk = output / apk_name
-    shutil.copyfile(source, apk)
-    if apk.stat().st_size != result.get("apkSize") or digest(apk) != result.get("sha256"):
-        raise ReleaseError("APK 大小或 SHA-256 与成功构建记录不符，已停止发布。")
     metadata = {
         key: result[key] for key in (
             "versionName", "versionCode", "commit", "commitSubject", "packageName", "minSdk",
             "apkSize", "sha256", "signatureSha256", "startedAt", "completedAt",
         ) if key in result
     }
-    metadata.update(taskId=int(directory.name), artifactName=apk_name, sourceArtifactName=name)
-    return [apk], metadata
+    metadata.update(taskId=int(directory.name))
+    records = [result]
+    if not single_apk:
+        if minimum_sdk <= 22:
+            raise ReleaseError("双包发布需要选择标准版构建任务；仅发布当前包请使用 --single-apk。")
+        manifest_file = directory / "dual-apks.json"
+        if manifest_file.is_symlink() or not manifest_file.is_file():
+            raise ReleaseError(
+                f"构建任务 {directory.name} 缺少 dual-apks.json，无法确认配套的 Android 5 兼容包。"
+                "请先完成同版本双包归档；仅发布当前 APK 可使用 --single-apk。"
+            )
+        try:
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as error:
+            raise ReleaseError(f"无法读取双包清单：{error}") from None
+        if not isinstance(manifest, dict) or manifest.get("status") != "SUCCESS":
+            raise ReleaseError("双包清单没有记录成功构建，已停止发布。")
+        # 清单根节点记录两包共用的构建身份，禁止拼接其他版本或其他提交的兼容包。
+        for key in ("artifactName", "versionName", "versionCode", "commit", "minSdk", "apkSize", "sha256", "signatureSha256"):
+            if manifest.get(key) != result.get(key):
+                raise ReleaseError(f"双包清单的 {key} 与所选成功构建不一致，已停止发布。")
+        signature = result.get("signatureSha256")
+        if not isinstance(signature, str) or not re.fullmatch(r"[0-9a-f]{64}", signature):
+            raise ReleaseError("双包构建缺少有效的签名证书校验值，已停止发布。")
+        if manifest.get("packageName", result["packageName"]) != result["packageName"]:
+            raise ReleaseError("双包清单的包名与成功构建不一致，已停止发布。")
+        android5 = manifest.get("android5")
+        if not isinstance(android5, dict) or type(android5.get("minSdk")) is not int or android5["minSdk"] not in (21, 22):
+            raise ReleaseError("双包清单缺少有效的 Android 5 兼容包记录，已停止发布。")
+        for key in ("versionName", "versionCode", "commit", "packageName", "signatureSha256"):
+            if android5.get(key, result.get(key)) != result.get(key):
+                raise ReleaseError(f"Android 5 兼容包的 {key} 与标准包不一致，已停止发布。")
+        if android5.get("status", "SUCCESS") != "SUCCESS":
+            raise ReleaseError("Android 5 兼容包尚未成功完成，已停止发布。")
+        if android5.get("artifactName") == name or android5.get("sha256") == result.get("sha256"):
+            raise ReleaseError("Android 5 兼容包不能使用标准 APK 的副本，已停止发布。")
+        records.append({**metadata, **android5})
+
+    assets = []
+    artifacts = []
+    for record in records:
+        source_name = record.get("artifactName", "")
+        size = record.get("apkSize")
+        checksum = record.get("sha256")
+        if not isinstance(source_name, str) or Path(source_name).name != source_name or not source_name.endswith(".apk"):
+            raise ReleaseError("构建记录中的 APK 文件名无效。")
+        if type(size) is not int or size <= 0 or not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{64}", checksum):
+            raise ReleaseError("构建记录中的 APK 大小或 SHA-256 无效。")
+        is_legacy = record["minSdk"] <= 22
+        label = "Android 5 兼容版" if is_legacy else "标准版"
+        apk_name = f"hongguotv-kotlin-{version}{'-android5' if is_legacy else ''}.apk"
+        source = directory / source_name
+        if source.is_symlink() or not source.is_file():
+            raise ReleaseError(f"构建任务 {directory.name} 的{label} APK 已不存在：{source_name}")
+        apk = output / apk_name
+        shutil.copyfile(source, apk)
+        if apk.stat().st_size != size or digest(apk) != checksum:
+            raise ReleaseError(f"{label} APK 大小或 SHA-256 与构建记录不符，已停止发布。")
+        assets.append(apk)
+        artifacts.append({
+            "label": label, "artifactName": apk_name, "sourceArtifactName": source_name,
+            "minSdk": record["minSdk"], "apkSize": size, "sha256": checksum,
+            "signatureSha256": record.get("signatureSha256"),
+        })
+    metadata.update(
+        artifactName=artifacts[0]["artifactName"], sourceArtifactName=name, artifacts=artifacts,
+    )
+    return assets, metadata
 
 
 def tag_commit(github, tag):
@@ -346,10 +402,16 @@ def release_notes(metadata, notes, commits):
         f"- 版本代码：{metadata['versionCode']}",
         f"- 源码提交：{metadata['commit']}（{metadata.get('commitSubject', '未记录提交说明')}）",
         f"- 构建完成时间：{metadata.get('completedAt', '未记录')}",
-        f"- 最低系统：Android API {metadata['minSdk']}",
-        f"- APK SHA-256：`{metadata['sha256']}`",
+    ])
+    for artifact in metadata.get("artifacts") or [metadata]:
+        label = artifact.get("label", "APK")
+        details.extend([
+            f"- {label}：`{artifact['artifactName']}`，最低 Android API {artifact['minSdk']}",
+            f"- {label} SHA-256：`{artifact['sha256']}`",
+        ])
+    details.extend([
         "",
-        "请在本 Release 的 Assets 中下载 APK。",
+        "请在本 Release 的 Assets 中下载适合设备系统的 APK。",
         "APK 来自打包服务器已成功完成的签名构建。",
     ])
     return "\n".join(details)
@@ -386,8 +448,9 @@ def recover_upload(github, release_id, path):
 
 def publish(github, assets, metadata, notes, dry_run=False):
     tag = f"build-v{metadata['versionName']}-{metadata['versionCode']}"
-    if not any(path.name == metadata["artifactName"] for path in assets):
-        raise ReleaseError("发布附件中缺少本次构建的 APK，已停止发布。")
+    required = {item["artifactName"] for item in metadata.get("artifacts") or [metadata]}
+    if not required.issubset({path.name for path in assets}):
+        raise ReleaseError("发布附件中缺少本次构建的配套 APK，已停止发布。")
     print("检查 GitHub 源码提交与发布标签……", flush=True)
     # Fail before creating anything when the build commit has not reached GitHub.
     if github.request("GET", "/commits/" + metadata["commit"], missing_ok=True) is None:
@@ -482,8 +545,9 @@ def publish(github, assets, metadata, notes, dry_run=False):
         raise ReleaseError(
             f"{error}\nRelease 尚未确认附件齐全并发布完成：{release_url}。重新执行脚本可继续补传。"
         ) from None
-    apk = uploaded_assets[metadata["artifactName"]]
-    print(f"APK 下载地址：{apk['browser_download_url']}", flush=True)
+    for path in assets:
+        apk = uploaded_assets[path.name]
+        print(f"APK 下载地址（{path.name}）：{apk['browser_download_url']}", flush=True)
     return tag, release_url
 
 
@@ -494,6 +558,8 @@ def main():
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", DEFAULT_REPOSITORY))
     parser.add_argument("--notes", default=os.environ.get("RELEASE_NOTES", ""),
                         help="补充说明，放在发布说明开头；更新列表由脚本自动生成")
+    parser.add_argument("--single-apk", action="store_true",
+                        help="仅发布所选构建的当前 APK；默认要求标准包与 Android 5 兼容包一起发布")
     parser.add_argument("--dry-run", action="store_true",
                         help="读取并校验真实 APK，查询 GitHub；不创建标签、上传附件或发布 Release")
     args = parser.parse_args()
@@ -501,7 +567,7 @@ def main():
         raise ReleaseError("GitHub 仓库名称格式应为 owner/repository。")
     directory, result = read_build(args.tasks_dir, args.task_id.strip())
     with tempfile.TemporaryDirectory(prefix="hongguotv-release-") as temporary:
-        assets, metadata = prepare_assets(directory, result, Path(temporary))
+        assets, metadata = prepare_assets(directory, result, Path(temporary), single_apk=args.single_apk)
         print(f"发布构建任务 {metadata['taskId']}：{metadata['versionName']} ({metadata['versionCode']})，源码 {metadata['commit']}", flush=True)
         github = GitHub(args.repo, token_from_environment())
         tag, url = publish(github, assets, metadata, args.notes, dry_run=args.dry_run)

@@ -212,7 +212,7 @@ libde265 软件解码，结果继续复用 Glide 位图池和磁盘缓存。为�
 bash scripts/publish-tv-release.sh
 ```
 
-也可以在 [GitHub Actions](https://github.com/superhuluwa/hongguoTV/actions/workflows/release.yml) 点击 **Run workflow** 发布。该流程读取已经完成的构建，不重新编译或修改签名；按构建记录将标准版 `hongguotv-kotlin-<版本号>.apk` 或兼容版 `hongguotv-kotlin-<版本号>-android5.apk` 上传到 Assets，标签为 `build-v<versionName>-<versionCode>` 并指向实际构建的源码提交。推送代码不会自动发版。
+也可以在 [GitHub Actions](https://github.com/superhuluwa/hongguoTV/actions/workflows/release.yml) 点击 **Run workflow** 发布。该流程读取已经完成的构建，不重新编译或修改签名；按同一任务的构建记录和 `dual-apks.json`，将标准版 `hongguotv-kotlin-<版本号>.apk` 与兼容版 `hongguotv-kotlin-<版本号>-android5.apk` 一起上传到 Assets；缺包时停止，旧构建可用 `--single-apk` 仅发布当前 APK，标签为 `build-v<versionName>-<versionCode>` 并指向实际构建的源码提交。推送代码不会自动发版。
 
 认证、指定构建任务、模拟执行、断线恢复和 self-hosted runner 配置见 [发布说明](docs/GITHUB_RELEASE.md)。
 

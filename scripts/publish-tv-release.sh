@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish the latest completed APK on Debian; never rebuild the application.
+# 在 Debian 上发布已完成的标准版和 Android 5 兼容版，不重新编译应用。
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,15 +12,18 @@ usage() {
   cat <<'HELP'
 用法：bash scripts/publish-tv-release.sh [--local] [发布参数]
 
-默认连接 Debian 打包服务器，创建包含最新成功构建 APK 的正式 GitHub Release，并设为 Latest。
-Release 的 Assets 仅上传 hongguotv-kotlin-<版本号>.apk，文件名不带系统后缀。
+默认连接 Debian 打包服务器，将最新成功构建的两个 APK 上传到同一个 GitHub Release，并设为 Latest。
+标准版为 hongguotv-kotlin-<版本号>.apk，兼容版为 hongguotv-kotlin-<版本号>-android5.apk。
+从同一任务目录的 dual-apks.json 读取兼容包，校验版本、提交、签名记录及两包文件大小、SHA-256。
+默认缺少任何一个包都会停止；需要沿用单包发布时显式添加 --single-apk。
 发布流程为创建 Release 草稿、上传附件、正式发布；所需 tag 由 GitHub 随发布自动创建。
 重复执行会补齐已有 Release 缺失的 APK，已上传完整的 APK 会保留。
 GitHub 认证复用本机 GH_TOKEN / GITHUB_TOKEN 或已保存的 GitHub Git 凭据。
 
   --local           已在 Debian 打包机上时使用，直接读取本机构建产物
   --dry-run         模拟执行：读取并校验真实 APK 和 GitHub 连接，不写入 GitHub
-  --task-id ID      指定成功的构建任务；不填则选择最新成功的 APK
+  --task-id ID      指定成功的构建任务；不填则选择最新成功的构建
+  --single-apk      仅上传当前构建的 APK，不要求配套 Android 5 兼容包
   --repo OWNER/REPO 指定 GitHub 仓库；默认 superhuluwa/hongguoTV
   --notes TEXT      补充发布说明（放在正文开头）；更新列表自动生成
   --tasks-dir PATH  指定打包机上的构建任务目录
@@ -80,8 +83,8 @@ else
     -- "$build_host")
 fi
 
-# The remote command is constant. Arguments, source and GitHub credentials travel
-# only over encrypted SSH stdin, never in process arguments or remote files.
+# 远端命令固定；参数、脚本和 GitHub 凭据只通过加密 SSH 标准输入传输。
+# 不把凭据写入进程参数或远端文件。
 remote_bootstrap='
 import json
 import os

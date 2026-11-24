@@ -30,7 +30,7 @@ bash scripts/publish-tv-release.sh
 当前构建缺少兼容包时不会自动拼接旧版本，也不会重新编译；需要沿用单包发布时显式指定
 `--single-apk`。
 
-脚本创建的是正式 GitHub Release：先创建草稿，将所选构建的两个 APK 上传到该 Release 的 **Assets**，确认附件齐全后再正式发布并设为 Latest。GitHub 按附件创建时间倒序展示，因此脚本先上传 Android 5 兼容版、最后上传标准版，让作为通用包的 标准版显示在 Assets 顶部。标准版使用 `hongguotv-kotlin-<版本号>.apk`，例如 `hongguotv-kotlin-1.1.70.apk`；最低系统为 API 21/22 的兼容包使用 `hongguotv-kotlin-<版本号>-android5.apk`，与标准版附件分开命名；不生成或上传 `build-info.json`、`SHA256SUMS`。发布成功会输出 APK 的直接下载地址。APK 的大小和 SHA-256 必须与构建记录一致。Release 使用 `build-v<versionName>-<versionCode>` 标签，指向该 APK 构建记录中的完整源码提交，而非运行脚本或工作流时的最新源码。对应提交须已同步到 GitHub；已有标签必须指向同一提交，缺少标签时由 GitHub 在发布 Release 时自动生成，脚本不再提前单独创建 tag。
+脚本创建的是正式 GitHub Release：先创建草稿，将所选构建的两个 APK 上传到该 Release 的 **Assets**，确认附件齐全后再正式发布并设为 Latest。GitHub 按附件创建时间从早到晚展示，因此脚本先上传标准版、最后上传 Android 5 兼容版，让作为通用包的标准版显示在 Assets 顶部。标准版使用 `hongguotv-kotlin-<版本号>.apk`，例如 `hongguotv-kotlin-1.1.70.apk`；最低系统为 API 21/22 的兼容包使用 `hongguotv-kotlin-<版本号>-android5.apk`，与标准版附件分开命名；不生成或上传 `build-info.json`、`SHA256SUMS`。发布成功会输出 APK 的直接下载地址。APK 的大小和 SHA-256 必须与构建记录一致。Release 使用 `build-v<versionName>-<versionCode>` 标签，指向该 APK 构建记录中的完整源码提交，而非运行脚本或工作流时的最新源码。对应提交须已同步到 GitHub；已有标签必须指向同一提交，缺少标签时由 GitHub 在发布 Release 时自动生成，脚本不再提前单独创建 tag。
 
 发布说明由脚本自动生成，不再是只取本次构建那一条提交信息。「本次更新」一节会以**上一个正式 Release** 的标签为基准，通过 GitHub 的 compare 接口取出两个版本之间新增的提交，直接逐条列出（`<短哈希> 提交标题`），不再额外写一行「对比上一版本 …」的说明；合并提交（多父提交或以 `Merge ` 开头的）不计入，最多列出 50 条，超出时注明剩余数量。没有提交可列时显示「没有新增的功能改动」。找不到可对比的上一版本时（例如首个版本，或两个版本没有共同祖先），退化为列出本次提交之前的历史。补发旧构建时会挑选仍是本次提交祖先的版本作为基准，不会误用更新的版本。`--dry-run` 会打印完整的发布说明预览。
 

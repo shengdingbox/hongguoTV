@@ -15,13 +15,13 @@ import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
 
 /**
- * 使用 openhongguo-signer（unidbg 跑真实 libmetasec_ml.so）完成签名。
+ * 使用 hongguosign（unidbg 跑真实 libmetasec_ml.so）完成签名。
  *
  * 与 [FridaSigner] 的区别在服务和协议，不在设备身份：
  * - 设备档案仍由本机 [RemoteSigner] 注册并持久化，[sign] 会先补全身份字段再送去签名；
  * - 签名服务只负责把完整的 URL（含查询串）与请求体字节换成六个签名头。
  *
- * 服务接口见 openhongguo-signer：`POST /feature-hash`
+ * 服务接口兼容 openhongguo-signer：`POST /feature-hash`
  * 请求 `{"url": "...", "body_hex": "..."}`，返回 `{"headers": {...}}`。
  * 服务在 `SIGNER_TOKEN` 非空时要求 `X-Signer-Token` 头。
  */
@@ -40,11 +40,10 @@ open class UnidbgSigner(
     private val clock: () -> Long = System::currentTimeMillis,
 ) : RemoteSigner(http = transport, store = store, clock = clock) {
     companion object {
-        /** 局域网内部署的签名服务；端口为宿主机映射端口。 */
         /**
          * 菜鸡公网签名服务地址。
          *
-         * 链路：公网 8028 → 飞牛 frpc-caiji → 局域网 192.168.3.83:9876（openhongguo-signer）。
+         * 链路：公网 8028 → 飞牛 frpc-caiji → 192.168.3.77:8006（hongguosign）。
          * 与 frida 模式共用同一台转发服务器，只是端口不同。
          */
         private const val DEFAULT_ENDPOINT = "http://taihe.678120.cn:8028"
@@ -134,8 +133,8 @@ open class UnidbgSigner(
     /**
      * 调用 `/feature-hash`。
      *
-     * 一次只签一个请求是由服务实现的：unidbg 只有一个 CPU 上下文，
-     * 并发请求在服务端串行，这里不需要额外加锁。
+     * 服务端串行计算并限制排队时间；传递当前请求剩余预算，
+     * 避免取址轮次已经超时后，服务端仍继续处理排队请求。
      */
     private fun featureHash(url: String, body: ByteArray?): Map<String, String> {
         val payload = JSONObject().put("url", url)
@@ -143,6 +142,8 @@ open class UnidbgSigner(
         if (body != null && body.isNotEmpty()) payload.put("body_hex", body.toByteString().hex())
         val request = Request.Builder()
             .url(base.newBuilder().addPathSegment("feature-hash").build())
+            .header("X-Signer-Timeout-Ms", (RequestScope.remainingMillis() ?: 30_000L)
+                .coerceIn(1L, 30_000L).toString())
             .apply { if (token.isNotBlank()) header("X-Signer-Token", token) }
             .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
@@ -154,6 +155,8 @@ open class UnidbgSigner(
                     val neptune = runCatching { JSONObject(text).optString("neptune") }.getOrDefault("")
                     throw SignatureException(
                         when {
+                            response.code == 429 || response.code == 503 -> "unidbg 签名服务繁忙，请稍后重试"
+                            response.code == 504 -> "unidbg 签名计算超时，请稍后重试"
                             reason.isBlank() -> "unidbg 签名服务不可用（HTTP ${response.code}）"
                             neptune.isNotBlank() -> "unidbg 签名服务拒绝了请求（X-Neptune $neptune）"
                             else -> "unidbg 签名服务返回错误：$reason"

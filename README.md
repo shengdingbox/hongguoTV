@@ -123,7 +123,7 @@ adb install -r hongguotv-kotlin-<版本号>.apk
 默认使用**本地算法**，在设备上完成请求签名并复用本机匿名设备身份。电视和手机均可在「设置 → 算法模式」中选择「本地计算」「远程计算-unidbg」或「远程计算-frida」，选择保存后立即生效，收藏和观看记录保留；设置页仅展示算法名称。播放取址优先本地，实在不行才降级远程：网络超时不算算法失败，不会触发切换；本地算法连续三次取址失败（空响应或错误码）才切到远程计算-unidbg，切换前的正式播放会先用远程算法救当次取址；使用远程计算时每次取址都会并行探测本地，本地连续两次探测成功才切回，避免半坏的本地算法被反复拉回。自动切换会同步保存设置，正在播放的已缓冲内容不中断，下一次取址使用新算法。
 
 - **本地计算**：播放优先使用 V5 协议 `/novel/player/multi_video_model/v1/`，本机生成 Helios / Medusa 签名并处理 gzip 请求体，直接解析当前集的多档视频地址与内容密钥。正式播放、预取和离线缓存共用取址链路，使用 Media3 播放及 CENC 媒体处理。
-- **远程计算-unidbg**：签名交给 [openhongguo-signer](../openhongguo/signer/README.md) —— 在 unidbg 里运行 App 自带的 `libmetasec_ml.so`，通过 `POST /feature-hash` 把完整 URL 与请求体字节换成六个签名头。设备身份仍由本机匿名注册，与本地计算共用同一份档案。地址为 `http://taihe.678120.cn:8028`（菜鸡公网，经飞牛 `frpc-caiji` 转发到局域网 `192.168.3.83:9876`），服务开启 `SIGNER_TOKEN` 时需在 `UnidbgSigner` 里填入相同的 token。播放优先使用 `video_tab` GET 接口。
+- **远程计算-unidbg**：签名交给 [hongguosign](../hongguosign/README.md) —— 在 unidbg 里运行 App 自带的 `libmetasec_ml.so`，通过 `POST /feature-hash` 把完整 URL 与请求体字节换成六个签名头。设备身份仍由本机匿名注册，与本地计算共用同一份档案。地址为 `http://taihe.678120.cn:8028`（菜鸡公网，经飞牛 `frpc-caiji` 转发到局域网 `192.168.3.77:8006`），服务开启 `SIGNER_TOKEN` 时需在 `UnidbgSigner` 里填入相同的 token。播放优先使用 `video_tab` GET 接口。
 - **远程计算-frida**：使用内置的明文 HTTP 远程服务，通过 `/info` 获取设备参数、通过 `/sign` 获取签名；POST 请求体以 `body_base64` 原样提交，服务需声明 `supportsBodySigning=true`。播放优先使用 `video_tab` GET 接口，沿用现有媒体处理链路。该模式依赖此第三方服务，不提供自定义服务地址设置；远程模式的可用性与传输安全边界不同于本地算法。
 
 本地计算是默认且无需额外部署的方式；两种远程计算模式都依赖各自内置的签名服务，且不适用本机 V5 播放取址路由。三种模式都要求上游接口、签名协议和设备档案可用。

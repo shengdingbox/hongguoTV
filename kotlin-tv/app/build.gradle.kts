@@ -109,6 +109,16 @@ androidComponents {
     }
 }
 
+// 保留已有打包机和维护命令使用的入口；开启双包时同时检查两个变体。
+listOf("Debug", "Release").forEach { buildType ->
+    tasks.register("lint$buildType") {
+        group = "verification"
+        description = "检查当前启用的安装包变体"
+        dependsOn("lintStandard$buildType")
+        if (buildAndroid5) dependsOn("lintAndroid5$buildType")
+    }
+}
+
 dependencies {
     implementation("androidx.core:core:1.8.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")

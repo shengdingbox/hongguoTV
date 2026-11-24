@@ -1247,24 +1247,25 @@ open class ContentRepository(
             .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
     }
-    /** 单集取址：`GET /reading/bookapi/video_tab/video_model/v`。
-     *
-     *  2026-11-09 实测：该接口对同一匿名设备可连续请求（12/12 全部返回模型）；
-     *  而下面的 `multi_video_model` 对匿名设备基本是一次性配额（同一设备第 1 次成功后持续空响应，
-     *  换主机只能再成功一次），也是「一直卡在正在获取播放地址」的根因。
-     *  因此单集取址优先走这里，`multi_video_model` 只作为兜底。
-     *  2026-11-23 小米电视实测：`device_level=3` 会让平台把 360P–1080P 全部下发为 bytevc2，
-     *  电视端必须显式固定为 1；否则会误报「平台未提供电视可解码的清晰度」。
-     *  参数照抄第三方参考实现的后端已验证的组合：video_id / source / need_all_video_definition / device_level。 */
-    private fun videoTabSingleModel(id: String, preferAlt: Boolean = false): JSONObject? = videoTabSingle(id,preferAlt).model
     /** 单集取址的完整结果：`model` 为空时由 [blank] 区分「空体」和「有明确错误码」，
      *  后者不该再触发换设备重扫。 */
     private data class SingleTab(val model: JSONObject?, val blank: Boolean, val code: Int = 0)
+    /** 单集兼容取址：`GET /reading/bookapi/video_tab/video_model/v`。
+     *  远程签名优先尝试多集 GET；该接口保留给多集不可用、但单集仍可用的环境。
+     *  电视端固定 device_level=1，避免服务端整集下发当前播放链路不支持的 bytevc2。 */
     private fun videoTabSingle(id: String, preferAlt: Boolean = false): SingleTab {
         val extra=linkedMapOf(
             "video_id" to id, "source" to "0", "need_all_video_definition" to "true",
             // 电视端的兼容档：服务端在 3 下可能整集改成 VVC，Media3 的 MP4 提取器读不出视频轨。
             "device_level" to "1",
+            // 与多集接口保持同一请求口径：缺 video_platform 会回 PARAM_INVALID(100103)，
+            // 其余几项在部分环境下也会导致空体，统一补齐避免换环境后再次失败。
+            // use_server_dns / detail_page_version / disable_digg_stat 对齐 App 的
+            // GetVideoBizParam 口径（官方默认 false/0/false）。
+            "video_id_type" to "0", "need_mp4_align" to "0",
+            "use_os_player" to "0", "video_platform" to "1024",
+            "from_video_id" to "", "use_server_dns" to "0",
+            "detail_page_version" to "0", "disable_digg_stat" to "0",
         )
         val hosts=listOf(
             "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/video_model/v",
@@ -1301,14 +1302,17 @@ open class ContentRepository(
     }
     /** 多集取址：`GET /reading/bookapi/video_tab/multi_video_model/v1/`。
      *  参数取自官方 `GetVideoModelRequest` 的 snake_case 字段，缺任一字段会回 `100103`。
-     *  注意该接口对匿名设备近乎一次性配额，只能作为兜底，见 [videoTabSingleModel]。
-     *  失败一律返回 null，由调用方回退旧接口。 */
+     *  远程签名优先使用该接口，失败后再尝试单集 GET 和 POST 兼容路由。
+     *  失败一律返回 null，由调用方继续回退。 */
     private fun videoTabModel(id: String, level: Int = 1, preferAlt: Boolean = false): JSONObject? {
         val extra=linkedMapOf(
             "video_id" to id, "video_id_type" to "0", "device_level" to level.toString(),
             "need_all_video_definition" to "1", "need_mp4_align" to "0",
             "use_os_player" to "0", "video_platform" to "1024", "source" to "0",
             "from_video_id" to "",
+            // 对齐 App 的 GetVideoBizParam 口径（官方默认 false/0/false）。
+            "use_server_dns" to "0", "detail_page_version" to "0",
+            "disable_digg_stat" to "0",
         )
         val hosts=listOf(
             "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/",
@@ -1335,7 +1339,8 @@ open class ContentRepository(
             if(root.optInt("code",root.optInt("Code",-1))!=0) continue
             val data=root.optJSONObject("data") ?: continue
             val rows=data.optJSONObject("video_model_data") ?: data
-            val row=rows.optJSONObject(id) ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull() ?: continue
+            // 必须匹配目标分集，缺失时继续回退，避免播放其它集并把错误模型写入当前集缓存。
+            val row=rows.optJSONObject(id) ?: continue
             val model=modelOf(row.opt("video_model")) ?: continue
             return model.put(ROUTE_KEY,"video_tab|"+base.removePrefix("https://").substringBefore('/'))
         }
@@ -1415,19 +1420,23 @@ open class ContentRepository(
         // 普通短剧的 ID 语义相反，传 1 会回 101000，所以两者必须分开。
         val idType = if (albumEpisode) 1 else 0
         val group = if (albumEpisode) MobilePlayback.GROUP_PUGC else MobilePlayback.GROUP_SHORT
-        // video_tab 的两条 GET 路由仍先试（部分环境仍是唯一可用入口），
-        // 但 2026-11-24 起服务端对它们恒回空体。若此处直接抛异常，
-        // 会跳过后面唯一可用的 PLAYER_PATH（POST video_model），
-        // 因此空体时继续往下走，只把明确的错误码留到最终失败时再抛。
+        // 2026-11-24 实测（unidbg 签名，5.0.0 线上）：
+        //   GET  video_tab/multi_video_model/v1/   ✅ 5 档  ← 多集，一次拿全，最省请求
+        //   POST novel/player/video_model/v1/      ✅ 5 档  ← 单集，兜底
+        //   GET  video_tab/video_model/v           ❌ 恒 0 字节（补全参数也无效，接口已下线）
+        // 所以优先多集 GET；单集 GET 仅在偏好开关下作为次选（保留以兼容其它环境）。
+        val prefersVideoTab = activeSigner.prefersVideoTab && !albumEpisode
+        var singleTab = SingleTab(null, true)
         var videoTabFailure: IOException? = null
-        if (activeSigner.prefersVideoTab && !albumEpisode) {
-            // 复用 Android 红果已可用的 GET 路径，避免先等待本机算法使用的 POST 路由。
-            val single = videoTabSingle(id, preferAlt)
-            single.model?.let { return it }
+        if (prefersVideoTab) {
+            // 多集接口：一次请求即可拿到该集模型，是当前最稳的主路径。
             videoTabModel(id, level, preferAlt)?.let { return it }
+            // 单集接口：线上已恒空，但部分环境仍是唯一入口，保留为次选。
+            singleTab = videoTabSingle(id, preferAlt)
+            singleTab.model?.let { return it }
             // 空体交给后续 POST 路由兜底；有明确错误码（如合集分集的 110）则先记下，
             // 待所有路由都失败后按原语义抛出，便于上层识别合集场景。
-            if (!single.blank) videoTabFailure = ServiceException(single.code)
+            if (!singleTab.blank) videoTabFailure = ServiceException(singleTab.code)
         }
         // V5 单集取址用的是本机算法专属的查询串模板与 V5 签名口径，
         // 远程签名服务（frida / unidbg）不适用，直接跳过这一路由。
@@ -1439,7 +1448,13 @@ open class ContentRepository(
         if (activeSigner.usesLocalPlaybackAlgorithm && !albumEpisode) {
             videoTabModelV5(id)?.let { return it }
         }
-        val primaryPayload ="""{"video_id":"$id","biz_param":{"video_id_type":$idType,"need_all_video_definition":true,"video_platform":3}}""".toByteArray(Charsets.UTF_8)
+        // biz_param 按 App 的 GetVideoBizParam 口径补齐（源码 rpc/model/GetVideoBizParam.java）：
+        //   detail_page_version / disable_digg_stat / disable_video_relate_book /
+        //   use_server_dns / from_video_id / source 这些字段官方都会带上，
+        // 实测补齐后仍返回 5 档，属于"口径对齐、降低被服务端按规则过滤"的保险。
+        // video_platform=3 与 1024 实测都能返回 5 档，沿用 3；
+        // device_level 与 video_tab 一致（电视端必须 1，3 会整集下发 bytevc2/VVC）。
+        val primaryPayload ="""{"video_id":"$id","biz_param":{"detail_page_version":0,"device_level":$level,"disable_digg_stat":false,"disable_video_relate_book":false,"from_video_id":"","need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_id_type":$idType,"video_platform":3,"source":0}}""".toByteArray(Charsets.UTF_8)
         val primary = try {
             sweepRoutes(listOf(PLAYER_PATH to primaryPayload))
         } catch (problem: java.io.InterruptedIOException) {
@@ -1448,11 +1463,13 @@ open class ContentRepository(
             Sweep(null, null, false, problem)
         }
         primary.model?.let { return it }
-        // 合集分集在 video_tab 上没有可用条目，跳过以免把 ILLEGAL_ACCESS 误当成空体。
-        val singleTab = if (albumEpisode) SingleTab(null, true) else videoTabSingle(id, preferAlt)
-        singleTab.model?.let { return it }
-        val multiTab = if (albumEpisode) null else videoTabModel(id, level, preferAlt)
-        multiTab?.let { return it }
+        // 合集分集不走 video_tab；远程签名前面已扫过相同参数和主机，不在 POST 失败后重复扫描。
+        // 保留首次单集 GET 的空体标记与错误码，继续沿用原有错误分类和合集识别。
+        if (!albumEpisode && !prefersVideoTab) {
+            singleTab = videoTabSingle(id, preferAlt)
+            singleTab.model?.let { return it }
+            videoTabModel(id, level, preferAlt)?.let { return it }
+        }
         // 与 video_tab 保持同一 device_level（可诊断轮换）：部分剧集在 3 下会把 360P–720P 全发成
         // bytevc2（MP4 提取器读不出视频轨），只剩超出电视解码上限的 1080P bytevc1，降档无路可走。
         val biz = """{"detail_page_version":0,"device_level":$level,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024}"""
@@ -1472,7 +1489,7 @@ open class ContentRepository(
         first.model?.let { model -> goodRoute = first.path; return model }
         // V5 身份轮换已由 mobilePlaybackModel() 按域名耗尽状态与冷却处理；
         // 这里只在兼容路由仍全部为空时，再扫一轮旧的 POST 兼容路由。
-        val allBlank = mobile.allBlank && primary.allBlank && first.allBlank && singleTab.blank && multiTab == null
+        val allBlank = mobile.allBlank && primary.allBlank && first.allBlank && singleTab.blank
         if (!allBlank) throw mobile.failure ?: first.failure ?: primary.failure
             ?: videoTabFailure ?: IOException("播放信息为空")
         val healed = sweepRoutes(listOf(PLAYER_PATH to primaryPayload) + ordered)

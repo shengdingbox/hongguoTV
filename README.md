@@ -10,7 +10,9 @@
 
 ## 下载与安装
 
-安装包发布在 [Release 页面](https://github.com/superhuluwa/hongguoTV/releases/latest)，电视、电视盒子和安卓手机共用同一个 APK，下载后安装即可。浏览和首次播放需要联网；已经完整缓存的剧集可从离线缓存入口本地播放。
+安装包发布在 [Release 页面](https://github.com/superhuluwa/hongguoTV/releases/latest)。电视、电视盒子和安卓手机共用同一套功能，请根据设备系统选择安装包：Android 7.0 及以上优先下载标准版；Android 5.0 或 5.1 只能下载兼容版。浏览和首次播放需要联网；已经完整缓存的剧集可从离线缓存入口本地播放。
+
+GitHub 会按附件文件名展示 Assets，兼容版名称排在标准版前面，因此列表中先出现的 `-android5.apk` 并不是通用包；系统和架构满足条件时，请选择不带 `-android5` 后缀的标准版。
 
 | 安装包 | 系统要求 |
 | --- | --- |

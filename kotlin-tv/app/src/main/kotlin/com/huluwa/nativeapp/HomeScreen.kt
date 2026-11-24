@@ -3,9 +3,12 @@ package com.huluwa.nativeapp
 
 import androidx.core.graphics.drawable.DrawableCompat
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.KeyEvent
@@ -103,10 +106,21 @@ class HomeScreen(
     private val feedTabs=mutableListOf<TextView>()
     private val carousel=FrameLayout(context).apply { clipChildren=false; clipToPadding=false }
     private val heroBorder=TvCardBorder(context,16)
-    private val hero=LinearLayout(context).apply {
+    private val hero=object: LinearLayout(context) {
+        override fun verifyDrawable(who: Drawable): Boolean = who===heroBorder || super.verifyDrawable(who)
+        override fun dispatchDraw(canvas: Canvas) {
+            super.dispatchDraw(canvas)
+            if(Build.VERSION.SDK_INT<23) {
+                // 旧系统的 LinearLayout 没有前景接口，在子控件之后绘制同一条边框。
+                heroBorder.setBounds(0,0,width,height)
+                heroBorder.draw(canvas)
+            }
+        }
+    }.apply {
         orientation=VERTICAL
         // 去掉内边距：画面与操作条直接贴到面板边缘，操作条才能真正贴住底部
-        background=TvVisual.panel(context); clipToOutline=true; foreground=heroBorder
+        background=TvVisual.panel(context); clipToOutline=true
+        if(Build.VERSION.SDK_INT>=23) foreground=heroBorder else heroBorder.callback=this
     }
     private val stage=FrameLayout(context).apply {
         id=View.generateViewId(); isFocusable=true; isFocusableInTouchMode=true; isClickable=true

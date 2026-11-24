@@ -1415,14 +1415,19 @@ open class ContentRepository(
         // 普通短剧的 ID 语义相反，传 1 会回 101000，所以两者必须分开。
         val idType = if (albumEpisode) 1 else 0
         val group = if (albumEpisode) MobilePlayback.GROUP_PUGC else MobilePlayback.GROUP_SHORT
+        // video_tab 的两条 GET 路由仍先试（部分环境仍是唯一可用入口），
+        // 但 2026-11-24 起服务端对它们恒回空体。若此处直接抛异常，
+        // 会跳过后面唯一可用的 PLAYER_PATH（POST video_model），
+        // 因此空体时继续往下走，只把明确的错误码留到最终失败时再抛。
+        var videoTabFailure: IOException? = null
         if (activeSigner.prefersVideoTab && !albumEpisode) {
             // 复用 Android 红果已可用的 GET 路径，避免先等待本机算法使用的 POST 路由。
             val single = videoTabSingle(id, preferAlt)
             single.model?.let { return it }
             videoTabModel(id, level, preferAlt)?.let { return it }
-            if (single.blank) throw EmptyPlaybackResponseException()
-            // 合集分集在该路径上固定回 ILLEGAL_ACCESS（110）；带上错误码交给上层按合集语义重取。
-            throw ServiceException(single.code)
+            // 空体交给后续 POST 路由兜底；有明确错误码（如合集分集的 110）则先记下，
+            // 待所有路由都失败后按原语义抛出，便于上层识别合集场景。
+            if (!single.blank) videoTabFailure = ServiceException(single.code)
         }
         // V5 单集取址用的是本机算法专属的查询串模板与 V5 签名口径，
         // 远程签名服务（frida / unidbg）不适用，直接跳过这一路由。
@@ -1468,11 +1473,13 @@ open class ContentRepository(
         // V5 身份轮换已由 mobilePlaybackModel() 按域名耗尽状态与冷却处理；
         // 这里只在兼容路由仍全部为空时，再扫一轮旧的 POST 兼容路由。
         val allBlank = mobile.allBlank && primary.allBlank && first.allBlank && singleTab.blank && multiTab == null
-        if (!allBlank) throw mobile.failure ?: first.failure ?: primary.failure ?: IOException("播放信息为空")
+        if (!allBlank) throw mobile.failure ?: first.failure ?: primary.failure
+            ?: videoTabFailure ?: IOException("播放信息为空")
         val healed = sweepRoutes(listOf(PLAYER_PATH to primaryPayload) + ordered)
         healed.model?.let { model -> goodRoute = healed.path; return model }
         if (healed.allBlank) throw EmptyPlaybackResponseException()
-        throw healed.failure ?: mobile.failure ?: IOException("播放信息为空")
+        throw healed.failure ?: mobile.failure ?: videoTabFailure
+            ?: IOException("播放信息为空")
     }
     /** V5 单集请求；先按域名健康度轮换，只有全部域名都空时才轮换匿名身份并重扫一次。
      *  [ahead] 里的相邻集随同一次 POST 顺带取回并写入模型缓存，切集时不再取址。 */

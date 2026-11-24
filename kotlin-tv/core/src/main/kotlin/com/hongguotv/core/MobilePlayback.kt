@@ -131,7 +131,7 @@ internal object MobilePlayback {
             "Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 
     /** V5 GET video_tab 取址请求（对齐参考项目 0.16.13 的 videoTabRequest）：
-     *  本机 V5 POST 空体后的回退路由。签名输入是 MD5(空字节)——空字节只进签名，
+     *  本地算法的首选路由。签名输入是 MD5(空字节)——空字节只进签名，
      *  GET 本身无 body；x-ss-stub / Content-Type / Content-Encoding 必须移除，
      *  否则服务端会按 POST 形态校验并直接拒绝。只构造请求，网络发送由调用方负责。 */
     fun videoTabRequest(

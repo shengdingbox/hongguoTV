@@ -1344,7 +1344,7 @@ open class ContentRepository(
         }
         return null
     }
-    /** V5 GET video_tab 回退（对齐参考项目 0.16.13 的修复）：本机 V5 POST 空体后的第一条回退。
+    /** 本地 V5 多集 GET 首选入口，沿用参考项目 0.16.13 的签名口径。
      *  与 [videoTabModel] 的老签名口径不同，这里用本机 V5 三头签 MD5(空字节)；
      *  失败一律返回 null，由调用方继续后续兼容路由。 */
     private fun videoTabModelV5(id: String): JSONObject? {
@@ -1396,7 +1396,7 @@ open class ContentRepository(
             throw problem
         }
     }
-    /** 本地算法优先走 V5 gzip POST；Android 签名服务与兼容回退继续共用模型缓存。 */
+    /** 本地算法优先走已可用的 V5 多集 GET；所有取址路由继续共用模型缓存。 */
     private fun videoModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false): JSONObject {
         modelCache.get(id,clock())?.let { return it }
         val model=fetchVideoModel(id,level,preferAlt,albumEpisode).put(LEVEL_KEY,level)
@@ -1429,13 +1429,17 @@ open class ContentRepository(
                 add(PlaybackRouteKind.VIDEO_TAB_SINGLE)
             }
             if (usesLocal) {
+                if (!albumEpisode) {
+                    // 2026-11-24 同身份实测：多集 GET 返回可播放模型，三个 V5 POST 域名均为空体。
+                    add(PlaybackRouteKind.VIDEO_TAB_V5)
+                    add(PlaybackRouteKind.VIDEO_TAB_MULTI)
+                }
                 add(PlaybackRouteKind.MOBILE)
-                if (!albumEpisode) add(PlaybackRouteKind.VIDEO_TAB_V5)
             }
             add(PlaybackRouteKind.PLAYER)
             if (!albumEpisode && !prefersVideoTab) {
                 add(PlaybackRouteKind.VIDEO_TAB_SINGLE)
-                add(PlaybackRouteKind.VIDEO_TAB_MULTI)
+                if (!usesLocal) add(PlaybackRouteKind.VIDEO_TAB_MULTI)
             }
             add(PlaybackRouteKind.LEGACY)
         }

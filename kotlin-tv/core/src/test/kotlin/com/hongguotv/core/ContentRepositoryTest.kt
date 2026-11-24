@@ -304,6 +304,22 @@ class ContentRepositoryTest {
             "/novel/player/multi_video_model/v1/","/novel/player/multi_video_model/v1/",preloadPath),postRoutes)
     }
 
+    @Test fun localPlaybackStartsWithV5GetWithoutProbingEmptyPostRoutes() {
+        val requests = mutableListOf<Request>()
+        val repo = repository { request ->
+            requests += request
+            assertEquals("GET", request.method)
+            assertEquals(tabPath, request.url.encodedPath)
+            assertEquals(PlayRetryPlan.host(0), request.url.host)
+            assertNull(request.header("X-Gorgon"))
+            val id = request.url.queryParameter("video_id")!!
+            """{"code":0,"data":{"video_model_data":{"$id":{"video_model":{"video_list":[{"main_url":"https://example.com/$id.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
+        }
+        assertEquals("https://example.com/123.mp4", repo.stream("123").url)
+        assertEquals("https://example.com/124.mp4", repo.stream("124").url)
+        assertEquals(2, requests.size)
+    }
+
     @Test fun localEmptyPostRoutesSwitchCandidatesWithoutImmediateRetry() {
         val postRoutes = mutableListOf<String>()
         val preloadPath = "/novel/player/multi_video_model/preload/v1/"
@@ -339,10 +355,9 @@ class ContentRepositoryTest {
         val requests = mutableListOf<Request>()
         val now = 1_700_000_000_000L
         val repo = repository(clock = { now }) { request ->
+            // 首选多集 GET 不可用后才进入 V5 POST，这里只统计 POST 域名轮换。
+            if (request.url.encodedPath != MobilePlayback.MODEL_PATH) return@repository ""
             requests += request
-            if (request.url.encodedPath != MobilePlayback.MODEL_PATH) {
-                throw AssertionError("应继续尝试 V5 备用域名，无需先扫描兼容接口")
-            }
             if (request.url.host == PlayRetryPlan.host(0)) throw java.net.SocketTimeoutException("域名读取超时")
             val payload = okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8()
             val id = JSONObject(payload).getJSONObject("mixed_video_id_map").getJSONArray("1004").getString(0)

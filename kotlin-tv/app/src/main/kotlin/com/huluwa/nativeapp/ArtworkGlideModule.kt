@@ -72,6 +72,8 @@ class ArtworkGlideModule : AppGlideModule() {
             .append(String::class.java, InputStream::class.java, StringLoader.StreamFactory())
             .append(Uri::class.java, InputStream::class.java, UrlUriLoader.StreamFactory())
             .register(Bitmap::class.java, BitmapDrawable::class.java, BitmapDrawableTranscoder(resources))
+        // 变体分别提供实现，标准版不会引用或打入 HEIC 原生库。
+        ArtworkCompatibility.register(glide, registry)
     }
 
     override fun isManifestParsingEnabled() = false

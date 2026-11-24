@@ -34,7 +34,7 @@ jobs:
       - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
       - name: 安装兼容版原生工具链
         if: matrix.flavor == 'android5'
-        run: sdkmanager 'ndk;27.1.12297006'
+        run: sdkmanager 'ndk;27.1.12297006' 'cmake;3.22.1'
       - name: 核心测试、变体 Lint 与开发安装包
         run: >-
           ./kotlin-tv/gradlew -p kotlin-tv

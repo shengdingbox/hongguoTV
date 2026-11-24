@@ -35,7 +35,7 @@ internal class PlaybackRenderersFactory(context: Context) : DefaultRenderersFact
         context: Context,
         enableFloatOutput: Boolean,
         enableAudioTrackPlaybackParams: Boolean,
-    ): AudioSink {
+    ): AudioSink? {
         if (!legacyAudio) return super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams)
         // 为老系统预留足够 PCM，降低播放线程短暂阻塞时的音频断续。
         return DefaultAudioSink.Builder(context)

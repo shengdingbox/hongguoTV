@@ -16,7 +16,7 @@ bash scripts/publish-tv-release.sh
 
 工作流直接读取已完成的 APK，不重新编译或修改签名。当前 `main` 分支默认只启用 `standard`
 变体，生成 Android 7.0（API 24）及以上安装包；标准包仍导出到原有路径，现有打包任务无需调整。
-在已经准备好 NDK 27.1.12297006、Python 3.12+、curl 和 make 的环境中，为 Gradle 增加
+在已经准备好 NDK 27.1.12297006、CMake 3.22.1、Python 3.12+、curl 和 make 的环境中，为 Gradle 增加
 `-PHONGGUOTV_BUILD_ANDROID5=true` 可同时生成标准版与 Android 5 兼容版；也可指定
 `:app:assembleAndroid5Release` 只生成兼容版。这个开关不会改变标准版的最低系统和依赖。
 发布任务仍按所选构建记录读取单个 APK，不会自动收集同目录下另一变体；发布说明中的最低系统

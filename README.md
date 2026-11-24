@@ -36,7 +36,7 @@
 | 兼容版 `hongguotv-kotlin-<版本号>-android5.apk` | Android 5.0（API 21）及以上，仅 ARM32 / ARM64 |
 | 历史版本中以 `-android8.apk` 结尾的文件 | 历史 Android 8.0 及以上版本 |
 
-- **CPU 架构**：标准版不含 JNI 库，可在 ARM32、ARM64、x86、x86_64 设备上运行；Android 5 兼容版包含 ARM32 / ARM64 两份精简 AAC 音频库。实际视频解码能力取决于设备。
+- **CPU 架构**：标准版不含 JNI 库，可在 ARM32、ARM64、x86、x86_64 设备上运行；Android 5 兼容版包含 ARM32 / ARM64 的精简 AAC 音频库及 HEIC 图片解码库。实际视频解码能力取决于设备。
 - **共用代码与数据**：两种安装包共用界面、业务、算法和包名，同版本使用同一份签名，可覆盖安装并保留数据。兼容版仅在 Android 5.0/5.1 优先启用 AAC 软解，更新系统继续使用系统音频解码器。
 - **统一包名**：应用包名为 `com.huluwa.nativeapp`；维护者发布的正式包使用同一份签名，可直接覆盖升级。
 - **附件说明**：最新 Release 的 Assets 只提供 APK；部分历史 Release 另附 `build-info.json` 与 `SHA256SUMS`，可用于核对版本号和文件校验值。
@@ -166,7 +166,7 @@ adb install -r hongguotv-kotlin-<版本号>.apk
 FFmpeg。标准版 APK 位于 `kotlin-tv/app/build/outputs/apk/standard/debug/app-standard-debug.apk`，
 同时导出到原有的 `kotlin-tv/app/build/outputs/apk/debug/app-debug.apk` 路径，兼容既有打包入口。
 
-需要 Android 5 兼容版时，额外准备 NDK **27.1.12297006**、Python **3.12+**、curl 和 make。
+需要 Android 5 兼容版时，额外准备 NDK **27.1.12297006**、CMake **3.22.1**、Python **3.12+**、curl 和 make。
 同一份源码、同一次 Gradle 调用生成双包：
 
 ```bash
@@ -182,16 +182,18 @@ FFmpeg。标准版 APK 位于 `kotlin-tv/app/build/outputs/apk/standard/debug/ap
 | 变体 | 正式包路径 | 最低系统 | 音频库 |
 | --- | --- | --- | --- |
 | `standard` | `kotlin-tv/app/build/outputs/apk/standard/release/app-standard-release.apk` | API 24 | 无原生库 |
-| `android5` | `kotlin-tv/app/build/outputs/apk/android5/release/app-android5-release.apk` | API 21 | 双 ARM AAC 软解 |
+| `android5` | `kotlin-tv/app/build/outputs/apk/android5/release/app-android5-release.apk` | API 21 | 双 ARM AAC 软解及 HEIC 图片解码 |
 
 标准版仍会导出 `kotlin-tv/app/build/outputs/apk/release/app-release.apk` 和对应元数据，原有
 打包机未开启开关时继续只生成标准版。只构建某一变体可以使用 `:app:assembleStandardRelease`，
 或者带上述开关使用 `:app:assembleAndroid5Release`。`HONGGUOTV_MIN_SDK` 仅控制标准版，
 不得小于 24；兼容版固定 API 21，不能只通过降低标准版的这个值代替。
 
-兼容版只添加音频解码，不添加视频软解或 HEIC 图片软解；老设备缺少相应能力时仍可能无法
-播放部分视频或显示部分封面。源码来源、固定版本及重新链接说明见
-[音频兼容模块](kotlin-tv/decoder-ffmpeg/README.md)。
+兼容版的 AAC 软解仅在 API 21/22 启用；HEIC 图片先尝试系统解码，失败后由 libheif 与
+libde265 软件解码，结果继续复用 Glide 位图池和磁盘缓存。为控制老设备内存，HEIC 文件上限
+8 MiB、原图上限约 800 万像素、输出边长上限 2048，软件解码串行进行。兼容版不提供视频软解。
+源码来源、固定版本及重新链接说明见[音频兼容模块](kotlin-tv/decoder-ffmpeg/README.md)和
+[图片兼容模块](kotlin-tv/decoder-heif/README.md)。
 
 核心模块测试与 Android Lint 可分别执行：
 
@@ -227,6 +229,7 @@ Release 构建启用 R8 代码压缩和资源裁剪，播放器只保留普通 M
 | `kotlin-tv/app/` | Android 应用、电视与手机界面、播放器、遥控与触屏交互、本机数据、离线任务和日志 |
 | `kotlin-tv/core/` | 纯 Kotlin / JVM 核心：内容浏览、搜索、榜单、新剧、账号、签名、播放解析、媒体处理和缓存 |
 | `kotlin-tv/decoder-ffmpeg/` | Android 5 兼容版专用的双 ARM AAC 音频解码与固定源码构建脚本 |
+| `kotlin-tv/decoder-heif/` | Android 5 兼容版专用的双 ARM HEIC 图片软件解码、JNI 和固定源码构建脚本 |
 | `kotlin-tv/core/src/test/` | 内容仓库、签名、缓存、弹幕、播放策略等 JVM 单元测试 |
 | `kotlin-tv/tools/` | 接口、交互和证据校验的维护工具 |
 | `scripts/` | 将打包服务器已有 APK 发布到 GitHub Release 的脚本 |

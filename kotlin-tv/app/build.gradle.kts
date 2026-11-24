@@ -122,6 +122,7 @@ dependencies {
     kapt("com.github.bumptech.glide:compiler:4.16.0")
     implementation(project(":core")) { exclude(group = "org.json") }
     "android5Implementation"(project(":decoder-ffmpeg"))
+    "android5Implementation"(project(":decoder-heif"))
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
 }

@@ -23,8 +23,14 @@ ByteBuffer、InputStream 两个 HEIC 解码器。先按文件头判断格式，�
 - C++ 运行时静态链接，只导出 JNI，链接器裁掉未引用函数，并设置 16 KiB 页对齐。
 
 Gradle 在兼容版的 `preBuild` 调用 `tools/build_native.py`，下载固定源码、验证校验值，
-依次构建静态 libde265、静态 libheif 和 JNI。中间库保留在 `build/native-work`，按源码和
-构建脚本指纹缓存。离线构建可提前把准确的两个源码归档放到 `build/sources`。
+依次构建静态 libde265、静态 libheif 和 JNI。`buildNativeHeif` 已启用 Gradle 构建缓存，
+按源码清单、JNI 源码、构建脚本、NDK 安装元数据、CMake 程序、目标架构、主机平台
+和编译环境变量识别缓存。首次构建后，后续打包可从持久的 `GRADLE_USER_HOME` 缓存恢复 `build/native-libs`
+中的双 ARM 成品库和指纹，日志显示 `FROM-CACHE`；临时源码目录变化、业务代码修改和
+应用版本递增不会使原生库缓存失效。
+
+中间静态库仍保留在本次构建的 `build/native-work`，不加入跨目录缓存。离线首次构建
+可提前把准确的两个源码归档放到 `build/sources`；命中 Gradle 缓存时不再下载或编译源码。
 
 ```bash
 ./kotlin-tv/gradlew -p kotlin-tv -PHONGGUOTV_BUILD_ANDROID5=true :app:assembleRelease

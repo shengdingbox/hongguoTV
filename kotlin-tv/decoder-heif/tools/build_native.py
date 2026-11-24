@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 import tarfile
@@ -54,13 +55,24 @@ def archive_source(source):
 
 
 def build(ndk, cmake):
-    if f"Pkg.Revision = {NDK_VERSION}" not in (ndk / "source.properties").read_text():
+    ndk_metadata = (ndk / "source.properties").read_bytes()
+    if f"Pkg.Revision = {NDK_VERSION}".encode() not in ndk_metadata:
         raise ValueError(f"请使用 Android NDK {NDK_VERSION}")
     sources = json.loads((MODULE / "sources.json").read_text())
     directories = {source["name"]: archive_source(source) for source in sources}
-    fingerprint = Path(__file__).read_bytes() + (MODULE / "sources.json").read_bytes()
-    for path in sorted((MODULE / "src/main/cpp").iterdir()):
-        fingerprint += path.read_bytes()
+    # 与 Gradle 缓存输入保持一致，环境或工具链变化时也使本地指纹失效。
+    environment = json.dumps({
+        "host": [platform.system(), platform.machine()],
+        "flags": {name: os.environ.get(name, "") for name in (
+            "CFLAGS", "CPPFLAGS", "CXXFLAGS", "LDFLAGS", "SOURCE_DATE_EPOCH",
+        )},
+    }, sort_keys=True).encode()
+    cmake_revision = hashlib.sha256(cmake.read_bytes()).digest()
+    fingerprint = (Path(__file__).read_bytes() + (MODULE / "sources.json").read_bytes()
+                   + ndk_metadata + cmake_revision + environment)
+    for path in sorted((MODULE / "src/main/cpp").rglob("*")):
+        if path.is_file():
+            fingerprint += path.relative_to(MODULE).as_posix().encode() + b"\0" + path.read_bytes()
     stamp = hashlib.sha256(fingerprint + NDK_VERSION.encode()).hexdigest()
     parallel = str(min(os.cpu_count() or 2, 4))
     for abi in ABIS:

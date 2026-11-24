@@ -2,6 +2,7 @@
 """从固定 FFmpeg 源码构建 Android 5 使用的双 ARM AAC 音频库。"""
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import platform
@@ -56,7 +57,8 @@ def source_archive():
 
 
 def build(ndk):
-    if f"Pkg.Revision = {NDK_VERSION}" not in (ndk / "source.properties").read_text():
+    ndk_metadata = (ndk / "source.properties").read_bytes()
+    if f"Pkg.Revision = {NDK_VERSION}".encode() not in ndk_metadata:
         raise ValueError(f"请使用 Android NDK {NDK_VERSION}")
     host = {"Darwin": "darwin-x86_64", "Linux": "linux-x86_64"}.get(platform.system())
     if host is None:
@@ -67,9 +69,18 @@ def build(ndk):
     if not source.exists():
         extract_archive(archive, archive.parent)
     jni = MODULE / "src/main/jni/ffmpeg_jni.cc"
-    stamp = hashlib.sha256(
-        Path(__file__).read_bytes() + jni.read_bytes() + SHA256.encode() + NDK_VERSION.encode()
-    ).hexdigest()
+    # 与 Gradle 缓存输入保持一致，环境或工具链变化时也使本地指纹失效。
+    environment = json.dumps({
+        "host": [platform.system(), platform.machine()],
+        "flags": {name: os.environ.get(name, "") for name in (
+            "CFLAGS", "CPPFLAGS", "CXXFLAGS", "LDFLAGS", "SOURCE_DATE_EPOCH",
+        )},
+    }, sort_keys=True).encode()
+    fingerprint = Path(__file__).read_bytes() + ndk_metadata + environment
+    for path in sorted((MODULE / "src/main/jni").rglob("*")):
+        if path.is_file():
+            fingerprint += path.relative_to(MODULE).as_posix().encode() + b"\0" + path.read_bytes()
+    stamp = hashlib.sha256(fingerprint + SHA256.encode() + NDK_VERSION.encode()).hexdigest()
     for abi, (arch, cpu, triple) in ABIS.items():
         output = MODULE / "build/native-libs" / abi / "libffmpegJNI.so"
         marker = output.with_suffix(".stamp")

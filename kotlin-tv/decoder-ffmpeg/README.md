@@ -27,9 +27,15 @@ Media3 的 FFmpeg 音频扩展绕过该问题，并提高老系统的 PCM 缓冲
 正式包沿用应用原有签名配置。开发双包使用 `:app:assembleDebug`。只生成兼容版可以使用
 `:app:assembleAndroid5Release`，同样需要 `-PHONGGUOTV_BUILD_ANDROID5=true`。
 
-Gradle 的 `preBuild` 调用 `tools/build_native.py`。脚本首次下载固定源码并校验 SHA-256，
-后续按构建脚本、JNI 源码和工具链版本缓存结果。需要离线构建时，将准确的源码归档提前放到
-`kotlin-tv/decoder-ffmpeg/build/ffmpeg-6.1.6.tar.xz`。
+Gradle 的 `preBuild` 调用 `tools/build_native.py`。脚本首次下载固定源码并校验 SHA-256。
+`buildNativeAudio` 已启用 Gradle 构建缓存，按构建脚本、JNI 源码、NDK 安装元数据、
+目标架构、主机平台和编译环境变量识别缓存。首次构建后，后续打包可从持久的
+`GRADLE_USER_HOME` 缓存恢复 `build/native-libs` 中的双 ARM 成品库和指纹，日志显示
+`FROM-CACHE`；临时源码目录变化、业务代码修改和应用版本递增不会使原生库缓存失效。
+
+中间文件仍位于本次构建的 `build/native-work`，不加入跨目录缓存。需要离线首次构建时，
+将准确的源码归档提前放到 `kotlin-tv/decoder-ffmpeg/build/ffmpeg-6.1.6.tar.xz`；
+命中 Gradle 缓存时不再下载或编译源码。
 
 ## 来源与授权
 

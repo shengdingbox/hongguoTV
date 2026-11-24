@@ -14,9 +14,15 @@ bash scripts/publish-tv-release.sh
 - `task_id` 填写任务 ID：发布指定的成功构建。
 - `notes`：可选补充说明，会放在发布说明开头；不填时只有「本次更新」和「构建信息」两节。
 
-工作流直接读取已完成的 APK，不重新编译或修改签名。当前 `main` 分支的打包配置默认生成 Android 7.0（API 24）及以上安装包；发布说明中的最低系统以构建记录 `minSdk` 为准。
+工作流直接读取已完成的 APK，不重新编译或修改签名。当前 `main` 分支默认只启用 `standard`
+变体，生成 Android 7.0（API 24）及以上安装包；标准包仍导出到原有路径，现有打包任务无需调整。
+在已经准备好 NDK 27.1.12297006、Python 3.12+、curl 和 make 的环境中，为 Gradle 增加
+`-PHONGGUOTV_BUILD_ANDROID5=true` 可同时生成标准版与 Android 5 兼容版；也可指定
+`:app:assembleAndroid5Release` 只生成兼容版。这个开关不会改变标准版的最低系统和依赖。
+发布任务仍按所选构建记录读取单个 APK，不会自动收集同目录下另一变体；发布说明中的最低系统
+以构建记录 `minSdk` 为准。
 
-脚本创建的是正式 GitHub Release：先创建草稿，仅将 `hongguotv-kotlin-<版本号>.apk` 上传到该 Release 的 **Assets**，确认 APK 完整后再正式发布并设为 Latest。文件名不带系统后缀，例如 `hongguotv-kotlin-1.1.70.apk`；不生成或上传 `build-info.json`、`SHA256SUMS`。发布成功会输出 APK 的直接下载地址。APK 的大小和 SHA-256 必须与构建记录一致。Release 使用 `build-v<versionName>-<versionCode>` 标签，指向该 APK 构建记录中的完整源码提交，而非运行脚本或工作流时的最新源码。对应提交须已同步到 GitHub；已有标签必须指向同一提交，缺少标签时由 GitHub 在发布 Release 时自动生成，脚本不再提前单独创建 tag。
+脚本创建的是正式 GitHub Release：先创建草稿，将所选构建的 APK 上传到该 Release 的 **Assets**，确认 APK 完整后再正式发布并设为 Latest。标准版使用 `hongguotv-kotlin-<版本号>.apk`，例如 `hongguotv-kotlin-1.1.70.apk`；最低系统为 API 21/22 的兼容包使用 `hongguotv-kotlin-<版本号>-android5.apk`，与标准版附件分开命名；不生成或上传 `build-info.json`、`SHA256SUMS`。发布成功会输出 APK 的直接下载地址。APK 的大小和 SHA-256 必须与构建记录一致。Release 使用 `build-v<versionName>-<versionCode>` 标签，指向该 APK 构建记录中的完整源码提交，而非运行脚本或工作流时的最新源码。对应提交须已同步到 GitHub；已有标签必须指向同一提交，缺少标签时由 GitHub 在发布 Release 时自动生成，脚本不再提前单独创建 tag。
 
 发布说明由脚本自动生成，不再是只取本次构建那一条提交信息。「本次更新」一节会以**上一个正式 Release** 的标签为基准，通过 GitHub 的 compare 接口取出两个版本之间新增的提交，直接逐条列出（`<短哈希> 提交标题`），不再额外写一行「对比上一版本 …」的说明；合并提交（多父提交或以 `Merge ` 开头的）不计入，最多列出 50 条，超出时注明剩余数量。没有提交可列时显示「没有新增的功能改动」。找不到可对比的上一版本时（例如首个版本，或两个版本没有共同祖先），退化为列出本次提交之前的历史。补发旧构建时会挑选仍是本次提交祖先的版本作为基准，不会误用更新的版本。`--dry-run` 会打印完整的发布说明预览。
 

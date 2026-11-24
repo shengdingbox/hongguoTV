@@ -11,4 +11,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "HongguoTVNative"
-include(":core", ":app")
+include(":core", ":app", ":decoder-ffmpeg")

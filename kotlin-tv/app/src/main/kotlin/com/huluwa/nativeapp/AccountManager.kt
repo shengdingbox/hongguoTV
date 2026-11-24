@@ -13,7 +13,11 @@ import android.util.Base64
 import android.util.Log
 import android.widget.Toast
 import com.hongguotv.core.*
+import java.security.GeneralSecurityException
+import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.SecureRandom
+import java.util.Calendar
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
@@ -23,14 +27,15 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-/** Credentials stay in an Android Keystore encrypted partition, outside library exports. */
-private class AccountStore(context: Context) {
+/** 登录凭据独立加密保存，不进入片单或本机数据导出。 */
+private class AccountStore(private val context: Context) {
     private val prefs = context.getSharedPreferences("cloud_account_secure", Context.MODE_PRIVATE)
     private val alias = "hongguotv.cloud.account.v1"
 
     private fun key(): SecretKey {
-        // Android 5.x 的 Keystore 不提供 AES 密钥，退回应用私有的随机密钥，加解密格式与新版一致
+        // Android 5 使用 RSA 包装 AES；系统升级后继续读取同一份密钥。
         if (Build.VERSION.SDK_INT < 23) return legacyKey()
+        if (prefs.contains("wrapped_key") || prefs.contains("legacy_key")) return legacyKey()
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(alias, null) as? SecretKey)?.let { return it }
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
@@ -48,37 +53,87 @@ private class AccountStore(context: Context) {
             .generateKey()
     }
 
+    private fun usesLegacyKey() = Build.VERSION.SDK_INT < 23 ||
+        prefs.contains("wrapped_key") || prefs.contains("legacy_key")
+
+    @Suppress("DEPRECATION")
     private fun legacyKey(): SecretKey {
-        prefs.getString("legacy_key", null)?.let { return SecretKeySpec(Base64.decode(it, Base64.NO_WRAP), "AES") }
-        val raw = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
-        check(prefs.edit().putString("legacy_key", Base64.encodeToString(raw, Base64.NO_WRAP)).commit()) { "初始化本地密钥失败" }
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val rsaAlias = "$alias.rsa"
+        val wrapped = prefs.getString("wrapped_key", null)
+        if (!store.containsAlias(rsaAlias)) {
+            check(wrapped == null) { "账号加密密钥已丢失，请重新登录" }
+            val start = Calendar.getInstance()
+            val end = Calendar.getInstance().apply { add(Calendar.YEAR, 30) }
+            KeyPairGenerator.getInstance("RSA", "AndroidKeyStore").apply {
+                initialize(android.security.KeyPairGeneratorSpec.Builder(context)
+                    .setAlias(rsaAlias)
+                    .setSubject(javax.security.auth.x500.X500Principal("CN=HongguoTV"))
+                    .setSerialNumber(java.math.BigInteger.ONE)
+                    .setStartDate(start.time)
+                    .setEndDate(end.time)
+                    .build())
+            }.generateKeyPair()
+        }
+        val cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
+        if (wrapped != null) {
+            cipher.init(Cipher.DECRYPT_MODE, store.getKey(rsaAlias, null))
+            return SecretKeySpec(cipher.doFinal(Base64.decode(wrapped, Base64.NO_WRAP)), "AES")
+        }
+        // 迁移历史兼容版的随机密钥，包装保存成功后才删除原值，保留原有登录态。
+        val raw = prefs.getString("legacy_key", null)?.let { Base64.decode(it, Base64.NO_WRAP) }
+            ?: ByteArray(32).also { SecureRandom().nextBytes(it) }
+        cipher.init(Cipher.ENCRYPT_MODE, store.getCertificate(rsaAlias).publicKey)
+        check(prefs.edit()
+            .putString("wrapped_key", Base64.encodeToString(cipher.doFinal(raw), Base64.NO_WRAP))
+            .remove("legacy_key")
+            .commit()) { "初始化账号加密密钥失败" }
         return SecretKeySpec(raw, "AES")
     }
 
     fun read(): AccountCredentials? {
         val raw = prefs.getString("session", null) ?: return null
         val bytes = Base64.decode(raw, Base64.NO_WRAP)
-        require(bytes.size > 12)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val iv = bytes.copyOfRange(0, 12)
-        cipher.init(Cipher.DECRYPT_MODE, key(), if (Build.VERSION.SDK_INT >= 26) {
-            GCMParameterSpec(128, iv)
-        } else {
-            // API 24/25 的 GCM 提供方不保证支持 GCMParameterSpec；这里使用同义 IV 参数。
-            IvParameterSpec(iv)
-        })
-        return AccountCredentials.fromJson(
-            String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
-        )
+        require(bytes.size >= 28) { "登录态数据不完整" }
+        val legacy = usesLegacyKey()
+        val secret = key()
+        fun decrypt(ivSize: Int): ByteArray {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            val iv = bytes.copyOfRange(0, ivSize)
+            cipher.init(Cipher.DECRYPT_MODE, secret, if (legacy || Build.VERSION.SDK_INT >= 26) {
+                GCMParameterSpec(128, iv)
+            } else {
+                // 保留现有 API 24/25 Keystore 提供方的兼容参数。
+                IvParameterSpec(iv)
+            })
+            return cipher.doFinal(bytes.copyOfRange(ivSize, bytes.size))
+        }
+        val plain = try {
+            decrypt(12)
+        } catch (error: GeneralSecurityException) {
+            // 历史 Android 5 提供方可能生成 16 字节 IV；回退仍必须通过 GCM 校验。
+            if (!legacy || bytes.size < 32) throw error
+            decrypt(16)
+        }
+        return AccountCredentials.fromJson(String(plain, Charsets.UTF_8))
     }
 
     fun save(credentials: AccountCredentials) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key())
-        val raw = cipher.iv + cipher.doFinal(credentials.toJson().toByteArray())
-        check(
-            prefs.edit().putString("session", Base64.encodeToString(raw, Base64.NO_WRAP)).commit()
-        ) { "保存登录态失败" }
+        val legacy = usesLegacyKey()
+        val secret = key()
+        if (legacy) {
+            val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
+            cipher.init(Cipher.ENCRYPT_MODE, secret, GCMParameterSpec(128, iv))
+        } else {
+            // 新系统的 Keystore 继续自行生成 IV，保持标准版原有加密方式。
+            cipher.init(Cipher.ENCRYPT_MODE, secret)
+        }
+        check(cipher.iv.size == 12) { "账号加密格式不兼容" }
+        val raw = cipher.iv + cipher.doFinal(credentials.toJson().toByteArray(Charsets.UTF_8))
+        check(prefs.edit().putString("session", Base64.encodeToString(raw, Base64.NO_WRAP)).commit()) {
+            "保存登录态失败"
+        }
     }
 
     fun clear() {

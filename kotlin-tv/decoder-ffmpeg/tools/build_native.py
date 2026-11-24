@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""从固定 FFmpeg 源码构建 Android 5 使用的双 ARM AAC 音频库。"""
+import argparse
+import hashlib
+import os
+from pathlib import Path
+import platform
+import shutil
+import subprocess
+import tarfile
+
+VERSION = "6.1.6"
+SHA256 = "d4fcb164028dd3beee5d92c0ac72e46aac6973c75ea12dc14de07bf8f407370a"
+NDK_VERSION = "27.1.12297006"
+MODULE = Path(__file__).resolve().parents[1]
+ABIS = {
+    "armeabi-v7a": ("arm", "armv7-a", "armv7a-linux-androideabi"),
+    "arm64-v8a": ("aarch64", "armv8-a", "aarch64-linux-android"),
+}
+
+
+def source_archive():
+    archive = MODULE / "build" / f"ffmpeg-{VERSION}.tar.xz"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    if not archive.exists():
+        temporary = archive.with_suffix(".download")
+        try:
+            subprocess.run([
+                "curl", "-fL", "--retry", "3", "--retry-all-errors",
+                "--retry-max-time", "300", "--connect-timeout", "30", "--max-time", "120",
+                f"https://ffmpeg.org/releases/ffmpeg-{VERSION}.tar.xz", "-o", str(temporary),
+            ], check=True)
+            if hashlib.sha256(temporary.read_bytes()).hexdigest() != SHA256:
+                raise ValueError("FFmpeg 源码校验失败")
+            temporary.replace(archive)
+        finally:
+            temporary.unlink(missing_ok=True)
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
+        raise ValueError(f"FFmpeg 源码校验失败：{archive}")
+    return archive
+
+
+def build(ndk):
+    if f"Pkg.Revision = {NDK_VERSION}" not in (ndk / "source.properties").read_text():
+        raise ValueError(f"请使用 Android NDK {NDK_VERSION}")
+    host = {"Darwin": "darwin-x86_64", "Linux": "linux-x86_64"}.get(platform.system())
+    if host is None:
+        raise ValueError("原生库构建需要 Linux 或 macOS；Windows 请使用 WSL")
+    tools = ndk / "toolchains/llvm/prebuilt" / host / "bin"
+    archive = source_archive()
+    source = MODULE / "build" / f"ffmpeg-{VERSION}"
+    if not source.exists():
+        with tarfile.open(archive) as tar:
+            tar.extractall(archive.parent, filter="data")
+    jni = MODULE / "src/main/jni/ffmpeg_jni.cc"
+    stamp = hashlib.sha256(
+        Path(__file__).read_bytes() + jni.read_bytes() + SHA256.encode() + NDK_VERSION.encode()
+    ).hexdigest()
+    for abi, (arch, cpu, triple) in ABIS.items():
+        output = MODULE / "build/native-libs" / abi / "libffmpegJNI.so"
+        marker = output.with_suffix(".stamp")
+        if output.exists() and marker.exists() and marker.read_text() == stamp:
+            continue
+        work = MODULE / "build/native-work" / abi
+        # 源码或配置变化后重新生成中间文件，避免复用不匹配的目标文件。
+        if work.exists():
+            shutil.rmtree(work)
+        work.mkdir(parents=True)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        cc = tools / f"{triple}21-clang"
+        cxx = tools / f"{triple}21-clang++"
+        subprocess.run([
+            str(source / "configure"), "--target-os=android", f"--arch={arch}", f"--cpu={cpu}",
+            f"--cc={cc}", f"--cxx={cxx}", f'--ar={tools / "llvm-ar"}',
+            f'--nm={tools / "llvm-nm"}', f'--ranlib={tools / "llvm-ranlib"}',
+            f'--strip={tools / "llvm-strip"}', "--enable-cross-compile", "--enable-pic",
+            "--enable-static", "--disable-shared", "--disable-doc", "--disable-programs",
+            "--disable-everything", "--disable-network", "--disable-avdevice", "--disable-avformat",
+            "--disable-swscale", "--disable-postproc", "--disable-avfilter", "--disable-symver",
+            "--disable-autodetect", "--enable-swresample", "--enable-decoder=aac",
+        ], cwd=work, check=True)
+        subprocess.run(["make", f"-j{min(os.cpu_count() or 2, 8)}"], cwd=work, check=True)
+        # 延后查找源码头文件，避免 VERSION 文件遮蔽 C++ 的标准头文件。
+        subprocess.run([
+            str(cxx), "-shared", "-fPIC", "-std=c++11", "-O2", "-idirafter", str(source),
+            "-iquote", ".", str(jni), "-Wl,--start-group", "libswresample/libswresample.a",
+            "libavcodec/libavcodec.a", "libavutil/libavutil.a", "-Wl,--end-group", "-llog",
+            "-landroid", "-lm", "-Wl,-Bsymbolic", "-Wl,-z,max-page-size=16384",
+            "-static-libstdc++", "-o", str(output),
+        ], cwd=work, check=True)
+        subprocess.run([str(tools / "llvm-strip"), str(output)], check=True)
+        marker.write_text(stamp)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ndk", required=True, type=Path, help="Android NDK 安装目录")
+    options = parser.parse_args()
+    build(options.ndk.resolve())

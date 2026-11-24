@@ -163,7 +163,9 @@ def prepare_assets(directory, result, output):
     minimum_sdk = result.get("minSdk")
     if type(minimum_sdk) is not int or minimum_sdk < 21:
         raise ReleaseError("构建记录中的最低 Android SDK 无效。")
-    apk_name = f"hongguotv-kotlin-{version}.apk"
+    # Android 5 兼容包单独命名，避免与同版本标准包互相覆盖。
+    suffix = "-android5" if minimum_sdk <= 22 else ""
+    apk_name = f"hongguotv-kotlin-{version}{suffix}.apk"
     source = directory / name
     if source.is_symlink() or not source.is_file():
         raise ReleaseError(f"构建任务 {directory.name} 的 APK 已不存在。")

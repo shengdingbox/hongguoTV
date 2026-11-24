@@ -236,7 +236,9 @@ def prepare_assets(directory, result, output, single_apk=False):
     metadata.update(
         artifactName=artifacts[0]["artifactName"], sourceArtifactName=name, artifacts=artifacts,
     )
-    return assets, metadata
+    # GitHub Release 按附件创建时间倒序展示。先上传兼容版、最后上传标准版，
+    # 让通用标准包显示在 Assets 顶部；发布说明仍按标准版在前的顺序生成。
+    return list(reversed(assets)), metadata
 
 
 def tag_commit(github, tag):

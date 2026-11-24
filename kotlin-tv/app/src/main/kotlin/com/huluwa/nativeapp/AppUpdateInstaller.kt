@@ -38,9 +38,10 @@ object AppUpdateInstaller {
     ) {
         worker.execute {
             try {
+                check(AppUpdateChannel.accepts(update)) { "更新包类型或最低系统与当前设备不匹配，已阻止下载" }
                 val directory=File(activity.getExternalFilesDir(null) ?: activity.filesDir,"updates")
                     .apply { mkdirs() }
-                val target=File(directory,"hongguotv-${update.latestVersionCode}.apk")
+                val target=File(directory,"hongguotv-${update.latestVersionCode}-${update.variant}.apk")
                 val temp=File(directory,"${target.name}.part")
                 // 同版本已完整下载并校验过：授权回来重试、取消安装后重试都直接复用，不重下。
                 if(target.exists() && verified(target,update)) {
@@ -87,7 +88,7 @@ object AppUpdateInstaller {
     /** 本地文件与服务器声明的大小、哈希一致才算可复用。 */
     private fun verified(file: File, update: AppUpdateInfo): Boolean {
         if(update.apkSize>0 && file.length()!=update.apkSize) return false
-        if(update.apkSha256.isBlank()) return file.length()>0
+        if(!Regex("[0-9a-fA-F]{64}").matches(update.apkSha256)) return false
         return sha256(file).equals(update.apkSha256,ignoreCase=true)
     }
 

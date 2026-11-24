@@ -783,7 +783,7 @@ class MainActivity: Activity() {
     private fun checkAppUpdate(manual: Boolean, anchor: View?) {
         if(manual) pendingManualAnchor=anchor
         io.execute {
-            val result=runCatching { AppUpdateChecker().check(BuildConfig.VERSION_CODE) }
+            val result=runCatching { AppUpdateChannel.check() }
             if(manual) result.onSuccess { PendingAppUpdate.publishManual(it) }
                 .onFailure { PendingAppUpdate.publishManualError(it.message ?: "网络不可用") }
         }

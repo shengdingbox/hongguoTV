@@ -2,7 +2,6 @@
 package com.huluwa.nativeapp
 
 import android.content.Context
-import com.hongguotv.core.AppUpdateChecker
 import com.hongguotv.core.AppUpdateInfo
 import java.util.concurrent.Executors
 
@@ -18,11 +17,7 @@ object AppUpdateStartupCheck {
         started=true
         worker.execute {
             runCatching {
-                AppUpdateChecker().check(
-                    BuildConfig.VERSION_CODE,
-                    DeviceId.get(context),
-                    BuildConfig.VERSION_NAME,
-                )
+                AppUpdateChannel.check(DeviceId.get(context))
             }
                 .onSuccess { PendingAppUpdate.publish(it) }
                 .onFailure { PendingAppUpdate.publish(null) }

@@ -1267,9 +1267,12 @@ open class ContentRepository(
             "device_level" to "1",
             // 与多集接口保持同一请求口径：缺 video_platform 会回 PARAM_INVALID(100103)，
             // 其余几项在部分环境下也会导致空体，统一补齐避免换环境后再次失败。
+            // use_server_dns / detail_page_version / disable_digg_stat 对齐 App 的
+            // GetVideoBizParam 口径（官方默认 false/0/false）。
             "video_id_type" to "0", "need_mp4_align" to "0",
             "use_os_player" to "0", "video_platform" to "1024",
-            "from_video_id" to "",
+            "from_video_id" to "", "use_server_dns" to "0",
+            "detail_page_version" to "0", "disable_digg_stat" to "0",
         )
         val hosts=listOf(
             "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/video_model/v",
@@ -1314,6 +1317,9 @@ open class ContentRepository(
             "need_all_video_definition" to "1", "need_mp4_align" to "0",
             "use_os_player" to "0", "video_platform" to "1024", "source" to "0",
             "from_video_id" to "",
+            // 对齐 App 的 GetVideoBizParam 口径（官方默认 false/0/false）。
+            "use_server_dns" to "0", "detail_page_version" to "0",
+            "disable_digg_stat" to "0",
         )
         val hosts=listOf(
             "https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/",
@@ -1446,10 +1452,13 @@ open class ContentRepository(
         if (activeSigner.usesLocalPlaybackAlgorithm && !albumEpisode) {
             videoTabModelV5(id)?.let { return it }
         }
+        // biz_param 按 App 的 GetVideoBizParam 口径补齐（源码 rpc/model/GetVideoBizParam.java）：
+        //   detail_page_version / disable_digg_stat / disable_video_relate_book /
+        //   use_server_dns / from_video_id / source 这些字段官方都会带上，
+        // 实测补齐后仍返回 5 档，属于"口径对齐、降低被服务端按规则过滤"的保险。
         // video_platform=3 与 1024 实测都能返回 5 档，沿用 3；
-        // device_level 与 video_tab 保持一致（电视端必须 1，3 会整集下发 bytevc2/VVC）；
-        // need_mp4_align / use_os_player 与其它路由统一，避免服务端按不同口径处理。
-        val primaryPayload ="""{"video_id":"$id","biz_param":{"video_id_type":$idType,"need_all_video_definition":true,"video_platform":3,"device_level":$level,"need_mp4_align":false,"use_os_player":false}}""".toByteArray(Charsets.UTF_8)
+        // device_level 与 video_tab 一致（电视端必须 1，3 会整集下发 bytevc2/VVC）。
+        val primaryPayload ="""{"video_id":"$id","biz_param":{"detail_page_version":0,"device_level":$level,"disable_digg_stat":false,"disable_video_relate_book":false,"from_video_id":"","need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_id_type":$idType,"video_platform":3,"source":0}}""".toByteArray(Charsets.UTF_8)
         val primary = try {
             sweepRoutes(listOf(PLAYER_PATH to primaryPayload))
         } catch (problem: java.io.InterruptedIOException) {

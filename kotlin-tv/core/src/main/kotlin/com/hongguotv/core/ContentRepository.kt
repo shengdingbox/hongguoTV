@@ -1463,7 +1463,7 @@ open class ContentRepository(
         var routeTimeout: IOException? = null
 
         fun sweep(routes: List<Pair<String, ByteArray>>): Sweep = try {
-            sweepRoutes(routes)
+            sweepRoutes(routes, retryFirstBlank = !usesLocal)
         } catch (problem: java.io.InterruptedIOException) {
             throw problem
         } catch (problem: IOException) {
@@ -1521,7 +1521,7 @@ open class ContentRepository(
         val allBlank = routeTimeout == null && mobile.allBlank && primary.allBlank && first.allBlank && singleTab.blank
         if (!allBlank) throw mobile.failure ?: first.failure ?: primary.failure
             ?: videoTabFailure ?: routeTimeout ?: IOException("播放信息为空")
-        val healed = sweepRoutes(listOf(PLAYER_PATH to primaryPayload) + ordered)
+        val healed = sweepRoutes(listOf(PLAYER_PATH to primaryPayload) + ordered, retryFirstBlank = !usesLocal)
         healed.model?.let { model ->
             val kind = if (healed.path == PLAYER_PATH) PlaybackRouteKind.PLAYER else PlaybackRouteKind.LEGACY
             return remember(kind, model)
@@ -1569,7 +1569,7 @@ open class ContentRepository(
         // 域名健康度先过滤冷却主机，成功记忆仅调整剩余候选的顺序。
         val pending = java.util.ArrayDeque(playbackRecovery.routes.plan(clock(), speculative = false)
             .sortedByDescending { it.host == preferredHost })
-        while (tried < MAX_PLAYBACK_ROUTES && pending.isNotEmpty()) {
+        while (pending.isNotEmpty()) {
             if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
             val route = pending.removeFirst()
             tried++
@@ -1594,6 +1594,14 @@ open class ContentRepository(
                     sawResponse = true,
                     attempted = true,
                 )
+            } catch (problem: java.net.SocketTimeoutException) {
+                // 单个域名超时先冷却并换下一域名，整轮预算耗尽和主动取消立即停止。
+                RequestScope.ensureActive()
+                RequestScope.current()?.ensureActive()
+                if (RequestScope.remainingMillis()?.let { it <= 0L } == true) throw problem
+                allBlank = false
+                lastFailure = problem
+                playbackRecovery.routes.failed(route, clock(), empty = false)
             } catch (problem: java.io.InterruptedIOException) {
                 throw problem
             } catch (problem: EmptyPlaybackResponseException) {
@@ -1617,14 +1625,14 @@ open class ContentRepository(
         playbackRecovery.recordRotation(succeeded)
         return succeeded
     }
-    /** 一轮路由扫描：首条路由原地重发一次，其余路由各发一次，尽量少的请求量覆盖所有候选。
+    /** 一轮路由扫描：本地算法每条路由只发一次；远程算法保留首条空体时的原地重发。
      *  返回后 [Sweep.allBlank] 才是 true 才代表「所有路由都空体」；有非空错误码时会立即返回，不再空转。 */
-    private fun sweepRoutes(routes: List<Pair<String,ByteArray>>): Sweep {
+    private fun sweepRoutes(routes: List<Pair<String,ByteArray>>, retryFirstBlank: Boolean = true): Sweep {
         var allBlank=true
         for((index,pair) in routes.withIndex()) {
             val (path,payload)=pair
-            // 首条路由既是上次成功的那条、也最可能是当前唯一可用的，值得原地重发一次。
-            val attempts=if(index==0) BLANK_RETRIES else 1
+            // 本地扫描空体后直接换候选，避免每个接口族的首条都被额外请求一次。
+            val attempts=if(index==0 && retryFirstBlank) BLANK_RETRIES else 1
             for(attempt in 0 until attempts) {
                 if(Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
                 val body=RequestScope.execute(playbackTransport().newCall(playerRequest(path,payload))) { response ->
@@ -1680,8 +1688,6 @@ open class ContentRepository(
         // （2026-10-13 用站点自带的漫剧热播榜与短剧分类列表逐条核对确认）。
         // 首条路由的空响应重发次数与退避：网关抖动时先原地重试，再换下一条路由。
         private const val BLANK_RETRIES=2
-        /** 一次前台 V5 取址最多尝试的同族域名数。 */
-        private const val MAX_PLAYBACK_ROUTES=4
         /** 连续整轮空响应达到此值才替换匿名身份；避免一次网关抖动就丢身份。 */
         private const val IDENTITY_ROTATE_ROUNDS=2
         /** 空体原地重试不再等待：参考项目同场景零等待快扫，400ms 退避会在失败链上累计出约 2 秒纯等待。 */

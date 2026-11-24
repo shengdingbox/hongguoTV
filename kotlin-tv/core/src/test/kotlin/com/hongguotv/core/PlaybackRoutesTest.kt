@@ -11,7 +11,8 @@ class PlaybackRoutesTest {
     @Test fun prefersRecentSuccessAndAvoidsEmptyRoutesUntilCooldownEnds() {
         val routes = PlaybackRoutes()
         val initial = routes.plan(1000, false)
-        assertEquals(4, initial.size)
+        assertEquals(3, initial.size)
+        assertEquals(PlayRetryPlan.hosts, initial.map { it.host })
 
         routes.failed(initial[0], 1000, empty = true)
         routes.success(initial[2], 1000)
@@ -39,7 +40,7 @@ class PlaybackRoutesTest {
         routes.failed(initial[1], 1000, empty = false)
 
         assertFalse(routes.exhausted(1001))
-        assertEquals(4, PlaybackRoutes().plan(1001, false).size)
+        assertEquals(3, PlaybackRoutes().plan(1001, false).size)
     }
 
     @Test fun recoveryRotationIsGatedByCooldownAndClearsOnlyAfterSuccess() {
@@ -60,7 +61,7 @@ class PlaybackRoutesTest {
         assertTrue(recovery.routes.exhausted(1001))
         recovery.resetRotationCooldown()
         assertFalse(recovery.routes.exhausted(1001))
-        assertEquals(4, recovery.routes.plan(1001, false).size)
+        assertEquals(3, recovery.routes.plan(1001, false).size)
     }
 
     @Test fun successMemorySeparatesAlbumEpisodesAndKeepsNewerConcurrentSuccess() {

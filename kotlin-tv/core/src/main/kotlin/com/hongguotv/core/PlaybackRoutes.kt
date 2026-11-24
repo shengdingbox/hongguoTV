@@ -8,7 +8,7 @@ package com.hongguotv.core
  * 只有所有域名都被判为空体时才轮换匿名身份。这里保留同样语义，但不保存媒体地址或凭据。
  */
 class PlaybackRoutes {
-    data class Route(val single: Boolean, val host: String)
+    data class Route(val host: String)
 
     private data class Health(
         var success: Long = Long.MIN_VALUE,
@@ -16,8 +16,8 @@ class PlaybackRoutes {
         var empty: Boolean = false,
     )
 
-    private val routes = listOf(Route(true, PlayRetryPlan.host(0))) +
-        PlayRetryPlan.hosts.map { Route(false, it) }
+    // V5 已统一使用多集接口，每个域名只保留一条路由及一份冷却状态。
+    private val routes = PlayRetryPlan.hosts.distinct().map { Route(it) }
     private val health = routes.associateWith { Health() }
 
     @Synchronized
@@ -26,14 +26,10 @@ class PlaybackRoutes {
             .sortedByDescending { health.getValue(it).success }
         if (available.isNotEmpty()) {
             if (speculative) return available.take(1)
-            return if (available.none { !it.single }) {
-                available + listOf(routes.filter { !it.single }.minBy { health.getValue(it).blockedUntil })
-            } else {
-                available
-            }
+            return available
         }
         return if (speculative) emptyList() else {
-            listOf(routes.filter { !it.single }.minBy { health.getValue(it).blockedUntil })
+            listOf(routes.minBy { health.getValue(it).blockedUntil })
         }
     }
 

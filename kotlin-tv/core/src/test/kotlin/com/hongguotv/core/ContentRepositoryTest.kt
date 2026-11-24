@@ -304,6 +304,20 @@ class ContentRepositoryTest {
             "/novel/player/multi_video_model/v1/","/novel/player/multi_video_model/v1/",preloadPath),postRoutes)
     }
 
+    @Test fun localEmptyPostRoutesSwitchCandidatesWithoutImmediateRetry() {
+        val postRoutes = mutableListOf<String>()
+        val preloadPath = "/novel/player/multi_video_model/preload/v1/"
+        val repo = repository { request ->
+            // V5 三头签名与兼容六头签名可能使用同路径，分开记录兼容扫描。
+            if (request.method == "POST" && request.header("X-Gorgon") != null) {
+                postRoutes += request.url.encodedPath
+            }
+            if (request.url.encodedPath == preloadPath) playerModelResponse() else ""
+        }
+        assertEquals("1080P", repo.stream("123").quality)
+        assertEquals(listOf(playerPath, MobilePlayback.MODEL_PATH, preloadPath), postRoutes)
+    }
+
     @Test fun v5EmptyHostFallsBackToNextHealthyHostBeforeIdentityRotation() {
         val hosts = mutableListOf<String>()
         val repo = repository { request ->
@@ -317,8 +331,28 @@ class ContentRepositoryTest {
             }
         }
         assertEquals("https://example.com/v5.mp4", repo.stream("123").url)
-        assertTrue(hosts.contains(PlayRetryPlan.host(0)))
-        assertTrue(hosts.drop(1).any { it in PlayRetryPlan.hosts })
+        // 首个域名空体后直接换下一个，不能以单集/多集名义重复请求相同 URL。
+        assertEquals(PlayRetryPlan.hosts.take(2), hosts)
+    }
+
+    @Test fun v5TimedOutHostIsSkippedWhileHealthyHostRemainsPreferred() {
+        val requests = mutableListOf<Request>()
+        val now = 1_700_000_000_000L
+        val repo = repository(clock = { now }) { request ->
+            requests += request
+            if (request.url.encodedPath != MobilePlayback.MODEL_PATH) {
+                throw AssertionError("应继续尝试 V5 备用域名，无需先扫描兼容接口")
+            }
+            if (request.url.host == PlayRetryPlan.host(0)) throw java.net.SocketTimeoutException("域名读取超时")
+            val payload = okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8()
+            val id = JSONObject(payload).getJSONObject("mixed_video_id_map").getJSONArray("1004").getString(0)
+            """{"code":0,"data":{"1004":{"$id":{"video_model":{"video_list":[{"main_url":"https://example.com/$id.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
+        }
+        assertEquals("https://example.com/123.mp4", repo.stream("123", playback = true).url)
+        assertEquals(PlayRetryPlan.hosts.take(2), requests.map { it.url.host })
+        requests.clear()
+        assertEquals("https://example.com/124.mp4", repo.stream("124", playback = true).url)
+        assertEquals(listOf(PlayRetryPlan.host(1)), requests.map { it.url.host })
     }
 
     @Test fun exhaustedV5HostsRotateOnlyAfterTwoRoundsAndOnlyOncePerAttempt() {

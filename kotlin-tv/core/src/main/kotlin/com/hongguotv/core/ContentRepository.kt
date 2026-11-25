@@ -1555,8 +1555,14 @@ open class ContentRepository(
                     }
                     PlaybackRouteKind.VIDEO_MODEL_V5 -> videoModelV5(id, endpoint)
                     PlaybackRouteKind.MOBILE -> {
-                        // 旧 POST 只作单次兜底；新端点已经失败时不再扫三个域名拖满播放预算。
-                        mobile = mobilePlaybackModel(id, group, ahead, endpoint, singleHost = usesLocal)
+                        // 旧 POST 保留多域名容错；但新端点已失败时不再顺带预取相邻集，
+                        // 避免用批量响应拖大播放预算。
+                        mobile = mobilePlaybackModel(
+                            id,
+                            group,
+                            if (usesLocal) emptyList() else ahead,
+                            endpoint,
+                        )
                         mobile.model
                     }
                     PlaybackRouteKind.VIDEO_TAB_V5 -> videoTabModelV5(id)
@@ -1600,7 +1606,6 @@ open class ContentRepository(
         group: String = MobilePlayback.GROUP_SHORT,
         ahead: List<String> = emptyList(),
         preferredHost: String? = null,
-        singleHost: Boolean = false,
     ): Sweep {
         val wanted = (listOf(id) + ahead)
             .filter { it.matches(Regex("[0-9]{1,30}")) }
@@ -1618,7 +1623,7 @@ open class ContentRepository(
         // 空轮计数由 addressModel 按整次取址的最终结果统一维护：V5 域名全冷却时
         // 本轮没有真正尝试 V5，这里既不累加也不清零，避免冷却窗口内的取址把
         // 「连续空轮」计数意外清掉，导致身份轮换阈值永远达不到。
-        return sweepMobilePlayback(wanted, group, preferredHost, singleHost)
+        return sweepMobilePlayback(wanted, group, preferredHost)
     }
 
     /** 按域名健康度扫描 V5 模型；失败只更新路由状态，不直接更换匿名身份。 */
@@ -1626,7 +1631,6 @@ open class ContentRepository(
         wanted: List<String>,
         group: String,
         preferredHost: String? = null,
-        singleHost: Boolean = false,
     ): Sweep {
         var allBlank = true
         var sawResponse = false
@@ -1642,8 +1646,7 @@ open class ContentRepository(
         }
         // 域名健康度先过滤冷却主机，成功记忆仅调整剩余候选的顺序。
         val pending = java.util.ArrayDeque(playbackRecovery.routes.plan(clock(), speculative = false)
-            .sortedByDescending { it.host == preferredHost }
-            .let { if (singleHost) it.take(1) else it })
+            .sortedByDescending { it.host == preferredHost })
         while (pending.isNotEmpty()) {
             if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
             val route = pending.removeFirst()

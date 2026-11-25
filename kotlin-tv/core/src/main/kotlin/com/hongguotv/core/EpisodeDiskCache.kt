@@ -15,13 +15,12 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 
 /** 整集落盘缓存池：播放页后台静默下载相邻集，命中后改由本地文件喂数据。
  *
  *  只主动下载后三集；离开下载窗口、切剧或切画质时保留已有文件。
  *  播放到某集的下下集后才清理该集；池满时按缓存时间淘汰最旧的非播放条目。
- *  完整缓存不依赖在线地址有效期；池容量按整集大小预留，避免并发下载突破上限。
+ *  完整缓存不依赖在线地址有效期；池容量按整集大小预留，避免下载突破上限。
  *  磁盘上存的是与在线字节完全一致的密文；解密仍走 [MediaCrypto.decrypt]，
  *  元数据（改写后的明文头 + 加密样本索引 + 已落盘区间）单独存 JSON。 */
 class EpisodeDiskCache(
@@ -75,8 +74,8 @@ class EpisodeDiskCache(
         const val SERIES_LIMIT_EPISODES = 5
         const val POOL_LIMIT_BYTES = 500L * 1024 * 1024
         const val FREE_FLOOR_BYTES = 1024L * 1024 * 1024
-        /** 缓冲充足时的并发上限，对应下 1/2/3 集。 */
-        const val MAX_PARALLEL = 3
+        /** 后三集严格串行下载，调用方只能控制暂停或单路运行。 */
+        const val MAX_PARALLEL = 1
         /** 某一集下载失败后的退避时间：期间不再重提，避免每个 tick 都重试同一集。 */
         private const val RETRY_BACKOFF_MS = 10_000L
         private const val COMPACT_EVERY = 32
@@ -132,10 +131,9 @@ class EpisodeDiskCache(
     private data class Resources(val free: Long, val lowMemory: Boolean)
     @Volatile private var resources = Resources(Long.MAX_VALUE, false)
     private var nextResourceCheckAt = 0L
-    private val threadCount = AtomicInteger()
-    /** 三集并发下载：下 1/2/3 集同时开工，不再排成一队等前一集下完。 */
-    private val executor = Executors.newFixedThreadPool(MAX_PARALLEL) { action ->
-        Thread(action, "episode-disk-${threadCount.incrementAndGet()}").apply { isDaemon = true }
+    /** 物理线程也只保留一条，旧下载退出前不能与新窗口的下载重叠。 */
+    private val executor = Executors.newSingleThreadExecutor { action ->
+        Thread(action, "episode-disk-download").apply { isDaemon = true }
     }
     @Volatile private var closed = false
     /** 实际下载目标，按调用方提供的优先级排列。 */
@@ -147,7 +145,7 @@ class EpisodeDiskCache(
     /** 此刻真在下载的集：[want] 是目标窗口，这里是线程池里实际跑着的子集。 */
     private val active = mutableSetOf<Key>()
     private val activeScopes = mutableMapOf<Key, RequestScope>()
-    /** 起播/缓冲时为 0，缓冲充足后从下一集单路下载逐步恢复到三路。 */
+    /** 起播/缓冲不足时为 0，缓冲充足后按下一集优先的顺序单路下载。 */
     private var downloadParallelism = MAX_PARALLEL
     /** 失败后的退避截止时间：同一集失败后 10 秒内不再重提，避免每个 tick 都重试。 */
     private val retryAt = mutableMapOf<Key, Long>()
@@ -432,7 +430,7 @@ class EpisodeDiskCache(
         // 保留已落盘区间；取消在途请求，让当前集立即拿回带宽，之后从缺口续传。
     }
 
-    /** 根据当前集的缓冲余量调整并发；缩减时立即取消低优先级的在途网络请求。 */
+    /** 根据当前集的缓冲余量暂停或恢复单路下载。 */
     fun setDownloadParallelism(value: Int) {
         synchronized(lock) {
             val next = value.coerceIn(0, MAX_PARALLEL)
@@ -444,8 +442,10 @@ class EpisodeDiskCache(
     }
 
     private fun cancelExcessDownloadsLocked() {
-        val allowed = want.filter { it in active }.take(downloadParallelism).toSet()
-        cancelLocked(activeScopes.filterKeys { it !in allowed }.values)
+        val first = want.firstOrNull { it !in capacityEvicted && needsDownloadLocked(it) }
+        // 切集、回看或切画质后重新按窗口排序，取消正在下载的低优先级集，保留其已有区间。
+        val allowed = if (downloadParallelism > 0) first else null
+        cancelLocked(activeScopes.filterKeys { it != allowed }.values)
     }
 
     /** 本地索引损坏时废弃该集缓存；在线地址失效不会调用此方法。 */
@@ -469,22 +469,16 @@ class EpisodeDiskCache(
         }
     }
 
-    /**
-     * 每次 schedule 后补齐下载线程：窗口里还没下完、且没在下载的集，
-     * 逐个提交到线程池。同一集不重复提交，缓冲不足时可取消低优先级请求。
-     */
+    /** 每次仅调度窗口里第一个未完成的分集，失败退避期间不让后面的集抢先下载。 */
     private fun ensureWorkerLocked() {
         if (closed || !scheduled || downloadParallelism == 0) return
         val now = clock()
-        val pending = want.filter { key ->
-            key !in active && key !in capacityEvicted && (retryAt[key] ?: 0L) <= now && needsDownloadLocked(key)
-        }
-        // 未开始下载的集按优先级补到并发上限（下 1/2/3 集同时开工）
-        pending.take((downloadParallelism - active.size).coerceAtLeast(0)).forEach { key ->
+        val first = want.firstOrNull { it !in capacityEvicted && needsDownloadLocked(it) }
+        if (active.isEmpty() && first != null && (retryAt[first] ?: 0L) <= now) {
             val scope = RequestScope()
-            active += key
-            activeScopes[key] = scope
-            executor.execute { downloadWorker(key, scope) }
+            active += first
+            activeScopes[first] = scope
+            executor.execute { downloadWorker(first, scope) }
         }
         // 队列长度 = 还没下完的集数（含正在下的），供日志/摘要显示
         setQueued(want.count { it !in capacityEvicted && needsDownloadLocked(it) })
@@ -502,9 +496,9 @@ class EpisodeDiskCache(
 
     private fun queueIsEmptyLocked(): Boolean = want.none { needsDownloadLocked(it) }
 
-    // ---------- 下载线程（并发，每个线程一条集） ----------
+    // ---------- 下载线程（串行，完整下载一集后处理下一集） ----------
 
-    /** 单个下载工作者：一次只负责一集，下完就退出，由下一次 schedule 决定要不要继续。 */
+    /** 一次负责一集，退出时按最新窗口顺序接着下载下一集。 */
     private fun downloadWorker(key: Key, scope: RequestScope) {
         try {
             scope.run { downloadEpisode(key) }
@@ -575,7 +569,7 @@ class EpisodeDiskCache(
         runCatching { onProgress(row.key.id, row.key.quality, 1f) }
     }
 
-    /** 缺元数据则解析地址并整段 prepare（约两三跳网络），之后按 4MiB 段续传。锁外执行。 */
+    /** 缺元数据则解析地址并整段 prepare（约两三跳网络），之后按 1MiB 段续传。锁外执行。 */
     private fun openRow(key: Key): Row? {
         val seriesId = synchronized(lock) {
             entries[key]?.let { return Row(key, it, dataFile(key), metaFile(key)) }
@@ -630,7 +624,7 @@ class EpisodeDiskCache(
 
     private fun download(row: Row) {
         val total = row.entry.meta.total
-        // 单路下载用 1MiB，尽早提供可播放区间、减少让路时丢弃的在途数据；宽裕时用 4MiB。
+        // 单路下载使用 1MiB 分段，尽早提供可播放区间，减少暂停时丢弃的在途数据。
         var pendingMeta = 0
         val fileLock = fileLocks.getOrPut(row.key) { Any() }
         var at = 0L
@@ -640,11 +634,11 @@ class EpisodeDiskCache(
             synchronized(lock) {
                 if (entries[row.key] !== row.entry) throw InterruptedException("下载已取消")
                 // 这一集已经滑出下载窗口（用户切到别的集了）：立刻让出线程槽位给新的下 1/2/3 集。
-                // 否则连切几集后三个线程还在下旧集，新窗口只能在后面等——就是「老是卡在排队」。
+                // 旧集必须及时停止，给新窗口里最靠近当前播放位置的分集让路。
                 // 已落盘的部分保留在磁盘上（meta 里有区间），以后排到时从缺口续传。
                 if (row.key !in want) throw InterruptedException("已移出下载窗口")
             }
-            val segment = synchronized(lock) { (if (downloadParallelism == 1) 1L else 4L) * 1024 * 1024 }
+            val segment = 1024L * 1024
             val end = minOf(total, at + segment)
             synchronized(lock) {
                 if (covered(row.entry.ranges, at, end - at)) { at = end; return@synchronized }

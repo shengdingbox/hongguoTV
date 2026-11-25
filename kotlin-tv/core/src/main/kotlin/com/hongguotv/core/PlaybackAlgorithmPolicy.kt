@@ -38,6 +38,7 @@ class PlaybackAlgorithmPolicy(
     onUnavailable: ((PlaybackAlgorithmUnavailable) -> Unit)? = null,
     automatic: Boolean = false,
     private val clock: () -> Long = { System.nanoTime() / 1_000_000L },
+    private val recoveryPause: (Long) -> Unit = { Thread.sleep(it) },
 ) {
     private val listeners = CopyOnWriteArrayList<(PlaybackAlgorithmChange) -> Unit>().apply { onChange?.let(::add) }
     private val unavailableListeners = CopyOnWriteArrayList<(PlaybackAlgorithmUnavailable) -> Unit>().apply { onUnavailable?.let(::add) }
@@ -130,7 +131,7 @@ class PlaybackAlgorithmPolicy(
         return change != null || unavailable != null
     }
 
-    /** 远程取址时独立检测本地；降级和每次失败探测后都冷却五分钟，且全局单飞。 */
+    /** 本地探测一轮最多三次，分别等待二秒和四秒；整轮失败后冷却五分钟，全局单飞。 */
     internal fun recover(probe: (PlaybackAlgorithmAttempt) -> Boolean): java.util.concurrent.Future<*>? {
         var preference = 0L
         val attempt = synchronized(lock) {
@@ -147,7 +148,16 @@ class PlaybackAlgorithmPolicy(
         return recoveryWorker.submit {
             var succeeded = false
             try {
-                succeeded = probe(attempt)
+                for (round in 0..RECOVERY_RETRY_DELAYS_MS.size) {
+                    if (!recoveryCurrent(preference)) break
+                    if (round > 0) recoveryPause(RECOVERY_RETRY_DELAYS_MS[round - 1])
+                    // 等待期间关闭自动切换或手动改算法后，不能再发出下一次探测。
+                    if (!recoveryCurrent(preference)) break
+                    succeeded = try { probe(attempt) } catch (_: java.io.IOException) { false }
+                    if (succeeded) break
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
             } finally {
                 var change: PlaybackAlgorithmChange? = null
                 synchronized(lock) {
@@ -204,6 +214,9 @@ class PlaybackAlgorithmPolicy(
     fun addUnavailableListener(listener: (PlaybackAlgorithmUnavailable) -> Unit) { if (listener !in unavailableListeners) unavailableListeners += listener }
     fun removeUnavailableListener(listener: (PlaybackAlgorithmUnavailable) -> Unit) { unavailableListeners -= listener }
 
+    private fun recoveryCurrent(preference: Long): Boolean = synchronized(lock) {
+        auto && preferenceRevision == preference && !Thread.currentThread().isInterrupted
+    }
     private fun matches(attempt: PlaybackAlgorithmAttempt) = attempt.revision == revision && attempt.signer === current
     private fun attempt() = PlaybackAlgorithmAttempt(revision, ++sequence, selected, current)
     private fun available(algorithm: PlaybackAlgorithm) = health[algorithm]?.let { clock() >= it.retryAt } ?: true
@@ -238,6 +251,7 @@ class PlaybackAlgorithmPolicy(
     private companion object {
         val ORDER = listOf(PlaybackAlgorithm.LOCAL, PlaybackAlgorithm.UNIDBG, PlaybackAlgorithm.FRIDA)
         const val FAILURE_LIMIT = 3
+        val RECOVERY_RETRY_DELAYS_MS = longArrayOf(2_000L, 4_000L)
         const val LOCAL_RECOVERY_COOLDOWN_MS = 300_000L
         const val INITIAL_COOLDOWN_MS = 30_000L
         const val MAX_COOLDOWN_MS = 300_000L

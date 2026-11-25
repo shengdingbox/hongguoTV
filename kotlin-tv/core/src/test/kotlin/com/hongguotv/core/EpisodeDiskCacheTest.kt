@@ -4,6 +4,8 @@ package com.hongguotv.core
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.RecordedRequest
 import okio.Buffer
 import org.json.JSONArray
 import org.junit.After
@@ -13,6 +15,9 @@ import org.junit.Test
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.file.Files
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class EpisodeDiskCacheTest {
     private val http = OkHttpClient()
@@ -142,6 +147,52 @@ class EpisodeDiskCacheTest {
         Thread.sleep(1500)
         assertNull(cache.meta("401", 720))
         cache.close()
+    }
+
+    @Test fun nextThreeEpisodesDownloadSequentiallyEvenWhenCallerRequestsConcurrency() {
+        val total = 2L * 1024 * 1024
+        val paths = CopyOnWriteArrayList<String>()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val laterStarted = CountDownLatch(1)
+        val finished = CountDownLatch(3)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = requireNotNull(request.requestUrl).encodedPath
+                paths += path
+                if (path == "/v/601" && entered.count > 0) {
+                    entered.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                } else if (path != "/v/601") laterStarted.countDown()
+                val range = requireNotNull(request.getHeader("Range")).removePrefix("bytes=").split('-')
+                val start = range[0].toLong()
+                val end = range[1].toLong()
+                return MockResponse().setResponseCode(206)
+                    .setHeader("Content-Range", "bytes $start-$end/$total")
+                    .setBody(Buffer().write(ByteArray((end - start + 1).toInt())))
+            }
+        }
+        for (id in listOf("601", "602", "603")) {
+            File(dir, "$id-q720.mp4").writeBytes(byteArrayOf(0))
+            writeMeta(id, 720, EpisodeDiskCache.Meta(id, 720, server.url("/v/$id").toString(), null,
+                "720P", 0, total, ByteArray(16), emptyList(), 1, false), listOf(longArrayOf(0, 1)))
+        }
+        val cache = EpisodeDiskCache(http, dir,
+            resolver = { _, _ -> throw AssertionError("断点续传应复用已有元数据") },
+            onLog = { if (it.startsWith("Episode cached ")) finished.countDown() })
+        try {
+            cache.schedule(listOf("601", "602", "603"), 720, parallelism = 3)
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            assertFalse(laterStarted.await(200, TimeUnit.MILLISECONDS))
+            release.countDown()
+            assertTrue(finished.await(10, TimeUnit.SECONDS))
+            assertEquals(listOf("/v/601", "/v/602", "/v/603"), paths.distinct())
+            assertEquals(paths.sorted(), paths.toList())
+            for (id in listOf("601", "602", "603")) assertTrue(cache.meta(id, 720)?.done == true)
+        } finally {
+            release.countDown()
+            cache.close()
+        }
     }
 
     @Test fun readHonorsCoverageAndClipsToTotal() {

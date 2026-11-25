@@ -1080,14 +1080,14 @@ open class ContentRepository(
                     val stream = withStreamBudget(if (foreground && policy.isAutomatic) 5_000 else 0) {
                         bound.streamUnbounded(id, maxQuality, refreshModel, ahead)
                     }
-                    if (!cached) policy.addressSucceeded(attempt)
+                    if (!cached || !policy.isAutomatic) policy.addressSucceeded(attempt)
                     return@withStreamBudget stream
                 } catch (problem: Exception) {
                     if (problem is InterruptedException) Thread.currentThread().interrupt()
                     RequestScope.ensureActive()
                     RequestScope.current()?.ensureActive()
                     // 外层页面超时不代表算法失效；单个算法的独立预算耗尽则允许降级。
-                    if (RequestScope.remainingMillis()?.let { it <= 0 } == true) throw problem
+                    if (policy.isAutomatic && RequestScope.remainingMillis()?.let { it <= 0 } == true) throw problem
                     if (!foreground) throw problem
                     bound.modelCache.evict(id)
                     policy.addressFailed(attempt)

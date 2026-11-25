@@ -21,6 +21,7 @@ class PlaybackAlgorithmDynamicTest {
         fridaFactory = { FakeSigner() },
         automatic = true,
         clock = now::get,
+        recoveryPause = {},
     )
 
     private fun degrade(policy: PlaybackAlgorithmPolicy) {
@@ -130,4 +131,31 @@ class PlaybackAlgorithmDynamicTest {
         assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
         assertNull(policy.unavailable)
     }
+
+    @Test fun recoveryRetriesAfterTwoAndFourSecondsThenStartsFiveMinuteCooldown() {
+        val delays = mutableListOf<Long>()
+        val policy = PlaybackAlgorithmPolicy(
+            PlaybackAlgorithm.LOCAL,
+            automatic = true,
+            clock = now::get,
+            recoveryPause = { delays += it },
+        )
+        degrade(policy)
+        now.addAndGet(300_000)
+        var probes = 0
+        requireNotNull(policy.recover { probes++; false }).get(2, TimeUnit.SECONDS)
+        assertEquals(3, probes)
+        assertEquals(listOf(2_000L, 4_000L), delays)
+        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
+        now.addAndGet(299_999)
+        assertNull(policy.recover { throw AssertionError("整轮失败后应等待五分钟") })
+        now.incrementAndGet()
+        probes = 0
+        delays.clear()
+        requireNotNull(policy.recover { ++probes == 2 }).get(2, TimeUnit.SECONDS)
+        assertEquals(2, probes)
+        assertEquals(listOf(2_000L), delays)
+        assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
+    }
+
 }

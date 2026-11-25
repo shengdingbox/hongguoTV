@@ -205,7 +205,7 @@ class MainActivity: Activity() {
     private var lastIdleForSummary=""
     /** 三段缓存条的高度（dp）：轨道与容器共用，避免只改一处导致填充条被裁掉。 */
     private val cacheStripHeightDp=0.5f
-    /** 上一次按 onProgress 重画条带的时间（elapsedRealtime）：三集并发时用来节流。 */
+    /** 上一次按 onProgress 重画条带的时间（elapsedRealtime）：分段落盘时用来节流。 */
     @Volatile private var cacheStripPaintedAt=0L
     /** 屏幕最底部的缓存状态条：三段依次对应下 1/2/3 集，null 表示当前页面未挂。 */
     private var cacheStripSegments: List<CacheProgressSegment>?=null
@@ -4685,7 +4685,7 @@ class MainActivity: Activity() {
                     episodeCacheLoading=false
                     if(isDestroyed || isFinishing) { result.getOrNull()?.close(); return@post }
                     result.onSuccess { cache ->
-                        // 三集并发时节流刷新条带；库与播放器均可在缓存尚未就绪时正常使用。
+                        // 分段落盘时节流刷新条带；库与播放器均可在缓存尚未就绪时正常使用。
                         cache.onProgress={ _,_,_ ->
                             val now=android.os.SystemClock.elapsedRealtime()
                             if(now-cacheStripPaintedAt>=200) {
@@ -4788,9 +4788,7 @@ class MainActivity: Activity() {
         val bufferedMs=if(ready) ((p!!.bufferedPosition-p.currentPosition).coerceAtLeast(0).toDouble()/p.playbackParameters.speed.coerceAtLeast(.1f)).toLong() else 0L
         val parallelism=when {
             !ready -> 0
-            p!!.bufferedPercentage==100 || bufferedMs>=12_000L -> EpisodeDiskCache.MAX_PARALLEL
-            episodeCacheParallelism==EpisodeDiskCache.MAX_PARALLEL && bufferedMs>=8_000L -> EpisodeDiskCache.MAX_PARALLEL
-            bufferedMs>=5_000L || episodeCacheParallelism>0 && bufferedMs>=3_000L -> 1
+            p!!.bufferedPercentage==100 || bufferedMs>=5_000L || episodeCacheParallelism>0 && bufferedMs>=3_000L -> 1
             else -> 0
         }
         episodeCacheParallelism=parallelism
@@ -4800,7 +4798,7 @@ class MainActivity: Activity() {
         // 排上调度：清掉上次的 idle 记录，之后若再卡住还能重新记一笔
         lastScheduleIdle=""
         lastIdleForSummary=""
-        // 新窗口与并发预算一起生效，避免恢复时先为上一集的旧队列发起网络请求。
+        // 新窗口与启停状态一起生效，始终从最近的未完成分集开始串行下载。
         cache.schedule(ordered,quality,parallelism,seriesId=data.series.id)
     }
     /** 移除自动连播队列时保留相邻集的媒体源，手动切集继续复用。 */

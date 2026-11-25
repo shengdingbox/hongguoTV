@@ -1089,15 +1089,12 @@ open class ContentRepository(
         val started = System.nanoTime()
         val profile = signer.profile()
         val host = "api5-normal-sinfonlineb.fqnovel.com"
-        val url = "https://$host/reading/bookapi/video_tab/multi_video_model/v1/"
-        val values = PlaybackProbe.signatureValues(id, profile)
+        // 远程签名器自己补齐身份字段；本地算法使用与正式播放相同的 74532 新端点。
         if (signer.usesLocalPlaybackAlgorithm) {
-            if (!profile.available || profile.params["cdid"].isNullOrBlank()) {
-                throw SignatureException("本机匿名设备尚未就绪")
-            }
-            PlaybackV5Signer.shared.sign(url, values, ByteArray(0), clock())
+            MobilePlayback.videoModelRequest(id, profile, clock(), host)
         } else {
-            // 远程签名器自己补齐身份字段；这里保持与正式 video_tab 请求相同的业务参数和签名输入。
+            val url = "https://$host${MobilePlayback.VIDEO_MODEL_PATH}"
+            val values = PlaybackProbe.signatureValues(id, profile)
             signer.sign(url, values, null)
         }
         return PlaybackSignatureProbe(signatureElapsedMillis(started))
@@ -1370,6 +1367,38 @@ open class ContentRepository(
         }
         return null
     }
+    /**
+     * 本地算法主路由：官方 `POST /novel/player/video_model/v1/`。
+     *
+     * 由 [MobilePlayback.videoModel] 完成 74532 画像、gzip 体、field21=312 与签名；
+     * 响应兼容 `data.video_model` 及 `data[id].video_model`。
+     * 空体/业务错误返回 null，交给 GET 和旧 POST 兼容路由。
+     */
+    private fun videoModelV5(id: String, preferredHost: String? = null): JSONObject? {
+        val profile = activeSigner.profile()
+        val hosts = if (preferredHost != null) listOf(preferredHost) + PlayRetryPlan.hosts.filter { it != preferredHost }
+        else PlayRetryPlan.hosts
+        for (host in hosts) {
+            val route = PlaybackRoutes.Route(host)
+            try {
+                val model = MobilePlayback.videoModel(id, profile, http, clock(), host)
+                playbackRecovery.routes.success(route, clock())
+                return model.put(ROUTE_KEY, "video-model|${PlayRetryPlan.tag(host)}").put(ENDPOINT_KEY, host)
+            } catch (problem: java.io.InterruptedIOException) {
+                throw problem
+            } catch (problem: EmptyPlaybackResponseException) {
+                playbackRecovery.routes.failed(route, clock(), empty = true)
+            } catch (problem: ServiceException) {
+                playbackRecovery.routes.failed(route, clock(), empty = false)
+            } catch (problem: IOException) {
+                playbackRecovery.routes.failed(route, clock(), empty = false)
+            } catch (problem: RuntimeException) {
+                playbackRecovery.routes.failed(route, clock(), empty = false)
+            }
+        }
+        return null
+    }
+
     /** 本地 V5 多集 GET 首选入口，沿用参考项目 0.16.13 的签名口径。
      *  与 [videoTabModel] 的老签名口径不同，这里用本机 V5 三头签 MD5(空字节)；
      *  失败一律返回 null，由调用方继续后续兼容路由。 */
@@ -1456,10 +1485,11 @@ open class ContentRepository(
             }
             if (usesLocal) {
                 if (!albumEpisode) {
-                    // 2026-11-24 同身份实测：多集 GET 返回可播放模型，三个 V5 POST 域名均为空体。
+                    // 先走官方 74532 新端点，再用 GET 作兼容兜底。
+                    add(PlaybackRouteKind.VIDEO_MODEL_V5)
                     add(PlaybackRouteKind.VIDEO_TAB_V5)
-                    add(PlaybackRouteKind.VIDEO_TAB_MULTI)
                 }
+                // 旧 multi_video_model POST 仅保留兜底，不覆盖新端点成功记忆。
                 add(PlaybackRouteKind.MOBILE)
             }
             add(PlaybackRouteKind.PLAYER)
@@ -1522,8 +1552,10 @@ open class ContentRepository(
                         if (prefersVideoTab && !singleTab.blank) videoTabFailure = ServiceException(singleTab.code)
                         singleTab.model
                     }
+                    PlaybackRouteKind.VIDEO_MODEL_V5 -> videoModelV5(id, endpoint)
                     PlaybackRouteKind.MOBILE -> {
-                        mobile = mobilePlaybackModel(id, group, ahead, endpoint)
+                        // 旧 POST 只作单次兜底；新端点已经失败时不再扫三个域名拖满播放预算。
+                        mobile = mobilePlaybackModel(id, group, ahead, endpoint, singleHost = usesLocal)
                         mobile.model
                     }
                     PlaybackRouteKind.VIDEO_TAB_V5 -> videoTabModelV5(id)
@@ -1562,7 +1594,13 @@ open class ContentRepository(
     }
     /** V5 单集请求；先按域名健康度轮换，只有全部域名都空时才轮换匿名身份并重扫一次。
      *  [ahead] 里的相邻集随同一次 POST 顺带取回并写入模型缓存，切集时不再取址。 */
-    private fun mobilePlaybackModel(id: String, group: String = MobilePlayback.GROUP_SHORT, ahead: List<String> = emptyList(), preferredHost: String? = null): Sweep {
+    private fun mobilePlaybackModel(
+        id: String,
+        group: String = MobilePlayback.GROUP_SHORT,
+        ahead: List<String> = emptyList(),
+        preferredHost: String? = null,
+        singleHost: Boolean = false,
+    ): Sweep {
         val wanted = (listOf(id) + ahead)
             .filter { it.matches(Regex("[0-9]{1,30}")) }
             .distinct()
@@ -1579,11 +1617,16 @@ open class ContentRepository(
         // 空轮计数由 addressModel 按整次取址的最终结果统一维护：V5 域名全冷却时
         // 本轮没有真正尝试 V5，这里既不累加也不清零，避免冷却窗口内的取址把
         // 「连续空轮」计数意外清掉，导致身份轮换阈值永远达不到。
-        return sweepMobilePlayback(wanted, group, preferredHost)
+        return sweepMobilePlayback(wanted, group, preferredHost, singleHost)
     }
 
     /** 按域名健康度扫描 V5 模型；失败只更新路由状态，不直接更换匿名身份。 */
-    private fun sweepMobilePlayback(wanted: List<String>, group: String, preferredHost: String? = null): Sweep {
+    private fun sweepMobilePlayback(
+        wanted: List<String>,
+        group: String,
+        preferredHost: String? = null,
+        singleHost: Boolean = false,
+    ): Sweep {
         var allBlank = true
         var sawResponse = false
         var lastFailure: IOException? = null
@@ -1598,7 +1641,8 @@ open class ContentRepository(
         }
         // 域名健康度先过滤冷却主机，成功记忆仅调整剩余候选的顺序。
         val pending = java.util.ArrayDeque(playbackRecovery.routes.plan(clock(), speculative = false)
-            .sortedByDescending { it.host == preferredHost })
+            .sortedByDescending { it.host == preferredHost }
+            .let { if (singleHost) it.take(1) else it })
         while (pending.isNotEmpty()) {
             if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("播放请求已取消")
             val route = pending.removeFirst()

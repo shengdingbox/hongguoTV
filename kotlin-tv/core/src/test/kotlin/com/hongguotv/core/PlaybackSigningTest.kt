@@ -2,7 +2,6 @@
 package com.hongguotv.core
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -54,6 +53,7 @@ class PlaybackSigningTest {
         assertTrue(headers.getValue("x-argus").startsWith("8o"))
         assertTrue(headers.getValue("x-argus").length > 64)
         assertTrue(headers.getValue("x-ladon").isNotBlank())
-        assertFalse(headers.containsKey("x-medusa"))
+        // 2026-11-23 起播放 POST 缺 x-medusa 会稳定返回 200 + 空体。
+        assertTrue(headers.containsKey("x-medusa"))
     }
 }

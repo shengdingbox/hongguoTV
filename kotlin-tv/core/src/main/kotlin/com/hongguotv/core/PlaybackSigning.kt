@@ -17,10 +17,14 @@ import javax.crypto.spec.SecretKeySpec
  * 四字节时间戳占位会得到 HTTP 200 空响应。这里实现 Argus 551 信封和 34 轮 Ladon，
  * 只用于播放模型请求，其他接口继续使用 [RemoteSigner] 的通用六头签名。
  *
+ * 2026-11-23 起播放请求还必须携带有效的 `x-medusa`（设备布局，field21 与请求画像
+ * 成对固定）；缺失时服务端同样返回 HTTP 200 + 空体。该头由调用方生成并保留，
+ * 本文件只补 Argus / Ladon，不能再把它删掉。
+ *
  * 移植自某 Apache-2.0 授权开源实现的 PR：
  * - X-Argus：protobuf bean → Simon 64/128 → 掩码翻转 → 标准 AES-128-CBC
  * - X-Ladon：34 轮 ARX，密钥由 nonce + aid 的 MD5 派生
- * - 播放 POST 不携带 X-Medusa；video_tab GET 继续使用原有通用签名
+ * - 播放 POST 保留 X-Medusa，不能只提交 Argus / Ladon
  */
 internal object PlaybackSigning {
     private const val LICENSE_ID = "1611921764"

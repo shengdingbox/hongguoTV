@@ -304,20 +304,54 @@ class ContentRepositoryTest {
             "/novel/player/multi_video_model/v1/","/novel/player/multi_video_model/v1/",preloadPath),postRoutes)
     }
 
-    @Test fun localPlaybackStartsWithV5GetWithoutProbingEmptyPostRoutes() {
+    @Test fun localPlaybackStartsWithCurrentVideoModelEndpoint() {
         val requests = mutableListOf<Request>()
         val repo = repository { request ->
             requests += request
-            assertEquals("GET", request.method)
-            assertEquals(tabPath, request.url.encodedPath)
+            assertEquals("POST", request.method)
+            assertEquals(MobilePlayback.VIDEO_MODEL_PATH, request.url.encodedPath)
             assertEquals(PlayRetryPlan.host(0), request.url.host)
-            assertNull(request.header("X-Gorgon"))
-            val id = request.url.queryParameter("video_id")!!
-            """{"code":0,"data":{"video_model_data":{"$id":{"video_model":{"video_list":[{"main_url":"https://example.com/$id.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
+            assertEquals("74532", request.url.queryParameter("version_code"))
+            assertEquals("7.4.5.32", request.url.queryParameter("version_name"))
+            assertEquals("update_64", request.url.queryParameter("channel"))
+            assertNull(request.url.queryParameter("ts"))
+            val actual = if (request.header("Content-Encoding") == "gzip") {
+                java.util.zip.GZIPInputStream(request.body!!.byteStream()).readBytes()
+            } else {
+                okio.Buffer().also { request.body!!.writeTo(it) }.readByteArray()
+            }
+            val id = JSONObject(actual.toString(Charsets.UTF_8)).getString("video_id")
+            """{"code":0,"data":{"video_model":{"video_list":[{"main_url":"https://example.com/$id.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}"""
         }
         assertEquals("https://example.com/123.mp4", repo.stream("123").url)
         assertEquals("https://example.com/124.mp4", repo.stream("124").url)
         assertEquals(2, requests.size)
+    }
+
+    @Test fun localEmptyCurrentEndpointFallsThroughToCompatibilityRoutes() {
+        val requests = mutableListOf<Request>()
+        val repo = repository { request ->
+            requests += request
+            when (request.url.encodedPath) {
+                MobilePlayback.VIDEO_MODEL_PATH -> ""
+                MobilePlayback.GET_TAB_PATH -> """{"code":100103,"message":"参数错误"}"""
+                MobilePlayback.MODEL_PATH -> {
+                    val raw = if (request.header("Content-Encoding") == "gzip") {
+                        java.util.zip.GZIPInputStream(request.body!!.byteStream()).readBytes()
+                    } else {
+                        okio.Buffer().also { request.body!!.writeTo(it) }.readByteArray()
+                    }
+                    val id = JSONObject(raw.toString(Charsets.UTF_8))
+                        .getJSONObject("mixed_video_id_map").getJSONArray("1004").getString(0)
+                    """{"code":0,"data":{"1004":{"$id":{"video_model":{"video_list":[{"main_url":"https://example.com/$id.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
+                }
+                else -> ""
+            }
+        }
+        assertEquals("https://example.com/123.mp4", repo.stream("123").url)
+        assertEquals(MobilePlayback.VIDEO_MODEL_PATH, requests.first().url.encodedPath)
+        assertTrue(requests.any { it.url.encodedPath == MobilePlayback.GET_TAB_PATH })
+        assertTrue(requests.any { it.url.encodedPath == MobilePlayback.MODEL_PATH })
     }
 
     @Test fun localEmptyPostRoutesSwitchCandidatesWithoutImmediateRetry() {

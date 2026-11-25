@@ -391,7 +391,12 @@ class ContentRepositoryTest {
             if (request.url.encodedPath != MobilePlayback.MODEL_PATH) return@repository ""
             requests += request
             if (request.url.host == PlayRetryPlan.host(0)) throw java.net.SocketTimeoutException("域名读取超时")
-            val payload = okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8()
+            val wire = okio.Buffer().also { request.body!!.writeTo(it) }.readByteArray()
+            val payload = if (request.header("Content-Encoding") == "gzip") {
+                java.util.zip.GZIPInputStream(wire.inputStream()).readBytes().toString(Charsets.UTF_8)
+            } else {
+                wire.toString(Charsets.UTF_8)
+            }
             val id = JSONObject(payload).getJSONObject("mixed_video_id_map").getJSONArray("1004").getString(0)
             """{"code":0,"data":{"1004":{"$id":{"video_model":{"video_list":[{"main_url":"https://example.com/$id.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
         }

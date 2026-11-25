@@ -39,9 +39,8 @@ class TvTools(private val activity: Activity) {
     fun algorithmPicker(anchor: View?,message: String?,autoCheck: Boolean,
         probe: (SigningSettings.Algorithm,String)->com.hongguotv.core.StreamInfo,
         signProbe: (SigningSettings.Algorithm,String)->com.hongguotv.core.PlaybackSignatureProbe,
-        onAutomaticChange: (Boolean)->Unit,
         onChoice: (SigningSettings.Algorithm)->Unit) {
-        val picker=PlaybackAlgorithmDialog(activity,message,autoCheck,probe,signProbe,onAutomaticChange,onChoice)
+        val picker=PlaybackAlgorithmDialog(activity,message,autoCheck,probe,signProbe,onChoice)
         algorithmDialog=picker
         open(picker.dialog,anchor) {
             if(algorithmDialog===picker) algorithmDialog=null

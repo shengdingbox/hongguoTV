@@ -7763,13 +7763,14 @@ class MainActivity: Activity() {
             probeRepository(algorithm).probePlayback(id)
         },signProbe={ algorithm,id ->
             probeRepository(algorithm).measurePlaybackSignature(id)
-        },onAutomaticChange=::setAutomaticAlgorithmSwitching,
-            onChoice={ algorithm -> setSigningMode(algorithm,playAfterChange=autoCheck) })
+        },onChoice={ algorithm -> setSigningMode(algorithm,playAfterChange=autoCheck) })
     }
 
     private fun setSigningMode(algorithm: SigningSettings.Algorithm, playAfterChange: Boolean = false) {
-        val automatic = SigningSettings.automaticSwitching
-        if(automatic && !playAfterChange) return
+        if(SigningSettings.automaticSwitching) {
+            PhoneUi.toast(this, "自动模式不能切换")
+            return
+        }
         val changed=algorithm.id!=SigningSettings.selectedAlgorithm.id
         val replay=!detail?.episodes.isNullOrEmpty() && !offlineOnly &&
             (screen=="player" || playAfterChange && screen=="detail")
@@ -7777,13 +7778,11 @@ class MainActivity: Activity() {
         val position=if(screen=="player" && replay) currentPosition() else if(replay) savedPosition(episodeIndex) else 0L
         val index=episodeIndex
         runCatching {
-            if(!automatic) {
-                val signer=SigningSettings.createSigner(algorithm,signerStore)
-                // 手动选择与自动开关分别保存，临时降级不能覆盖手动配置。
-                SigningSettings.select(algorithm)
-                SigningSettings.automaticSwitching = false
-                playbackAlgorithms.select(SigningSettings.toPlaybackAlgorithm(algorithm)) { signer }
-            }
+            val signer=SigningSettings.createSigner(algorithm,signerStore)
+            // 固定已有的关闭状态，避免旧自定义配置换成内置算法后套用默认自动模式。
+            SigningSettings.automaticSwitching = false
+            SigningSettings.select(algorithm)
+            playbackAlgorithms.select(SigningSettings.toPlaybackAlgorithm(algorithm)) { signer }
         }.onFailure {
             PhoneUi.toast(this,"切换算法失败，请重试")
             return

@@ -17,7 +17,6 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Switch
 import com.hongguotv.core.PlaybackSignatureProbe
 import com.hongguotv.core.RequestScope
 import com.hongguotv.core.StreamInfo
@@ -30,7 +29,6 @@ internal class PlaybackAlgorithmDialog(
     private val autoCheck: Boolean,
     private val probe: (SigningSettings.Algorithm, String) -> StreamInfo,
     private val signProbe: (SigningSettings.Algorithm, String) -> PlaybackSignatureProbe,
-    private val onAutomaticChange: (Boolean) -> Unit,
     onChoice: (SigningSettings.Algorithm) -> Unit,
 ) {
     private companion object {
@@ -39,11 +37,11 @@ internal class PlaybackAlgorithmDialog(
     }
 
     private val phone = PhoneDialog.shouldUse(activity)
-    private val current = SigningSettings.selectedAlgorithm
-    private var automatic = SigningSettings.automaticSwitching
-    private val automaticToggle: Switch
+    private val current get() = SigningSettings.selectedAlgorithm
+    private val automatic get() = SigningSettings.automaticSwitching
+    private val automaticNotice: TextView
     private var modes: List<SigningSettings.Algorithm> = SigningSettings.algorithms
-    private var selected: SigningSettings.Algorithm? = if (autoCheck) null else current
+    private var selected: SigningSettings.Algorithm? = if (autoCheck || automatic) null else current
     private var fastest: SigningSettings.Algorithm? = null
     private var checked = false
     private val main = Handler(Looper.getMainLooper())
@@ -77,17 +75,12 @@ internal class PlaybackAlgorithmDialog(
 
     init {
         if (phone) PortraitStyle.refresh(activity)
-        automaticToggle = Switch(activity).apply {
-            id = View.generateViewId()
-            text = "自动切换"
-            textSize = 16f
-            setTextColor(textColor)
-            isChecked = automatic
-            isFocusable = true
-            setPadding(dp(4), dp(10), dp(4), dp(12))
-        }
-        summary = label(strategyHint(), 14f, mutedColor).apply {
+        automaticNotice = label("自动模式不能切换", 14f, mutedColor).apply {
             setPadding(0, 0, 0, dp(12))
+        }
+        summary = label("", 14f, mutedColor).apply {
+            setPadding(0, 0, 0, dp(12))
+            visibility = View.GONE
         }
         list = column()
         val customButton = action("自定义算法") { showCustomAlgorithmDialog() }
@@ -99,9 +92,9 @@ internal class PlaybackAlgorithmDialog(
         checkButton = action("检测算法") { startCheck() }
         confirmButton = action("确认", primary = true) {
             val algorithm = selected
-            if (running == null && automatic) {
-                dialog.dismiss()
-                onChoice(current)
+            if (automatic) {
+                automaticNotice.visibility = View.VISIBLE
+                refreshSelection()
             } else if (algorithm != null && running == null &&
                 (!checked || (algorithm in latencies && algorithm in availableAlgorithms))
             ) {
@@ -118,7 +111,7 @@ internal class PlaybackAlgorithmDialog(
             listOf(confirmButton, checkButton, customButton, closeButton).forEachIndexed { index, button ->
                 actions.addView(button, LinearLayout.LayoutParams(-1, -2).apply { if (index > 0) topMargin = dp(8) })
             }
-            val content = column().apply { addView(automaticToggle); addView(summary); addView(list) }
+            val content = column().apply { addView(automaticNotice); addView(summary); addView(list) }
             dialog = PhoneDialog.sheet(activity, "算法模式", subtitle = message, content = content, footer = actions)
         } else {
             actions.orientation = LinearLayout.VERTICAL
@@ -145,7 +138,7 @@ internal class PlaybackAlgorithmDialog(
             val content = column().apply {
                 addView(TvDialog.title(activity, "算法模式"))
                 if (!message.isNullOrBlank()) addView(TvDialog.body(activity, message))
-                addView(automaticToggle)
+                addView(automaticNotice)
                 addView(summary)
                 addView(ScrollView(activity).apply { isVerticalScrollBarEnabled = false; addView(list) })
                 addView(actions)
@@ -154,24 +147,17 @@ internal class PlaybackAlgorithmDialog(
             TvDialog.styleWindow(activity, dialog, widthDp = 450,
                 capPx = (activity.resources.displayMetrics.heightPixels * .85f).toInt()) {
                 if (running != null) closeButton.requestFocus()
-                else if (automatic) automaticToggle.requestFocus()
+                else if (automatic) checkButton.requestFocus()
                 else options[selected ?: current]?.requestFocus() ?: customButton.requestFocus()
             }
-        }
-        automaticToggle.setOnCheckedChangeListener { _, enabled ->
-            onAutomaticChange(enabled)
-            automatic = SigningSettings.automaticSwitching
-            if (automaticToggle.isChecked != automatic) automaticToggle.isChecked = automatic
-            if (!automatic && selected == null) selected = current
-            summary.text = strategyHint()
-            refreshSelection()
         }
         refreshSelection()
     }
 
-    private fun strategyHint() = if (automatic) {
-        "本地连续取址失败 3 次后使用 unidbg，仍失败再用 Frida；记住可用远程算法，每 5 分钟探测本地，成功立即恢复。关闭后仅手动切换。"
-    } else "仅使用手动选择的算法。检测结果来自固定样本，不代表当前集一定可用。"
+    private fun setSummary(value: String) {
+        summary.text = value
+        summary.visibility = if (value.isBlank()) View.GONE else View.VISIBLE
+    }
 
     private fun rebuildRows(customButton: TextView) {
         list.removeAllViews()
@@ -318,18 +304,21 @@ internal class PlaybackAlgorithmDialog(
     }
 
     private fun refreshSelection() {
+        // 弹框只读取外部开关，检测结果不能改变自动模式或手动选择。
+        automaticNotice.visibility = if (automatic) View.VISIBLE else View.GONE
+        if (automatic) selected = null
+        else if (!checked && selected == null) selected = current
         modes.forEach { algorithm ->
-            val suffix = if (algorithm.id == current.id) " · 当前" else ""
+            val suffix = if (!automatic && algorithm.id == current.id) " · 当前" else ""
             names.getValue(algorithm).text = (if (algorithm == selected) "✓  " else "") + algorithm.label + suffix
             options.getValue(algorithm).isSelected = algorithm == selected
             options.getValue(algorithm).isEnabled = !automatic
             options.getValue(algorithm).alpha = if (automatic) .6f else 1f
             paintOption(algorithm)
         }
-        if (!phone) automaticToggle.nextFocusDownId = if (automatic) checkButton.id else options.values.firstOrNull()?.id ?: checkButton.id
         val algorithm = selected
-        confirmButton.isEnabled = running == null && (automatic || algorithm != null &&
-            (!checked || (algorithm in latencies && algorithm in availableAlgorithms)))
+        confirmButton.isEnabled = !automatic && running == null && algorithm != null &&
+            (!checked || (algorithm in latencies && algorithm in availableAlgorithms))
         confirmButton.alpha = if (confirmButton.isEnabled) 1f else .5f
     }
 
@@ -373,12 +362,10 @@ internal class PlaybackAlgorithmDialog(
         if (rows.isEmpty()) return
         val custom = focusAnchor ?: return
         rows.forEachIndexed { index, row ->
-            row.nextFocusUpId = rows.getOrNull(index - 1)?.id ?: automaticToggle.id
+            row.nextFocusUpId = rows.getOrNull(index - 1)?.id ?: custom.id
             row.nextFocusDownId = rows.getOrNull(index + 1)?.id ?: custom.id
         }
         custom.nextFocusUpId = rows.last().id
-        automaticToggle.nextFocusDownId = if (automatic) checkButton.id else rows.first().id
-        automaticToggle.nextFocusUpId = custom.id
     }
 
     private fun createRow(algorithm: SigningSettings.Algorithm): LinearLayout {
@@ -405,8 +392,7 @@ internal class PlaybackAlgorithmDialog(
         row.setOnClickListener {
             if (running == null && !automatic) {
                 selected = algorithm
-                summary.text = if (!checked) "已选择${algorithm.label}，点击确认后使用此算法。"
-                    else "已选择${algorithm.label}（签名 ${latencies[algorithm]?.let { "$it ms" } ?: "—"}），确认后使用此算法。"
+                setSummary("已选择${algorithm.label}")
                 refreshSelection()
             }
         }
@@ -416,7 +402,7 @@ internal class PlaybackAlgorithmDialog(
 
     private fun checkModes(session: RequestScope, episodeId: String, checkedAlgorithms: List<SigningSettings.Algorithm>) {
         var remaining = checkedAlgorithms.size
-        summary.text = "正在使用固定短剧分集检测 ${checkedAlgorithms.size} 种算法…"
+        setSummary("正在检测 ${checkedAlgorithms.size} 种算法…")
         checkedAlgorithms.forEach { algorithm ->
             results.getValue(algorithm).text = "签名 — · 检测中 · 样本最高 —"
             val scope = session.child(20_000)
@@ -444,16 +430,16 @@ internal class PlaybackAlgorithmDialog(
                         fastest = checkedAlgorithms
                             .filter { it in latencies && it in availableAlgorithms }
                             .minByOrNull { latencies.getValue(it) }
-                        selected = fastest
+                        selected = if (automatic) null else fastest
                         val best = fastest
-                        summary.text = when {
-                            automatic -> strategyHint()
-                            best != null -> "已选播放签名最快的${best.label}（${latencies.getValue(best)} ms），确认后使用此算法。"
-                            else -> "没有同时可播放且完成签名测速的算法，请重新检测。"
-                        }
+                        setSummary(when {
+                            automatic -> "检测完成"
+                            best != null -> "已选择${best.label} · ${latencies.getValue(best)} ms"
+                            else -> "暂无可用算法，请重新检测"
+                        })
                         finishCheck(session)
-                        if (!phone && best != null) confirmButton.requestFocus()
-                    } else summary.text = "已完成 ${checkedAlgorithms.size - remaining}/${checkedAlgorithms.size}，其余算法仍在检测…"
+                        if (!phone && !automatic && best != null) confirmButton.requestFocus()
+                    } else setSummary("已完成 ${checkedAlgorithms.size - remaining}/${checkedAlgorithms.size}")
                 }
             }
         }

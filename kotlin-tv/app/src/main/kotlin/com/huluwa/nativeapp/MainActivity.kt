@@ -7732,19 +7732,27 @@ class MainActivity: Activity() {
     val phoneAutomaticAlgorithmSwitching get() = SigningSettings.automaticSwitching
     fun phoneToggleAutomaticAlgorithmSwitching() = setAutomaticAlgorithmSwitching(!SigningSettings.automaticSwitching)
 
-    /** 开关立即生效；关闭后恢复单独保存的手动算法，不中断正在播放的视频。 */
+    /** 先保存开关再切换算法；切换失败恢复原设置，界面刷新不参与切换结果判断。 */
     private fun setAutomaticAlgorithmSwitching(enabled: Boolean) {
-        if(enabled == SigningSettings.automaticSwitching) return
+        val previous = SigningSettings.automaticSwitching
+        if(enabled == previous) return
         runCatching {
-            if(enabled) playbackAlgorithms.selectAutomatic()
-            else {
-                val algorithm = SigningSettings.selectedAlgorithm
-                val signer = SigningSettings.createSigner(algorithm, signerStore)
-                playbackAlgorithms.select(SigningSettings.toPlaybackAlgorithm(algorithm)) { signer }
-            }
+            val algorithm = SigningSettings.selectedAlgorithm
+            val signer = if(enabled) null else SigningSettings.createSigner(algorithm, signerStore)
             SigningSettings.automaticSwitching = enabled
-            phoneRefreshSettingsValues()
-        }.onFailure { PhoneUi.toast(this, "切换自动算法失败，请重试") }
+            try {
+                if(enabled) playbackAlgorithms.selectAutomatic()
+                else playbackAlgorithms.select(SigningSettings.toPlaybackAlgorithm(algorithm)) { requireNotNull(signer) }
+            } catch(problem: Exception) {
+                SigningSettings.automaticSwitching = previous
+                throw problem
+            }
+        }.onFailure { problem ->
+            RuntimeLog.add("自动切换设置失败：${problem.javaClass.simpleName} ${problem.message.orEmpty()}")
+            PhoneUi.toast(this, "切换自动算法失败，请重试")
+            return
+        }
+        phoneRefreshSettingsValues()
     }
 
 

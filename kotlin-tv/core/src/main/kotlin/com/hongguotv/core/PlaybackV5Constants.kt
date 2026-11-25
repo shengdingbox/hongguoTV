@@ -2,11 +2,11 @@
 // GPL-3.0-only derived; see the README 来源与声明 section.
 package com.hongguotv.core
 
-/** v04.06.04 播放协议常量；服务端当前只接受这一档，GPL 来源见根目录 README.md 的「来源与声明」。 */
+/** v04.10.03 播放协议常量；与查询串的 74532 画像和 medusa field21=312 配套。 */
 internal object PlaybackV5Constants {
-    val magic = hex("f7e85ffad7d7dc3bd62ac87057cf6118")
-    const val license = "AXYQOS6n2m60x1fVZHIrH3iol"
-    val signKey = hex("8ebdfa3806ecc5cee79423e6029ed82540bc2218bb7eaef71cb691f7aa8aa2f5")
+    val magic = hex("2d4b4fca49750d433fb5ae2c226dcc56")
+    const val license = "646637794"
+    val signKey = hex("b23c2a470a20d105dc3f8c4438f8272ed46d6c89ffdcdedd5108698d26e9489d")
     val sbox = hex(
         "53290fe9e51f316f90f74a7e034d367784ab49237cd0135cdc632c322fd3be0e2624a417ecd9151a7ff64f60730a87f9445ec6ada2f865d22b696c4188f24c0d" +
         "f37b75510b939f6bc2fe6883e68bc8c722181ba0bdb08c9871b50c9a16b46eea8eed20ba4b8a14e0fcf1468dbbef05a93e5a9d7dcf06898635c1fd99f5de287a" +

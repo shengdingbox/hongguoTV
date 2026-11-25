@@ -2,6 +2,7 @@
 package com.hongguotv.core
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -13,7 +14,7 @@ class PlaybackV5SignerTest {
             linkedMapOf(
                 "device_id" to "7000000000000000001",
                 "iid" to "7000000000000000002",
-                "version_name" to "7.4.3.32",
+                "version_name" to "7.4.5.32",
                 "os_version" to "14",
                 "device_type" to "23127PN0CC",
                 "channel" to "xiaomi_8662_64",
@@ -22,11 +23,12 @@ class PlaybackV5SignerTest {
             now,
         )
 
-        val queryTs = signed.url.substringAfter('?').split('&')
+        val query = signed.url.substringAfter('?').split('&')
             .map { it.substringBefore('=') to it.substringAfter('=') }
-            .toMap()["ts"]
-        assertEquals("1700000000", queryTs)
-        assertEquals(queryTs, signed.headers["x-khronos"])
+            .toMap()
+        // v5 查询串不带 ts；ts 只用于签名输入和 x-khronos。
+        assertFalse(query.containsKey("ts"))
+        assertEquals("1700000000", signed.headers["x-khronos"])
         assertTrue(signed.headers.getValue("x-medusa").isNotBlank())
         assertTrue(signed.headers.getValue("x-helios").isNotBlank())
     }

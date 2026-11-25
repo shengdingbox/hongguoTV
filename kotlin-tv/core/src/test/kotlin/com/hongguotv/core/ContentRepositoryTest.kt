@@ -195,11 +195,11 @@ class ContentRepositoryTest {
     }
 
     @Test fun v5PlaybackQueriesUseTheRegisteredDeviceProfile() {
-        // 2026-11-23 起服务端会把匿名身份和查询串里的设备字段一起校验。
-        // 这里固定成与注册档案不同的机型，若实现又写死 PGT-AN10/HONOR 就会失败。
+        // 播放画像固定为官方 74532；设备身份来自注册档案，查不到时才回退官方默认值。
+        // 这里不再接受设备表里的旧机型/渠道覆盖播放查询，否则平台会回 200 + 空体。
         val identity = linkedMapOf(
             "device_id" to "1905892595378490",
-            "iid" to "1905892595382586",
+            "iid" to "1902595382586",
             "cdid" to "530e9d5a2b7c4f18a9603d1ce74b82f6",
             "device_type" to "23127PN0CC",
             "device_brand" to "Xiaomi",
@@ -215,31 +215,31 @@ class ContentRepositoryTest {
         val repo = repository(signer = signer) { request ->
             requests += request
             when (request.url.encodedPath) {
-                "/novel/player/multi_video_model/v1/" ->
-                    """{"code":0,"data":{"1004":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}}"""
+                MobilePlayback.VIDEO_MODEL_PATH -> playerModelResponse()
                 else -> videoInfo()
             }
         }
 
         assertEquals("1080P", repo.stream("123").quality)
 
-        val playbackUrl = requests.first { it.url.encodedPath == "/novel/player/multi_video_model/v1/" }.url
-        // POST 查询串保留了手机端标准字段，并且设备身份来自注册档案。
-        assertEquals("23127PN0CC", playbackUrl.queryParameter("device_type"))
-        assertEquals("Xiaomi", playbackUrl.queryParameter("device_brand"))
-        assertEquals("14", playbackUrl.queryParameter("os_version"))
-        assertEquals("34", playbackUrl.queryParameter("os_api"))
-        assertEquals("1200*2670", playbackUrl.queryParameter("resolution"))
-        assertEquals("460", playbackUrl.queryParameter("dpi"))
-        assertEquals("xiaomi_8662_64", playbackUrl.queryParameter("channel"))
-        assertNotNull(playbackUrl.queryParameter("ts"))
+        val playbackUrl = requests.first { it.url.encodedPath == MobilePlayback.VIDEO_MODEL_PATH }.url
+        // 请求画像按官方新版本固定；设备身份仍来自注册档案。
+        assertEquals("25053RT47C", playbackUrl.queryParameter("device_type"))
+        assertEquals("Redmi", playbackUrl.queryParameter("device_brand"))
+        assertEquals("16", playbackUrl.queryParameter("os_version"))
+        assertEquals("36", playbackUrl.queryParameter("os_api"))
+        assertEquals("update_64", playbackUrl.queryParameter("channel"))
+        assertEquals("74532", playbackUrl.queryParameter("version_code"))
+        assertEquals("7.4.5.32", playbackUrl.queryParameter("version_name"))
+        assertEquals("1905892595378490", playbackUrl.queryParameter("device_id"))
+        assertEquals("1902595382586", playbackUrl.queryParameter("iid"))
+        assertNull(playbackUrl.queryParameter("ts"))
 
         val getRequest = MobilePlayback.videoTabRequest("123", signer.profile(), 1_700_000_000_000L)
-        assertEquals("23127PN0CC", getRequest.url.queryParameter("device_type"))
-        assertEquals("Xiaomi", getRequest.url.queryParameter("device_brand"))
-        assertEquals("14", getRequest.url.queryParameter("os_version"))
-        assertEquals("34", getRequest.url.queryParameter("os_api"))
-        assertEquals("1700000000", getRequest.url.queryParameter("ts"))
+        assertEquals("25053RT47C", getRequest.url.queryParameter("device_type"))
+        assertEquals("Redmi", getRequest.url.queryParameter("device_brand"))
+        assertEquals("74532", getRequest.url.queryParameter("version_code"))
+        assertNull(getRequest.url.queryParameter("ts"))
         assertEquals("1700000000", getRequest.header("x-khronos"))
     }
 
@@ -304,20 +304,56 @@ class ContentRepositoryTest {
             "/novel/player/multi_video_model/v1/","/novel/player/multi_video_model/v1/",preloadPath),postRoutes)
     }
 
-    @Test fun localPlaybackStartsWithV5GetWithoutProbingEmptyPostRoutes() {
+    @Test fun localPlaybackStartsWithCurrentVideoModelEndpoint() {
         val requests = mutableListOf<Request>()
         val repo = repository { request ->
             requests += request
-            assertEquals("GET", request.method)
-            assertEquals(tabPath, request.url.encodedPath)
+            assertEquals("POST", request.method)
+            assertEquals(MobilePlayback.VIDEO_MODEL_PATH, request.url.encodedPath)
             assertEquals(PlayRetryPlan.host(0), request.url.host)
-            assertNull(request.header("X-Gorgon"))
-            val id = request.url.queryParameter("video_id")!!
-            """{"code":0,"data":{"video_model_data":{"$id":{"video_model":{"video_list":[{"main_url":"https://example.com/$id.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
+            assertEquals("74532", request.url.queryParameter("version_code"))
+            assertEquals("7.4.5.32", request.url.queryParameter("version_name"))
+            assertEquals("update_64", request.url.queryParameter("channel"))
+            assertNull(request.url.queryParameter("ts"))
+            val wire = okio.Buffer().also { request.body!!.writeTo(it) }.readByteArray()
+            val actual = if (request.header("Content-Encoding") == "gzip") {
+                java.util.zip.GZIPInputStream(wire.inputStream()).readBytes()
+            } else {
+                wire
+            }
+            val id = JSONObject(actual.toString(Charsets.UTF_8)).getString("video_id")
+            """{"code":0,"data":{"video_model":{"video_list":[{"main_url":"https://example.com/$id.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}"""
         }
         assertEquals("https://example.com/123.mp4", repo.stream("123").url)
         assertEquals("https://example.com/124.mp4", repo.stream("124").url)
         assertEquals(2, requests.size)
+    }
+
+    @Test fun localEmptyCurrentEndpointFallsThroughToCompatibilityRoutes() {
+        val requests = mutableListOf<Request>()
+        val repo = repository { request ->
+            requests += request
+            when (request.url.encodedPath) {
+                MobilePlayback.VIDEO_MODEL_PATH -> ""
+                MobilePlayback.GET_TAB_PATH -> """{"code":100103,"message":"参数错误"}"""
+                MobilePlayback.MODEL_PATH -> {
+                    val wire = okio.Buffer().also { request.body!!.writeTo(it) }.readByteArray()
+                    val raw = if (request.header("Content-Encoding") == "gzip") {
+                        java.util.zip.GZIPInputStream(wire.inputStream()).readBytes()
+                    } else {
+                        wire
+                    }
+                    val id = JSONObject(raw.toString(Charsets.UTF_8))
+                        .getJSONObject("mixed_video_id_map").getJSONArray("1004").getString(0)
+                    """{"code":0,"data":{"1004":{"$id":{"video_model":{"video_list":[{"main_url":"https://example.com/$id.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
+                }
+                else -> ""
+            }
+        }
+        assertEquals("https://example.com/123.mp4", repo.stream("123").url)
+        assertEquals(MobilePlayback.VIDEO_MODEL_PATH, requests.first().url.encodedPath)
+        assertTrue(requests.any { it.url.encodedPath == MobilePlayback.GET_TAB_PATH })
+        assertTrue(requests.any { it.url.encodedPath == MobilePlayback.MODEL_PATH })
     }
 
     @Test fun localEmptyPostRoutesSwitchCandidatesWithoutImmediateRetry() {
@@ -336,15 +372,11 @@ class ContentRepositoryTest {
 
     @Test fun v5EmptyHostFallsBackToNextHealthyHostBeforeIdentityRotation() {
         val hosts = mutableListOf<String>()
-        val repo = repository { request ->
-            when {
-                request.url.encodedPath == MobilePlayback.MODEL_PATH -> {
-                    hosts += request.url.host
-                    if (request.url.host == PlayRetryPlan.host(0)) ""
-                    else """{"code":0,"data":{"1004":{"123":{"video_model":{"video_list":[{"main_url":"https://example.com/v5.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
-                }
-                else -> ""
-            }
+        val repo = repository(signer = mobileOnlySigner()) { request ->
+            if (request.url.encodedPath != MobilePlayback.MODEL_PATH) return@repository ""
+            hosts += request.url.host
+            if (request.url.host == PlayRetryPlan.host(0)) ""
+            else """{"code":0,"data":{"1004":{"123":{"video_model":{"video_list":[{"main_url":"https://example.com/v5.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
         }
         assertEquals("https://example.com/v5.mp4", repo.stream("123").url)
         // 首个域名空体后直接换下一个，不能以单集/多集名义重复请求相同 URL。
@@ -354,12 +386,17 @@ class ContentRepositoryTest {
     @Test fun v5TimedOutHostIsSkippedWhileHealthyHostRemainsPreferred() {
         val requests = mutableListOf<Request>()
         val now = 1_700_000_000_000L
-        val repo = repository(clock = { now }) { request ->
-            // 首选多集 GET 不可用后才进入 V5 POST，这里只统计 POST 域名轮换。
+        val repo = repository(clock = { now }, signer = mobileOnlySigner()) { request ->
+            // 只验证多集 V5 POST 的域名轮换。
             if (request.url.encodedPath != MobilePlayback.MODEL_PATH) return@repository ""
             requests += request
             if (request.url.host == PlayRetryPlan.host(0)) throw java.net.SocketTimeoutException("域名读取超时")
-            val payload = okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8()
+            val wire = okio.Buffer().also { request.body!!.writeTo(it) }.readByteArray()
+            val payload = if (request.header("Content-Encoding") == "gzip") {
+                java.util.zip.GZIPInputStream(wire.inputStream()).readBytes().toString(Charsets.UTF_8)
+            } else {
+                wire.toString(Charsets.UTF_8)
+            }
             val id = JSONObject(payload).getJSONObject("mixed_video_id_map").getJSONArray("1004").getString(0)
             """{"code":0,"data":{"1004":{"$id":{"video_model":{"video_list":[{"main_url":"https://example.com/$id.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
         }
@@ -373,10 +410,13 @@ class ContentRepositoryTest {
     @Test fun exhaustedV5HostsRotateOnlyAfterTwoRoundsAndOnlyOncePerAttempt() {
         var rotations = 0
         val signer = object : FakeSigner() {
+            override val prefersVideoTab get() = false
             override fun renew(): SignerProfile {
                 rotations++
                 throw IOException("device register unavailable")
             }
+            override fun sign(url: String, values: Map<String, String>, body: ByteArray?): SignedRequest =
+                super.sign(url, values, body).copy(headers = mapOf("X-Gorgon" to "mobile-only"))
         }
         val repo = ContentRepository(
             OkHttpClient.Builder().addInterceptor { chain ->
@@ -397,6 +437,19 @@ class ContentRepositoryTest {
         assertEquals(1, rotations)
         assertThrows(IOException::class.java) { repo.stream("126") }
         assertEquals(1, rotations)
+    }
+
+    /** 仅验证多集 V5 POST：保留本地 MOBILE 路由，但让其它播放路由的签名标记不同。 */
+    private fun mobileOnlySigner(): FakeSigner = object : FakeSigner() {
+        override val prefersVideoTab get() = false
+        override fun sign(url: String, values: Map<String, String>, body: ByteArray?): SignedRequest {
+            // 只给 multi_video_model 旧 POST 带六头签名；PLAYER / LEGACY / GET 用无签名标记，
+            // 让测试夹具只对目标路由返回模型。
+            val target = url.contains("/novel/player/multi_video_model/v1/") &&
+                !url.contains("/preload/") && !url.contains("/player/")
+            val signed = super.sign(url, values, body)
+            return if (target) signed else signed.copy(headers = mapOf("X-Gorgon" to "mobile-only"))
+        }
     }
 
     private fun repository(clock: () -> Long = System::currentTimeMillis, signer: FakeSigner = FakeSigner(), respond: (Request) -> String) = ContentRepository(

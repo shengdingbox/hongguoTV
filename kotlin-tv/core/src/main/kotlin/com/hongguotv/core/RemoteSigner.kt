@@ -242,9 +242,10 @@ open class RemoteSigner(
             "x-tt-dt" to "",
         )
         if (PlaybackSigning.isPlayerPath(path.substringBefore('?'))) {
-            // Bind the envelope to the final query and the same profile used
-            // above; reading profile() again could race with device recovery.
-            headers.remove("x-medusa")
+            // Bind the envelope to the final query and the same profile used above;
+            // reading profile() again could race with device recovery.
+            // 2026-11-23 起播放取址必须同时提交 x-medusa；11-10 曾观察到相反行为，
+            // 但该头缺失会让服务端稳定返回 HTTP 200 + 空体，不能再无条件删除。
             headers["lc"] = "101"
             headers["x-ss-dp"] = profile.params["aid"].orEmpty().ifBlank { "8662" }
             headers.putAll(PlaybackSigning.headers(

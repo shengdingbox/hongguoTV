@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.core
 
+/** 一次播放签名测速的结果；只含签名自身耗时，不含播放内容接口。 */
+data class PlaybackSignatureProbe(val elapsedMs: Long)
+
+/** core 不依赖 Android；用 JVM 单调时钟统计签名耗时。 */
+internal fun signatureElapsedMillis(started: Long): Long =
+    (System.nanoTime() - started) / 1_000_000L
+
 /** 算法检测共用同一份播放签名输入，避免列表测速与正式 video_tab 请求的参数口径漂移。 */
 internal object PlaybackProbe {
     fun signatureValues(id: String, profile: SignerProfile): Map<String, String> {

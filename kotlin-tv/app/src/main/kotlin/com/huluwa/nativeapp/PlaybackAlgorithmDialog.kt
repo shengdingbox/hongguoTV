@@ -6,7 +6,6 @@ import android.app.AlertDialog
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.text.InputFilter
 import android.text.InputType
 import android.text.TextUtils
@@ -18,8 +17,8 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.hongguotv.core.PlaybackSignatureProbe
 import com.hongguotv.core.RequestScope
-import com.hongguotv.core.SignedRequest
 import com.hongguotv.core.StreamInfo
 import java.util.concurrent.Executors
 
@@ -30,7 +29,7 @@ internal class PlaybackAlgorithmDialog(
     private val autoCheck: Boolean,
     private val resolveEpisode: () -> String,
     private val probe: (SigningSettings.Algorithm, String) -> StreamInfo,
-    private val signProbe: (SigningSettings.Algorithm, String) -> SignedRequest,
+    private val signProbe: (SigningSettings.Algorithm, String) -> PlaybackSignatureProbe,
     onChoice: (SigningSettings.Algorithm) -> Unit,
 ) {
     private val phone = PhoneDialog.shouldUse(activity)
@@ -47,6 +46,7 @@ internal class PlaybackAlgorithmDialog(
     private var checkPending = false
     private val latencies = mutableMapOf<SigningSettings.Algorithm, Long>()
     private val qualities = mutableMapOf<SigningSettings.Algorithm, String>()
+    private val availableAlgorithms = mutableSetOf<SigningSettings.Algorithm>()
     private val results = mutableMapOf<SigningSettings.Algorithm, TextView>()
     private val names = mutableMapOf<SigningSettings.Algorithm, TextView>()
     private val options = mutableMapOf<SigningSettings.Algorithm, LinearLayout>()
@@ -69,7 +69,7 @@ internal class PlaybackAlgorithmDialog(
 
     init {
         if (phone) PortraitStyle.refresh(activity)
-        summary = label("先验证播放是否可用，再按播放签名耗时自动选择最快算法。", 14f, mutedColor).apply {
+        summary = label("每行显示签名延迟、是否可用与最高清晰度。", 14f, mutedColor).apply {
             setPadding(0, 0, 0, dp(12))
         }
         list = column()
@@ -82,7 +82,9 @@ internal class PlaybackAlgorithmDialog(
         checkButton = action("检测算法") { startCheck() }
         confirmButton = action("确认", primary = true) {
             val algorithm = selected
-            if (algorithm != null && running == null && (!checked || algorithm in latencies)) {
+            if (algorithm != null && running == null &&
+                (!checked || (algorithm in latencies && algorithm in availableAlgorithms))
+            ) {
                 dialog.dismiss()
                 onChoice(algorithm)
             }
@@ -289,7 +291,8 @@ internal class PlaybackAlgorithmDialog(
             paintOption(algorithm)
         }
         val algorithm = selected
-        confirmButton.isEnabled = running == null && algorithm != null && (!checked || algorithm in latencies)
+        confirmButton.isEnabled = running == null && algorithm != null &&
+            (!checked || (algorithm in latencies && algorithm in availableAlgorithms))
         confirmButton.alpha = if (confirmButton.isEnabled) 1f else .5f
     }
 
@@ -304,7 +307,7 @@ internal class PlaybackAlgorithmDialog(
         val session = RequestScope()
         running = session
         checked = true
-        selected = null; fastest = null; latencies.clear(); qualities.clear()
+        selected = null; fastest = null; latencies.clear(); qualities.clear(); availableAlgorithms.clear()
         checkButton.isEnabled = false
         checkButton.alpha = .5f
         checkButton.text = "检测中…"
@@ -361,16 +364,15 @@ internal class PlaybackAlgorithmDialog(
             setOnFocusChangeListener { _, _ -> paintOption(algorithm) }
         }
         val name = label("", 16f, textColor).apply {
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.MIDDLE
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
         }
         names[algorithm] = name
         row.addView(name)
-        val result = label("尚未检测\n\u00A0", 13f, mutedColor).apply {
+        val result = label("尚未检测", 13f, mutedColor).apply {
             setPadding(0, dp(4), 0, 0)
-            minLines = 2; maxLines = 2
+            maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
-            setLineSpacing(dp(1).toFloat(), 1.15f)
         }
         row.addView(result)
         results[algorithm] = result
@@ -378,8 +380,7 @@ internal class PlaybackAlgorithmDialog(
             if (running == null) {
                 selected = algorithm
                 summary.text = if (!checked) "已选择${algorithm.label}，点击确认后使用此算法。"
-                    else if (algorithm in latencies) "已选择${algorithm.label}（签名 ${latencies.getValue(algorithm)} ms），确认后使用此算法。"
-                    else "所选算法不可用，请选择可用算法或重新检测。"
+                    else "已选择${algorithm.label}（签名 ${latencies[algorithm]?.let { "$it ms" } ?: "—"}），确认后使用此算法。"
                 refreshSelection()
             }
         }
@@ -391,43 +392,37 @@ internal class PlaybackAlgorithmDialog(
         var remaining = checkedAlgorithms.size
         summary.text = "正在检查 ${checkedAlgorithms.size} 种算法的播放可用性与签名耗时…"
         checkedAlgorithms.forEach { algorithm ->
-            results.getValue(algorithm).text = "正在验证播放可用性…"
+            results.getValue(algorithm).text = "签名 — · 检测中 · 最高 —"
             val scope = session.child(20_000)
             workers.execute {
-                val result = runCatching {
-                    scope.run {
-                        // 可用性仍按真实播放取址判断，只有成功取得可播放地址的算法才进入签名测速。
-                        val info = probe(algorithm, episodeId)
-                        val started = SystemClock.elapsedRealtime()
-                        signProbe(algorithm, episodeId)
-                        info to (SystemClock.elapsedRealtime() - started)
-                    }
-                }
+                val availability = runCatching { scope.run { probe(algorithm, episodeId) } }
+                // 可用性失败不能吞掉签名结果；本地算法尤其需要单独展示本机计算耗时。
+                val signature = runCatching { scope.run { signProbe(algorithm, episodeId) } }
                 main.post {
                     if (running !== session || !dialog.isShowing || activity.isFinishing || activity.isDestroyed) return@post
                     val view = results[algorithm] ?: return@post
-                    result.fold({ (info, elapsed) ->
-                        latencies[algorithm] = elapsed
-                        qualities[algorithm] = info.quality
-                        view.text = "可用 · 签名 ${elapsed} ms\n最高 ${info.quality}"
-                        view.setTextColor(if (phone && !PortraitStyle.isDark) Color.rgb(30, 130, 65) else Color.rgb(86, 196, 122))
-                    }, { problem ->
-                        view.text = "不可用 · ${failureReason(problem)}"
-                        view.setTextColor(if (phone && !PortraitStyle.isDark) Color.rgb(190, 45, 45) else Color.rgb(235, 95, 95))
-                    })
+                    val latency = signature.getOrNull()?.elapsedMs
+                    if (latency != null) {
+                        latencies[algorithm] = latency
+                    } else {
+                        latencies.remove(algorithm)
+                    }
+                    val usable = availability.isSuccess
+                    val quality = availability.getOrNull()?.quality?.takeIf { it.isNotBlank() }
+                    if (quality != null) qualities[algorithm] = quality else qualities.remove(algorithm)
+                    if (usable) availableAlgorithms += algorithm else availableAlgorithms -= algorithm
+                    view.text = detectionLine(latency, usable, quality)
+                    view.setTextColor(detectionColor(usable, signature.isSuccess))
                     remaining--
                     if (remaining == 0) {
-                        // 直接保留准备阶段取得的最高清晰度，避免从已标记“最快”的文本里反解析。
-                        fastest = checkedAlgorithms.filter { it in latencies }.minByOrNull { latencies.getValue(it) }
+                        fastest = checkedAlgorithms
+                            .filter { it in latencies && it in availableAlgorithms }
+                            .minByOrNull { latencies.getValue(it) }
                         selected = fastest
                         val best = fastest
-                        summary.text = if (best == null) "所有算法均无法完成播放签名，请重新检测或检查签名服务。"
-                            else "已选播放签名最快的${best.label}（${latencies.getValue(best)} ms），确认后使用此算法。"
-                        if (best != null) {
-                            val bestView = results.getValue(best)
-                            val quality = qualities[best].orEmpty()
-                            bestView.text = "可用 · 签名 ${latencies.getValue(best)} ms · 最快" +
-                                if (quality.isNotBlank()) "\n最高 $quality" else ""
+                        summary.text = when {
+                            best != null -> "已选播放签名最快的${best.label}（${latencies.getValue(best)} ms），确认后使用此算法。"
+                            else -> "没有同时可播放且完成签名测速的算法，请重新检测。"
                         }
                         finishCheck(session)
                         if (!phone && best != null) confirmButton.requestFocus()
@@ -435,6 +430,19 @@ internal class PlaybackAlgorithmDialog(
                 }
             }
         }
+    }
+
+    private fun detectionLine(latency: Long?, usable: Boolean, quality: String?): String = buildString {
+        append(if (latency == null) "签名 —" else "签名 ${latency} ms")
+        append(" · ")
+        append(if (usable) "可用" else "不可用")
+        append(" · 最高 ")
+        append(quality ?: "—")
+    }
+
+    private fun detectionColor(usable: Boolean, signatureOk: Boolean): Int = when {
+        !usable || !signatureOk -> if (phone && !PortraitStyle.isDark) Color.rgb(190, 45, 45) else Color.rgb(235, 95, 95)
+        else -> if (phone && !PortraitStyle.isDark) Color.rgb(30, 130, 65) else Color.rgb(86, 196, 122)
     }
 
     private fun finishCheck(session: RequestScope) {

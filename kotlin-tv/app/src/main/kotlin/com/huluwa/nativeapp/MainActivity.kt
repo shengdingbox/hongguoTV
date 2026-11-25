@@ -7594,7 +7594,6 @@ class MainActivity: Activity() {
         val recent=if(library.isLoaded) library.history().firstOrNull() else null
         val episodeId=detail?.episodes?.getOrNull(episodeIndex) ?: detail?.episodes?.firstOrNull() ?: recent?.episodeId
         val seriesId=pendingDetail?.id ?: recent?.series?.id ?: phoneRecommendationItems.firstOrNull()?.id ?: catalog.firstOrNull()?.id
-        val quality=if(library.isLoaded) library.maxQuality else 1080
         val type=if(library.isLoaded) library.contentType else ContentType.SHORT
         val profile=signerStore.load()
         val http=repository.http.newBuilder().cookieJar(okhttp3.CookieJar.NO_COOKIES).build()
@@ -7616,7 +7615,7 @@ class MainActivity: Activity() {
                     ?: throw java.io.IOException("该剧暂无分集，请打开其他剧集后重试")
             }
         },probe={ algorithm,id ->
-            probeRepository(algorithm).stream(id,quality,refreshModel=true,playback=true)
+            probeRepository(algorithm).probePlayback(id)
         },signProbe={ algorithm,id ->
             probeRepository(algorithm).measurePlaybackSignature(id)
         },onChoice={ algorithm -> setSigningMode(algorithm,playAfterChange=autoCheck) })

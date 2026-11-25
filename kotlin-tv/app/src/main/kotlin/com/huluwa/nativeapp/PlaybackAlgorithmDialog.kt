@@ -69,7 +69,7 @@ internal class PlaybackAlgorithmDialog(
 
     init {
         if (phone) PortraitStyle.refresh(activity)
-        summary = label("每行显示签名延迟、是否可用与最高清晰度。", 14f, mutedColor).apply {
+        summary = label("每行显示签名延迟、是否可用与最高兼容清晰度，检测不受播放清晰度上限影响。", 14f, mutedColor).apply {
             setPadding(0, 0, 0, dp(12))
         }
         list = column()

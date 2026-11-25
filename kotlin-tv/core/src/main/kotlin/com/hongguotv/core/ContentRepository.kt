@@ -1078,6 +1078,42 @@ open class ContentRepository(
     }
 
     /**
+     * 检测当前算法的最高兼容清晰度，不套用用户的播放清晰度上限。
+     *
+     * 优先沿用正式取址流程；本地首个模型不足 1080P 时，在同一预算内补查多集 GET，
+     * 避免把某个接口的低清模型误报为本地算法的能力上限。
+     */
+    fun probePlayback(id: String): StreamInfo {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
+        return RequestScope.withDeadline(deadline) {
+            var best = stream(id, maxQuality = Int.MAX_VALUE, refreshModel = true, playback = true)
+            if (!activeSigner.usesLocalPlaybackAlgorithm || isAlbumEpisode(id) || qualityNumber(best.quality) >= 1080) {
+                return@withDeadline best
+            }
+            val alternatives = listOf<() -> JSONObject?>(
+                { videoTabModelV5(id) },
+                { videoTabModel(id) },
+            )
+            for (resolve in alternatives) {
+                RequestScope.ensureActive()
+                if (RequestScope.remainingMillis()?.let { it <= 0L } == true) break
+                try {
+                    val model = resolve() ?: continue
+                    val candidate = streamFromModel(model, Int.MAX_VALUE)
+                    if (qualityNumber(candidate.quality) > qualityNumber(best.quality)) best = candidate
+                    if (qualityNumber(best.quality) >= 1080) break
+                } catch (problem: Exception) {
+                    // 补查失败保留已取得的兼容资源；页面取消和检测超时仍须立即终止。
+                    if (problem is InterruptedException) Thread.currentThread().interrupt()
+                    RequestScope.ensureActive()
+                    RequestScope.current()?.ensureActive()
+                }
+            }
+            best
+        }
+    }
+
+    /**
      * 执行一次真实播放请求的签名并返回耗时。
      *
      * 本地算法使用与正式播放相同的 V5 三头签名；远程签名器会完成各自的服务往返。

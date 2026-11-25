@@ -191,7 +191,7 @@ internal class PlaybackAlgorithmDialog(
                     ensureRows()
                     // 弹框关闭后再启动检测：地址输入框和软键盘的窗口仍在收尾，等下一帧更稳。
                     main.post {
-                        if (!dialog.isShowing || isFinishing) return@post
+                        if (!dialog.isShowing || activity.isFinishing || activity.isDestroyed) return@post
                         if (running != null) checkPending = true else startCheck()
                     }
                     error.visibility = View.GONE
@@ -240,13 +240,13 @@ internal class PlaybackAlgorithmDialog(
         }
     }
 
-    private fun field(hintValue: String, inputType: Int, maxLength: Int): EditText = EditText(activity).apply {
+    private fun field(hintValue: String, keyboardType: Int, maxLength: Int): EditText = EditText(activity).apply {
         hint = hintValue
         textSize = 16f
         isSingleLine = true
         setTextColor(textColor)
         setHintTextColor(mutedColor)
-        inputType = inputType
+        inputType = keyboardType
         filters = arrayOf(InputFilter.LengthFilter(maxLength))
         imeOptions = if (maxLength == 16) EditorInfo.IME_ACTION_NEXT else EditorInfo.IME_ACTION_DONE
         setPadding(dp(14), dp(12), dp(14), dp(12))

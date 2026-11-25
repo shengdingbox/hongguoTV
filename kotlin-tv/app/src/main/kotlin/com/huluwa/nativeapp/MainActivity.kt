@@ -7598,38 +7598,44 @@ class MainActivity: Activity() {
         val type=if(library.isLoaded) library.contentType else ContentType.SHORT
         val profile=signerStore.load()
         val http=repository.http.newBuilder().cookieJar(okhttp3.CookieJar.NO_COOKIES).build()
-        fun probeRepository(mode: SigningSettings.Mode): ContentRepository {
+        fun probeStore(): InMemorySignerProfileStore {
             // 每种算法只使用独立内存档案和空缓存，检测不改正式设备身份、算法选择与失败计数。
             val store=InMemorySignerProfileStore()
             profile?.let(store::save)
-            return ContentRepository(http=http,signer=SigningSettings.createSigner(mode,store))
+            return store
         }
+        fun probeRepository(algorithm: SigningSettings.Algorithm): ContentRepository =
+            ContentRepository(http=http,signer=SigningSettings.createSigner(algorithm,probeStore()))
         tvTools.algorithmPicker(anchor,message,autoCheck,resolveEpisode={
             episodeId ?: run {
                 // 没有播放记录时，先从当前剧集或首页准备一个共同分集，准备耗时不计入算法延迟。
-                val sample=probeRepository(SigningSettings.Mode.LOCAL)
+                val sample=probeRepository(SigningSettings.selectedAlgorithm)
                 val id=seriesId ?: sample.home(type=type).items.firstOrNull()?.id
                     ?: throw java.io.IOException("暂无可检测剧集，请先打开一部剧集")
                 sample.seriesDetail(id).episodes.firstOrNull()
                     ?: throw java.io.IOException("该剧暂无分集，请打开其他剧集后重试")
             }
-        },probe={ mode,id ->
-            probeRepository(mode).stream(id,quality,refreshModel=true,playback=true)
-        },onChoice={ mode -> setSigningMode(mode,playAfterChange=autoCheck) })
+        },probe={ algorithm,id ->
+            probeRepository(algorithm).stream(id,quality,refreshModel=true,playback=true)
+        },onChoice={ algorithm -> setSigningMode(algorithm,playAfterChange=autoCheck) })
     }
 
-    private fun setSigningMode(mode: SigningSettings.Mode, playAfterChange: Boolean = false) {
-        val changed=mode!=SigningSettings.mode
+    private fun setSigningMode(algorithm: SigningSettings.Algorithm, playAfterChange: Boolean = false) {
+        val changed=algorithm.id!=SigningSettings.selectedAlgorithm.id
         val replay=!detail?.episodes.isNullOrEmpty() && !offlineOnly &&
             (screen=="player" || playAfterChange && screen=="detail")
         if(!changed && !replay) return
         val position=if(screen=="player" && replay) currentPosition() else if(replay) savedPosition(episodeIndex) else 0L
         val index=episodeIndex
-        runCatching { playbackAlgorithms.select(SigningSettings.toPlaybackAlgorithm(mode)) }.onFailure {
+        runCatching {
+            val signer=SigningSettings.createSigner(algorithm,signerStore)
+            // 先持久化具体项（尤其自定义 ID），再切换策略，后台通知回来不会覆盖选择。
+            SigningSettings.select(algorithm)
+            playbackAlgorithms.select(SigningSettings.toPlaybackAlgorithm(algorithm)) { signer }
+        }.onFailure {
             PhoneUi.toast(this,"切换算法失败，请重试")
             return
         }
-        SigningSettings.mode=mode
         danmakuRepo=null
         rebuildPlaybackCacheForAlgorithm()
         if(replay) {
@@ -7665,6 +7671,7 @@ class MainActivity: Activity() {
     private fun applyPlaybackAlgorithm(change: PlaybackAlgorithmChange) {
         main.post {
             if(isFinishing || isDestroyed) return@post
+            // 自定义项的具体 ID 已由 setSigningMode 先写入；这里同步模式即可。
             SigningSettings.mode = SigningSettings.modeOf(change.to)
             rebuildPlaybackCacheForAlgorithm()
             if(screen=="settings") phoneRefreshSettingsValues()

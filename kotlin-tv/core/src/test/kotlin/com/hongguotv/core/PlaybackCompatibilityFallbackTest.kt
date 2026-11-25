@@ -57,6 +57,7 @@ class PlaybackCompatibilityFallbackTest {
         fridaFactory = { FridaFakeSigner() },
         localFactory = { throw AssertionError("不应自动使用本地算法") },
         unidbgFactory = { throw AssertionError("不应自动使用 unidbg 算法") },
+        customFactory = { throw AssertionError("不应自动使用自定义算法") },
     )
 
     @Test fun compatibleRemotePlaybackUsesOnlySelectedAlgorithmAndCachesEpisode() {
@@ -187,6 +188,7 @@ class PlaybackCompatibilityFallbackTest {
         val policy = PlaybackAlgorithmPolicy(
             PlaybackAlgorithm.FRIDA,
             fridaFactory = { FridaFakeSigner() },
+            customFactory = { throw AssertionError("不应自动使用自定义算法") },
             unidbgFactory = { FridaFakeSigner() },
         )
         val requests = mutableListOf<Request>()

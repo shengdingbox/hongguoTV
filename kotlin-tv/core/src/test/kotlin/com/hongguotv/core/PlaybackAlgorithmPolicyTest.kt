@@ -121,4 +121,17 @@ class PlaybackAlgorithmPolicyTest {
         assertTrue(policy.addressFailed(policy.beginAddress()))
     }
 
+    @Test fun customFactoryIsUsedForCustomAlgorithmAndSelectCanReplaceSameEnum() {
+        val first = FakeSigner(mapOf("device_id" to "first", "iid" to "first"))
+        val second = FakeSigner(mapOf("device_id" to "second", "iid" to "second"))
+        val policy = PlaybackAlgorithmPolicy(
+            PlaybackAlgorithm.CUSTOM,
+            customFactory = { first },
+        )
+        assertSame(first, policy.signer)
+        // 多个自定义地址共用 CUSTOM 枚举；显式 factory 必须换掉签名器。
+        policy.select(PlaybackAlgorithm.CUSTOM) { second }
+        assertSame(second, policy.signer)
+        assertEquals(PlaybackAlgorithm.CUSTOM, policy.algorithm)
+    }
 }

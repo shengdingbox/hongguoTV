@@ -4,9 +4,10 @@ package com.huluwa.nativeapp
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import com.hongguotv.core.PlaybackAlgorithmChange
 import com.hongguotv.core.PlaybackAlgorithm
+import com.hongguotv.core.PlaybackAlgorithmChange
 import com.hongguotv.core.PlaybackAlgorithmPolicy
+import com.hongguotv.core.RemoteSigner
 import com.hongguotv.core.SignerProfileStore
 
 /**
@@ -24,21 +25,26 @@ object PlaybackAlgorithms {
         instance?.let { return it }
         val localSigner = SigningSettings.createSigner(SigningSettings.Mode.LOCAL, store)
         return PlaybackAlgorithmPolicy(
-            initial = SigningSettings.toPlaybackAlgorithm(SigningSettings.mode),
+            initial = SigningSettings.toPlaybackAlgorithm(SigningSettings.selectedAlgorithm),
             localFactory = { localSigner },
             unidbgFactory = { SigningSettings.createSigner(SigningSettings.Mode.UNIDBG, store) },
             fridaFactory = { SigningSettings.createSigner(SigningSettings.Mode.FRIDA, store) },
+            customFactory = { SigningSettings.createSigner(store) },
             onChange = { change -> main.post { persist(change) } },
         ).also { instance = it }
     }
 
-    /** 用户选择在主线程持久化，避免后台线程访问 SharedPreferences。 */
+    /** 用户选择在主线程持久化；自定义项的具体 ID 已由 [SigningSettings.select] 写入。 */
     private fun persist(change: PlaybackAlgorithmChange) {
-        SigningSettings.mode = SigningSettings.modeOf(change.to)
+        if (change.to == PlaybackAlgorithm.CUSTOM) {
+            SigningSettings.mode = SigningSettings.Mode.CUSTOM
+        } else {
+            SigningSettings.mode = SigningSettings.modeOf(change.to)
+        }
     }
 
-    /** 设置页手动切换时同步单例；如果尚未创建则不提前注册设备。 */
-    fun select(algorithm: PlaybackAlgorithm) {
-        instance?.select(algorithm)
+    /** 设置页手动切换时同步单例；自定义项必须同时带入具体签名器。 */
+    fun select(algorithm: PlaybackAlgorithm, factory: (() -> RemoteSigner)? = null) {
+        instance?.select(algorithm, factory)
     }
 }

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.core
 
-/** 当前播放算法，与设置页的三种算法模式一一对应。 */
+/** 当前播放算法；自定义算法由设置层选择具体配置，策略层只需区分这是远程自定义分支。 */
 enum class PlaybackAlgorithm {
     LOCAL,
     UNIDBG,
     FRIDA,
+    CUSTOM,
 }
 
 /** 用户手动切换算法的通知；界面据此同步设置。 */
@@ -29,6 +30,7 @@ class PlaybackAlgorithmPolicy(
     private val localFactory: () -> RemoteSigner = { RemoteSigner() },
     private val unidbgFactory: () -> RemoteSigner = { UnidbgSigner() },
     private val fridaFactory: () -> RemoteSigner = { FridaSigner() },
+    private val customFactory: () -> RemoteSigner = { UnidbgSigner() },
     onChange: ((PlaybackAlgorithmChange) -> Unit)? = null,
     onUnavailable: ((PlaybackAlgorithmUnavailable) -> Unit)? = null,
 ) {
@@ -94,10 +96,19 @@ class PlaybackAlgorithmPolicy(
 
     /** 设置页显式切换；相同算法不重复创建签名器。 */
     fun select(next: PlaybackAlgorithm) {
+        select(next, factory = null)
+    }
+
+    /**
+     * 自定义算法可能有多个地址：即使枚举同为 CUSTOM，也必须换掉当前签名器。
+     * 传入 factory 时按新配置重建；传入 null 时与 [select] 的相同模式去重规则一致。
+     */
+    fun select(next: PlaybackAlgorithm, factory: (() -> RemoteSigner)?) {
         val from = synchronized(lock) {
-            if (selected == next) return
+            if (selected == next && factory == null) return
             val old = selected
-            val signer = create(next)
+            // 先创建新签名器；失败时旧算法、旧签名器和累计状态保持不变。
+            val signer = factory?.invoke() ?: create(next)
             selected = next
             current = signer
             failureCount = 0
@@ -118,6 +129,7 @@ class PlaybackAlgorithmPolicy(
         PlaybackAlgorithm.LOCAL -> localFactory()
         PlaybackAlgorithm.UNIDBG -> unidbgFactory()
         PlaybackAlgorithm.FRIDA -> fridaFactory()
+        PlaybackAlgorithm.CUSTOM -> customFactory()
         null -> RemoteSigner()
     }
 

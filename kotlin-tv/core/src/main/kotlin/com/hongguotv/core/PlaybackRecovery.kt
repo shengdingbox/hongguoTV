@@ -3,6 +3,11 @@ package com.hongguotv.core
 
 /** 播放恢复会话：成功路径、域名健康度、空响应轮次与身份轮换冷却跨子仓库共享。 */
 class PlaybackRecovery {
+    // 域名冷却与空响应计数按签名器隔离，本地失败不能压住远程兜底。
+    private val partitions = java.util.IdentityHashMap<RemoteSigner, PlaybackRecovery>()
+    internal fun forSigner(signer: RemoteSigner): PlaybackRecovery = synchronized(lock) {
+        partitions.getOrPut(signer) { PlaybackRecovery() }
+    }
     val routes = PlaybackRoutes()
     internal val successfulRoutes = PlaybackRouteMemory()
     private val lock = Any()

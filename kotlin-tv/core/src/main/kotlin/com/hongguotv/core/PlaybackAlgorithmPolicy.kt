@@ -1,30 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hongguotv.core
 
-/** 当前播放算法；自定义算法由设置层选择具体配置，策略层只需区分这是远程自定义分支。 */
-enum class PlaybackAlgorithm {
-    LOCAL,
-    UNIDBG,
-    FRIDA,
-    CUSTOM,
-}
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
 
-/** 用户手动切换算法的通知；界面据此同步设置。 */
+/** 自定义算法由设置层选择具体配置，不加入内置算法的自动降级链。 */
+enum class PlaybackAlgorithm { LOCAL, UNIDBG, FRIDA, CUSTOM }
+
+/** 算法变化只影响后续取址，不要求播放器重建正在使用的媒体源。 */
 data class PlaybackAlgorithmChange(
     val from: PlaybackAlgorithm?,
     val to: PlaybackAlgorithm,
     val reason: String,
+    val automatic: Boolean = false,
+    internal val revision: Long = 0,
 )
 
-/** 一次取址开始时绑定的算法与播放版本；切换前的旧请求不能影响新选择或新剧集。 */
+/** 一次取址固定使用同一个签名器，版本与成功水位用于丢弃过期的并发结果。 */
 data class PlaybackAlgorithmAttempt internal constructor(
     internal val revision: Long,
+    internal val sequence: Long,
+    val algorithm: PlaybackAlgorithm?,
+    val signer: RemoteSigner,
 )
 
-/** 当前模式连续三次取址失败；每轮失败独立通知，界面可据此避免重复弹窗。 */
+/** 仅手动模式的前台连续失败通知；自动模式使用有界降级和冷却。 */
 class PlaybackAlgorithmUnavailable internal constructor(val algorithm: PlaybackAlgorithm)
 
-/** 播放算法只由用户选择；连续取址失败时通知界面，不自动更换算法或签名器。 */
+/** 本地优先，依次降级至 unidbg、Frida；恢复探测全局单飞，网络操作始终在锁外执行。 */
 class PlaybackAlgorithmPolicy(
     initial: PlaybackAlgorithm?,
     private val localFactory: () -> RemoteSigner = { RemoteSigner() },
@@ -33,29 +36,37 @@ class PlaybackAlgorithmPolicy(
     private val customFactory: () -> RemoteSigner = { UnidbgSigner() },
     onChange: ((PlaybackAlgorithmChange) -> Unit)? = null,
     onUnavailable: ((PlaybackAlgorithmUnavailable) -> Unit)? = null,
+    automatic: Boolean = false,
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000L },
 ) {
-    private val listeners = java.util.concurrent.CopyOnWriteArrayList<(PlaybackAlgorithmChange) -> Unit>().apply {
-        onChange?.let(::add)
-    }
-    private val unavailableListeners = java.util.concurrent.CopyOnWriteArrayList<(PlaybackAlgorithmUnavailable) -> Unit>().apply {
-        onUnavailable?.let(::add)
-    }
-
+    private val listeners = CopyOnWriteArrayList<(PlaybackAlgorithmChange) -> Unit>().apply { onChange?.let(::add) }
+    private val unavailableListeners = CopyOnWriteArrayList<(PlaybackAlgorithmUnavailable) -> Unit>().apply { onUnavailable?.let(::add) }
     private val lock = Any()
-    private var selected = initial
-    private var current = create(initial)
+    private var auto = automatic && initial != null
+    private var selected = if (auto) PlaybackAlgorithm.LOCAL else initial
+    private val signers = mutableMapOf<PlaybackAlgorithm?, RemoteSigner>()
+    private var current = create(selected)
     private var failureCount = 0
     private var revision = 0L
+    private var preferenceRevision = 0L
+    private var sequence = 0L
+    private var successWatermark = 0L
     private var playbackSeriesId: String? = null
     private var currentUnavailable: PlaybackAlgorithmUnavailable? = null
+    private data class Health(var failures: Int = 0, var retryAt: Long = 0)
+    private val health = mutableMapOf<PlaybackAlgorithm, Health>()
+    private var recoveryAttempt: PlaybackAlgorithmAttempt? = null
+    private var lastRecoveryAt: Long? = null
+    private val recoveryWorker by lazy {
+        Executors.newSingleThreadExecutor { action -> Thread(action, "playback-algorithm-recovery").apply { isDaemon = true } }
+    }
 
-    /** 当前实际用于播放取址的签名器。 */
     val signer: RemoteSigner get() = synchronized(lock) { current }
     val algorithm: PlaybackAlgorithm? get() = synchronized(lock) { selected }
-    /** 保留尚未恢复的失败状态，应用回到前台时仍可提示用户。 */
+    val isAutomatic: Boolean get() = synchronized(lock) { auto }
     val unavailable: PlaybackAlgorithmUnavailable? get() = synchronized(lock) { currentUnavailable }
 
-    /** 换剧或确认重播后重新累计失败，旧剧集的在途请求不能压住新一轮提示。 */
+    /** 换剧只重置前台提示，不清除服务冷却，也不允许旧剧结果修改新剧的策略。 */
     fun beginPlayback(seriesId: String, restart: Boolean = false) {
         synchronized(lock) {
             if (playbackSeriesId == seriesId && !restart) return
@@ -66,74 +77,169 @@ class PlaybackAlgorithmPolicy(
         }
     }
 
-    /** 在真正发起取址前记录当前选择版本。 */
-    fun beginAddress(): PlaybackAlgorithmAttempt = synchronized(lock) {
-        PlaybackAlgorithmAttempt(revision)
-    }
+    fun beginAddress(): PlaybackAlgorithmAttempt = synchronized(lock) { attempt() }
 
-    /** 记录一次完整取址失败；每段连续失败只在第三次通知，不自动切换算法。 */
-    fun addressFailed(attempt: PlaybackAlgorithmAttempt? = null): Boolean {
-        val failure = synchronized(lock) {
-            if (attempt != null && attempt.revision != revision) return false
-            val algorithm = selected ?: return false
-            if (currentUnavailable != null) return false
-            failureCount++
-            if (failureCount < FAILURE_LIMIT) return false
-            PlaybackAlgorithmUnavailable(algorithm).also { currentUnavailable = it }
+    /** 本地可重试至三次阈值，远程每轮只尝试一次；全部冷却时由播放页原有重试接管。 */
+    internal fun nextAddress(tried: Set<PlaybackAlgorithm?>): PlaybackAlgorithmAttempt? {
+        var change: PlaybackAlgorithmChange? = null
+        val result = synchronized(lock) {
+            if (!auto) return@synchronized if (selected in tried) null else attempt()
+            val next = selected?.takeIf { it !in tried && available(it) && recoveryAttempt?.algorithm != it }
+                ?: ORDER.firstOrNull { it !in tried && available(it) && recoveryAttempt?.algorithm != it }
+                ?: return@synchronized null
+            if (next != selected) change = switchTo(next, "冷却结束后重试")
+            attempt()
         }
-        unavailableListeners.forEach { runCatching { it(failure) } }
-        return true
+        notifyChange(change)
+        return result
     }
 
-    /** 成功获取播放地址后，重新累计下一段连续失败。 */
+    /** 缓存命中不调用这里：旧地址可播放并不能证明当前算法已经恢复。 */
     fun addressSucceeded(attempt: PlaybackAlgorithmAttempt? = null) {
         synchronized(lock) {
-            if (attempt != null && attempt.revision != revision) return
+            if (attempt != null && !matches(attempt)) return
+            successWatermark = maxOf(successWatermark, attempt?.sequence ?: sequence)
             failureCount = 0
             currentUnavailable = null
+            selected?.let { health.remove(it) }
         }
     }
 
-    /** 设置页显式切换；相同算法不重复创建签名器。 */
-    fun select(next: PlaybackAlgorithm) {
-        select(next, factory = null)
+    /** 只接收正式播放的完整失败；预取、下载、取消不允许触发全局降级和弹窗。 */
+    fun addressFailed(attempt: PlaybackAlgorithmAttempt? = null): Boolean {
+        var change: PlaybackAlgorithmChange? = null
+        var unavailable: PlaybackAlgorithmUnavailable? = null
+        synchronized(lock) {
+            if (attempt != null && (!matches(attempt) || attempt.sequence <= successWatermark)) return false
+            val algorithm = selected ?: return false
+            if (auto) {
+                // 本地累计三次完整失败才降级；成功会清零，旧成功之前发出的失败不再累计。
+                if (algorithm == PlaybackAlgorithm.LOCAL && ++failureCount < FAILURE_LIMIT) return false
+                // 同一版本的并发失败只打开一次熔断，随后到达的旧请求失效。
+                coolDown(algorithm)
+                val next = ORDER.dropWhile { it != algorithm }.drop(1).firstOrNull { available(it) }
+                if (next != null) change = switchTo(next, "当前算法取址失败，自动降级")
+                else revision++
+            } else {
+                if (currentUnavailable != null || ++failureCount < FAILURE_LIMIT) return false
+                unavailable = PlaybackAlgorithmUnavailable(algorithm).also { currentUnavailable = it }
+            }
+        }
+        notifyChange(change)
+        unavailable?.let { failure -> unavailableListeners.forEach { runCatching { it(failure) } } }
+        return change != null || unavailable != null
     }
 
-    /**
-     * 自定义算法可能有多个地址：即使枚举同为 CUSTOM，也必须换掉当前签名器。
-     * 传入 factory 时按新配置重建；传入 null 时与 [select] 的相同模式去重规则一致。
-     */
+    /** 远程取址时独立检测本地；降级和每次失败探测后都冷却五分钟，且全局单飞。 */
+    internal fun recover(probe: (PlaybackAlgorithmAttempt) -> Boolean): java.util.concurrent.Future<*>? {
+        var preference = 0L
+        val attempt = synchronized(lock) {
+            if (!auto || selected == PlaybackAlgorithm.LOCAL || recoveryAttempt != null) return null
+            val now = clock()
+            if (!available(PlaybackAlgorithm.LOCAL)) return null
+            if (lastRecoveryAt?.let { now - it < LOCAL_RECOVERY_COOLDOWN_MS } == true) return null
+            preference = preferenceRevision
+            lastRecoveryAt = now
+            // 冷却到期后独立探测，不等待远程当前请求结束。
+            PlaybackAlgorithmAttempt(revision, ++sequence, PlaybackAlgorithm.LOCAL, create(PlaybackAlgorithm.LOCAL))
+                .also { recoveryAttempt = it }
+        }
+        return recoveryWorker.submit {
+            var succeeded = false
+            try {
+                succeeded = probe(attempt)
+            } finally {
+                var change: PlaybackAlgorithmChange? = null
+                synchronized(lock) {
+                    if (recoveryAttempt === attempt) recoveryAttempt = null
+                    // 自动远程降级不使本地成功失效；只有用户改动开关或算法才撤销探测结果。
+                    if (auto && preferenceRevision == preference) {
+                        val algorithm = requireNotNull(attempt.algorithm)
+                        if (succeeded) {
+                            health.remove(algorithm)
+                            change = switchTo(algorithm, "真实取址探测成功，恢复优先算法")
+                        } else coolDown(algorithm)
+                    }
+                }
+                notifyChange(change)
+            }
+        }
+    }
+
+    fun selectAutomatic() {
+        val change = synchronized(lock) {
+            if (auto) return
+            create(PlaybackAlgorithm.LOCAL)
+            preferenceRevision++
+            auto = true
+            health.clear()
+            lastRecoveryAt = null
+            switchTo(PlaybackAlgorithm.LOCAL, "用户启用自动切换")
+        }
+        notifyChange(change)
+    }
+
+    fun select(next: PlaybackAlgorithm) = select(next, null)
+
+    /** 自定义配置即使枚举相同，也可通过显式工厂更换签名器。 */
     fun select(next: PlaybackAlgorithm, factory: (() -> RemoteSigner)?) {
-        val from = synchronized(lock) {
-            if (selected == next && factory == null) return
-            val old = selected
-            // 先创建新签名器；失败时旧算法、旧签名器和累计状态保持不变。
+        val change = synchronized(lock) {
+            if (!auto && selected == next && factory == null) return
+            // 先构造，失败时保留当前模式和状态。
             val signer = factory?.invoke() ?: create(next)
-            selected = next
-            current = signer
-            failureCount = 0
-            currentUnavailable = null
-            revision++
-            old
+            signers[next] = signer
+            preferenceRevision++
+            auto = false
+            health.clear()
+            lastRecoveryAt = null
+            switchTo(next, "用户选择")
         }
-        val change = PlaybackAlgorithmChange(from, next, "用户选择")
-        listeners.forEach { runCatching { it(change) } }
+        notifyChange(change)
     }
 
+    /** 主线程排队的旧通知不能覆盖后到达的切换。 */
+    fun isCurrent(change: PlaybackAlgorithmChange): Boolean = synchronized(lock) { change.revision == revision }
     fun addListener(listener: (PlaybackAlgorithmChange) -> Unit) { if (listener !in listeners) listeners += listener }
     fun removeListener(listener: (PlaybackAlgorithmChange) -> Unit) { listeners -= listener }
     fun addUnavailableListener(listener: (PlaybackAlgorithmUnavailable) -> Unit) { if (listener !in unavailableListeners) unavailableListeners += listener }
     fun removeUnavailableListener(listener: (PlaybackAlgorithmUnavailable) -> Unit) { unavailableListeners -= listener }
 
-    private fun create(algorithm: PlaybackAlgorithm?): RemoteSigner = when (algorithm) {
-        PlaybackAlgorithm.LOCAL -> localFactory()
-        PlaybackAlgorithm.UNIDBG -> unidbgFactory()
-        PlaybackAlgorithm.FRIDA -> fridaFactory()
-        PlaybackAlgorithm.CUSTOM -> customFactory()
-        null -> RemoteSigner()
+    private fun matches(attempt: PlaybackAlgorithmAttempt) = attempt.revision == revision && attempt.signer === current
+    private fun attempt() = PlaybackAlgorithmAttempt(revision, ++sequence, selected, current)
+    private fun available(algorithm: PlaybackAlgorithm) = health[algorithm]?.let { clock() >= it.retryAt } ?: true
+    private fun coolDown(algorithm: PlaybackAlgorithm) {
+        val state = health.getOrPut(algorithm) { Health() }
+        state.failures = (state.failures + 1).coerceAtMost(5)
+        state.retryAt = clock() + if (algorithm == PlaybackAlgorithm.LOCAL) LOCAL_RECOVERY_COOLDOWN_MS
+            else minOf(MAX_COOLDOWN_MS, INITIAL_COOLDOWN_MS * (1L shl (state.failures - 1)))
     }
-
+    private fun switchTo(next: PlaybackAlgorithm, reason: String): PlaybackAlgorithmChange {
+        val signer = create(next)
+        val previous = selected
+        selected = next
+        current = signer
+        failureCount = 0
+        currentUnavailable = null
+        revision++
+        return PlaybackAlgorithmChange(previous, next, reason, auto, revision)
+    }
+    private fun notifyChange(change: PlaybackAlgorithmChange?) {
+        if (change != null) listeners.forEach { runCatching { it(change) } }
+    }
+    private fun create(algorithm: PlaybackAlgorithm?): RemoteSigner = signers.getOrPut(algorithm) {
+        when (algorithm) {
+            PlaybackAlgorithm.LOCAL -> localFactory()
+            PlaybackAlgorithm.UNIDBG -> unidbgFactory()
+            PlaybackAlgorithm.FRIDA -> fridaFactory()
+            PlaybackAlgorithm.CUSTOM -> customFactory()
+            null -> RemoteSigner()
+        }
+    }
     private companion object {
+        val ORDER = listOf(PlaybackAlgorithm.LOCAL, PlaybackAlgorithm.UNIDBG, PlaybackAlgorithm.FRIDA)
         const val FAILURE_LIMIT = 3
+        const val LOCAL_RECOVERY_COOLDOWN_MS = 300_000L
+        const val INITIAL_COOLDOWN_MS = 30_000L
+        const val MAX_COOLDOWN_MS = 300_000L
     }
 }

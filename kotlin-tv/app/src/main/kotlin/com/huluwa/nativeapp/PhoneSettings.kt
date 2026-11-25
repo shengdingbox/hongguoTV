@@ -251,6 +251,9 @@ class PhoneSettings(private val activity: MainActivity) {
 
     private fun signingSection(parent: LinearLayout) {
         section(parent, "算法模式") { group ->
+            addRow(group, toggleRow("自动切换", { activity.phoneAutomaticAlgorithmSwitching }) {
+                activity.phoneToggleAutomaticAlgorithmSwitching()
+            })
             addRow(group, row("计算方式", activity.phoneSigningModeLabel, { activity.phoneSigningModeLabel }, valueColor = accent) {
                 activity.phoneSigningModePicker()
             })

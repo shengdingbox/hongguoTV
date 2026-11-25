@@ -593,6 +593,9 @@ class MainActivity: Activity() {
     private var downgradeCount=0
     private val tick=object: Runnable {
         override fun run() {
+            if(foreground && screen=="player" && !offlineOnly && playbackReady) {
+                detail?.episodes?.getOrNull(episodeIndex)?.let { repository.recoverPlaybackAlgorithm(it) }
+            }
             if(!foreground || isDestroyed) return
             if(screen=="player") {
                 if(sleepTimer.poll()) stopForSleep()
@@ -2788,7 +2791,13 @@ class MainActivity: Activity() {
 
         heading(playback,"播放与观看",categories[0].second)
         lateinit var signingModeButton: TextView
-        signingModeButton=setting(playback,"算法模式  ·  ${SigningSettings.algorithmLabel}") {
+        lateinit var automaticAlgorithmButton: TextView
+        automaticAlgorithmButton=setting(playback,"自动切换算法  ·  ${if(SigningSettings.automaticSwitching) "开启" else "关闭"}") {
+            phoneToggleAutomaticAlgorithmSwitching()
+            automaticAlgorithmButton.text="自动切换算法  ·  ${if(SigningSettings.automaticSwitching) "开启" else "关闭"}"
+            signingModeButton.text="算法模式  ·  $playbackAlgorithmLabel"
+        }
+        signingModeButton=setting(playback,"算法模式  ·  $playbackAlgorithmLabel") {
             showSigningModePicker(signingModeButton)
         }
         lateinit var qualityButton: TextView
@@ -7717,8 +7726,29 @@ class MainActivity: Activity() {
         refreshPhoneSettings()
     }
 
-    val phoneSigningModeLabel get() = SigningSettings.algorithmLabel
+    private val playbackAlgorithmLabel: String get() = if (playbackAlgorithms.isAutomatic) {
+        "自动 · ${SigningSettings.modeOf(playbackAlgorithms.algorithm ?: PlaybackAlgorithm.LOCAL).label}"
+    } else SigningSettings.algorithmLabel
+    val phoneSigningModeLabel get() = playbackAlgorithmLabel
     fun phoneSigningModePicker() = showSigningModePicker(pickerAnchor)
+    val phoneAutomaticAlgorithmSwitching get() = SigningSettings.automaticSwitching
+    fun phoneToggleAutomaticAlgorithmSwitching() = setAutomaticAlgorithmSwitching(!SigningSettings.automaticSwitching)
+
+    /** 开关立即生效；关闭后恢复单独保存的手动算法，不中断正在播放的视频。 */
+    private fun setAutomaticAlgorithmSwitching(enabled: Boolean) {
+        if(enabled == SigningSettings.automaticSwitching) return
+        runCatching {
+            if(enabled) playbackAlgorithms.selectAutomatic()
+            else {
+                val algorithm = SigningSettings.selectedAlgorithm
+                val signer = SigningSettings.createSigner(algorithm, signerStore)
+                playbackAlgorithms.select(SigningSettings.toPlaybackAlgorithm(algorithm)) { signer }
+            }
+            SigningSettings.automaticSwitching = enabled
+            phoneRefreshSettingsValues()
+        }.onFailure { PhoneUi.toast(this, "切换自动算法失败，请重试") }
+    }
+
 
     private fun showSigningModePicker(anchor: View?, message: String? = null, autoCheck: Boolean = false) {
         val profile=signerStore.load()
@@ -7735,10 +7765,13 @@ class MainActivity: Activity() {
             probeRepository(algorithm).probePlayback(id)
         },signProbe={ algorithm,id ->
             probeRepository(algorithm).measurePlaybackSignature(id)
-        },onChoice={ algorithm -> setSigningMode(algorithm,playAfterChange=autoCheck) })
+        },onAutomaticChange=::setAutomaticAlgorithmSwitching,
+            onChoice={ algorithm -> setSigningMode(algorithm,playAfterChange=autoCheck) })
     }
 
     private fun setSigningMode(algorithm: SigningSettings.Algorithm, playAfterChange: Boolean = false) {
+        val automatic = SigningSettings.automaticSwitching
+        if(automatic && !playAfterChange) return
         val changed=algorithm.id!=SigningSettings.selectedAlgorithm.id
         val replay=!detail?.episodes.isNullOrEmpty() && !offlineOnly &&
             (screen=="player" || playAfterChange && screen=="detail")
@@ -7746,10 +7779,13 @@ class MainActivity: Activity() {
         val position=if(screen=="player" && replay) currentPosition() else if(replay) savedPosition(episodeIndex) else 0L
         val index=episodeIndex
         runCatching {
-            val signer=SigningSettings.createSigner(algorithm,signerStore)
-            // 先持久化具体项（尤其自定义 ID），再切换策略，后台通知回来不会覆盖选择。
-            SigningSettings.select(algorithm)
-            playbackAlgorithms.select(SigningSettings.toPlaybackAlgorithm(algorithm)) { signer }
+            if(!automatic) {
+                val signer=SigningSettings.createSigner(algorithm,signerStore)
+                // 手动选择与自动开关分别保存，临时降级不能覆盖手动配置。
+                SigningSettings.select(algorithm)
+                SigningSettings.automaticSwitching = false
+                playbackAlgorithms.select(SigningSettings.toPlaybackAlgorithm(algorithm)) { signer }
+            }
         }.onFailure {
             PhoneUi.toast(this,"切换算法失败，请重试")
             return
@@ -7773,25 +7809,26 @@ class MainActivity: Activity() {
         recreateKeepingPage("算法模式")
     }
 
-    /** 连续失败只提示用户选择；后台到达的失败状态在回到前台后补弹。 */
+    /** 仅手动模式的前台连续失败提示；已有视频就绪时保留正常播放。 */
     private fun showUnavailablePlaybackAlgorithm() {
         if(!activityInitialized || !foreground || isFinishing || isDestroyed) return
         val failure=playbackAlgorithms.unavailable ?: return
+        // 有可播放的视频时不弹出诊断框，后台失败也不能打断当前播放。
+        if(playbackAlgorithms.isAutomatic || playbackReady || player?.playbackState == Player.STATE_READY) return
         if(shownUnavailableAlgorithm===failure) return
         shownUnavailableAlgorithm=failure
         // 检测和确认期间保留当前集，避免自动重试、降档或跳集改变检测对象。
         cancelRecovery(); cancelSkipUnplayable(); cancelPrefetch()
         RuntimeLog.add("算法连续三次取址失败: " + failure.algorithm.name)
-        showSigningModePicker(currentFocus ?: pickerAnchor, "当前算法模式完全不可用 请选择其他算法模式", autoCheck=true)
+        showSigningModePicker(currentFocus ?: pickerAnchor, "当前集暂时取址失败，可重试或启用自动切换", autoCheck=true)
     }
 
-    /** 用户选择算法后，同步主线程上的设置与播放仓库。 */
+    /** 自动切换只更新后续取址与状态展示，保留当前视频、相邻集缓冲和用户的自动模式。 */
     private fun applyPlaybackAlgorithm(change: PlaybackAlgorithmChange) {
         main.post {
-            if(isFinishing || isDestroyed) return@post
-            // 自定义项的具体 ID 已由 setSigningMode 先写入；这里同步模式即可。
-            SigningSettings.mode = SigningSettings.modeOf(change.to)
-            rebuildPlaybackCacheForAlgorithm()
+            if(isFinishing || isDestroyed || !playbackAlgorithms.isCurrent(change)) return@post
+            RuntimeLog.add("播放算法切换: ${change.from} → ${change.to} · ${change.reason}")
+            if(!change.automatic) rebuildPlaybackCacheForAlgorithm()
             if(screen=="settings") phoneRefreshSettingsValues()
         }
     }

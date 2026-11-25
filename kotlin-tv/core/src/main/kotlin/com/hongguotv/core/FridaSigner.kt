@@ -130,7 +130,10 @@ class FridaSigner(
         supportsBodySigning = false
     }
 
-    private fun exchange(path: String, payload: JSONObject? = null): JSONObject {
+    private fun exchange(path: String, payload: JSONObject? = null): JSONObject =
+        RemoteSigningGate.run(base.toString()) { exchangeDirect(path, payload) }
+
+    private fun exchangeDirect(path: String, payload: JSONObject?): JSONObject {
         val url = base.newBuilder().addPathSegment(path).build()
         val request = Request.Builder().url(url).apply {
             if (payload != null) post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))

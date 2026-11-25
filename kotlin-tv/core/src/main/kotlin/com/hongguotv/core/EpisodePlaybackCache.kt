@@ -55,7 +55,7 @@ class EpisodePlaybackCache(
         recent.clear()
     }
 
-    /** 整集取址复用模型缓存、降级重试和即将过期重取；仅正式播放使用三次失败阈值。
+    /** 整集取址复用模型缓存、降级重试和即将过期重取；仅正式播放参与算法降级和连续失败计数。
      *  [ahead] 是顺带预取的相邻集：随本次 V5 请求一次带回，切集时零请求命中。 */
     fun resolveStream(id: String, quality: Int, playback: Boolean = false, prefetch: Boolean = false, ahead: List<String> = emptyList()): StreamInfo =
         repository.stream(id, quality, playback = playback, prefetch = prefetch, ahead = ahead).let { info ->

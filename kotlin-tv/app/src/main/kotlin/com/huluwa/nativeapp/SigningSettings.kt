@@ -12,7 +12,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 算法选择独立于设备档案保存，默认本地算法；切换回来继续复用本机匿名身份。
+ * 算法选择独立于设备档案保存，默认自动切换；切回本地继续复用本机匿名身份。
  *
  * 内置模式：
  * - [Mode.LOCAL]：本机算法，身份与签名都在设备上完成；
@@ -24,6 +24,7 @@ import org.json.JSONObject
  */
 object SigningSettings {
     private const val KEY = "nativeSigningMode"
+    private const val STRATEGY_KEY = "nativePlaybackAlgorithmStrategy"
     private const val CUSTOM_LIST_KEY = "nativeCustomAlgorithms"
     private const val CUSTOM_SELECTED_KEY = "nativeCustomAlgorithm"
     private const val MAX_NAME_LENGTH = 16
@@ -63,7 +64,7 @@ object SigningSettings {
         Algorithm("frida", Mode.FRIDA.label, Mode.FRIDA),
     )
 
-    /** 弹框与设置页展示的顺序：三个内置项在前，自定义项按添加顺序追加。 */
+    /** 三个内置项在前，自定义项按添加顺序追加。 */
     val algorithms: List<Algorithm>
         get() = builtInAlgorithms + customAlgorithms.map {
             Algorithm("custom:${it.id}", it.label, Mode.CUSTOM, it.endpoint)
@@ -93,26 +94,25 @@ object SigningSettings {
         get() = StartupSettings.string(CUSTOM_SELECTED_KEY)
         set(value) = StartupSettings.set(CUSTOM_SELECTED_KEY, value)
 
-    /** 当前模式；无法识别的历史取值回退到本地算法。 */
+    /** 手动算法单独保存，自动降级不会覆盖此项。 */
     var mode: Mode
         get() = when (StartupSettings.string(KEY, "local")) {
             "unidbg" -> Mode.UNIDBG
-            // 旧版本只有「本地/远程」两档，存的是 frida，读出来就是远程计算-frida。
             "frida" -> Mode.FRIDA
             "custom" -> if (selectedCustomId in customAlgorithms.map { it.id }) Mode.CUSTOM else Mode.LOCAL
             else -> Mode.LOCAL
         }
-        set(value) = setModeValue(value)
-
-    private fun setModeValue(value: Mode) = StartupSettings.set(
-        KEY,
-        when (value) {
+        set(value) = StartupSettings.set(KEY, when (value) {
             Mode.LOCAL -> "local"
             Mode.UNIDBG -> "unidbg"
             Mode.FRIDA -> "frida"
             Mode.CUSTOM -> "custom"
-        },
-    )
+        })
+
+    /** 独立开关：默认开启；已有自定义服务的用户保留手动模式。 */
+    var automaticSwitching: Boolean
+        get() = StartupSettings.string(STRATEGY_KEY, if (mode == Mode.CUSTOM) "manual" else "auto") == "auto"
+        set(value) = StartupSettings.set(STRATEGY_KEY, if (value) "auto" else "manual")
 
     /** 当前选中的配置；自定义项丢失时安全回退到本地算法。 */
     val selectedAlgorithm: Algorithm

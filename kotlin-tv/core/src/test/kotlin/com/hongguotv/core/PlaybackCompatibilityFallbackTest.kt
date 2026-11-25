@@ -16,7 +16,7 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** 取址只使用用户选择的算法，兼容性重试不跨算法，完整失败统一累计一次。 */
+/** 手动模式严格使用所选算法；自动模式验证三次本地失败后的远程复用。 */
 class PlaybackCompatibilityFallbackTest {
     private val multiPath = "/reading/bookapi/video_tab/multi_video_model/v1/"
     private val singlePath = "/reading/bookapi/video_tab/video_model/v"
@@ -217,10 +217,10 @@ class PlaybackCompatibilityFallbackTest {
             multiResponse(model("bytevc2"))
         }
         repeat(2) {
-            assertThrows(UnplayableVideoException::class.java) { repo.stream(episodeId) }
+            assertThrows(UnplayableVideoException::class.java) { repo.stream(episodeId, playback = true) }
             assertNull(policy.unavailable)
         }
-        assertThrows(UnplayableVideoException::class.java) { repo.stream(episodeId) }
+        assertThrows(UnplayableVideoException::class.java) { repo.stream(episodeId, playback = true) }
         assertEquals(PlaybackAlgorithm.FRIDA, policy.unavailable?.algorithm)
         assertEquals(PlaybackAlgorithm.FRIDA, policy.algorithm)
         // 每次完整取址内部有 3 轮不兼容重试，三次 stream 共 9 个请求。
@@ -234,10 +234,10 @@ class PlaybackCompatibilityFallbackTest {
         val policy = policy()
         val repo = repository(policy) { throw IOException("网络连接失败") }
         repeat(2) {
-            assertThrows(IOException::class.java) { repo.stream(episodeId) }
+            assertThrows(IOException::class.java) { repo.stream(episodeId, playback = true) }
             assertNull(policy.unavailable)
         }
-        assertThrows(IOException::class.java) { repo.stream(episodeId) }
+        assertThrows(IOException::class.java) { repo.stream(episodeId, playback = true) }
         assertEquals(PlaybackAlgorithm.FRIDA, policy.unavailable?.algorithm)
         assertEquals(PlaybackAlgorithm.FRIDA, policy.algorithm)
     }
@@ -250,7 +250,7 @@ class PlaybackCompatibilityFallbackTest {
                 scope.cancel()
                 throw InterruptedIOException("播放请求已取消")
             }
-            assertThrows(InterruptedIOException::class.java) { scope.run { repo.stream(episodeId) } }
+            assertThrows(InterruptedIOException::class.java) { scope.run { repo.stream(episodeId, playback = true) } }
         }
         assertNull(policy.unavailable)
         assertEquals(PlaybackAlgorithm.FRIDA, policy.algorithm)
@@ -267,4 +267,47 @@ class PlaybackCompatibilityFallbackTest {
         assertEquals(PlaybackAlgorithm.LOCAL, policy.algorithm)
         assertEquals(PlaybackAlgorithm.LOCAL, policy.unavailable?.algorithm)
     }
+
+    @Test fun backgroundFailuresNeverShowAlgorithmUnavailable() {
+        val policy = policy()
+        val repo = repository(policy) { throw IOException("后台连接失败") }
+        repeat(3) {
+            assertThrows(IOException::class.java) { repo.stream(episodeId, prefetch = true) }
+            assertThrows(IOException::class.java) { repo.stream(episodeId) }
+        }
+        assertNull(policy.unavailable)
+        assertEquals(PlaybackAlgorithm.FRIDA, policy.algorithm)
+    }
+
+    @Test fun automaticPlaybackRetriesLocalThreeTimesThenKeepsWorkingRemoteForNextEpisode() {
+        var localAttempts = 0
+        val local = object : FakeSigner() {
+            override val usesLocalPlaybackAlgorithm get() = false
+            override val prefersVideoTab get() = true
+            override fun sign(url: String, values: Map<String, String>, body: ByteArray?): SignedRequest {
+                localAttempts++
+                throw SignatureException("本地签名暂不可用")
+            }
+        }
+        val policy = PlaybackAlgorithmPolicy(
+            PlaybackAlgorithm.LOCAL,
+            localFactory = { local },
+            unidbgFactory = { FridaFakeSigner() },
+            fridaFactory = { throw AssertionError("unidbg 可用时不应继续降级") },
+            automatic = true,
+        )
+        val requests = mutableListOf<Request>()
+        val repo = repository(policy) { request ->
+            requests += request
+            multiResponse(model("h264"), request.url.queryParameter("video_id")!!)
+        }
+        assertEquals("https://example.com/h264.mp4", repo.stream(episodeId, playback = true).url)
+        assertEquals(3, localAttempts)
+        assertEquals(PlaybackAlgorithm.UNIDBG, policy.algorithm)
+        assertEquals("https://example.com/h264.mp4", repo.stream("124", playback = true).url)
+        assertEquals(3, localAttempts)
+        assertEquals(2, requests.size)
+        assertNull(policy.unavailable)
+    }
+
 }

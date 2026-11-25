@@ -134,10 +134,13 @@ open class UnidbgSigner(
     /**
      * 调用 `/feature-hash`。
      *
-     * 一次只签一个请求是由服务实现的：unidbg 只有一个 CPU 上下文，
-     * 并发请求在服务端串行，这里不需要额外加锁。
+     * unidbg 只有一个 CPU 上下文；同一地址在本机先排队，
+     * 取消和超时的请求不再挤进服务端队列。
      */
-    private fun featureHash(url: String, body: ByteArray?): Map<String, String> {
+    private fun featureHash(url: String, body: ByteArray?): Map<String, String> =
+        RemoteSigningGate.run(base.toString()) { featureHashDirect(url, body) }
+
+    private fun featureHashDirect(url: String, body: ByteArray?): Map<String, String> {
         val payload = JSONObject().put("url", url)
         // 签名必须覆盖线上实际发送的字节（例如 gzip 之后），所以用十六进制原样提交。
         if (body != null && body.isNotEmpty()) payload.put("body_hex", body.toByteString().hex())

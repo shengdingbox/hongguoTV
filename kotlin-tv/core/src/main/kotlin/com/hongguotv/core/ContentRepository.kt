@@ -1049,31 +1049,88 @@ open class ContentRepository(
         ahead: List<String> = emptyList(),
     ): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
-        // 正式播放最多 8 秒，后台相邻集预热最多 2 秒；自检与离线下载沿用原有较宽预算。
-        val timeout = when {
-            playback -> 8L
-            prefetch -> 2L
-            else -> 0L
-        }
+        RequestScope.ensureActive()
         val policy = playbackAlgorithms
-        val attempt = policy?.beginAddress()
-        try {
-            val stream = if (timeout == 0L) {
+        if (policy == null) {
+            return withStreamBudget(if (playback) 8_000 else if (prefetch) 2_000 else 0) {
                 streamUnbounded(id, maxQuality, refreshModel, ahead)
-            } else {
-                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeout)
-                RequestScope.withDeadline(deadline) {
-                    streamUnbounded(id, maxQuality, refreshModel, ahead)
+            }
+        }
+        recoverPlaybackAlgorithm(id)
+        // 本地最多三轮、两个远程各一轮，共用总预算，避免失效算法无限拖延。
+        val foreground = playback && !prefetch
+        val budget = if (foreground && policy.isAutomatic) 25_000L else if (playback) 8_000L else if (prefetch) 2_000L else 0L
+        return withStreamBudget(budget) {
+            val tried = mutableSetOf<PlaybackAlgorithm?>()
+            var lastFailure: Exception? = null
+            var attempts = 0
+            while (true) {
+                RequestScope.ensureActive()
+                RequestScope.current()?.ensureActive()
+                if (RequestScope.remainingMillis()?.let { it <= 0 } == true) {
+                    throw lastFailure ?: java.io.InterruptedIOException("播放取址超时，请稍后重试")
+                }
+                val attempt = if (foreground) policy.nextAddress(tried) else policy.beginAddress()
+                if (attempt == null) throw lastFailure ?: IOException("播放算法正在冷却，请稍后重试")
+                attempts++
+                // 每轮绑定独立算法的缓存和路由健康度；并发切换不会混用设备、签名与 UA。
+                val bound = boundPlayback(attempt.signer)
+                val cached = !refreshModel && bound.modelCache.get(id, clock()) != null
+                try {
+                    val stream = withStreamBudget(if (foreground && policy.isAutomatic) 5_000 else 0) {
+                        bound.streamUnbounded(id, maxQuality, refreshModel, ahead)
+                    }
+                    if (!cached) policy.addressSucceeded(attempt)
+                    return@withStreamBudget stream
+                } catch (problem: Exception) {
+                    if (problem is InterruptedException) Thread.currentThread().interrupt()
+                    RequestScope.ensureActive()
+                    RequestScope.current()?.ensureActive()
+                    // 外层页面超时不代表算法失效；单个算法的独立预算耗尽则允许降级。
+                    if (RequestScope.remainingMillis()?.let { it <= 0 } == true) throw problem
+                    if (!foreground) throw problem
+                    bound.modelCache.evict(id)
+                    policy.addressFailed(attempt)
+                    // 本地未达到三次阈值时继续本地；已经切换或冷却后不重复尝试旧算法。
+                    if (policy.algorithm != attempt.algorithm || attempt.algorithm != PlaybackAlgorithm.LOCAL) {
+                        tried += attempt.algorithm
+                    }
+                    lastFailure = problem
+                    if (!policy.isAutomatic || attempts >= 5) throw problem
                 }
             }
-            policy?.addressSucceeded(attempt)
-            return stream
-        } catch (problem: Exception) {
-            // 页面切换、主动取消和线程中断不算取址失败；网络超时与解析失败照常累计。
-            if (problem is InterruptedException) Thread.currentThread().interrupt()
-            RequestScope.ensureActive()
-            policy?.addressFailed(attempt)
-            throw problem
+            @Suppress("UNREACHABLE_CODE")
+            throw IOException("播放取址失败，请稍后重试")
+        }
+    }
+
+    private fun <T> withStreamBudget(timeoutMillis: Long, action: () -> T): T =
+        if (timeoutMillis <= 0) action() else RequestScope.withDeadline(
+            System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis), action,
+        )
+
+    private fun boundPlayback(signer: RemoteSigner) = ContentRepository(
+        http, clock, signer, modelCache.forSigner(signer), null, playbackRecovery.forSigner(signer),
+    ).also { bound ->
+        synchronized(albumEpisodes) { bound.albumEpisodes.addAll(albumEpisodes) }
+    }
+
+    /** 播放期间也可由界面定时调用；缓存命中不参与恢复判断，只有真实兼容取址成功才恢复。 */
+    fun recoverPlaybackAlgorithm(id: String) {
+        val policy = playbackAlgorithms ?: return
+        if (!id.matches(Regex("[0-9]{1,30}"))) return
+        val album = isAlbumEpisode(id)
+        policy.recover { attempt ->
+            val probe = ContentRepository(http, clock, attempt.signer)
+            if (album) synchronized(probe.albumEpisodes) { probe.albumEpisodes += id }
+            try {
+                RequestScope(5_000).run {
+                    probe.stream(id, maxQuality = Int.MAX_VALUE, refreshModel = true, playback = true)
+                }
+                true
+            } catch (_: Exception) {
+                false
+            }
         }
     }
 
@@ -1143,7 +1200,7 @@ open class ContentRepository(
         try {
             return streamFromModel(addressModel(id, albumEpisode = albumEpisode, ahead = ahead),maxQuality)
         } catch (unplayable: UnplayableVideoException) {
-            // 平台可能间歇下发不兼容模型：仅用当前算法有界重取，不跨算法寻找兼容源。
+            // 平台可能间歇下发不兼容模型：先在绑定的算法内有界重取，再由外层决定降级。
             // 始终使用电视兼容档位，不切到 level=3，也不反复更换设备。
             var failure=unplayable
             for(round in 1 until PLAYBACK_RETRY_ROUNDS) {
@@ -1268,6 +1325,7 @@ open class ContentRepository(
      *  与正式播放共用 V5 单集取址和模型缓存，最多预热 [WARM_LIMIT] 集。
      *  失败不上抛，播放时按需取址仍是兜底。 */
     fun warm(episodes: List<String>): WarmReport {
+        if (playbackAlgorithms != null) return boundPlayback(playbackAlgorithms.beginAddress().signer).warm(episodes)
         val ids=episodes.filter { it.matches(Regex("[0-9]{1,30}")) }.distinct()
         if(ids.isEmpty()) return WarmReport(0,0,0,null)
         val now=clock()
@@ -1869,8 +1927,13 @@ class PlaybackModelCache(private val limit: Int = 120, private val ttlMillis: Lo
     @Synchronized fun put(id: String, model: JSONObject, now: Long) {
         entries[id]=Entry(now,model)
     }
+    // 算法缓存分区，防止旧请求晚到后覆盖新算法的模型；子仓库仍复用同一分区。
+    private val partitions = java.util.IdentityHashMap<RemoteSigner, PlaybackModelCache>()
+    @Synchronized internal fun forSigner(signer: RemoteSigner): PlaybackModelCache =
+        partitions.getOrPut(signer) { PlaybackModelCache(limit, ttlMillis) }
     @Synchronized fun evict(id: String) {
         entries.remove(id)
+        partitions.values.forEach { it.evict(id) }
     }
 }
 

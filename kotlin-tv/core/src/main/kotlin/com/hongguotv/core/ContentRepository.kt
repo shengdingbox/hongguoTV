@@ -1078,43 +1078,6 @@ open class ContentRepository(
     }
 
     /**
-     * 检测当前算法的最高兼容清晰度，不套用用户的播放清晰度上限。
-     *
-     * 优先沿用正式取址流程；本地首个模型不足 1080P 时，另用最多 8 秒补查多集 GET，
-     * 避免首轮取址耗尽预算后，把某个接口的低清模型误报为本地算法的能力上限。
-     */
-    fun probePlayback(id: String): StreamInfo {
-        var best = stream(id, maxQuality = Int.MAX_VALUE, refreshModel = true, playback = true)
-        if (!activeSigner.usesLocalPlaybackAlgorithm || isAlbumEpisode(id) || qualityNumber(best.quality) >= 1080) {
-            return best
-        }
-        // 首轮继续使用正式播放的时限，补查另计预算；外层检测作用域仍统一管理取消和总时限。
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
-        return RequestScope.withDeadline(deadline) {
-            val alternatives = listOf<() -> JSONObject?>(
-                { videoTabModelV5(id) },
-                { videoTabModel(id) },
-            )
-            for (resolve in alternatives) {
-                RequestScope.ensureActive()
-                if (RequestScope.remainingMillis()?.let { it <= 0L } == true) break
-                try {
-                    val model = resolve() ?: continue
-                    val candidate = streamFromModel(model, Int.MAX_VALUE)
-                    if (qualityNumber(candidate.quality) > qualityNumber(best.quality)) best = candidate
-                    if (qualityNumber(best.quality) >= 1080) break
-                } catch (problem: Exception) {
-                    // 补查失败保留已取得的兼容资源；页面取消和检测超时仍须立即终止。
-                    if (problem is InterruptedException) Thread.currentThread().interrupt()
-                    RequestScope.ensureActive()
-                    RequestScope.current()?.ensureActive()
-                }
-            }
-            best
-        }
-    }
-
-    /**
      * 执行一次真实播放请求的签名并返回耗时。
      *
      * 本地算法使用与正式播放相同的 V5 三头签名；远程签名器会完成各自的服务往返。
@@ -1126,12 +1089,15 @@ open class ContentRepository(
         val started = System.nanoTime()
         val profile = signer.profile()
         val host = "api5-normal-sinfonlineb.fqnovel.com"
-        // 远程签名器自己补齐身份字段；本地算法使用与正式播放相同的 74532 新端点。
+        val url = "https://$host/reading/bookapi/video_tab/multi_video_model/v1/"
+        val values = PlaybackProbe.signatureValues(id, profile)
         if (signer.usesLocalPlaybackAlgorithm) {
-            MobilePlayback.videoModelRequest(id, profile, clock(), host)
+            if (!profile.available || profile.params["cdid"].isNullOrBlank()) {
+                throw SignatureException("本机匿名设备尚未就绪")
+            }
+            PlaybackV5Signer.shared.sign(url, values, ByteArray(0), clock())
         } else {
-            val url = "https://$host${MobilePlayback.VIDEO_MODEL_PATH}"
-            val values = PlaybackProbe.signatureValues(id, profile)
+            // 远程签名器自己补齐身份字段；这里保持与正式 video_tab 请求相同的业务参数和签名输入。
             signer.sign(url, values, null)
         }
         return PlaybackSignatureProbe(signatureElapsedMillis(started))
@@ -1404,39 +1370,6 @@ open class ContentRepository(
         }
         return null
     }
-    /**
-     * 本地算法主路由：官方 `POST /novel/player/video_model/v1/`。
-     *
-     * 由 [MobilePlayback.videoModel] 完成 74532 画像、gzip 体、field21=312 与签名；
-     * 响应兼容 `data.video_model` 及 `data[id].video_model`。
-     * 空体/业务错误返回 null，交给 GET 和旧 POST 兼容路由。
-     */
-    private fun videoModelV5(id: String, preferredHost: String? = null): JSONObject? {
-        val profile = activeSigner.profile()
-        val hosts = if (preferredHost != null) listOf(preferredHost) + PlayRetryPlan.hosts.filter { it != preferredHost }
-        else PlayRetryPlan.hosts
-        for (host in hosts) {
-            val route = PlaybackRoutes.Route(host)
-            try {
-                val model = MobilePlayback.videoModel(id, profile, http, clock(), host)
-                playbackRecovery.routes.success(route, clock())
-                return model.put(ROUTE_KEY, "video-model|${PlayRetryPlan.tag(host)}").put(ENDPOINT_KEY, host)
-            } catch (problem: java.io.InterruptedIOException) {
-                throw problem
-            } catch (problem: EmptyPlaybackResponseException) {
-                // 新端点是独立形态，空体只表示该形态不可用；不能把共享域名打进冷却，
-                // 否则紧随其后的 GET / 旧 POST 兼容兜底会被直接跳过。
-            } catch (problem: ServiceException) {
-                playbackRecovery.routes.failed(route, clock(), empty = false)
-            } catch (problem: IOException) {
-                playbackRecovery.routes.failed(route, clock(), empty = false)
-            } catch (problem: RuntimeException) {
-                playbackRecovery.routes.failed(route, clock(), empty = false)
-            }
-        }
-        return null
-    }
-
     /** 本地 V5 多集 GET 首选入口，沿用参考项目 0.16.13 的签名口径。
      *  与 [videoTabModel] 的老签名口径不同，这里用本机 V5 三头签 MD5(空字节)；
      *  失败一律返回 null，由调用方继续后续兼容路由。 */
@@ -1523,11 +1456,10 @@ open class ContentRepository(
             }
             if (usesLocal) {
                 if (!albumEpisode) {
-                    // 先走官方 74532 新端点，再用 GET 作兼容兜底。
-                    add(PlaybackRouteKind.VIDEO_MODEL_V5)
+                    // 2026-11-24 同身份实测：多集 GET 返回可播放模型，三个 V5 POST 域名均为空体。
                     add(PlaybackRouteKind.VIDEO_TAB_V5)
+                    add(PlaybackRouteKind.VIDEO_TAB_MULTI)
                 }
-                // 旧 multi_video_model POST 仅保留兜底，不覆盖新端点成功记忆。
                 add(PlaybackRouteKind.MOBILE)
             }
             add(PlaybackRouteKind.PLAYER)
@@ -1590,16 +1522,8 @@ open class ContentRepository(
                         if (prefersVideoTab && !singleTab.blank) videoTabFailure = ServiceException(singleTab.code)
                         singleTab.model
                     }
-                    PlaybackRouteKind.VIDEO_MODEL_V5 -> videoModelV5(id, endpoint)
                     PlaybackRouteKind.MOBILE -> {
-                        // 旧 POST 保留多域名容错；但新端点已失败时不再顺带预取相邻集，
-                        // 避免用批量响应拖大播放预算。
-                        mobile = mobilePlaybackModel(
-                            id,
-                            group,
-                            if (usesLocal) emptyList() else ahead,
-                            endpoint,
-                        )
+                        mobile = mobilePlaybackModel(id, group, ahead, endpoint)
                         mobile.model
                     }
                     PlaybackRouteKind.VIDEO_TAB_V5 -> videoTabModelV5(id)
@@ -1638,12 +1562,7 @@ open class ContentRepository(
     }
     /** V5 单集请求；先按域名健康度轮换，只有全部域名都空时才轮换匿名身份并重扫一次。
      *  [ahead] 里的相邻集随同一次 POST 顺带取回并写入模型缓存，切集时不再取址。 */
-    private fun mobilePlaybackModel(
-        id: String,
-        group: String = MobilePlayback.GROUP_SHORT,
-        ahead: List<String> = emptyList(),
-        preferredHost: String? = null,
-    ): Sweep {
+    private fun mobilePlaybackModel(id: String, group: String = MobilePlayback.GROUP_SHORT, ahead: List<String> = emptyList(), preferredHost: String? = null): Sweep {
         val wanted = (listOf(id) + ahead)
             .filter { it.matches(Regex("[0-9]{1,30}")) }
             .distinct()
@@ -1664,11 +1583,7 @@ open class ContentRepository(
     }
 
     /** 按域名健康度扫描 V5 模型；失败只更新路由状态，不直接更换匿名身份。 */
-    private fun sweepMobilePlayback(
-        wanted: List<String>,
-        group: String,
-        preferredHost: String? = null,
-    ): Sweep {
+    private fun sweepMobilePlayback(wanted: List<String>, group: String, preferredHost: String? = null): Sweep {
         var allBlank = true
         var sawResponse = false
         var lastFailure: IOException? = null

@@ -36,11 +36,11 @@ class TvTools(private val activity: Activity) {
         open(next,anchor)
     }
     /** 算法检测随弹框关闭一起取消，避免页面离开后继续占用取址请求。 */
-    fun algorithmPicker(anchor: View?,message: String?,autoCheck: Boolean,
+    fun algorithmPicker(anchor: View?,message: String?,autoCheck: Boolean,resolveEpisode: ()->String,
         probe: (SigningSettings.Algorithm,String)->com.hongguotv.core.StreamInfo,
         signProbe: (SigningSettings.Algorithm,String)->com.hongguotv.core.PlaybackSignatureProbe,
         onChoice: (SigningSettings.Algorithm)->Unit) {
-        val picker=PlaybackAlgorithmDialog(activity,message,autoCheck,probe,signProbe,onChoice)
+        val picker=PlaybackAlgorithmDialog(activity,message,autoCheck,resolveEpisode,probe,signProbe,onChoice)
         algorithmDialog=picker
         open(picker.dialog,anchor) {
             if(algorithmDialog===picker) algorithmDialog=null

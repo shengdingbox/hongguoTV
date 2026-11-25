@@ -22,6 +22,6 @@ class PlaybackProbeTest {
         assertEquals("device", values["device_id"])
         assertEquals("install", values["iid"])
         assertEquals("cdid", values["cdid"])
-        assertTrue(values["version_name"] == "7.4.5.32")
+        assertTrue(values["version_name"] == "7.4.3.32")
     }
 }

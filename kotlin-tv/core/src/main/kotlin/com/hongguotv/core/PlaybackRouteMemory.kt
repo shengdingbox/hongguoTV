@@ -5,7 +5,7 @@ import java.util.WeakHashMap
 
 /** 不同签名口径与接口族分别标记，避免把同路径的 V5 请求和远程签名请求混用。 */
 internal enum class PlaybackRouteKind {
-    VIDEO_MODEL_V5, VIDEO_TAB_MULTI, VIDEO_TAB_SINGLE, MOBILE, VIDEO_TAB_V5, PLAYER, LEGACY,
+    VIDEO_TAB_MULTI, VIDEO_TAB_SINGLE, MOBILE, VIDEO_TAB_V5, PLAYER, LEGACY,
 }
 
 /** 短期记住成功的接口和主机，按签名器与分集分组隔离，预取和正式播放共享。 */

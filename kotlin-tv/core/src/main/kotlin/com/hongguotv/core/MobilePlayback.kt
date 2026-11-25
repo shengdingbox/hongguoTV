@@ -2,12 +2,9 @@
 // GPL-3.0-only derived; see the README 来源与声明 section.
 package com.hongguotv.core
 
-import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InterruptedIOException
-import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
-import java.util.zip.GZIPOutputStream
 import okhttp3.CookieJar
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -17,46 +14,16 @@ import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 
-/** 原生算法的 V5 取址通道；使用共用匿名身份，签名覆盖实际发送的请求体字节。 */
+/** 原生算法的 V5 取址通道；使用共用匿名身份，签名覆盖实际发送的明文 JSON 字节。 */
 internal object MobilePlayback {
     const val MODEL_BASE = "https://api5-normal-sinfonlinea.fqnovel.com"
-    const val PRELOAD_BASE = "https://reading.snssdk.com"
-    const val GET_TAB_BASE = "https://api5-normal-sinfonlineb.fqnovel.com"
-    // 旧版播放协议使用无场景后缀的路径，保留为兜底；当前官方客户端使用 VIDEO_MODEL_PATH。
+    // 旧版播放协议使用无场景后缀的路径，且请求体不再携带 dr_scene。
     const val MODEL_PATH = "/novel/player/multi_video_model/v1/"
-    const val PRELOAD_PATH = "/novel/player/multi_video_model/preload/v1/"
-    const val PLAYER_PATH = "/novel/player/multi_video_model/player/v1/"
-    const val VIDEO_MODEL_PATH = "/novel/player/video_model/v1/"
-    const val GET_TAB_PATH = "/reading/bookapi/video_tab/multi_video_model/v1/"
     const val GROUP_SHORT = "1004"
     const val GROUP_PUGC = "1001"
-
-    /**
-     * 官方 7.4.5.32 App 画像。平台按「请求画像 + 签名」双重校验：
-     * 旧的 `vivo_8662_64 / PGT-AN10 / Android 12` 与 `field21=377` 会让播放接口
-     * 返回 HTTP 200 + 0 字节。该画像必须与 [PlaybackV5Signer.MEDUSA_FIELD21_74532]
-     * 成对使用；设备相关的 iid / device_id / cdid 仍在运行时注入。
-     */
-    private val APP_QUERY = linkedMapOf(
-        "aid" to "8662", "app_name" to "novelread",
-        "version_code" to "74532", "version_name" to "7.4.5.32",
-        "update_version_code" to "74532", "manifest_version_code" to "74532",
-        "os" to "android", "ssmix" to "a", "channel" to "update_64",
-        "device_platform" to "android", "device_type" to "25053RT47C",
-        "device_brand" to "Redmi", "os_version" to "16", "os_api" to "36",
-        "ac" to "wifi", "language" to "zh", "host_abi" to "arm64-v8a",
-    )
+    // 沿用新协议的原始 UA；查询串中的版本按手机端模板使用 74332。
     private const val PLAYBACK_UA =
-        "com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; " +
-            "Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
-
-    /** 当前官方画像的查询参数；设备身份由注册档案补充。 */
-    private fun appQuery(profile: SignerProfile): LinkedHashMap<String, String> = linkedMapOf<String, String>().apply {
-        putAll(APP_QUERY)
-        put("iid", profile.installId)
-        put("device_id", profile.deviceId)
-        put("cdid", profile.params["cdid"].orEmpty())
-    }
+        "com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)"
 
     /** 取址分组：普通短剧在 1004，合集分集属于 PUGC 的 1001，分组错误会回 101000。
      *
@@ -79,24 +46,43 @@ internal object MobilePlayback {
         if (!profile.available || profile.params["cdid"].isNullOrBlank()) {
             throw SignatureException("本机匿名设备尚未就绪")
         }
+        // 设备字段优先取注册档案，未录入的旧档案再回退到匿名模板。
+        fun identity(key: String, fallback: String) = profile.params[key]?.takeIf { it.isNotBlank() } ?: fallback
+        val query = linkedMapOf(
+            "device_platform" to "android", "os" to "android", "ssmix" to "a",
+            "_rticket" to now.toString(),
+            "cdid" to profile.params.getValue("cdid"),
+            "channel" to identity("channel", "vivo_8662_64"),
+            "aid" to identity("aid", "8662"), "app_name" to identity("app_name", "novelread"),
+            "version_code" to "74332", "version_name" to "7.4.3.32",
+            "manifest_version_code" to "74332", "update_version_code" to "74332",
+            "resolution" to identity("resolution", "1260*2800"), "dpi" to identity("dpi", "480"),
+            "device_type" to identity("device_type", "PGT-AN10"),
+            "device_brand" to identity("device_brand", "HONOR"),
+            "language" to identity("language", "zh"), "os_api" to identity("os_api", "31"),
+            "os_version" to identity("os_version", "12"), "ac" to identity("ac", "wifi"),
+            "host_abi" to "arm64-v8a", "dragon_device_type" to "phone",
+            "pv_player" to "74332", "compliance_status" to "0",
+            "need_personal_recommend" to "1", "player_so_load" to "1",
+            "is_android_pad_screen" to "0",
+            "iid" to profile.installId, "device_id" to profile.deviceId,
+        )
+        // 旧版播放协议按明文 JSON 计算 MD5 和签名，不能再额外 gzip。
+        // device_level 继续固定为 1：电视端在 3 下会收到无法解码的 bytevc2。
         val body = JSONObject(
             """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"$group":${JSONArray(ids)}}}"""
         ).toString().toByteArray(Charsets.UTF_8)
-        // 旧 POST 保留 gzip 口径：签名绑定压缩后的实际发送字节，x-ss-stub 也取自压缩体。
-        val gzip = ByteArrayOutputStream().also { output -> GZIPOutputStream(output).use { it.write(body) } }.toByteArray()
         // 参考项目会按会话健康度在同族播放域名之间轮换；签名覆盖最终请求地址，不能先签名再改 host。
-        val signed = PlaybackV5Signer.shared.sign(
-            "https://$host$MODEL_PATH", appQuery(profile), gzip, now,
-            PlaybackV5Signer.MEDUSA_FIELD21_74532,
-        )
+        val signed = PlaybackV5Signer.shared.sign("https://$host$MODEL_PATH", query, body, now)
         val request = Request.Builder().url(signed.url)
             .header("User-Agent", PLAYBACK_UA)
-            .header("Accept", "application/json; charset=utf-8")
-            .header("Content-Encoding", "gzip")
-            .header("x-ss-stub", MessageDigest.getInstance("MD5").digest(gzip)
+            .header("Accept", "application/json; charset=utf-8,application/x-protobuf")
+            .header("x-xs-from-web", "0")
+            // 网关按实际发送的明文 JSON 字节校验请求体完整性。
+            .header("x-ss-stub", java.security.MessageDigest.getInstance("MD5").digest(body)
                 .joinToString("") { "%02X".format(it) })
             .apply { signed.headers.forEach { (key, value) -> header(key, value) } }
-            .post(gzip.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
         val remaining = RequestScope.remainingMillis()
         val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).apply {
@@ -110,9 +96,8 @@ internal object MobilePlayback {
         return RequestScope.execute(transport.newCall(request)) { response ->
             if (!response.isSuccessful) throw ContentHttpException(response.code)
             val responseBody = response.body ?: throw IOException("播放信息格式异常")
-            // 分块响应/压缩响应的 contentLength 可能是 -1 或压缩长度，不能据此拒绝；
-            // 只在实际读取时限制体积，避免正常模型被误判为“过大”。
             val limit = 2 * 1024 * 1024L
+            if (responseBody.contentLength() > limit) throw IOException("播放信息过大")
             val source = responseBody.source()
             source.request(limit + 1)
             if (source.buffer.size > limit) throw IOException("播放信息过大")
@@ -140,136 +125,10 @@ internal object MobilePlayback {
         }
     }
 
-    /**
-     * 构造旧 `multi_video_model` 系列的 POST 请求。
-     *
-     * 与 [videoModelRequest] 的差异是请求体仍使用 `biz_param + mixed_video_id_map`；
-     * 该形态保留给 `preload` / `player` / 平铺 `v1` 兜底，不能用于新端点。
-     */
-    fun modelRequest(
-        id: String,
-        profile: SignerProfile,
-        now: Long,
-        path: String,
-        host: String,
-        group: String = GROUP_SHORT,
-        deviceLevel: Int = 1,
-    ): Request {
-        require(id.matches(Regex("[0-9]{1,30}")))
-        if (!profile.available || profile.params["cdid"].isNullOrBlank()) {
-            throw SignatureException("本机匿名设备尚未就绪")
-        }
-        val body = JSONObject(
-            """{"biz_param":{"detail_page_version":0,"device_level":$deviceLevel,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"$group":${JSONArray(listOf(id))}}}"""
-        ).toString().toByteArray(Charsets.UTF_8)
-        val gzip = ByteArrayOutputStream().also { output -> GZIPOutputStream(output).use { it.write(body) } }.toByteArray()
-        val values = appQuery(profile).apply { if (path.contains("preload")) put("dr_scene", "preload") }
-        val signed = PlaybackV5Signer.shared.sign(
-            "https://$host$path", values, gzip, now,
-            PlaybackV5Signer.MEDUSA_FIELD21_74532,
-        )
-        return Request.Builder().url(signed.url)
-            .header("User-Agent", PLAYBACK_UA)
-            .header("Accept", "application/json")
-            .header("Content-Encoding", "gzip")
-            .header("x-ss-stub", MessageDigest.getInstance("MD5").digest(gzip)
-                .joinToString("") { "%02X".format(it) })
-            .apply { signed.headers.forEach { (key, value) -> header(key, value) } }
-            .post(gzip.toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .build()
-    }
-
-    /**
-     * 官方现行 `POST /novel/player/video_model/v1/` 取址入口。
-     *
-     * 这条端点只接受**扁平请求体**：`video_id` / `device_level` /
-     * `need_all_video_definition` 等字段直接放在顶层。继续使用旧端点的
-     * `biz_param + mixed_video_id_map` 会被回 `code=100001 video_id invalid`。
-     *
-     * 请求体先 gzip 再签名，`x-ss-stub` 也取压缩后字节的 MD5；这是 v5
-     * 协议与旧明文 POST 的关键差异。
-     */
-    fun videoModelRequest(
-        id: String,
-        profile: SignerProfile,
-        now: Long,
-        host: String = MODEL_BASE.removePrefix("https://"),
-        deviceLevel: Int = 1,
-    ): Request {
-        require(id.matches(Regex("[0-9]{1,30}")))
-        if (!profile.available || profile.params["cdid"].isNullOrBlank()) {
-            throw SignatureException("本机匿名设备尚未就绪")
-        }
-        val payload = JSONObject()
-            .put("video_id", id)
-            .put("video_id_type", 0)
-            .put("device_level", deviceLevel)
-            .put("need_all_video_definition", true)
-            .put("need_mp4_align", false)
-            .put("use_os_player", false)
-            .put("video_platform", 1024)
-        val raw = payload.toString().toByteArray(Charsets.UTF_8)
-        val gzip = ByteArrayOutputStream().also { output -> GZIPOutputStream(output).use { it.write(raw) } }.toByteArray()
-        val signed = PlaybackV5Signer.shared.sign(
-            "https://$host$VIDEO_MODEL_PATH", appQuery(profile), gzip, now,
-            PlaybackV5Signer.MEDUSA_FIELD21_74532,
-        )
-        return Request.Builder().url(signed.url)
-            .header("User-Agent", PLAYBACK_UA)
-            .header("Accept", "application/json")
-            .header("Content-Encoding", "gzip")
-            .header("x-ss-stub", MessageDigest.getInstance("MD5").digest(gzip)
-                .joinToString("") { "%02X".format(it) })
-            .apply { signed.headers.forEach { (key, value) -> header(key, value) } }
-            .post(gzip.toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .build()
-    }
-
-    /** 官方现行 video_model/v1 的扁平响应：兼容 data.video_model 与 data[id].video_model。 */
-    fun videoModel(
-        id: String,
-        profile: SignerProfile,
-        http: OkHttpClient,
-        now: Long,
-        host: String = MODEL_BASE.removePrefix("https://"),
-    ): JSONObject {
-        val request = videoModelRequest(id, profile, now, host)
-        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-        return RequestScope.execute(transport.newCall(request)) { response ->
-            if (!response.isSuccessful) throw ContentHttpException(response.code)
-            val responseBody = response.body ?: throw IOException("播放信息格式异常")
-            // 分块响应/压缩响应的 contentLength 可能是 -1 或压缩长度，不能据此拒绝；
-            // 只在实际读取时限制体积，避免正常模型被误判为“过大”。
-            val limit = 2 * 1024 * 1024L
-            val source = responseBody.source()
-            source.request(limit + 1)
-            if (source.buffer.size > limit) throw IOException("播放信息过大")
-            val text = source.readUtf8()
-            if (text.isBlank()) throw EmptyPlaybackResponseException()
-            val root = try { JSONObject(text) } catch (problem: JSONException) {
-                throw IOException("播放信息格式异常", problem)
-            }
-            val code = root.optInt("Code", root.optInt("code", 0))
-            if (code != 0) throw ServiceException(code)
-            val data = root.optJSONObject("data") ?: throw IOException("播放信息为空")
-            val model = modelOfRow(data.opt("video_model"))
-                ?: modelOfRow(data.optJSONObject(id)?.opt("video_model"))
-                ?: throw IOException("播放信息未包含指定剧集")
-            val count = when (val list = model.opt("video_list")) {
-                is JSONObject -> list.length()
-                is JSONArray -> list.length()
-                else -> 0
-            }
-            if (count == 0 && !model.has("fallback_api")) throw IOException("播放信息没有可用资源")
-            model
-        }
-    }
-
-    private fun modelOfRow(raw: Any?): JSONObject? = when (raw) {
-        is JSONObject -> raw
-        is String -> runCatching { JSONObject(raw) }.getOrNull()
-        else -> null
-    }
+    /** V5 GET 取址的固定 UA（对齐参考项目实测口径；查询串身份仍是 PGT-AN10，两者不必一致）。 */
+    private const val VIDEO_TAB_UA =
+        "com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; " +
+            "Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 
     /** V5 GET video_tab 取址请求（对齐参考项目 0.16.13 的 videoTabRequest）：
      *  本地算法的首选路由。签名输入是 MD5(空字节)——空字节只进签名，
@@ -285,24 +144,36 @@ internal object MobilePlayback {
         if (!profile.available || profile.params["cdid"].isNullOrBlank()) {
             throw SignatureException("本机匿名设备尚未就绪")
         }
-        // 设备身份与 74532 画像一起进入签名；字段缺失或画像不匹配都会回 200 + 空体。
-        val values = appQuery(profile).apply {
-            put("video_id", id)
-            put("video_id_type", "0")
-            put("device_level", "1")
-            put("need_all_video_definition", "1")
-            put("need_mp4_align", "0")
-            put("use_os_player", "0")
-            put("video_platform", "1024")
-            put("source", "0")
-            put("from_video_id", "")
-        }
+        // 键序与签名对字节级敏感：身份键 + 业务键在前，_rticket 由签名器追加在末尾。
+        // 设备字段必须与匿名注册档案一致，不能写死成另一台机型，否则服务端会回 200 + 空体。
+        fun identity(key: String, fallback: String) = profile.params[key]?.takeIf { it.isNotBlank() } ?: fallback
+        val values = linkedMapOf(
+            "device_platform" to "android", "os" to "android", "ssmix" to "a",
+            "cdid" to profile.params.getValue("cdid"),
+            "channel" to identity("channel", "vivo_8662_64"),
+            "aid" to identity("aid", "8662"), "app_name" to identity("app_name", "novelread"),
+            "version_code" to "74332", "version_name" to "7.4.3.32",
+            "manifest_version_code" to "74332", "update_version_code" to "74332",
+            "resolution" to identity("resolution", "1260*2800"), "dpi" to identity("dpi", "480"),
+            "device_type" to identity("device_type", "PGT-AN10"),
+            "device_brand" to identity("device_brand", "HONOR"),
+            "language" to identity("language", "zh"), "os_api" to identity("os_api", "31"),
+            "os_version" to identity("os_version", "12"), "ac" to identity("ac", "wifi"),
+            "host_abi" to "arm64-v8a", "dragon_device_type" to "phone",
+            "pv_player" to "74332", "compliance_status" to "0",
+            "need_personal_recommend" to "1", "player_so_load" to "1",
+            "is_android_pad_screen" to "0",
+            "iid" to profile.installId, "device_id" to profile.deviceId,
+            "video_id" to id, "video_id_type" to "0", "device_level" to "1",
+            "need_all_video_definition" to "1", "need_mp4_align" to "0",
+            "use_os_player" to "0", "video_platform" to "1024", "source" to "0",
+            "from_video_id" to "",
+        )
         val signed = PlaybackV5Signer.shared.sign(
-            "https://$host$GET_TAB_PATH", values, ByteArray(0), now,
-            PlaybackV5Signer.MEDUSA_FIELD21_74532,
+            "https://$host/reading/bookapi/video_tab/multi_video_model/v1/", values, ByteArray(0), now,
         )
         return Request.Builder().url(signed.url).get()
-            .header("User-Agent", PLAYBACK_UA)
+            .header("User-Agent", VIDEO_TAB_UA)
             .header("Accept", "application/json; charset=utf-8")
             .header("Accept-Language", "zh-CN,zh;q=0.9")
             .apply {

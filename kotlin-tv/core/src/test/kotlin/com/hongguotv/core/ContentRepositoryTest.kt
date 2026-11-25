@@ -405,7 +405,6 @@ class ContentRepositoryTest {
     @Test fun exhaustedV5HostsRotateOnlyAfterTwoRoundsAndOnlyOncePerAttempt() {
         var rotations = 0
         val signer = object : FakeSigner() {
-            override val usesLocalPlaybackAlgorithm get() = false
             override val prefersVideoTab get() = false
             override fun renew(): SignerProfile {
                 rotations++
@@ -435,16 +434,16 @@ class ContentRepositoryTest {
         assertEquals(1, rotations)
     }
 
-    /** 仅验证多集 V5 POST：关闭本地新端点/GET，且不优先旧播放路由。 */
+    /** 仅验证多集 V5 POST：保留本地 MOBILE 路由，但让其它播放路由的签名标记不同。 */
     private fun mobileOnlySigner(): FakeSigner = object : FakeSigner() {
-        override val usesLocalPlaybackAlgorithm get() = false
         override val prefersVideoTab get() = false
         override fun sign(url: String, values: Map<String, String>, body: ByteArray?): SignedRequest {
-            // 排除旧 PLAYER / LEGACY / 单集 GET 命中，只让 multi_video_model POST 返回模型。
-            if (url.contains("/novel/player/") || url.contains("/reading/bookapi/")) {
-                return SignedRequest(url, mapOf("X-Gorgon" to "mobile-only"), body)
-            }
-            return super.sign(url, values, body)
+            // 只给 multi_video_model 旧 POST 带六头签名；PLAYER / LEGACY / GET 用无签名标记，
+            // 让测试夹具只对目标路由返回模型。
+            val target = url.contains("/novel/player/multi_video_model/v1/") &&
+                !url.contains("/preload/") && !url.contains("/player/")
+            val signed = super.sign(url, values, body)
+            return if (target) signed else signed.copy(headers = mapOf("X-Gorgon" to "mobile-only"))
         }
     }
 

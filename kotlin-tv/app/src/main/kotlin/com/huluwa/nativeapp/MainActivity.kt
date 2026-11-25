@@ -3747,8 +3747,9 @@ class MainActivity: Activity() {
     }
     /** focusPager：翻页后焦点留在翻页按钮上（-1=‹，1=›），0=按 focusEpisode 决定，见函数末尾。 */
     private fun showDetail(focusEpisode: Boolean, focusPager: Int = 0) {
-        invalidatePage(); releaseCatalogViews(); screen="detail"; val data=detail ?: return showCatalog()
-        val hasEpisodes=data.episodes.isNotEmpty()
+        invalidatePage(); releaseCatalogViews(); screen="detail"; var data=detail ?: return showCatalog()
+        var hasEpisodes=data.episodes.isNotEmpty()
+        var loadingSeasonId: String?=null
         val body=base("剧集详情")
         val compact=widthDp()<700
         val inset=dp(if(compact) 16 else 24)
@@ -3773,11 +3774,15 @@ class MainActivity: Activity() {
         hero.addView(image,lp(posterWidth,(posterWidth/TvStyle.POSTER_ASPECT).toInt()).apply { rightMargin=dp(if(compact) 16 else 24) })
         loadCover(image,data.series.cover)
         val info=column(); hero.addView(info,lp(0,-2).apply { weight=1f })
-        info.addView(text(data.series.title,if(compact) 22f else 26f).apply { setTypeface(null,Typeface.BOLD); maxLines=2; ellipsize=TextUtils.TruncateAt.END })
-        val episodeLabel=if(hasEpisodes) "${data.episodes.size} 集" else if(data.series.release!=null) "待上线" else data.series.badge
-        val metadata=listOf(episodeLabel,data.series.tags,library.progress(data.series.id)?.let { "看到第 ${it.episodeIndex+1} 集" }.orEmpty())
-            .filter { it.isNotBlank() }.joinToString("  ·  ")
-        info.addView(text(metadata,13f,muted).apply { maxLines=1; setPadding(0,dp(8),0,dp(8)) })
+        val heroTitle=text(data.series.title,if(compact) 22f else 26f).apply { setTypeface(null,Typeface.BOLD); maxLines=2; ellipsize=TextUtils.TruncateAt.END }
+        info.addView(heroTitle)
+        fun metadata(current: Detail): String {
+            val episodeLabel=if(current.episodes.isNotEmpty()) "${current.episodes.size} 集" else if(current.series.release!=null) "待上线" else current.series.badge
+            return listOf(episodeLabel,current.series.tags,library.progress(current.series.id)?.let { "看到第 ${it.episodeIndex+1} 集" }.orEmpty())
+                .filter { it.isNotBlank() }.joinToString("  ·  ")
+        }
+        val metadataView=text(metadata(data),13f,muted).apply { maxLines=1; setPadding(0,dp(8),0,dp(8)) }
+        info.addView(metadataView)
         val releaseView=text(data.series.release?.label.orEmpty(),15f,accent).apply {
             setPadding(0,0,0,dp(8)); visibility=if(!hasEpisodes && data.series.release!=null) View.VISIBLE else View.GONE
         }
@@ -3806,14 +3811,15 @@ class MainActivity: Activity() {
         val synopsis=text(description,14f,muted).apply { maxLines=if(synopsisExpanded) 20 else 2; ellipsize=TextUtils.TruncateAt.END; setLineSpacing(dp(3).toFloat(),1f) }
         info.addView(synopsis)
         val actions=row(); actions.setPadding(0,dp(12),0,0); info.addView(actions)
-        val progress=library.progress(data.series.id)
-        val resumeIndex=progress?.let { data.episodes.indexOf(it.episodeId).takeIf { n -> n>=0 } } ?: 0
-        val resumePosition=progress?.takeIf { !it.completed && resumeIndex==it.episodeIndex }?.position ?: 0
-        val watched=library.watched(data.series.id)
-        val play=addButton(actions,if(watched) "重新观看" else if(progress!=null && !progress.completed) "继续第 ${resumeIndex+1} 集" else "开始观看") { playEpisode(if(watched) 0 else if(progress?.completed==true) (resumeIndex+1).coerceAtMost(data.episodes.lastIndex) else resumeIndex,if(watched) 0 else resumePosition) }
+        var progress=library.progress(data.series.id)
+        var resumeIndex=progress?.let { data.episodes.indexOf(it.episodeId).takeIf { n -> n>=0 } } ?: 0
+        var resumePosition=progress?.takeIf { !it.completed && resumeIndex==it.episodeIndex }?.position ?: 0
+        var watched=library.watched(data.series.id)
+        val play=addButton(actions,if(watched) "重新观看" else if(progress?.completed==false) "继续第 ${resumeIndex+1} 集" else "开始观看") { if(loadingSeasonId==null) playEpisode(if(watched) 0 else if(progress?.completed==true) (resumeIndex+1).coerceAtMost(data.episodes.lastIndex) else resumeIndex,if(watched) 0 else resumePosition) }
             .apply { visibility=if(hasEpisodes) View.VISIBLE else View.GONE; isEnabled=hasEpisodes }
         lateinit var favorite: TextView
         favorite=addButton(actions,if(library.favorite(data.series.id)) "已收藏" else "收藏") {
+            if(loadingSeasonId!=null) return@addButton
             favoriteMonitor.stop()
             val saved=library.toggle(data.series)
             if(saved) library.observeFavorite(data.series.id,data.episodes.size,System.currentTimeMillis(),acknowledge=true)
@@ -3830,10 +3836,10 @@ class MainActivity: Activity() {
             synopsisButton.post { synopsisButton.requestRectangleOnScreen(android.graphics.Rect(0,0,synopsisButton.width,synopsisButton.height),false) }
         }
         lateinit var jump: TextView
-        jump=addButton(secondary,"跳转集数") { tvTools.episodePicker(data.episodes.size,episodeIndex,jump) { target -> episodeIndex=target; group=target/20; detailEpisodePage=target/20; showDetail(true); prefetchDetailWindow(target) } }
+        jump=addButton(secondary,"跳转集数") { if(loadingSeasonId==null) tvTools.episodePicker(data.episodes.size,episodeIndex,jump) { target -> episodeIndex=target; group=target/20; detailEpisodePage=target/20; showDetail(true); prefetchDetailWindow(target) } }
             .apply { visibility=if(hasEpisodes) View.VISIBLE else View.GONE; isEnabled=hasEpisodes }
-        val firstAction=if(hasEpisodes) play else favorite
-        val lastAction=if(hasEpisodes) jump else synopsisButton
+        var firstAction=if(hasEpisodes) play else favorite
+        var lastAction=if(hasEpisodes) jump else synopsisButton
         listOf(play,favorite,synopsisButton,jump).forEach { view ->
             view.textSize=if(compact) 13f else 14f; view.minHeight=dp(38)
             view.maxLines=1; view.ellipsize=TextUtils.TruncateAt.END
@@ -3844,95 +3850,138 @@ class MainActivity: Activity() {
         // 与参考 TV 详情页一致，季条和选集独立占满内容宽度。
         val seasonHost=column()
         content.addView(seasonHost)
-        if(!hasEpisodes) info.addView(text(if(data.series.release!=null) "上线后即可观看，可先收藏" else "暂时没有可看的剧集",15f,muted).apply { setPadding(0,dp(12),0,0) })
+        val emptyHint=text("",15f,muted).apply { setPadding(0,dp(12),0,0) }
+        info.addView(emptyHint)
+        fun renderEmptyHint() {
+            emptyHint.text=if(data.series.release!=null) "上线后即可观看，可先收藏" else "暂时没有可看的剧集"
+            emptyHint.visibility=if(hasEpisodes) View.GONE else View.VISIBLE
+        }
+        renderEmptyHint()
         val seasonButtons=mutableListOf<TextView>()
-        var renderedSeasons: List<Series>?=null
+        val knownSeasons=linkedMapOf<String,Series>()
+        var renderedSeasonIds: List<String>?=null
         var renderedSeasonStrip: HorizontalScrollView?=null
-        fun renderSeasons(current: Detail) {
-            val seasons=(listOf(current.series)+current.sameName).distinctBy { it.id }
-                .sortedBy { val number=seasonNumber(it.title); if(number==Int.MAX_VALUE) 0 else number }
-            if(renderedSeasons==seasons) return
-            val focusedId=seasonButtons.firstOrNull { it.hasFocus() }?.tag as? String
-            val oldScrollX=renderedSeasonStrip?.scrollX ?: 0
-            renderedSeasons=seasons
-            seasonHost.removeAllViews(); seasonButtons.clear(); renderedSeasonStrip=null
-            if(seasons.size<=1) {
-                if(focusedId!=null) lastAction.requestFocus()
-                return
+        lateinit var switchSeason: (Series)->Unit
+        fun updateSeasonSelection() {
+            seasonButtons.forEach { view ->
+                view.isSelected=view.tag==data.series.id
+                view.background=TvVisual.card(this,view.hasFocus(),view.isSelected)
+                view.alpha=if(view.tag==loadingSeasonId) .5f else 1f
             }
-            val seasonRow=row(); seasonRow.setPadding(0,dp(10),0,dp(2))
-            seasonRow.addView(text("系列 ${seasons.size} 季",13f,accent).apply { gravity=Gravity.CENTER },lp(dp(78),dp(42)))
-            val strip=HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled=false; clipToPadding=false }
-            val line=row(); strip.addView(line)
-            seasons.forEach { season ->
+        }
+        fun renderSeasons(current: Detail) {
+            // 主详情未补齐分季时沿用已知季列表，避免季条消失或横向滚动复位。
+            if(current.seasonsLoaded) knownSeasons.clear()
+            (listOf(current.series)+current.sameName).forEach { knownSeasons[it.id]=it }
+            val seasons=knownSeasons.values.sortedBy { val number=seasonNumber(it.title); if(number==Int.MAX_VALUE) 0 else number }
+            val ids=seasons.map { it.id }
+            if(renderedSeasonIds!=ids) {
+                val focusedId=seasonButtons.firstOrNull { it.hasFocus() }?.tag as? String
+                val oldScrollX=renderedSeasonStrip?.scrollX ?: 0
+                renderedSeasonIds=ids
+                seasonHost.removeAllViews(); seasonButtons.clear(); renderedSeasonStrip=null
+                if(seasons.size>1) {
+                    val seasonRow=row(); seasonRow.setPadding(0,dp(10),0,dp(2))
+                    seasonRow.addView(text("系列 ${seasons.size} 季",13f,accent).apply { gravity=Gravity.CENTER },lp(dp(78),dp(42)))
+                    val strip=HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled=false; clipToPadding=false }
+                    val line=row(); strip.addView(line)
+                    seasons.forEach { season ->
+                        seasonButtons+=addButton(line,"") {
+                            knownSeasons[season.id]?.let { latest ->
+                                if(latest.id!=data.series.id || loadingSeasonId!=null) switchSeason(latest)
+                            }
+                        }.apply {
+                            tag=season.id
+                            setOnFocusChangeListener { _,focused -> background=TvVisual.card(this@MainActivity,focused,isSelected) }
+                        }
+                    }
+                    seasonRow.addView(strip,lp(0,dp(42)).apply { weight=1f })
+                    seasonHost.addView(seasonRow)
+                    renderedSeasonStrip=strip
+                    strip.post {
+                        if(renderedSeasonStrip!==strip || !strip.isAttachedToWindow) return@post
+                        if(focusedId!=null) (seasonButtons.firstOrNull { it.tag==focusedId }
+                            ?: seasonButtons.firstOrNull { it.tag==data.series.id })?.requestFocus()
+                        strip.scrollTo(oldScrollX,0)
+                    }
+                } else if(focusedId!=null) lastAction.requestFocus()
+            }
+            seasonButtons.forEach { view ->
+                val season=knownSeasons[view.tag as? String ?: return@forEach] ?: return@forEach
                 val number=seasonNumber(season.title)
                 val seen=library.progress(season.id)?.let { " · 看到${it.episodeIndex+1}集" }.orEmpty()
-                val title=if(number==Int.MAX_VALUE) season.title.take(12) else "第 ${number} 季"
-                seasonButtons+=addButton(line,title+seen,season.id==current.series.id) { if(season.id!=current.series.id) openDetail(season) }
-                    .apply { tag=season.id; contentDescription=listOf(season.title,season.release?.label.orEmpty()).filter { it.isNotBlank() }.joinToString("，") }
+                view.text=(if(number==Int.MAX_VALUE) season.title.take(12) else "第 ${number} 季")+seen
+                view.contentDescription=listOf(season.title,season.release?.label.orEmpty()).filter { it.isNotBlank() }.joinToString("，")
             }
-            seasonRow.addView(strip,lp(0,dp(42)).apply { weight=1f })
-            seasonHost.addView(seasonRow)
-            renderedSeasonStrip=strip
-            strip.post {
-                if(renderedSeasonStrip!==strip || !strip.isAttachedToWindow) return@post
-                if(focusedId!=null) (seasonButtons.firstOrNull { it.tag==focusedId }
-                    ?: seasonButtons.firstOrNull { it.tag==current.series.id })?.requestFocus()
-                strip.scrollTo(oldScrollX,0)
-            }
+            updateSeasonSelection()
         }
         // 每组 20 集，列数随可用宽度调整；只渲染当前组，长剧也保持轻量。
         val episodeCols=when { widthDp()<600 -> 5; widthDp()<850 -> 8; else -> 10 }
         val pageSize=20
-        val totalPages=((data.episodes.size+pageSize-1)/pageSize).coerceAtLeast(1)
-        detailEpisodePage=if(detailEpisodePage<0) (episodeIndex/pageSize).coerceIn(0,totalPages-1) else detailEpisodePage.coerceIn(0,totalPages-1)
-        var prevPager: TextView?=null; var nextPager: TextView?=null
-        if(hasEpisodes) {
-            val pager=row().apply { setPadding(0,dp(6),0,dp(6)); gravity=Gravity.CENTER_VERTICAL }
-            pager.addView(text("选集",16f).apply { setTypeface(null,Typeface.BOLD) },lp(-2,-2).apply { rightMargin=dp(12) })
-            pager.addView(text("第 ${detailEpisodePage*pageSize+1}—${minOf((detailEpisodePage+1)*pageSize,data.episodes.size)} 集 / 共 ${data.episodes.size} 集",12f,muted).apply {
-                maxLines=1; ellipsize=TextUtils.TruncateAt.END
-            },lp(0,-2).apply { weight=1f })
-            if(totalPages>1) {
-                prevPager=button("‹ 上一组") { if(detailEpisodePage>0){detailEpisodePage--;showDetail(true,-1)} }.apply {
-                    isEnabled=detailEpisodePage>0; isFocusable=isEnabled; alpha=if(isEnabled) 1f else .4f
-                    minHeight=dp(36); textSize=12f; setPadding(dp(10),dp(6),dp(10),dp(6))
-                }
-                pager.addView(prevPager,lp(-2,-2))
-                pager.addView(text("${detailEpisodePage+1}/${totalPages}",12f,muted).apply { setPadding(dp(8),0,dp(8),0) })
-                nextPager=button("下一组 ›") { if(detailEpisodePage<totalPages-1){detailEpisodePage++;showDetail(true,1)} }.apply {
-                    isEnabled=detailEpisodePage<totalPages-1; isFocusable=isEnabled; alpha=if(isEnabled) 1f else .4f
-                    minHeight=dp(36); textSize=12f; setPadding(dp(10),dp(6),dp(10),dp(6))
-                }
-                pager.addView(nextPager,lp(-2,-2))
-            }
-            content.addView(pager)
-            content.addView(text("橙色为当前集 · 上次为续播位置 · 方向键选择，确定播放",11f,muted).apply { setPadding(0,0,0,dp(8)) })
-        }
-        val pageStart=detailEpisodePage*pageSize
-        val pageEnd=minOf(pageStart+pageSize,data.episodes.size)
+        val episodeHost=column()
+        content.addView(episodeHost,lp(-1,-2))
         val episodes=mutableListOf<View>()
-        (pageStart until pageEnd).chunked(episodeCols).forEach { numbers ->
-            val line=row()
-            numbers.forEach { index ->
-                val seen=watched || index<episodeIndex
-                val marker=when {
-                    index==episodeIndex -> "当前"
-                    index==resumeIndex && progress!=null -> if(progress.completed) "已看" else "上次"
-                    else -> ""
+        var totalPages=1
+        var pageStart=0
+        var prevPager: TextView?=null; var nextPager: TextView?=null
+        var episodeStatus: TextView?=null
+        fun renderEpisodes() {
+            episodeHost.removeAllViews(); episodes.clear()
+            totalPages=((data.episodes.size+pageSize-1)/pageSize).coerceAtLeast(1)
+            detailEpisodePage=if(detailEpisodePage<0) (episodeIndex/pageSize).coerceIn(0,totalPages-1) else detailEpisodePage.coerceIn(0,totalPages-1)
+            prevPager=null; nextPager=null; episodeStatus=null
+            if(hasEpisodes) {
+                val pager=row().apply { setPadding(0,dp(6),0,dp(6)); gravity=Gravity.CENTER_VERTICAL }
+                pager.addView(text("选集",16f).apply { setTypeface(null,Typeface.BOLD) },lp(-2,-2).apply { rightMargin=dp(12) })
+                val status=text("第 ${detailEpisodePage*pageSize+1}—${minOf((detailEpisodePage+1)*pageSize,data.episodes.size)} 集 / 共 ${data.episodes.size} 集",12f,muted).apply {
+                    maxLines=1; ellipsize=TextUtils.TruncateAt.END
                 }
-                val item=button("${index+1}"+(if(marker.isNotBlank()) "\n$marker" else ""),index==episodeIndex) { playEpisode(index,if(progress?.episodeId==data.episodes[index] && !progress.completed) progress.position else savedPosition(index)) }
-                item.textSize=13f; item.maxLines=2; item.minHeight=dp(46); item.setPadding(dp(2),dp(4),dp(2),dp(4))
-                item.contentDescription="第 ${index+1} 集"+(if(index==episodeIndex) "，当前" else if(seen) "，已看" else if(index==resumeIndex && progress!=null && !progress.completed) "，看到 ${formatTime(progress.position)}" else "")
-                if(seen && index!=episodeIndex) item.alpha=.6f
-                line.addView(item,lp(0,dp(46)).apply { weight=1f; rightMargin=dp(6) }); episodes+=item
+                episodeStatus=status
+                pager.addView(status,lp(0,-2).apply { weight=1f })
+                if(totalPages>1) {
+                    prevPager=button("‹ 上一组") { if(loadingSeasonId==null && detailEpisodePage>0){detailEpisodePage--;showDetail(true,-1)} }.apply {
+                        isEnabled=detailEpisodePage>0; isFocusable=isEnabled; alpha=if(isEnabled) 1f else .4f
+                        minHeight=dp(36); textSize=12f; setPadding(dp(10),dp(6),dp(10),dp(6))
+                    }
+                    pager.addView(prevPager,lp(-2,-2))
+                    pager.addView(text("${detailEpisodePage+1}/${totalPages}",12f,muted).apply { setPadding(dp(8),0,dp(8),0) })
+                    nextPager=button("下一组 ›") { if(loadingSeasonId==null && detailEpisodePage<totalPages-1){detailEpisodePage++;showDetail(true,1)} }.apply {
+                        isEnabled=detailEpisodePage<totalPages-1; isFocusable=isEnabled; alpha=if(isEnabled) 1f else .4f
+                        minHeight=dp(36); textSize=12f; setPadding(dp(10),dp(6),dp(10),dp(6))
+                    }
+                    pager.addView(nextPager,lp(-2,-2))
+                }
+                episodeHost.addView(pager)
+                episodeHost.addView(text("橙色为当前集 · 上次为续播位置 · 方向键选择，确定播放",11f,muted).apply { setPadding(0,0,0,dp(8)) })
             }
-            repeat(episodeCols-numbers.size) { line.addView(Space(this),lp(0,dp(46)).apply { weight=1f; rightMargin=dp(6) }) }
-            content.addView(line,lp(-1,dp(52)))
+            pageStart=detailEpisodePage*pageSize
+            val pageEnd=minOf(pageStart+pageSize,data.episodes.size)
+            val episodeProgress=progress
+            (pageStart until pageEnd).chunked(episodeCols).forEach { numbers ->
+                val line=row()
+                numbers.forEach { index ->
+                    val seen=watched || index<episodeIndex
+                    val marker=when {
+                        index==episodeIndex -> "当前"
+                        index==resumeIndex && episodeProgress!=null -> if(episodeProgress.completed) "已看" else "上次"
+                        else -> ""
+                    }
+                    val item=button("${index+1}"+(if(marker.isNotBlank()) "\n$marker" else ""),index==episodeIndex) { if(loadingSeasonId==null) playEpisode(index,if(episodeProgress?.episodeId==data.episodes[index] && !episodeProgress.completed) episodeProgress.position else savedPosition(index)) }
+                    item.textSize=13f; item.maxLines=2; item.minHeight=dp(46); item.setPadding(dp(2),dp(4),dp(2),dp(4))
+                    item.contentDescription="第 ${index+1} 集"+(if(index==episodeIndex) "，当前" else if(seen) "，已看" else if(index==resumeIndex && episodeProgress!=null && !episodeProgress.completed) "，看到 ${formatTime(episodeProgress.position)}" else "")
+                    if(seen && index!=episodeIndex) item.alpha=.6f
+                    line.addView(item,lp(0,dp(46)).apply { weight=1f; rightMargin=dp(6) }); episodes+=item
+                }
+                repeat(episodeCols-numbers.size) { line.addView(Space(this),lp(0,dp(46)).apply { weight=1f; rightMargin=dp(6) }) }
+                episodeHost.addView(line,lp(-1,dp(52)))
+            }
         }
+        renderEpisodes()
         val recommendationHost=column()
         content.addView(recommendationHost,lp(-1,-2))
         fun renderExtras(current: Detail) {
+            if(current.series.id!=data.series.id || loadingSeasonId!=null) return
+            data=current
             releaseView.text=current.series.release?.label.orEmpty()
             releaseView.visibility=if(!hasEpisodes && current.series.release!=null) View.VISIBLE else View.GONE
             renderMetrics(current)
@@ -4025,6 +4074,87 @@ class MainActivity: Activity() {
                     v.nextFocusDownId=if(rowIndex<extraRows.lastIndex) extraRows[rowIndex+1].getOrNull(i.coerceAtMost(extraRows[rowIndex+1].lastIndex))?.id ?: v.id else v.id
                 }
             }
+        }
+        fun setSeasonLoading(seasonId: String?) {
+            loadingSeasonId=seasonId
+            play.isEnabled=seasonId==null && hasEpisodes
+            favorite.isEnabled=seasonId==null
+            jump.isEnabled=seasonId==null && hasEpisodes
+            listOf(play,favorite,jump).forEach { it.alpha=if(it.isEnabled) 1f else .45f }
+            episodeHost.alpha=if(seasonId==null) 1f else .45f
+            if(seasonId!=null) episodeStatus?.text="正在切换…"
+            updateSeasonSelection()
+        }
+        switchSeason=switch@{ series ->
+            if(series.id==loadingSeasonId || (series.id==data.series.id && loadingSeasonId==null)) return@switch
+            favoriteMonitor.stop()
+            // 只取消旧季请求，保留页面、海报与季按钮；连续切季由 generation 丢弃过时响应。
+            generation++; cancelWork(); cancelDetailExtras()
+            val ticket=generation
+            pendingDetail=series
+            setSeasonLoading(series.id)
+            val scheduled=scheduledSeries(series)
+            val apply: (Detail)->Unit=apply@{ loaded ->
+                if(generation!=ticket || screen!="detail" || body.parent!==root) return@apply
+                val result=withCachedSeasons(withReleaseSchedule(loaded,scheduled))
+                val previousCover=data.series.cover
+                val oldScrollY=scroll.scrollY
+                val oldSeasonTop=seasonHost.top
+                data=result; detail=result
+                playbackAlgorithms.beginPlayback(series.id)
+                hasEpisodes=result.episodes.isNotEmpty()
+                if(hasEpisodes) {
+                    library.observeFavorite(series.id,result.episodes.size,System.currentTimeMillis(),acknowledge=true)
+                    val saved=library.progress(series.id)
+                    episodeIndex=ResumePlayback.target(result.episodes,saved?.episodeId,saved?.position ?: 0,saved?.completed==true).index
+                } else episodeIndex=0
+                group=episodeIndex/20; detailEpisodePage=episodeIndex/pageSize
+                progress=library.progress(series.id)
+                resumeIndex=progress?.let { result.episodes.indexOf(it.episodeId).takeIf { n -> n>=0 } } ?: 0
+                resumePosition=progress?.takeIf { !it.completed && resumeIndex==it.episodeIndex }?.position ?: 0
+                watched=library.watched(series.id)
+                heroTitle.text=result.series.title
+                metadataView.text=metadata(result)
+                synopsis.text=result.series.description.ifBlank { if(hasEpisodes) "选择剧集开始观看" else "暂无简介" }
+                play.text=if(watched) "重新观看" else if(progress?.completed==false) "继续第 ${resumeIndex+1} 集" else "开始观看"
+                play.visibility=if(hasEpisodes) View.VISIBLE else View.GONE
+                favorite.text=if(library.favorite(series.id)) "已收藏" else "收藏"
+                jump.visibility=if(hasEpisodes) View.VISIBLE else View.GONE
+                firstAction=if(hasEpisodes) play else favorite
+                lastAction=if(hasEpisodes) jump else synopsisButton
+                renderEmptyHint()
+                if(result.series.cover!=previousCover) artwork.load(image,result.series.cover,keepCurrentImage=true)
+                renderEpisodes()
+                setSeasonLoading(null)
+                renderExtras(result)
+                // 上方标题、简介或评分高度变化后，维持季条在屏幕里的位置。
+                val observer=content.viewTreeObserver
+                observer.addOnPreDrawListener(object: ViewTreeObserver.OnPreDrawListener {
+                    override fun onPreDraw(): Boolean {
+                        if(observer.isAlive) observer.removeOnPreDrawListener(this)
+                        if(generation==ticket && body.parent===root && oldScrollY>0)
+                            scroll.scrollTo(0,(oldScrollY+seasonHost.top-oldSeasonTop).coerceAtLeast(0))
+                        return true
+                    }
+                })
+                loadDetailExtras(result,::renderExtras)
+                if(hasEpisodes) prefetchDetailWindow(episodeIndex)
+            }
+            val cached=repository.cachedDetail(series.id)
+            if(cached?.episodes?.isNotEmpty()==true) apply(cached)
+            else if(scheduled?.release?.isPending()==true) apply(Detail(scheduled,emptyList()))
+            else if(cached!=null) apply(cached)
+            else work({ repository.seriesDetail(series.id) },apply,{
+                if(scheduled!=null) apply(Detail(scheduled,emptyList()))
+                else if(screen=="detail" && body.parent===root) {
+                    pendingDetail=data.series
+                    renderEpisodes()
+                    setSeasonLoading(null)
+                    renderExtras(data)
+                    loadDetailExtras(data,::renderExtras)
+                    Toast.makeText(this,"切换失败，请重试",Toast.LENGTH_SHORT).show()
+                }
+            })
         }
         renderExtras(data)
         loadDetailExtras(data,::renderExtras)

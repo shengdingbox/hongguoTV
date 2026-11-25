@@ -120,11 +120,11 @@ adb install -r hongguotv-kotlin-<版本号>.apk
 
 ## 签名模式
 
-默认使用**本地算法**，在设备上完成请求签名并复用本机匿名设备身份。电视和手机均可在「设置 → 算法模式」中选择内置算法，也可以点击「＋ 自定义算法」填写名称和 openhongguo-signer 兼容地址；自定义项会出现在算法列表中，并和一键检测一起参与测速；列表先验证真实播放是否可用，再显示播放签名耗时，选择保存后立即生效，收藏和观看记录保留。播放取址优先本地，实在不行才降级远程：网络超时不算算法失败，不会触发切换；本地算法连续三次取址失败（空响应或错误码）才切到远程计算-unidbg，切换前的正式播放会先用远程算法救当次取址；使用远程计算时每次取址都会并行探测本地，本地连续两次探测成功才切回，避免半坏的本地算法被反复拉回。自动切换会同步保存设置，正在播放的已缓冲内容不中断，下一次取址使用新算法。
+默认使用**本地算法**，在设备上完成请求签名并复用本机匿名设备身份。三种内置算法的来源不同：本地算法参考 [beilunyang/openhongguo](https://github.com/beilunyang/openhongguo) 实现，远程计算-unidbg 的签名服务同样参考该项目，远程计算-frida 的签名服务则为本项目自行实现。电视和手机均可在「设置 → 算法模式」中选择内置算法，也可以点击「＋ 自定义算法」填写名称和 openhongguo-signer 兼容地址；自定义项会出现在算法列表中，并和一键检测一起参与测速；列表先验证真实播放是否可用，再显示播放签名耗时，选择保存后立即生效，收藏和观看记录保留。播放取址优先本地，实在不行才降级远程：网络超时不算算法失败，不会触发切换；本地算法连续三次取址失败（空响应或错误码）才切到远程计算-unidbg，切换前的正式播放会先用远程算法救当次取址；使用远程计算时每次取址都会并行探测本地，本地连续两次探测成功才切回，避免半坏的本地算法被反复拉回。自动切换会同步保存设置，正在播放的已缓冲内容不中断，下一次取址使用新算法。
 
 - **本地计算**：播放优先使用 V5 协议 `/novel/player/multi_video_model/v1/`，本机生成 Helios / Medusa 签名并处理 gzip 请求体，直接解析当前集的多档视频地址与内容密钥。正式播放、预取和离线缓存共用取址链路，使用 Media3 播放及 CENC 媒体处理。
-- **远程计算-unidbg**：签名交给 [openhongguo-signer](../openhongguo/signer/README.md) —— 在 unidbg 里运行 App 自带的 `libmetasec_ml.so`，通过 `POST /feature-hash` 把完整 URL 与请求体字节换成六个签名头。设备身份仍由本机匿名注册，与本地计算共用同一份档案。地址为 `http://taihe.678120.cn:8028`（菜鸡公网，经飞牛 `frpc-caiji` 转发到局域网 `192.168.3.83:9876`），服务开启 `SIGNER_TOKEN` 时需在 `UnidbgSigner` 里填入相同的 token。播放优先使用 `video_tab` GET 接口。
-- **远程计算-frida**：使用内置的明文 HTTP 远程服务，通过 `/info` 获取设备参数、通过 `/sign` 获取签名；POST 请求体以 `body_base64` 原样提交，服务需声明 `supportsBodySigning=true`。播放优先使用 `video_tab` GET 接口，沿用现有媒体处理链路。该模式依赖此第三方服务；远程模式的可用性与传输安全边界不同于本地算法。
+- **远程计算-unidbg**：签名服务参考 [beilunyang/openhongguo](https://github.com/beilunyang/openhongguo)，通过 [openhongguo-signer](../openhongguo/signer/README.md) 在 unidbg 里运行 App 自带的 `libmetasec_ml.so`，通过 `POST /feature-hash` 把完整 URL 与请求体字节换成六个签名头。设备身份仍由本机匿名注册，与本地计算共用同一份档案。地址为 `http://taihe.678120.cn:8028`（菜鸡公网，经飞牛 `frpc-caiji` 转发到局域网 `192.168.3.83:9876`），服务开启 `SIGNER_TOKEN` 时需在 `UnidbgSigner` 里填入相同的 token。播放优先使用 `video_tab` GET 接口。
+- **远程计算-frida**：使用本项目自行实现的内置明文 HTTP 远程签名服务，通过 `/info` 获取设备参数、通过 `/sign` 获取签名；POST 请求体以 `body_base64` 原样提交，服务需声明 `supportsBodySigning=true`。播放优先使用 `video_tab` GET 接口，沿用现有媒体处理链路。该模式依赖本项目维护的远程服务；远程模式的可用性与传输安全边界不同于本地算法。
 - **自定义算法**：填写名称与服务根地址后保存，调用同一套 openhongguo-signer `/feature-hash` 协议；设备身份仍由本机匿名注册。自定义项会参与算法弹框的一键检测；检测先用真实播放请求判断可用性，再单独统计播放签名耗时。地址只支持 `http://` 或 `https://`，请只填写可信服务。
 
 本地计算是默认且无需额外部署的方式；两种内置远程计算模式依赖各自签名服务，自定义算法依赖用户填写的服务；远程模式都不适用本机 V5 播放取址路由。所有算法都要求上游接口、签名协议和设备档案可用。
@@ -269,11 +269,12 @@ Release 构建启用 R8 代码压缩和资源裁剪，播放器只保留普通 M
 本仓库不引用、不分发其他仓库的构建产物。以下说明派生关系、界面参考和许可证归属：
 
 - `core` 中的 Spade URL / key 处理与 MP4 CENC 处理（`MediaCrypto.kt`、`VendorConstants.kt`）为 GPL-3.0 源码的 Kotlin 移植；加密媒体通过 Media3 DataSource 直接读取，并增加样本边界检查、子样本处理和 AVC 原始编码恢复。
-- `core` 中的请求签名算法（`SignPrimitives.kt`、`SignAlgorithms.kt`、`AesV3.kt`，含 SM3、X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios 与魔改 AES-V3）为 GPL-3.0 Go 源码的 Kotlin 移植，在设备本地离线计算。
+- `core` 中的请求签名算法（`SignPrimitives.kt`、`SignAlgorithms.kt`、`AesV3.kt`，含 SM3、X-Gorgon / X-Ladon / X-Argus / X-Medusa / X-Helios 与魔改 AES-V3）参考 [beilunyang/openhongguo](https://github.com/beilunyang/openhongguo) 的 Go 实现并改写为 Kotlin，在设备本地离线计算。
 - 匿名设备注册协议（`DeviceRegister.kt`）改写自 GPL-3.0-only 授权的开源实现。
 - `PlaybackSigning.kt` 的 Argus 551 / Ladon 实现源自以 Apache-2.0 发布的实现，其许可证全文随 APK 打包于 `kotlin-tv/app/src/main/assets/licenses/`。
 - 播放 V5 协议（`MobilePlayback.kt`、`PlaybackV5Signer.kt`、`PlaybackV5Aes.kt`、`PlaybackV5Constants.kt`）改写自 GPL-3.0-only 授权的开源实现，包含 V5 的摘要、Helios、Medusa、专用 AES 载波和 gzip 播放请求，并复用本机 SM3、匿名设备档案、模型缓存与 CENC 播放链路。
-- 手机推荐流、新剧日历、热搜与排行榜的请求参数和响应字段，参考 [kadaliao/kaixinguo-ios](https://github.com/kadaliao/kaixinguo-ios) 与 openhongguo（Apache-2.0）的接口定义；本仓库以 Kotlin 接入相同的公开协议，并复用本机匿名设备签名。手机竖屏页面组织与播放交互也参考了 kaixinguo-ios。
+- 手机推荐流、新剧日历、热搜与排行榜的请求参数和响应字段，参考 [kadaliao/kaixinguo-ios](https://github.com/kadaliao/kaixinguo-ios) 与 [beilunyang/openhongguo](https://github.com/beilunyang/openhongguo)（Apache-2.0）的接口定义；本仓库以 Kotlin 接入相同的公开协议，并复用本机匿名设备签名。手机竖屏页面组织与播放交互也参考了 kaixinguo-ios。
+- `UnidbgSigner.kt` 对接的远程签名服务参考 [beilunyang/openhongguo](https://github.com/beilunyang/openhongguo)：服务端在 unidbg 中运行 App 自带的 `libmetasec_ml.so`，本仓库实现客户端调用协议。`FridaSigner.kt` 对接的 Frida 远程签名服务及协议由本项目自行实现，不由上述参考项目提供。
 - TV 浏览、详情、选集和播放页的布局及原生绘制样式，参考并改写自 [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV)（GPL-3.0-only）：迁移视觉布局与首页自动播放交互，接入本仓库的收藏、历史、筛选、播放和焦点恢复；背景与控件直接绘制，未引入参考项目的账号业务、字体、噪点位图或媒体资源。
 
 第三方依赖及其许可证：

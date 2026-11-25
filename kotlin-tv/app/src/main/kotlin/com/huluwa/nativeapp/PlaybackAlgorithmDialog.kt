@@ -281,8 +281,7 @@ internal class PlaybackAlgorithmDialog(
     private fun refreshSelection() {
         modes.forEach { algorithm ->
             val suffix = if (algorithm.id == current.id) " · 当前" else ""
-            val endpoint = algorithm.endpoint?.let { "\n$it" }.orEmpty()
-            names.getValue(algorithm).text = (if (algorithm == selected) "✓  " else "") + algorithm.label + suffix + endpoint
+            names.getValue(algorithm).text = (if (algorithm == selected) "✓  " else "") + algorithm.label + suffix
             options.getValue(algorithm).isSelected = algorithm == selected
             paintOption(algorithm)
         }

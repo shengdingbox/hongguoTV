@@ -46,6 +46,7 @@ internal class PlaybackAlgorithmDialog(
     private var running: RequestScope? = null
     private var checkPending = false
     private val latencies = mutableMapOf<SigningSettings.Algorithm, Long>()
+    private val qualities = mutableMapOf<SigningSettings.Algorithm, String>()
     private val results = mutableMapOf<SigningSettings.Algorithm, TextView>()
     private val names = mutableMapOf<SigningSettings.Algorithm, TextView>()
     private val options = mutableMapOf<SigningSettings.Algorithm, LinearLayout>()
@@ -303,7 +304,7 @@ internal class PlaybackAlgorithmDialog(
         val session = RequestScope()
         running = session
         checked = true
-        selected = null; fastest = null; latencies.clear()
+        selected = null; fastest = null; latencies.clear(); qualities.clear()
         checkButton.isEnabled = false
         checkButton.alpha = .5f
         checkButton.text = "检测中…"
@@ -355,6 +356,7 @@ internal class PlaybackAlgorithmDialog(
         val row = column().apply {
             id = View.generateViewId()
             isFocusable = true; isClickable = true
+            gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(16), dp(10), dp(16), dp(10))
             setOnFocusChangeListener { _, _ -> paintOption(algorithm) }
         }
@@ -364,11 +366,11 @@ internal class PlaybackAlgorithmDialog(
         }
         names[algorithm] = name
         row.addView(name)
-        val result = label("尚未检测", 13f, mutedColor).apply {
+        val result = label("尚未检测\n\u00A0", 13f, mutedColor).apply {
             setPadding(0, dp(4), 0, 0)
             minLines = 2; maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
-            setLineSpacing(0f, 1.15f)
+            setLineSpacing(dp(1).toFloat(), 1.15f)
         }
         row.addView(result)
         results[algorithm] = result
@@ -395,18 +397,19 @@ internal class PlaybackAlgorithmDialog(
                 val result = runCatching {
                     scope.run {
                         // 可用性仍按真实播放取址判断，只有成功取得可播放地址的算法才进入签名测速。
-                        probe(algorithm, episodeId)
+                        val info = probe(algorithm, episodeId)
                         val started = SystemClock.elapsedRealtime()
                         signProbe(algorithm, episodeId)
-                        SystemClock.elapsedRealtime() - started
+                        info to (SystemClock.elapsedRealtime() - started)
                     }
                 }
                 main.post {
                     if (running !== session || !dialog.isShowing || activity.isFinishing || activity.isDestroyed) return@post
                     val view = results[algorithm] ?: return@post
-                    result.fold({ elapsed ->
+                    result.fold({ (info, elapsed) ->
                         latencies[algorithm] = elapsed
-                        view.text = "可用 · 签名 ${elapsed} ms"
+                        qualities[algorithm] = info.quality
+                        view.text = "可用 · 签名 ${elapsed} ms\n最高 ${info.quality}"
                         view.setTextColor(if (phone && !PortraitStyle.isDark) Color.rgb(30, 130, 65) else Color.rgb(86, 196, 122))
                     }, { problem ->
                         view.text = "不可用 · ${failureReason(problem)}"
@@ -414,6 +417,7 @@ internal class PlaybackAlgorithmDialog(
                     })
                     remaining--
                     if (remaining == 0) {
+                        // 直接保留准备阶段取得的最高清晰度，避免从已标记“最快”的文本里反解析。
                         fastest = checkedAlgorithms.filter { it in latencies }.minByOrNull { latencies.getValue(it) }
                         selected = fastest
                         val best = fastest
@@ -421,7 +425,9 @@ internal class PlaybackAlgorithmDialog(
                             else "已选播放签名最快的${best.label}（${latencies.getValue(best)} ms），确认后使用此算法。"
                         if (best != null) {
                             val bestView = results.getValue(best)
-                            bestView.text = "可用 · 签名 ${latencies.getValue(best)} ms · 最快"
+                            val quality = qualities[best].orEmpty()
+                            bestView.text = "可用 · 签名 ${latencies.getValue(best)} ms · 最快" +
+                                if (quality.isNotBlank()) "\n最高 $quality" else ""
                         }
                         finishCheck(session)
                         if (!phone && best != null) confirmButton.requestFocus()

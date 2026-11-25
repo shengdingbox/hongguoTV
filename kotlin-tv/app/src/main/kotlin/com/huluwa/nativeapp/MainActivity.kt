@@ -7617,6 +7617,8 @@ class MainActivity: Activity() {
             }
         },probe={ algorithm,id ->
             probeRepository(algorithm).stream(id,quality,refreshModel=true,playback=true)
+        },signProbe={ algorithm,id ->
+            probeRepository(algorithm).signPlaybackProbe(id)
         },onChoice={ algorithm -> setSigningMode(algorithm,playAfterChange=autoCheck) })
     }
 

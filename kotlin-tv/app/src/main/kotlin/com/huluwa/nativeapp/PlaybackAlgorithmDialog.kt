@@ -19,16 +19,18 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.hongguotv.core.RequestScope
+import com.hongguotv.core.SignedRequest
 import com.hongguotv.core.StreamInfo
 import java.util.concurrent.Executors
 
-/** 检测后预选取址最快的可用算法，只有用户确认后才切换正式模式。 */
+/** 用真实播放请求判断可用性，再只比较签名耗时；确认后才切换正式模式。 */
 internal class PlaybackAlgorithmDialog(
     private val activity: Activity,
     message: String?,
     private val autoCheck: Boolean,
     private val resolveEpisode: () -> String,
     private val probe: (SigningSettings.Algorithm, String) -> StreamInfo,
+    private val signProbe: (SigningSettings.Algorithm, String) -> SignedRequest,
     onChoice: (SigningSettings.Algorithm) -> Unit,
 ) {
     private val phone = PhoneDialog.shouldUse(activity)
@@ -66,7 +68,7 @@ internal class PlaybackAlgorithmDialog(
 
     init {
         if (phone) PortraitStyle.refresh(activity)
-        summary = label("检测后自动选中取址最快的可用算法，也可自行选择后确认。", 14f, mutedColor).apply {
+        summary = label("先验证播放是否可用，再按播放签名耗时自动选择最快算法。", 14f, mutedColor).apply {
             setPadding(0, 0, 0, dp(12))
         }
         list = column()
@@ -374,8 +376,8 @@ internal class PlaybackAlgorithmDialog(
             if (running == null) {
                 selected = algorithm
                 summary.text = if (!checked) "已选择${algorithm.label}，点击确认后使用此算法。"
-                    else if (algorithm in latencies) "已选择${algorithm.label}（${latencies.getValue(algorithm)} ms），确认后使用此算法。"
-                    else "所选算法未取得可用地址，请选择可用算法或重新检测。"
+                    else if (algorithm in latencies) "已选择${algorithm.label}（签名 ${latencies.getValue(algorithm)} ms），确认后使用此算法。"
+                    else "所选算法不可用，请选择可用算法或重新检测。"
                 refreshSelection()
             }
         }
@@ -385,24 +387,29 @@ internal class PlaybackAlgorithmDialog(
 
     private fun checkModes(session: RequestScope, episodeId: String, checkedAlgorithms: List<SigningSettings.Algorithm>) {
         var remaining = checkedAlgorithms.size
-        summary.text = "正在检测 ${checkedAlgorithms.size} 种算法，比较完整取址耗时…"
+        summary.text = "正在检查 ${checkedAlgorithms.size} 种算法的播放可用性与签名耗时…"
         checkedAlgorithms.forEach { algorithm ->
-            results.getValue(algorithm).text = "正在获取播放地址…"
-            val scope = session.child(10_000)
+            results.getValue(algorithm).text = "正在验证播放可用性…"
+            val scope = session.child(20_000)
             workers.execute {
-                // 单调时钟统计完整取址耗时，包含签名与内部重试，不包含分集准备。
-                val started = SystemClock.elapsedRealtime()
-                val result = runCatching { scope.run { probe(algorithm, episodeId) } }
-                val elapsed = SystemClock.elapsedRealtime() - started
+                val result = runCatching {
+                    scope.run {
+                        // 可用性仍按真实播放取址判断，只有成功取得可播放地址的算法才进入签名测速。
+                        probe(algorithm, episodeId)
+                        val started = SystemClock.elapsedRealtime()
+                        signProbe(algorithm, episodeId)
+                        SystemClock.elapsedRealtime() - started
+                    }
+                }
                 main.post {
                     if (running !== session || !dialog.isShowing || activity.isFinishing || activity.isDestroyed) return@post
                     val view = results[algorithm] ?: return@post
-                    result.fold({ info ->
+                    result.fold({ elapsed ->
                         latencies[algorithm] = elapsed
-                        view.text = "可用 · ${elapsed} ms\n${info.quality}"
+                        view.text = "可用 · 签名 ${elapsed} ms"
                         view.setTextColor(if (phone && !PortraitStyle.isDark) Color.rgb(30, 130, 65) else Color.rgb(86, 196, 122))
                     }, { problem ->
-                        view.text = "失败 · ${elapsed} ms\n${failureReason(problem)}"
+                        view.text = "不可用 · ${failureReason(problem)}"
                         view.setTextColor(if (phone && !PortraitStyle.isDark) Color.rgb(190, 45, 45) else Color.rgb(235, 95, 95))
                     })
                     remaining--
@@ -410,11 +417,11 @@ internal class PlaybackAlgorithmDialog(
                         fastest = checkedAlgorithms.filter { it in latencies }.minByOrNull { latencies.getValue(it) }
                         selected = fastest
                         val best = fastest
-                        summary.text = if (best == null) "所有算法均未取得可用地址，请重新检测或稍后重试。"
-                            else "已选取址最快的${best.label}（${latencies.getValue(best)} ms），确认后使用此算法。"
+                        summary.text = if (best == null) "所有算法均无法完成播放签名，请重新检测或检查签名服务。"
+                            else "已选播放签名最快的${best.label}（${latencies.getValue(best)} ms），确认后使用此算法。"
                         if (best != null) {
                             val bestView = results.getValue(best)
-                            bestView.text = bestView.text.toString().replace(" ms\n", " ms · 最快\n")
+                            bestView.text = "可用 · 签名 ${latencies.getValue(best)} ms · 最快"
                         }
                         finishCheck(session)
                         if (!phone && best != null) confirmButton.requestFocus()

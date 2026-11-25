@@ -1077,6 +1077,30 @@ open class ContentRepository(
         }
     }
 
+    /**
+     * 只执行一次真实播放请求的签名，不发送内容请求。
+     *
+     * 本地算法使用与正式播放相同的 V5 三头签名；远程签名器会在这里完成各自的服务往返。
+     * 调用方可以先用 [stream] 判断整体可用性，再单独测这里的耗时，避免把内容接口误算成签名延迟。
+     */
+    fun signPlaybackProbe(id: String): SignedRequest {
+        require(id.matches(Regex("[0-9]{1,30}")))
+        val signer = activeSigner
+        val profile = signer.profile()
+        val host = "api5-normal-sinfonlineb.fqnovel.com"
+        val url = "https://$host/reading/bookapi/video_tab/multi_video_model/v1/"
+        val values = PlaybackProbe.signatureValues(id, profile)
+        return if (signer.usesLocalPlaybackAlgorithm) {
+            if (!profile.available || profile.params["cdid"].isNullOrBlank()) {
+                throw SignatureException("本机匿名设备尚未就绪")
+            }
+            PlaybackV5Signer.shared.sign(url, values, ByteArray(0), clock())
+        } else {
+            // 远程签名器自己补齐身份字段；这里保持与正式 video_tab 请求相同的业务参数和签名输入。
+            signer.sign(url, values, null)
+        }
+    }
+
     private fun streamUnbounded(id: String, maxQuality: Int, refreshModel: Boolean, ahead: List<String> = emptyList()): StreamInfo {
         if(refreshModel) modelCache.evict(id)
         val albumEpisode=isAlbumEpisode(id)

@@ -194,6 +194,7 @@ internal object MobilePlayback {
         profile: SignerProfile,
         now: Long,
         host: String = MODEL_BASE.removePrefix("https://"),
+        deviceLevel: Int = 1,
     ): Request {
         require(id.matches(Regex("[0-9]{1,30}")))
         if (!profile.available || profile.params["cdid"].isNullOrBlank()) {
@@ -202,7 +203,7 @@ internal object MobilePlayback {
         val payload = JSONObject()
             .put("video_id", id)
             .put("video_id_type", 0)
-            .put("device_level", 1)
+            .put("device_level", deviceLevel)
             .put("need_all_video_definition", true)
             .put("need_mp4_align", false)
             .put("use_os_player", false)

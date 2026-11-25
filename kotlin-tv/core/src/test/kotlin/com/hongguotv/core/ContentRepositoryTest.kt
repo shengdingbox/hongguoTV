@@ -372,15 +372,11 @@ class ContentRepositoryTest {
 
     @Test fun v5EmptyHostFallsBackToNextHealthyHostBeforeIdentityRotation() {
         val hosts = mutableListOf<String>()
-        val repo = repository(signer = LegacyFakeSigner()) { request ->
-            when {
-                request.url.encodedPath == MobilePlayback.MODEL_PATH -> {
-                    hosts += request.url.host
-                    if (request.url.host == PlayRetryPlan.host(0)) ""
-                    else """{"code":0,"data":{"1004":{"123":{"video_model":{"video_list":[{"main_url":"https://example.com/v5.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
-                }
-                else -> ""
-            }
+        val repo = repository(signer = mobileOnlySigner()) { request ->
+            if (request.url.encodedPath != MobilePlayback.MODEL_PATH) return@repository ""
+            hosts += request.url.host
+            if (request.url.host == PlayRetryPlan.host(0)) ""
+            else """{"code":0,"data":{"1004":{"123":{"video_model":{"video_list":[{"main_url":"https://example.com/v5.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}}}"""
         }
         assertEquals("https://example.com/v5.mp4", repo.stream("123").url)
         // 首个域名空体后直接换下一个，不能以单集/多集名义重复请求相同 URL。
@@ -390,8 +386,8 @@ class ContentRepositoryTest {
     @Test fun v5TimedOutHostIsSkippedWhileHealthyHostRemainsPreferred() {
         val requests = mutableListOf<Request>()
         val now = 1_700_000_000_000L
-        val repo = repository(clock = { now }, signer = LegacyFakeSigner()) { request ->
-            // 首选多集 GET 不可用后才进入 V5 POST，这里只统计 POST 域名轮换。
+        val repo = repository(clock = { now }, signer = mobileOnlySigner()) { request ->
+            // 只验证多集 V5 POST 的域名轮换。
             if (request.url.encodedPath != MobilePlayback.MODEL_PATH) return@repository ""
             requests += request
             if (request.url.host == PlayRetryPlan.host(0)) throw java.net.SocketTimeoutException("域名读取超时")
@@ -409,10 +405,14 @@ class ContentRepositoryTest {
     @Test fun exhaustedV5HostsRotateOnlyAfterTwoRoundsAndOnlyOncePerAttempt() {
         var rotations = 0
         val signer = object : FakeSigner() {
+            override val usesLocalPlaybackAlgorithm get() = false
+            override val prefersVideoTab get() = false
             override fun renew(): SignerProfile {
                 rotations++
                 throw IOException("device register unavailable")
             }
+            override fun sign(url: String, values: Map<String, String>, body: ByteArray?): SignedRequest =
+                super.sign(url, values, body).copy(headers = mapOf("X-Gorgon" to "mobile-only"))
         }
         val repo = ContentRepository(
             OkHttpClient.Builder().addInterceptor { chain ->
@@ -433,6 +433,19 @@ class ContentRepositoryTest {
         assertEquals(1, rotations)
         assertThrows(IOException::class.java) { repo.stream("126") }
         assertEquals(1, rotations)
+    }
+
+    /** 仅验证多集 V5 POST：关闭本地新端点/GET，且不优先旧播放路由。 */
+    private fun mobileOnlySigner(): FakeSigner = object : FakeSigner() {
+        override val usesLocalPlaybackAlgorithm get() = false
+        override val prefersVideoTab get() = false
+        override fun sign(url: String, values: Map<String, String>, body: ByteArray?): SignedRequest {
+            // 排除旧 PLAYER / LEGACY / 单集 GET 命中，只让 multi_video_model POST 返回模型。
+            if (url.contains("/novel/player/") || url.contains("/reading/bookapi/")) {
+                return SignedRequest(url, mapOf("X-Gorgon" to "mobile-only"), body)
+            }
+            return super.sign(url, values, body)
+        }
     }
 
     private fun repository(clock: () -> Long = System::currentTimeMillis, signer: FakeSigner = FakeSigner(), respond: (Request) -> String) = ContentRepository(

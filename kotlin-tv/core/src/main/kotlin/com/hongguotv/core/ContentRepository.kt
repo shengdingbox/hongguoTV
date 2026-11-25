@@ -1080,16 +1080,17 @@ open class ContentRepository(
     /**
      * 检测当前算法的最高兼容清晰度，不套用用户的播放清晰度上限。
      *
-     * 优先沿用正式取址流程；本地首个模型不足 1080P 时，在同一预算内补查多集 GET，
-     * 避免把某个接口的低清模型误报为本地算法的能力上限。
+     * 优先沿用正式取址流程；本地首个模型不足 1080P 时，另用最多 8 秒补查多集 GET，
+     * 避免首轮取址耗尽预算后，把某个接口的低清模型误报为本地算法的能力上限。
      */
     fun probePlayback(id: String): StreamInfo {
+        var best = stream(id, maxQuality = Int.MAX_VALUE, refreshModel = true, playback = true)
+        if (!activeSigner.usesLocalPlaybackAlgorithm || isAlbumEpisode(id) || qualityNumber(best.quality) >= 1080) {
+            return best
+        }
+        // 首轮继续使用正式播放的时限，补查另计预算；外层检测作用域仍统一管理取消和总时限。
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8)
         return RequestScope.withDeadline(deadline) {
-            var best = stream(id, maxQuality = Int.MAX_VALUE, refreshModel = true, playback = true)
-            if (!activeSigner.usesLocalPlaybackAlgorithm || isAlbumEpisode(id) || qualityNumber(best.quality) >= 1080) {
-                return@withDeadline best
-            }
             val alternatives = listOf<() -> JSONObject?>(
                 { videoTabModelV5(id) },
                 { videoTabModel(id) },

@@ -27,11 +27,15 @@ internal class PlaybackAlgorithmDialog(
     private val activity: Activity,
     message: String?,
     private val autoCheck: Boolean,
-    private val resolveEpisode: () -> String,
     private val probe: (SigningSettings.Algorithm, String) -> StreamInfo,
     private val signProbe: (SigningSettings.Algorithm, String) -> PlaybackSignatureProbe,
     onChoice: (SigningSettings.Algorithm) -> Unit,
 ) {
+    private companion object {
+        // 固定使用已有 1080P 取址记录的普通短剧分集，每种算法、每次检测使用同一样本。
+        const val SAMPLE_EPISODE_ID = "7675424396831378456"
+    }
+
     private val phone = PhoneDialog.shouldUse(activity)
     private val current = SigningSettings.selectedAlgorithm
     private var modes: List<SigningSettings.Algorithm> = SigningSettings.algorithms
@@ -69,7 +73,7 @@ internal class PlaybackAlgorithmDialog(
 
     init {
         if (phone) PortraitStyle.refresh(activity)
-        summary = label("每行显示签名延迟、是否可用与最高兼容清晰度，检测不受播放清晰度上限影响。", 14f, mutedColor).apply {
+        summary = label("固定使用同一普通短剧分集，显示签名延迟、可用性与样本最高兼容清晰度。", 14f, mutedColor).apply {
             setPadding(0, 0, 0, dp(12))
         }
         list = column()
@@ -301,7 +305,7 @@ internal class PlaybackAlgorithmDialog(
         if (autoCheck) startCheck()
     }
 
-    /** 先确定共同分集，再让每种算法在独立线程中完成一次取址。 */
+    /** 所有算法固定检测同一普通短剧分集，各自使用独立线程取址。 */
     private fun startCheck() {
         if (running != null || !dialog.isShowing) return
         val session = RequestScope()
@@ -311,25 +315,12 @@ internal class PlaybackAlgorithmDialog(
         checkButton.isEnabled = false
         checkButton.alpha = .5f
         checkButton.text = "检测中…"
-        summary.text = "正在准备检测分集…"
         // 自定义项可能在弹框打开期间新增；每次检测都以最新列表为准。
         modes = SigningSettings.algorithms
         ensureRows()
         results.values.forEach { it.text = "等待检测…"; it.setTextColor(mutedColor) }
         refreshSelection()
-        val checkedAlgorithms = modes
-        val prepareScope = session.child(12_000)
-        workers.execute {
-            val episode = runCatching { prepareScope.run { resolveEpisode() } }
-            main.post {
-                if (running !== session || !dialog.isShowing || activity.isFinishing || activity.isDestroyed) return@post
-                episode.fold({ id -> checkModes(session, id, checkedAlgorithms) }, { problem ->
-                    summary.text = "无法准备检测分集：${failureReason(problem)}"
-                    results.values.forEach { it.text = "未检测" }
-                    finishCheck(session)
-                })
-            }
-        }
+        checkModes(session, SAMPLE_EPISODE_ID, modes)
     }
 
     /** 新增自定义项后重画列表；正常检测刷新不重建，保留行上的结果与焦点。 */
@@ -390,9 +381,9 @@ internal class PlaybackAlgorithmDialog(
 
     private fun checkModes(session: RequestScope, episodeId: String, checkedAlgorithms: List<SigningSettings.Algorithm>) {
         var remaining = checkedAlgorithms.size
-        summary.text = "正在检查 ${checkedAlgorithms.size} 种算法的播放可用性与签名耗时…"
+        summary.text = "正在使用固定短剧分集检测 ${checkedAlgorithms.size} 种算法…"
         checkedAlgorithms.forEach { algorithm ->
-            results.getValue(algorithm).text = "签名 — · 检测中 · 最高 —"
+            results.getValue(algorithm).text = "签名 — · 检测中 · 样本最高 —"
             val scope = session.child(20_000)
             workers.execute {
                 val availability = runCatching { scope.run { probe(algorithm, episodeId) } }
@@ -436,7 +427,7 @@ internal class PlaybackAlgorithmDialog(
         append(if (latency == null) "签名 —" else "签名 ${latency} ms")
         append(" · ")
         append(if (usable) "可用" else "不可用")
-        append(" · 最高 ")
+        append(" · 样本最高 ")
         append(quality ?: "—")
     }
 
@@ -458,9 +449,6 @@ internal class PlaybackAlgorithmDialog(
             startCheck()
         }
     }
-
-    private fun failureReason(problem: Throwable) =
-        problem.message?.lineSequence()?.firstOrNull()?.take(96).orEmpty().ifBlank { "取址失败，请稍后重试" }
 
     /** 关闭弹框或确认选择时，停止检测及其网络请求，丢弃未显示的结果。 */
     fun cancel() {

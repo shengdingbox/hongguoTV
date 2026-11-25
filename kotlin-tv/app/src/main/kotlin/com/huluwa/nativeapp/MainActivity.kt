@@ -7591,10 +7591,6 @@ class MainActivity: Activity() {
     fun phoneSigningModePicker() = showSigningModePicker(pickerAnchor)
 
     private fun showSigningModePicker(anchor: View?, message: String? = null, autoCheck: Boolean = false) {
-        val recent=if(library.isLoaded) library.history().firstOrNull() else null
-        val episodeId=detail?.episodes?.getOrNull(episodeIndex) ?: detail?.episodes?.firstOrNull() ?: recent?.episodeId
-        val seriesId=pendingDetail?.id ?: recent?.series?.id ?: phoneRecommendationItems.firstOrNull()?.id ?: catalog.firstOrNull()?.id
-        val type=if(library.isLoaded) library.contentType else ContentType.SHORT
         val profile=signerStore.load()
         val http=repository.http.newBuilder().cookieJar(okhttp3.CookieJar.NO_COOKIES).build()
         fun probeStore(): InMemorySignerProfileStore {
@@ -7605,16 +7601,7 @@ class MainActivity: Activity() {
         }
         fun probeRepository(algorithm: SigningSettings.Algorithm): ContentRepository =
             ContentRepository(http=http,signer=SigningSettings.createSigner(algorithm,probeStore()))
-        tvTools.algorithmPicker(anchor,message,autoCheck,resolveEpisode={
-            episodeId ?: run {
-                // 没有播放记录时，先从当前剧集或首页准备一个共同分集，准备耗时不计入算法延迟。
-                val sample=probeRepository(SigningSettings.selectedAlgorithm)
-                val id=seriesId ?: sample.home(type=type).items.firstOrNull()?.id
-                    ?: throw java.io.IOException("暂无可检测剧集，请先打开一部剧集")
-                sample.seriesDetail(id).episodes.firstOrNull()
-                    ?: throw java.io.IOException("该剧暂无分集，请打开其他剧集后重试")
-            }
-        },probe={ algorithm,id ->
+        tvTools.algorithmPicker(anchor,message,autoCheck,probe={ algorithm,id ->
             probeRepository(algorithm).probePlayback(id)
         },signProbe={ algorithm,id ->
             probeRepository(algorithm).measurePlaybackSignature(id)

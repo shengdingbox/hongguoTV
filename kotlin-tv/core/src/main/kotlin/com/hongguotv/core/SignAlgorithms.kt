@@ -260,12 +260,16 @@ private fun rc4Gorgon(data: ByteArray, key: ByteArray): ByteArray {
     return out
 }
 
-internal fun xGorgon(query: String, body: ByteArray?, hasBody: Boolean, khronos: Int, random: Int): String {
+internal fun xGorgon(
+    query: String, body: ByteArray?, hasBody: Boolean, khronos: Int, random: Int,
+    sdkVersion: Int = GORGON_SDK_VERSION,
+    flags: ByteArray = byteArrayOf(0x40, 0x01),
+): String {
     val queryMd5 = digest("MD5", query.toByteArray(Charsets.UTF_8))
     val bodyMd5 = if (hasBody) digest("MD5", body!!) else ByteArray(16)
     val input = queryMd5.copyOfRange(0, 4) + bodyMd5.copyOfRange(0, 4) +
-        ByteArray(4) + le32(GORGON_SDK_VERSION) + be32(khronos)
-    val key = byteArrayOf(0x4a, 0x40, 0x16, ((random shr 8) and 255).toByte(), 0x47, 0x6c, 0x01, (random and 255).toByte())
+        ByteArray(4) + le32(sdkVersion) + be32(khronos)
+    val key = byteArrayOf(0x4a, flags[0], 0x16, ((random shr 8) and 255).toByte(), 0x47, 0x6c, flags[1], (random and 255).toByte())
     val out = rc4Gorgon(input, key)
     val n = out.size
     for (i in 0 until n) {
@@ -274,7 +278,7 @@ internal fun xGorgon(query: String, body: ByteArray?, hasBody: Boolean, khronos:
         val next = out[if (i + 1 < n) i + 1 else 0].u()
         out[i] = (reverseBits((next xor swapped).toByte()).u() xor 20).inv().toByte()
     }
-    return (hex("8404") + byteArrayOf(random.toByte(), (random shr 8).toByte(), 0x40, 0x01) + out).hex()
+    return (hex("8404") + byteArrayOf(random.toByte(), (random shr 8).toByte(), flags[0], flags[1]) + out).hex()
 }
 
 // ---------------- X-Helios ----------------
@@ -298,8 +302,8 @@ private fun diffuse(words: LongArray): LongArray {
     return table.toLongArray()
 }
 
-private fun heliosPad(khronos: Int): ByteArray {
-    val text = "$khronos-$SIGN_CHANNEL_ID-$SIGN_APP_ID".toByteArray(Charsets.UTF_8)
+private fun heliosPad(khronos: Int, licenseId: String): ByteArray {
+    val text = "$khronos-$licenseId-$SIGN_APP_ID".toByteArray(Charsets.UTF_8)
     val fill = 16 - (text.size % 16)
     val size = ((text.size + 1 + 15) / 16) * 16
     val out = ByteArray(size) { fill.toByte() }
@@ -307,12 +311,12 @@ private fun heliosPad(khronos: Int): ByteArray {
     return out
 }
 
-internal fun assembleHelios(khronos: Int, random: Int): String {
+internal fun assembleHelios(khronos: Int, random: Int, licenseId: String = SIGN_CHANNEL_ID): String {
     val seed = le32(random) + SIGN_APP_ID.toByteArray(Charsets.UTF_8)
     val ascii = digest("MD5", seed).hex().toByteArray(Charsets.US_ASCII)
     val words = LongArray(4) { ascii.i64Le(it * 8) }
     val table = diffuse(words)
-    val padded = heliosPad(khronos)
+    val padded = heliosPad(khronos, licenseId)
     val output = java.io.ByteArrayOutputStream()
     output.write(le32(random))
     for (off in padded.indices step 16) {

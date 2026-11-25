@@ -214,15 +214,14 @@ class ContentRepositoryTest {
         val requests = mutableListOf<Request>()
         val repo = repository(signer = signer) { request ->
             requests += request
-            when (request.url.encodedPath) {
-                MobilePlayback.VIDEO_MODEL_PATH -> playerModelResponse()
-                else -> videoInfo()
-            }
+            // PR #25 与 74532 兼容请求共用路径，按请求画像区分，专门验证后者的设备字段。
+            if (request.url.encodedPath == MobilePlayback.VIDEO_MODEL_PATH &&
+                request.url.queryParameter("version_code") == "74532") playerModelResponse() else ""
         }
 
         assertEquals("1080P", repo.stream("123").quality)
 
-        val playbackUrl = requests.first { it.url.encodedPath == MobilePlayback.VIDEO_MODEL_PATH }.url
+        val playbackUrl = requests.first { it.url.queryParameter("version_code") == "74532" }.url
         // 请求画像按官方新版本固定；设备身份仍来自注册档案。
         assertEquals("25053RT47C", playbackUrl.queryParameter("device_type"))
         assertEquals("Redmi", playbackUrl.queryParameter("device_brand"))
@@ -304,24 +303,32 @@ class ContentRepositoryTest {
             "/novel/player/multi_video_model/v1/","/novel/player/multi_video_model/v1/",preloadPath),postRoutes)
     }
 
-    @Test fun localPlaybackStartsWithCurrentVideoModelEndpoint() {
+    @Test fun localPlaybackPrefersPr25FullDefinitionEndpoint() {
         val requests = mutableListOf<Request>()
-        val repo = repository { request ->
+        val identity = VendorConstants.device + mapOf("device_id" to "device", "iid" to "install", "cdid" to "cdid")
+        val repo = repository(signer = FakeSigner(identity)) { request ->
             requests += request
             assertEquals("POST", request.method)
-            assertEquals(MobilePlayback.VIDEO_MODEL_PATH, request.url.encodedPath)
-            assertEquals(PlayRetryPlan.host(0), request.url.host)
-            assertEquals("74532", request.url.queryParameter("version_code"))
-            assertEquals("7.4.5.32", request.url.queryParameter("version_name"))
-            assertEquals("update_64", request.url.queryParameter("channel"))
-            assertNull(request.url.queryParameter("ts"))
+            assertEquals(playerPath, request.url.encodedPath)
+            assertEquals("api5-normal-sinfonlinea.fqnovel.com", request.url.host)
+            assertEquals("73932", request.url.queryParameter("version_code"))
+            assertEquals("7.3.9.32", request.url.queryParameter("version_name"))
+            assertEquals("xiaomi_8662_64", request.url.queryParameter("channel"))
+            assertEquals("Medusa", request.header("x-medusa"))
             val wire = okio.Buffer().also { request.body!!.writeTo(it) }.readByteArray()
             val actual = if (request.header("Content-Encoding") == "gzip") {
                 java.util.zip.GZIPInputStream(wire.inputStream()).readBytes()
             } else {
                 wire
             }
-            val id = JSONObject(actual.toString(Charsets.UTF_8)).getString("video_id")
+            val payload = JSONObject(actual.toString(Charsets.UTF_8))
+            val id = payload.getString("video_id")
+            assertEquals(setOf("video_id", "biz_param"), payload.keySet())
+            val biz = payload.getJSONObject("biz_param")
+            assertEquals(setOf("need_all_video_definition", "video_id_type", "video_platform"), biz.keySet())
+            assertTrue(biz.getBoolean("need_all_video_definition"))
+            assertEquals(3, biz.getInt("video_platform"))
+            assertEquals(0, biz.getInt("video_id_type"))
             """{"code":0,"data":{"video_model":{"video_list":[{"main_url":"https://example.com/$id.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}"""
         }
         assertEquals("https://example.com/123.mp4", repo.stream("123").url)
@@ -329,7 +336,29 @@ class ContentRepositoryTest {
         assertEquals(2, requests.size)
     }
 
-    @Test fun localEmptyCurrentEndpointFallsThroughToCompatibilityRoutes() {
+    @Test fun rememberedLowQualityRouteCannotSkipPr25ForAnotherEpisode() {
+        var fullModelAvailable = false
+        val paths = mutableListOf<String>()
+        val repo = repository { request ->
+            paths += request.url.encodedPath
+            when {
+                request.url.encodedPath == playerPath && request.header("x-gorgon") == "8404fake" ->
+                    if (fullModelAvailable) playerModelResponse() else ""
+                request.url.encodedPath == MobilePlayback.VIDEO_MODEL_PATH &&
+                    request.url.queryParameter("version_code") == "74532" ->
+                    """{"code":0,"data":{"video_model":{"video_list":[{"main_url":"https://example.com/720.mp4","video_meta":{"definition":"720p","codec_type":"h264"}}]}}}"""
+                else -> ""
+            }
+        }
+        assertEquals("720P", repo.stream("123").quality)
+        assertEquals(listOf(playerPath, MobilePlayback.VIDEO_MODEL_PATH), paths)
+        paths.clear()
+        fullModelAvailable = true
+        assertEquals("1080P", repo.stream("124").quality)
+        assertEquals(listOf(playerPath), paths)
+    }
+
+    @Test fun localEmptyPr25EndpointFallsThroughToCompatibilityRoutes() {
         val requests = mutableListOf<Request>()
         val repo = repository { request ->
             requests += request
@@ -351,7 +380,8 @@ class ContentRepositoryTest {
             }
         }
         assertEquals("https://example.com/123.mp4", repo.stream("123").url)
-        assertEquals(MobilePlayback.VIDEO_MODEL_PATH, requests.first().url.encodedPath)
+        assertEquals(playerPath, requests.first().url.encodedPath)
+        assertTrue(requests.any { it.url.encodedPath == MobilePlayback.VIDEO_MODEL_PATH })
         assertTrue(requests.any { it.url.encodedPath == MobilePlayback.GET_TAB_PATH })
         assertTrue(requests.any { it.url.encodedPath == MobilePlayback.MODEL_PATH })
     }

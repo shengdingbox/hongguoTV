@@ -1117,7 +1117,7 @@ open class ContentRepository(
     /**
      * 执行一次真实播放请求的签名并返回耗时。
      *
-     * 本地算法使用与正式播放相同的 V5 三头签名；远程签名器会完成各自的服务往返。
+     * 本地算法使用与正式播放相同的 PR #25 签名；远程签名器会完成各自的服务往返。
      * 这里只负责签名本身，可用性由调用方另行检查，避免本地取址失败连带隐藏本地签名延迟。
      */
     fun measurePlaybackSignature(id: String): PlaybackSignatureProbe {
@@ -1126,9 +1126,9 @@ open class ContentRepository(
         val started = System.nanoTime()
         val profile = signer.profile()
         val host = "api5-normal-sinfonlineb.fqnovel.com"
-        // 远程签名器自己补齐身份字段；本地算法使用与正式播放相同的 74532 新端点。
+        // 本地检测与正式播放使用同一路径、请求体和完整签名头。
         if (signer.usesLocalPlaybackAlgorithm) {
-            MobilePlayback.videoModelRequest(id, profile, clock(), host)
+            signer.sign("$API$PLAYER_PATH", emptyMap(), OpenHongguoPlaybackSigning.body(id))
         } else {
             val url = "https://$host${MobilePlayback.VIDEO_MODEL_PATH}"
             val values = PlaybackProbe.signatureValues(id, profile)
@@ -1301,6 +1301,7 @@ open class ContentRepository(
         }
     private fun playerRequest(path: String,payload: ByteArray): Request {
         val signed=activeSigner.sign("$API$path", linkedMapOf(), payload)
+        // 保留签名器生成的完整头部，包括 PR #25 要求的 x-medusa。
         return signedBuilder(signed)
             .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
             .build()
@@ -1405,7 +1406,7 @@ open class ContentRepository(
         return null
     }
     /**
-     * 本地算法主路由：官方 `POST /novel/player/video_model/v1/`。
+     * 本地算法的 74532 兼容形态，与 PR #25 共用 `POST /novel/player/video_model/v1/`。
      *
      * 由 [MobilePlayback.videoModel] 完成 74532 画像、gzip 体、field21=312 与签名；
      * 响应兼容 `data.video_model` 及 `data[id].video_model`。
@@ -1489,7 +1490,7 @@ open class ContentRepository(
             throw problem
         }
     }
-    /** 本地算法优先走已可用的 V5 多集 GET；所有取址路由继续共用模型缓存。 */
+    /** 本地算法优先走 PR #25 的完整模型接口；所有取址路由共用模型缓存。 */
     private fun videoModel(id: String, level: Int = 1, preferAlt: Boolean = false, albumEpisode: Boolean = false): JSONObject {
         modelCache.get(id,clock())?.let { return it }
         val model=fetchVideoModel(id,level,preferAlt,albumEpisode).put(LEVEL_KEY,level)
@@ -1538,11 +1539,20 @@ open class ContentRepository(
             add(PlaybackRouteKind.LEGACY)
         }
         // 成功接口整个提前，POST 曾成功时无需先消耗 GET 配额；每个接口族仍只扫描一次。
-        val planned = if (preferred != null && preferred.kind in defaults) {
+        val remembered = if (preferred != null && preferred.kind in defaults) {
             listOf(preferred.kind) + defaults.filter { it != preferred.kind }
         } else defaults
-        // 按官方 GetVideoBizParam 补齐参数；电视端始终使用兼容档 device_level=1。
-        val primaryPayload ="""{"video_id":"$id","biz_param":{"detail_page_version":0,"device_level":$level,"disable_digg_stat":false,"disable_video_relate_book":false,"from_video_id":"","need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_id_type":$idType,"video_platform":3,"source":0}}""".toByteArray(Charsets.UTF_8)
+        // 本地普通短剧先用 PR #25 的完整模型接口，避免新接口的 720P 结果提前结束取址。
+        // 旧的低清成功记忆也不能把它挤到后面；合集仍使用原有的 PUGC 请求。
+        val planned = if (usesLocal && !albumEpisode) {
+            listOf(PlaybackRouteKind.PLAYER) + remembered.filter { it != PlaybackRouteKind.PLAYER }
+        } else remembered
+        // 本地普通短剧精确对齐 SDK PlaybackBody；其余请求保留原有电视兼容参数。
+        val primaryPayload = if (usesLocal && !albumEpisode) {
+            OpenHongguoPlaybackSigning.body(id)
+        } else {
+            """{"video_id":"$id","biz_param":{"detail_page_version":0,"device_level":$level,"disable_digg_stat":false,"disable_video_relate_book":false,"from_video_id":"","need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_id_type":$idType,"video_platform":3,"source":0}}""".toByteArray(Charsets.UTF_8)
+        }
         val biz = """{"detail_page_version":0,"device_level":$level,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024}"""
         val map = """{"biz_param":$biz,"mixed_video_id_map":{"$group":["$id"]}}""".toByteArray(Charsets.UTF_8)
         val legacyPaths = listOf(

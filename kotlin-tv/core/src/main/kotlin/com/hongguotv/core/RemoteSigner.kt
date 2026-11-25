@@ -194,6 +194,12 @@ open class RemoteSigner(
         body: ByteArray?,
         profile: SignerProfile,
     ): Pair<String, Map<String, String>> {
+        val path = java.net.URI(url).path.orEmpty()
+        if (PlaybackSigning.isPlayerPath(path)) {
+            // 对齐 openhongguo PR #25：V5 设备布局、Gorgon 标志与真实 Argus/Ladon 一起发送。
+            val signed = OpenHongguoPlaybackSigning.sign(url, values, body, profile, clock(), random)
+            return signed.url to signed.headers
+        }
         val now = clock()
         val hasBody = body != null
         val bodyMd5 = if (hasBody) digest("MD5", body!!) else ByteArray(16)
@@ -215,7 +221,6 @@ open class RemoteSigner(
         }
         val entropy = drawEntropy(now, random)
         // x-medusa 哈希的是这个固定主机的地址，不随实际请求主机变化（平台实测如此）。
-        val path = url.substringAfter("://").let { it.substring(it.indexOf('/')) }
         val medusaSource = "https://reading.snssdk.com" + path + "?" + query
         val headers = linkedMapOf(
             "Accept" to "application/json; charset=utf-8,application/x-protobuf",
@@ -241,18 +246,6 @@ open class RemoteSigner(
             ),
             "x-tt-dt" to "",
         )
-        if (PlaybackSigning.isPlayerPath(path.substringBefore('?'))) {
-            // Bind the envelope to the final query and the same profile used above;
-            // reading profile() again could race with device recovery.
-            // 2026-11-23 起播放取址必须同时提交 x-medusa；11-10 曾观察到相反行为，
-            // 但该头缺失会让服务端稳定返回 HTTP 200 + 空体，不能再无条件删除。
-            headers["lc"] = "101"
-            headers["x-ss-dp"] = profile.params["aid"].orEmpty().ifBlank { "8662" }
-            headers.putAll(PlaybackSigning.headers(
-                query, body, khronos, profile.deviceId, profile.installId,
-                versionName = profile.versionName.ifBlank { APP_VERSION_NAME },
-            ))
-        }
         if (hasBody) {
             headers["Content-Type"] = "application/json; charset=UTF-8"
             headers["x-ss-stub"] = digest("MD5", body!!).hex().uppercase()

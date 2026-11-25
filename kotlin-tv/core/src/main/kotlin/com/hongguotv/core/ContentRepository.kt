@@ -1387,7 +1387,8 @@ open class ContentRepository(
             } catch (problem: java.io.InterruptedIOException) {
                 throw problem
             } catch (problem: EmptyPlaybackResponseException) {
-                playbackRecovery.routes.failed(route, clock(), empty = true)
+                // 新端点是独立形态，空体只表示该形态不可用；不能把共享域名打进冷却，
+                // 否则紧随其后的 GET / 旧 POST 兼容兜底会被直接跳过。
             } catch (problem: ServiceException) {
                 playbackRecovery.routes.failed(route, clock(), empty = false)
             } catch (problem: IOException) {

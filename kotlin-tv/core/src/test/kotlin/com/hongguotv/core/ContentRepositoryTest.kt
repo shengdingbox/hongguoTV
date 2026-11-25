@@ -195,11 +195,11 @@ class ContentRepositoryTest {
     }
 
     @Test fun v5PlaybackQueriesUseTheRegisteredDeviceProfile() {
-        // 2026-11-23 起服务端会把匿名身份和查询串里的设备字段一起校验。
-        // 这里固定成与注册档案不同的机型，若实现又写死 PGT-AN10/HONOR 就会失败。
+        // 播放画像固定为官方 74532；设备身份来自注册档案，查不到时才回退官方默认值。
+        // 这里不再接受设备表里的旧机型/渠道覆盖播放查询，否则平台会回 200 + 空体。
         val identity = linkedMapOf(
             "device_id" to "1905892595378490",
-            "iid" to "1905892595382586",
+            "iid" to "1902595382586",
             "cdid" to "530e9d5a2b7c4f18a9603d1ce74b82f6",
             "device_type" to "23127PN0CC",
             "device_brand" to "Xiaomi",
@@ -215,31 +215,31 @@ class ContentRepositoryTest {
         val repo = repository(signer = signer) { request ->
             requests += request
             when (request.url.encodedPath) {
-                "/novel/player/multi_video_model/v1/" ->
-                    """{"code":0,"data":{"1004":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}}"""
+                MobilePlayback.VIDEO_MODEL_PATH -> playerModelResponse()
                 else -> videoInfo()
             }
         }
 
         assertEquals("1080P", repo.stream("123").quality)
 
-        val playbackUrl = requests.first { it.url.encodedPath == "/novel/player/multi_video_model/v1/" }.url
-        // POST 查询串保留了手机端标准字段，并且设备身份来自注册档案。
-        assertEquals("23127PN0CC", playbackUrl.queryParameter("device_type"))
-        assertEquals("Xiaomi", playbackUrl.queryParameter("device_brand"))
-        assertEquals("14", playbackUrl.queryParameter("os_version"))
-        assertEquals("34", playbackUrl.queryParameter("os_api"))
-        assertEquals("1200*2670", playbackUrl.queryParameter("resolution"))
-        assertEquals("460", playbackUrl.queryParameter("dpi"))
-        assertEquals("xiaomi_8662_64", playbackUrl.queryParameter("channel"))
-        assertNotNull(playbackUrl.queryParameter("ts"))
+        val playbackUrl = requests.first { it.url.encodedPath == MobilePlayback.VIDEO_MODEL_PATH }.url
+        // 请求画像按官方新版本固定；设备身份仍来自注册档案。
+        assertEquals("25053RT47C", playbackUrl.queryParameter("device_type"))
+        assertEquals("Redmi", playbackUrl.queryParameter("device_brand"))
+        assertEquals("16", playbackUrl.queryParameter("os_version"))
+        assertEquals("36", playbackUrl.queryParameter("os_api"))
+        assertEquals("update_64", playbackUrl.queryParameter("channel"))
+        assertEquals("74532", playbackUrl.queryParameter("version_code"))
+        assertEquals("7.4.5.32", playbackUrl.queryParameter("version_name"))
+        assertEquals("1905892595378490", playbackUrl.queryParameter("device_id"))
+        assertEquals("1902595382586", playbackUrl.queryParameter("iid"))
+        assertNull(playbackUrl.queryParameter("ts"))
 
         val getRequest = MobilePlayback.videoTabRequest("123", signer.profile(), 1_700_000_000_000L)
-        assertEquals("23127PN0CC", getRequest.url.queryParameter("device_type"))
-        assertEquals("Xiaomi", getRequest.url.queryParameter("device_brand"))
-        assertEquals("14", getRequest.url.queryParameter("os_version"))
-        assertEquals("34", getRequest.url.queryParameter("os_api"))
-        assertEquals("1700000000", getRequest.url.queryParameter("ts"))
+        assertEquals("25053RT47C", getRequest.url.queryParameter("device_type"))
+        assertEquals("Redmi", getRequest.url.queryParameter("device_brand"))
+        assertEquals("74532", getRequest.url.queryParameter("version_code"))
+        assertNull(getRequest.url.queryParameter("ts"))
         assertEquals("1700000000", getRequest.header("x-khronos"))
     }
 
@@ -372,7 +372,7 @@ class ContentRepositoryTest {
 
     @Test fun v5EmptyHostFallsBackToNextHealthyHostBeforeIdentityRotation() {
         val hosts = mutableListOf<String>()
-        val repo = repository { request ->
+        val repo = repository(signer = LegacyFakeSigner()) { request ->
             when {
                 request.url.encodedPath == MobilePlayback.MODEL_PATH -> {
                     hosts += request.url.host
@@ -390,7 +390,7 @@ class ContentRepositoryTest {
     @Test fun v5TimedOutHostIsSkippedWhileHealthyHostRemainsPreferred() {
         val requests = mutableListOf<Request>()
         val now = 1_700_000_000_000L
-        val repo = repository(clock = { now }) { request ->
+        val repo = repository(clock = { now }, signer = LegacyFakeSigner()) { request ->
             // 首选多集 GET 不可用后才进入 V5 POST，这里只统计 POST 域名轮换。
             if (request.url.encodedPath != MobilePlayback.MODEL_PATH) return@repository ""
             requests += request

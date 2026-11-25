@@ -53,7 +53,33 @@ class PlaybackSigningTest {
         assertTrue(headers.getValue("x-argus").startsWith("8o"))
         assertTrue(headers.getValue("x-argus").length > 64)
         assertTrue(headers.getValue("x-ladon").isNotBlank())
-        // 2026-11-23 起播放 POST 缺 x-medusa 会稳定返回 200 + 空体。
-        assertTrue(headers.containsKey("x-medusa"))
+        // 本方法只补 Argus / Ladon，x-medusa 由调用方保留；
+        // 完整播放 POST 的头组合在 RemoteSigner 测试里验证。
+        assertTrue(headers.containsKey("x-argus"))
+    }
+
+    @Test fun playbackPostsKeepMedusaAlongsideTheEnvelope() {
+        val profile = SignerProfile(
+            params = linkedMapOf(
+                "device_id" to "7000000000000000001",
+                "iid" to "7000000000000000002",
+                "cdid" to "00000000-0000-4000-8000-000000000001",
+                "version_name" to "7.3.9.32",
+            ),
+            userAgent = RemoteSigner.DEFAULT_USER_AGENT,
+        )
+        val signer = object : RemoteSigner() {
+            override fun profile(): SignerProfile = profile
+            override fun recover() = Unit
+            override fun renew(): SignerProfile = profile
+        }
+        val signed = signer.sign(
+            "https://api5-normal-sinfonlinea.fqnovel.com/novel/player/video_model/v1/",
+            mapOf("video_id" to "7543196048185887806"),
+            null,
+        )
+        assertTrue(signed.headers.containsKey("x-medusa"))
+        assertTrue(signed.headers.containsKey("x-argus"))
+        assertTrue(signed.headers.containsKey("x-ladon"))
     }
 }

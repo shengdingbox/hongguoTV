@@ -315,10 +315,11 @@ class ContentRepositoryTest {
             assertEquals("7.4.5.32", request.url.queryParameter("version_name"))
             assertEquals("update_64", request.url.queryParameter("channel"))
             assertNull(request.url.queryParameter("ts"))
+            val wire = okio.Buffer().also { request.body!!.writeTo(it) }.readByteArray()
             val actual = if (request.header("Content-Encoding") == "gzip") {
-                java.util.zip.GZIPInputStream(request.body!!.byteStream()).readBytes()
+                java.util.zip.GZIPInputStream(wire.inputStream()).readBytes()
             } else {
-                okio.Buffer().also { request.body!!.writeTo(it) }.readByteArray()
+                wire
             }
             val id = JSONObject(actual.toString(Charsets.UTF_8)).getString("video_id")
             """{"code":0,"data":{"video_model":{"video_list":[{"main_url":"https://example.com/$id.mp4","video_meta":{"definition":"1080p","codec_type":"h264"}}]}}}"""
@@ -336,10 +337,11 @@ class ContentRepositoryTest {
                 MobilePlayback.VIDEO_MODEL_PATH -> ""
                 MobilePlayback.GET_TAB_PATH -> """{"code":100103,"message":"参数错误"}"""
                 MobilePlayback.MODEL_PATH -> {
+                    val wire = okio.Buffer().also { request.body!!.writeTo(it) }.readByteArray()
                     val raw = if (request.header("Content-Encoding") == "gzip") {
-                        java.util.zip.GZIPInputStream(request.body!!.byteStream()).readBytes()
+                        java.util.zip.GZIPInputStream(wire.inputStream()).readBytes()
                     } else {
-                        okio.Buffer().also { request.body!!.writeTo(it) }.readByteArray()
+                        wire
                     }
                     val id = JSONObject(raw.toString(Charsets.UTF_8))
                         .getJSONObject("mixed_video_id_map").getJSONArray("1004").getString(0)

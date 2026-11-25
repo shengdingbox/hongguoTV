@@ -77,7 +77,7 @@ internal class PlaybackAlgorithmDialog(
             setPadding(0, 0, 0, dp(12))
         }
         list = column()
-        val customButton = action("＋ 自定义算法") { showCustomAlgorithmDialog() }
+        val customButton = action("自定义算法") { showCustomAlgorithmDialog() }
         customButton.id = View.generateViewId()
         focusAnchor = customButton
         customButton.contentDescription = "添加自定义算法"

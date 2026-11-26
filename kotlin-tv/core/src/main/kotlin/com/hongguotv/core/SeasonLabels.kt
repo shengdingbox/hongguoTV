@@ -37,6 +37,7 @@ fun seasonLabels(items: Collection<Series>): Map<String, String> {
             number != Int.MAX_VALUE -> numberedLabel
             else -> trimSeasonLabel(title.substringAfterLast('：').substringAfterLast(':'))
         }
-        series.id to label.ifEmpty { numberedLabel }
+        // 剧名去掉公共前缀后可能只剩「！」等标点，此时按季号显示，不能当成独立季名。
+        series.id to (label.takeIf { it.any { char -> char.isLetterOrDigit() } } ?: numberedLabel)
     }
 }

@@ -60,11 +60,11 @@ class FavoriteMonitor(private val library: Library, source: ContentRepository, p
             status = "检查更新 ${completed + 1}/${items.size}…"
             changed()
             lastChangedId = null; lastOriginalId = null
-            val reservation = library.reserved(item.id)
+            val reservation = item.upcoming
             job = worker.submit {
                 if (ticket != epoch) return@submit
                 val result = runCatching { owned.run {
-                    if (reservation) repository.reservationDetail(item) else repository.detail(item.id, refreshMain = true)
+                    if (reservation) repository.reservationDetail(item, refresh = true) else repository.detail(item.id, refreshMain = true)
                 } }
                 main.post {
                     if (ticket != epoch) return@post

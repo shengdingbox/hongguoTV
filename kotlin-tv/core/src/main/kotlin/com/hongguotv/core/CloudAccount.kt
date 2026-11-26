@@ -447,6 +447,8 @@ class CloudAccountClient(private val http: OkHttpClient, private val signer: Rem
                                 else schedule.label,
                                 video.str("category"),
                                 if (online) null else schedule,
+                                reservationContentType(row, video, online),
+                                video.optInt("season_index", row.optInt("season_index")).coerceAtLeast(0),
                             )
                         CloudReservation(series, online, stamp, row.str("expected_rec_text"))
                     }

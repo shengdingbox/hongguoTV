@@ -61,7 +61,9 @@ internal object SearchResults {
                             .ifBlank { video.str("cover").ifBlank { video.str("cover_url") } }),
                         card.str("series_intro").ifBlank { video.str("video_desc") },
                         card.str("episode_right_text").ifBlank { if(count > 0) "全 $count 集" else video.str("rec_text") },
-                        card.str("sub_title").ifBlank { video.str("sub_title") })
+                        card.str("sub_title").ifBlank { video.str("sub_title") }, ReleaseSchedule.fromSeries(card),
+                        card.optInt("content_type", video.optInt("content_type")),
+                        card.optInt("season_index", video.optInt("season_index")).coerceAtLeast(0))
                 }
             }
         }.distinctBy { it.id }
@@ -76,7 +78,7 @@ internal object SearchResults {
         return items.flatMap { item ->
             val key = base(item.title)
             if(!placed.add(key)) emptyList() else groups.getValue(key).sortedBy {
-                seasonNumber(it.title).let { number -> if(number == Int.MAX_VALUE) 1 else number }
+                seriesSeasonNumber(it).let { number -> if(number == Int.MAX_VALUE) 1 else number }
             }
         }
     }

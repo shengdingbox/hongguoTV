@@ -242,9 +242,9 @@ class Library(context: Context) {
     fun reserved(id: String) = state().reserved(id)
     fun availableFavorites() = state().availableFavorites()
     fun reservations() = state().reservedFavorites().map { series ->
-        if (series.release == null) series.copy(badge = "已上线 · ${series.badge}") else series
+        if (!series.upcoming) series.copy(badge = "已上线 · ${series.badge}") else series
     }
-    private fun reservationAction(series: Series) = if (favorite(series.id)) reserved(series.id) else series.release != null
+    private fun reservationAction(series: Series) = if (favorite(series.id)) reserved(series.id) else series.upcoming
     fun favoriteActionLabel(series: Series): String = if (reservationAction(series)) {
         if (favorite(series.id)) "已预约" else "预约"
     } else if (favorite(series.id)) "已收藏" else "收藏"

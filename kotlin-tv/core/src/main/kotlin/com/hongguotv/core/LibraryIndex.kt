@@ -9,7 +9,7 @@ class LibraryIndex(data: LibraryData, updates: Map<String, FavoriteUpdate> = emp
     private var favoriteRows = data.favorites.distinctBy { it.id }.take(500)
     private var favoriteIds = favoriteRows.map { it.id }.toSet()
     // 旧收藏按排期迁入预约；上线状态与是否已查看分集分别保存。
-    private var reservationIds = (data.reservations + favoriteRows.filter { it.release != null }.map { it.id }).intersect(favoriteIds)
+    private var reservationIds = (data.reservations + favoriteRows.filter { it.upcoming }.map { it.id }).intersect(favoriteIds)
     private var laterRows = data.later.distinctBy { it.id }.take(100)
     private var laterIds = laterRows.map { it.id }.toSet()
     private var historyRows = data.history.sortedByDescending { it.updatedAt }.distinctBy { it.series.id }.take(200)
@@ -62,7 +62,7 @@ class LibraryIndex(data: LibraryData, updates: Map<String, FavoriteUpdate> = emp
         val added = !favorite(series.id)
         favoriteRows = (if (added) listOf(series) + favoriteRows else favoriteRows.filterNot { it.id == series.id }).take(500)
         favoriteIds = favoriteRows.map { it.id }.toSet()
-        reservationIds = (if (added && series.release != null) reservationIds + series.id else reservationIds - series.id).intersect(favoriteIds)
+        reservationIds = (if (added && series.upcoming) reservationIds + series.id else reservationIds - series.id).intersect(favoriteIds)
         updateRows = updateRows.filterKeys { it in favoriteIds }
         updateCount = updateRows.values.count { it.added > 0 }
         if (!added) groupById = groupById - series.id
@@ -148,6 +148,10 @@ class LibraryIndex(data: LibraryData, updates: Map<String, FavoriteUpdate> = emp
             tags = detail.series.tags.ifBlank { previous.tags },
             badge = if (count > 0) "共 $count 集" else schedule?.label ?: detail.series.badge.ifBlank { previous.badge },
             release = schedule,
+            contentType = detail.series.contentType.takeIf { it > 0 } ?: if (count > 0) {
+                when (previous.contentType) { 1002 -> 7; 1007 -> 1004; else -> previous.contentType }
+            } else previous.contentType,
+            seasonIndex = detail.series.seasonIndex.takeIf { it > 0 } ?: previous.seasonIndex,
         )
         val nextReservations = when {
             count > 0 && acknowledge -> reservationIds - id

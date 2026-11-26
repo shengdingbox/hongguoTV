@@ -18,7 +18,7 @@ object SeasonSnapshot {
 
     /** 未标季号沿用第一季口径，同季按 ID 排序，切季时不受当前条目插入位置影响。 */
     fun ordered(items: Collection<Series>): List<Series> = items.distinctBy { it.id }.sortedWith(
-        compareBy<Series> { seasonNumber(it.title).let { number -> if (number == Int.MAX_VALUE) 1 else number } }
+        compareBy<Series> { seriesSeasonNumber(it).let { number -> if (number == Int.MAX_VALUE) 1 else number } }
             .thenBy { it.id })
 
     fun retain(items: List<Series>) = items.filter { validId(it.id) && it.title.isNotBlank() }
@@ -47,3 +47,6 @@ object SeasonSnapshot {
         CachedSeasons(sourceId, retain(items), savedAt)
     }.getOrNull()
 }
+
+/** 官方季序优先，旧缓存缺少 season_index 时才从剧名补齐。 */
+fun seriesSeasonNumber(series: Series): Int = series.seasonIndex.takeIf { it > 0 } ?: seasonNumber(series.title)

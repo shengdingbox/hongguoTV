@@ -14,7 +14,8 @@ data class NewRelease(val series: Series, val online: Boolean, val note: String,
     /** 旧日历缓存也在读取时补齐排期，收藏后继续保留。 */
     fun withSchedule(date: String): NewRelease {
         val schedule = if (online) null else ReleaseSchedule(ReleaseSchedule.millis(publishAt), date, note)
-        return copy(series = series.copy(badge = schedule?.label ?: series.badge, release = schedule))
+        return copy(series = series.copy(badge = schedule?.label ?: series.badge, release = schedule,
+            contentType = if (online) when (series.contentType) { 1002 -> 7; 1007 -> 1004; else -> series.contentType } else series.contentType))
     }
 }
 data class NewReleasePage(
@@ -54,7 +55,7 @@ internal object NewReleaseParser {
         val items = data.optJSONArray("subscribe_items")?.objects().orEmpty().mapNotNull { item ->
             val online = item.optBoolean("is_online", false)
             val row = item.optJSONObject("subscribe_data")
-            val id = row?.str("series_id") ?: item.str("item_id")
+            val id = row?.str("series_id").orEmpty().ifBlank { item.str("item_id_str").ifBlank { item.str("item_id") } }
             val title = seriesTitle(row?.str("title") ?: item.str("name"))
             if (id == "0" || !id.matches(Regex("[0-9]{1,30}")) || title.isBlank()) return@mapNotNull null
             val note = item.str("sub_info")
@@ -68,7 +69,9 @@ internal object NewReleaseParser {
             val tags = (0 until minOf(categories?.length() ?: 0, 5)).map { categories!!.optString(it) }
                 .filter { it.isNotBlank() }.joinToString(" · ")
             val series = Series(id, title, cleanUrl(row?.str("cover") ?: item.str("cover")),
-                row?.str("video_desc") ?: item.str("item_desc"), badge, tags)
+                row?.str("video_desc") ?: item.str("item_desc"), badge, tags,
+                contentType = reservationContentType(item, row, online),
+                seasonIndex = (row?.optInt("season_index") ?: item.optInt("season_index")).coerceAtLeast(0))
             NewRelease(series, online, note, item.optLong("schedule_publish_time", 0).takeIf { it > 0 }
                 ?: item.optLong("expected_publish_time", 0)).withSchedule(date)
         }.distinctBy { it.series.id }
@@ -78,5 +81,16 @@ internal object NewReleaseParser {
             NewReleaseCursor(date, offset, data.str("session_id").ifBlank { previous?.takeIf { it.date == date }?.sessionId.orEmpty() })
         } else null
         return NewReleasePage(date, dates, items, cursor)
+    }
+}
+
+/** 官方 SubscribeTypeEnum：短剧及短剧查询为 1/3，漫剧为 14。 */
+internal fun reservationContentType(item: JSONObject, video: JSONObject?, online: Boolean): Int {
+    val type = video?.optInt("content_type")?.takeIf { it > 0 } ?: item.optInt("content_type")
+    if (type > 0) return if (online) when (type) { 1002 -> 7; 1007 -> 1004; else -> type } else type
+    return when (item.optInt("item_type")) {
+        1, 3 -> if (online) 7 else 1002
+        14 -> if (online) 1004 else 1007
+        else -> 0
     }
 }

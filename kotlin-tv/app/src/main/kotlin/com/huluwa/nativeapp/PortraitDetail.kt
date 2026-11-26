@@ -28,7 +28,7 @@ import android.widget.TextView
 import com.hongguotv.core.Detail
 import com.hongguotv.core.Series
 import com.hongguotv.core.SeasonSnapshot
-import com.hongguotv.core.seasonNumber
+import com.hongguotv.core.seriesSeasonNumber
 import java.util.Locale
 
 /** 竖屏详情：渐变海报区、续播与收藏、季导航和六列选集。 */
@@ -396,7 +396,7 @@ class PortraitDetail(
                 seasonLine.removeAllViews()
                 seasonButtons.clear()
                 seasons.forEach { season ->
-                    val number = seasonNumber(season.title)
+                    val number = seriesSeasonNumber(season)
                     val label = if (number == Int.MAX_VALUE) season.title else "第 $number 季"
                     val button = text(label, 13f).apply {
                         gravity = Gravity.CENTER
@@ -417,7 +417,7 @@ class PortraitDetail(
                 }
             }
             seasons.forEach { season ->
-                val number = seasonNumber(season.title)
+                val number = seriesSeasonNumber(season)
                 seasonButtons[season.id]?.apply {
                     text = if (number == Int.MAX_VALUE) season.title else "第 $number 季"
                     contentDescription = listOf(season.title, season.release?.label.orEmpty()).filter { it.isNotBlank() }.joinToString("，")

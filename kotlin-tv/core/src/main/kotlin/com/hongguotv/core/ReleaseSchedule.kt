@@ -60,7 +60,7 @@ data class ReleaseSchedule(val publishAt: Long = 0, val date: String = "", val n
         internal fun fromItem(item: JSONObject, date: String = "", note: String = item.str("sub_info")): ReleaseSchedule {
             val sources = listOfNotNull(item, item.optJSONObject("subscribe_item"))
             val stamp = sources.asSequence().flatMap { source ->
-                sequenceOf(source.optLong("schedule_publish_time"), source.optLong("expected_publish_time"))
+                sequenceOf(source.optLong("schedule_publish_time"), source.optLong("expected_publish_time"), source.optLong("online_time"))
             }.firstOrNull { it > 0 } ?: 0
             val notes = listOf(note) + sources.flatMap { source ->
                 listOf(source.str("sub_info")) + source.optJSONArray("sub_title_list")?.objects()
@@ -72,7 +72,7 @@ data class ReleaseSchedule(val publishAt: Long = 0, val date: String = "", val n
         }
 
         internal fun fromSeries(item: JSONObject): ReleaseSchedule? {
-            val trailer = item.optInt("content_type") == 1007
+            val trailer = item.optInt("content_type") in listOf(1002, 1007)
             if (!trailer && item.optInt("episode_cnt") > 0) return null
             val schedule = fromItem(item)
             return schedule.takeIf { trailer || item.optJSONObject("subscribe_item") != null || it.publishAt > 0 ||

@@ -22,9 +22,10 @@ import java.util.concurrent.TimeUnit
 internal fun JSONArray.objects() = (0 until length()).mapNotNull { optJSONObject(it) }
 internal fun JSONObject.str(key: String) = if (isNull(key)) "" else optString(key, "").trim()
 internal fun cleanUrl(s: String) = s.replace("\\/","/").replace("\\u002F","/",ignoreCase=true).replace("\\u0026","&").replace("&amp;","&")
-data class Series(val id: String, val title: String, val cover: String = "", val description: String = "", val badge: String = "", val tags: String = "", val release: ReleaseSchedule? = null) {
-    fun toJson() = JSONObject().put("id",id).put("title",title).put("cover",cover).put("description",description).put("badge",badge).put("tags",tags).put("release",release?.toJson())
-    companion object { fun fromJson(o: JSONObject) = Series(o.str("id"),seriesTitle(o.str("title")),o.str("cover"),o.str("description"),o.str("badge"),o.str("tags"),o.optJSONObject("release")?.let { ReleaseSchedule.fromJson(it) }) }
+data class Series(val id: String, val title: String, val cover: String = "", val description: String = "", val badge: String = "", val tags: String = "", val release: ReleaseSchedule? = null, val contentType: Int = 0, val seasonIndex: Int = 0) {
+    val upcoming get() = release != null || contentType == 1002 || contentType == 1007
+    fun toJson() = JSONObject().put("id",id).put("title",title).put("cover",cover).put("description",description).put("badge",badge).put("tags",tags).put("release",release?.toJson()).put("contentType",contentType).put("seasonIndex",seasonIndex)
+    companion object { fun fromJson(o: JSONObject) = Series(o.str("id"),seriesTitle(o.str("title")),o.str("cover"),o.str("description"),o.str("badge"),o.str("tags"),o.optJSONObject("release")?.let { ReleaseSchedule.fromJson(it) },o.optInt("contentType"),o.optInt("seasonIndex").coerceAtLeast(0)) }
 }
 /** 详情页附带的社交数据，缺失时各字段保持默认空值，调用方按需隐藏。 */
 data class SeriesSocial(val rating: Double = 0.0, val ratingCount: String = "", val favoriteText: String = "", val heatText: String = "") {
@@ -46,11 +47,11 @@ fun seriesTitle(raw: String): String = raw.lineSequence()
 data class Detail(val series: Series, val episodes: List<String>, val related: List<Series> = emptyList(), val sameName: List<Series> = emptyList(), val social: SeriesSocial = SeriesSocial(), val seasonsLoaded: Boolean = false) {
     /** Same-name entries with a finite season number beyond the current one (untitled season counts as 1). */
     val newerSeasons: List<Series> get() {
-        val current=seasonNumber(series.title).let { if(it==Int.MAX_VALUE) 1 else it }
-        return sameName.filter { val n=seasonNumber(it.title); n!=Int.MAX_VALUE && n>current }
+        val current=seriesSeasonNumber(series).let { if(it==Int.MAX_VALUE) 1 else it }
+        return sameName.filter { val n=seriesSeasonNumber(it); n!=Int.MAX_VALUE && n>current && !it.upcoming }
     }
     /** The immediately following season, so auto-play continues in order instead of jumping to the latest. */
-    val nextSeason: Series? get() = newerSeasons.minByOrNull { seasonNumber(it.title) }
+    val nextSeason: Series? get() = newerSeasons.minByOrNull { seriesSeasonNumber(it) }
 }
 data class RankPosition(val rank: Int?, val heat: String)
 data class ComicRanking(val positions: Map<String,RankPosition>, val totalPages: Int, val updatedText: String)
@@ -161,7 +162,8 @@ open class ContentRepository(
         val o=item.optJSONObject("video_data") ?: item
         val count=o.optInt("episode_cnt",o.optJSONObject("series_episode_info")?.optInt("episode_cnt",0) ?: 0)
         val tags=o.optJSONArray("tags") ?: o.optJSONArray("category_list") ?: JSONArray()
-        return Series(o.str("series_id"),seriesTitle(o.str("series_name").ifEmpty { o.str("series_title").ifEmpty { item.str("name") } }),cleanUrl(o.str("series_cover")),o.str("series_intro"),o.str("episode_right_text").ifEmpty { if(count>0) "全 ${count} 集" else "" },(0 until minOf(tags.length(),5)).joinToString(" · ") { tags.optJSONObject(it)?.str("name") ?: tags.optString(it) })
+        return Series(o.str("series_id"),seriesTitle(o.str("series_name").ifEmpty { o.str("series_title").ifEmpty { item.str("name") } }),cleanUrl(o.str("series_cover")),o.str("series_intro"),o.str("episode_right_text").ifEmpty { if(count>0) "全 ${count} 集" else "" },(0 until minOf(tags.length(),5)).joinToString(" · ") { tags.optJSONObject(it)?.str("name") ?: tags.optString(it) },
+            ReleaseSchedule.fromSeries(o),o.optInt("content_type"),o.optInt("season_index").coerceAtLeast(0))
     }
     private fun valid(rows: List<Series>) = rows.filter { it.id.matches(Regex("[0-9]{1,30}")) && it.title.isNotBlank() }.distinctBy { it.id }
     /**
@@ -729,34 +731,43 @@ open class ContentRepository(
         }
     }
 
-    /** 预告 ID 上线后可能失效或继续返回空目录，需关联同名同季的正式剧集。 */
-    fun reservationDetail(series: Series): Detail {
-        val original = runCatching { detail(series.id, refreshMain = true) }
-        original.getOrNull()?.takeIf { it.episodes.isNotEmpty() }?.let { return it }
-        RequestScope.current()?.ensureActive()
-        if (Thread.currentThread().isInterrupted) throw IOException("请求已取消")
-        val scope = RequestScope.current()?.child(15_000) ?: RequestScope(15_000)
-        try {
-            return scope.run {
-                val attempted = mutableSetOf(series.id)
-                var resolutionFailure: Throwable? = null
-                fun resolve(candidates: List<Series>): Detail? {
-                    val candidate = ReservationMatch.select(series, candidates.filter { it.id !in attempted }) ?: return null
-                    attempted += candidate.id
-                    val found = runCatching { seriesDetail(candidate.id, refresh = true) }
-                        .onFailure { resolutionFailure = it }.getOrNull()
-                    scope.ensureActive()
-                    return found?.takeIf { it.episodes.isNotEmpty() && ReservationMatch.matches(series, it.series) }
-                }
-                val seasons = original.getOrNull()?.sameName.orEmpty()
-                resolve(seasons)?.let { return@run it }
-                val results = search(series.title, refresh = true).items
-                resolve(seasons + results)?.let { return@run it }
-                resolutionFailure?.let { throw IOException("预约剧集详情暂不可用，请稍后重试", it) }
-                original.getOrThrow()
+    /** 官方预约详情：单部请求携带预告类型，主信息与系列、推荐等辅助请求分开。 */
+    fun reservationDetail(series: Series, refresh: Boolean = false): Detail {
+        require(SeasonSnapshot.validId(series.id))
+        if (!refresh) synchronized(detailCache) {
+            detailCache[series.id]?.takeIf { clock() - it.at in 0..30_000L }?.let { return it.detail }
+        }
+        // 官方 GetVideoDetailRequest：待上线短剧为 1002，待上线漫剧为 1007。
+        val contentType = when (series.contentType) {
+            7, 1002 -> 1002
+            1004, 1007 -> 1007
+            else -> null
+        }
+        val body = JSONObject().put("series_id", series.id)
+            .put("biz_param", JSONObject().put("video_id_type", 1).put("source", 5).put("detail_page_version", 1))
+        // 官方字段可选；旧缓存没有类型时由服务端按 ID 识别，不猜测短剧或漫剧。
+        if (contentType != null) body.put("content_type", contentType)
+        val video = signedJson("$API/novel/player/video_detail/v1/", emptyMap(),
+            body.toString().toByteArray(Charsets.UTF_8), detailHttp)
+            .optJSONObject("data")?.optJSONObject("video_data") ?: throw IOException("预约详情暂不可用")
+        val payload = parseSeriesDetail(series.id, video, resolveSchedule = false)
+        val schedule = if (payload.episodes.isEmpty()) payload.series.release ?: series.release else null
+        val current = payload.series.copy(
+            release = schedule,
+            badge = schedule?.label ?: payload.series.badge,
+            cover = payload.series.cover.ifBlank { series.cover },
+            description = payload.series.description.ifBlank { series.description },
+            tags = payload.series.tags.ifBlank { series.tags },
+            contentType = payload.series.contentType.takeIf { it > 0 }
+                ?: if (payload.episodes.isEmpty()) contentType ?: series.contentType
+                    else when (contentType) { 1002 -> 7; 1007 -> 1004; else -> 0 },
+            seasonIndex = payload.series.seasonIndex.takeIf { it > 0 } ?: series.seasonIndex,
+        )
+        return Detail(current, payload.episodes, social = payload.social).also { result ->
+            synchronized(detailCache) {
+                detailCache[series.id] = DetailCache(clock(), result)
+                while (detailCache.size > 30) detailCache.remove(detailCache.keys.first())
             }
-        } finally {
-            scope.cancel()
         }
     }
 
@@ -832,6 +843,10 @@ open class ContentRepository(
         // multi_video_detail 按 series_id 包装每部剧，真正的卡片与分集在其 video_data 内。
         val v = data.optJSONObject("data")?.optJSONObject(id)?.optJSONObject("video_data")
             ?: throw IOException("剧集详情暂不可用")
+        return parseSeriesDetail(id, v)
+    }
+
+    private fun parseSeriesDetail(id: String, v: JSONObject, resolveSchedule: Boolean = true): SeriesPayload {
         // 合集卡片的普通详情没有分集，必须读专用目录；搜索、收藏与续播直达共用此入口。
         if (v.optInt("content_type") == ALBUM_TYPE) return fetchAlbumDetail(id)
         val series = planCardSeries(v)
@@ -848,8 +863,8 @@ open class ContentRepository(
         }.sortedBy { it.first }.map { it.second }
         if (episodes.distinct().size != episodes.size) throw IOException("分集数据异常")
         var schedule = series.release.takeIf { episodes.isEmpty() }
-        if (schedule != null && !schedule.isSpecified) {
-            // 预告详情只给 content_type=1007 和空分集；排期需从同系列的预约条目补取。
+        if (resolveSchedule && schedule != null && !schedule.isSpecified) {
+            // 旧普通详情仅给预告类型和空分集时，从系列条目补排期；官方预约单部请求不阻塞补取。
             // 使用当前剧集 ID 查询，收藏、搜索直达也不依赖先打开新剧日历。
             val scope = RequestScope.current()?.child(2_000) ?: RequestScope(2_000)
             val reserved = try {
@@ -869,7 +884,8 @@ open class ContentRepository(
             if (reserved?.isSpecified == true) schedule = reserved
         }
         val current = when {
-            episodes.isNotEmpty() && series.release != null -> series.copy(badge = "共 ${episodes.size} 集", release = null)
+            episodes.isNotEmpty() && series.upcoming -> series.copy(badge = "共 ${episodes.size} 集", release = null,
+                contentType = when (series.contentType) { 1002 -> 7; 1007 -> 1004; else -> series.contentType })
             schedule != null -> series.copy(badge = schedule.label, release = schedule)
             else -> series
         }
@@ -1020,7 +1036,8 @@ open class ContentRepository(
             .orEmpty()
         val tags = (infoTags.ifEmpty { fallbackTags }).distinct().take(3).joinToString(" · ")
         val release = ReleaseSchedule.fromSeries(o)
-        return Series(id, seriesTitle(title), cleanUrl(cover), intro, release?.label ?: badge, tags, release)
+        return Series(id, seriesTitle(title), cleanUrl(cover), intro, release?.label ?: badge, tags, release,
+            o.optInt("content_type"), o.optInt("season_index").coerceAtLeast(0))
     }
 
     /** 网页详情提供十分制评分；只接收与当前剧集匹配的有效分数。 */

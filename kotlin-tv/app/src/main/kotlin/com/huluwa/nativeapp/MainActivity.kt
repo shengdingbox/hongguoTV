@@ -3604,27 +3604,33 @@ class MainActivity: Activity() {
     private fun cachedSeriesDetail(series: Series): Detail? = if(library.favorite(series.id) || series.release!=null) null
         else repository.cachedDetail(series.id)?.takeIf { it.episodes.isNotEmpty() }
 
-    /** 在主线程固定预约状态，后台请求可将预告 ID 解析成正式剧集 ID。 */
+    /** 在主线程固定官方作品类型，预约仅请求单部预告详情。 */
     private fun seriesDetailRequest(series: Series): () -> Detail {
         val saved=library.favorites().firstOrNull { it.id==series.id } ?: series
-        val reservation=library.reserved(series.id) || saved.release!=null
+        val reservation=saved.upcoming
         return { if(reservation) repository.reservationDetail(saved) else repository.seriesDetail(saved.id,refresh=true) }
     }
 
     /** 日历排期随 Series 存入收藏与导航现场，重开详情时也能展示。 */
     private fun scheduledSeries(series: Series): Series? {
         val saved=library.favorites().firstOrNull { it.id==series.id }
-        if(saved!=null && saved.release==null && (library.favoriteUpdate(series.id)?.total ?: 0)>0) return null
+        if(saved!=null && !saved.upcoming && (library.favoriteUpdate(series.id)?.total ?: 0)>0) return null
         val cached=library.cachedSeasons(series.id)?.items?.firstOrNull { it.id==series.id }
-        if(cached!=null) return cached.takeIf { it.release!=null }
-        return phoneNewReleasePages.values.asSequence().flatMap { it.items.asSequence() }
-            .firstOrNull { it.series.id==series.id && !it.online }?.series ?: series.takeIf { it.release!=null }
+        val candidate=cached ?: saved?.takeIf { it.upcoming }
+            ?: phoneNewReleasePages.values.asSequence().flatMap { it.items.asSequence() }
+                .firstOrNull { it.series.id==series.id && !it.online }?.series ?: series
+        if(!candidate.upcoming) return null
+        return if(candidate.release!=null) candidate else candidate.copy(release=ReleaseSchedule(),badge="上线时间待定")
     }
 
     private fun withSeasonRows(data: Detail, rows: List<Series>): Detail {
         val current=rows.firstOrNull { it.id==data.series.id }
-        val series=if(data.episodes.isEmpty() && current?.release!=null)
-            data.series.copy(badge=current.badge,release=current.release) else data.series
+        var series=data.series.copy(
+            contentType=data.series.contentType.takeIf { it>0 } ?: current?.contentType ?: 0,
+            seasonIndex=current?.seasonIndex?.takeIf { it>0 } ?: data.series.seasonIndex)
+        if(data.episodes.isEmpty() && current?.release!=null) series=series.copy(badge=current.badge,release=current.release)
+        else if(data.episodes.isNotEmpty() && series.upcoming) series=series.copy(release=null,
+            contentType=when(series.contentType) { 1002 -> 7; 1007 -> 1004; else -> series.contentType })
         return data.copy(series=series,sameName=rows.filter { it.id!=data.series.id },seasonsLoaded=true)
     }
 
@@ -3695,7 +3701,7 @@ class MainActivity: Activity() {
         val cached=if(cloud==null) cachedSeriesDetail(series) else null
         if(preloaded!=null) apply(preloaded)
         else if(cached?.episodes?.isNotEmpty()==true) apply(cached)
-        else if(cached!=null) apply(cached)
+        else if(scheduled!=null) apply(Detail(scheduled,emptyList()))
         else work(seriesDetailRequest(series), apply, { problem ->
             if(scheduled!=null) apply(Detail(scheduled,emptyList()))
             else error(body,problem) { openDetail(series,resume,detailAutoplay,cloud) }
@@ -3719,6 +3725,29 @@ class MainActivity: Activity() {
             (screen=="detail" || screen=="player") && detail?.series?.id==data.series.id
         detailExtrasJob=io.submit {
             val result=runCatching { scope.run {
+                if(initial.episodes.isEmpty() && initial.series.upcoming) {
+                    val primary=repository.reservationDetail(initial.series)
+                    scope.ensureActive()
+                    main.post {
+                        if(!active()) return@post
+                        val current=detail ?: return@post
+                        val updated=withCachedSeasons(withReleaseSchedule(primary.copy(
+                            related=current.related,sameName=current.sameName,seasonsLoaded=current.seasonsLoaded),current.series))
+                        library.observeFavoriteDetail(updated,acknowledge=true)
+                        detail=updated; pendingDetail=updated.series
+                        if(updated.episodes.isNotEmpty()) {
+                            val progress=library.progress(updated.series.id)
+                            episodeIndex=ResumePlayback.target(updated.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true).index
+                            group=episodeIndex/20
+                            if(phoneLayout()) {
+                                if(!portraitDetail.updateSeason(root,updated)) renderPhoneDetail(updated)
+                            } else showDetail(false)
+                            prefetchDetailWindow(episodeIndex)
+                        } else if(updated!=current) render(updated)
+                    }
+                    // 正式分集展示后由新的页面请求补齐辅助信息，避免两套请求竞争。
+                    if(primary.episodes.isNotEmpty()) return@run primary
+                }
                 repository.detail(data.series.id,refreshSeasons=true,onSeasons={ rows ->
                     main.post {
                         if(!active()) return@post
@@ -3954,7 +3983,7 @@ class MainActivity: Activity() {
             }
             seasonButtons.forEach { view ->
                 val season=knownSeasons[view.tag as? String ?: return@forEach] ?: return@forEach
-                val number=seasonNumber(season.title)
+                val number=seriesSeasonNumber(season)
                 val seen=library.progress(season.id)?.let { " · 看到${it.episodeIndex+1}集" }.orEmpty()
                 view.text=(if(number==Int.MAX_VALUE) season.title.take(12) else "第 ${number} 季")+seen
                 view.contentDescription=listOf(season.title,season.release?.label.orEmpty()).filter { it.isNotBlank() }.joinToString("，")
@@ -4189,7 +4218,7 @@ class MainActivity: Activity() {
             }
             val cached=cachedSeriesDetail(series)
             if(cached?.episodes?.isNotEmpty()==true) apply(cached)
-            else if(cached!=null) apply(cached)
+            else if(scheduled!=null) apply(Detail(scheduled,emptyList()))
             else work(seriesDetailRequest(series),apply,{
                 if(scheduled!=null) apply(Detail(scheduled,emptyList()))
                 else if(screen=="detail" && body.parent===root) {
@@ -7359,8 +7388,9 @@ class MainActivity: Activity() {
         }
         val cached=cachedSeriesDetail(series)
         if(cached?.episodes?.isNotEmpty()==true) { apply(cached); return }
-        // 排期仅供展示和失败兜底，实际是否上线由最新分集决定。
-        cached?.let(apply) ?: work(seriesDetailRequest(series), apply, { problem ->
+        // 先显示预约卡片；官方单部详情在 loadDetailExtras 中异步刷新。
+        if(scheduled!=null) { apply(Detail(scheduled,emptyList())); return }
+        work(seriesDetailRequest(series), apply, { problem ->
             if(scheduled!=null) apply(Detail(scheduled,emptyList()))
             else if(phoneLayout()) {
                 portraitDetail.renderState(root,problem.message ?: "加载失败",series=series,retry={ openDetailPhone(series,resume) })
@@ -7402,7 +7432,8 @@ class MainActivity: Activity() {
         }
         val cached = cachedSeriesDetail(series)
         if (cached?.episodes?.isNotEmpty() == true) { apply(cached); return }
-        cached?.let(apply) ?: work(seriesDetailRequest(series), apply, {
+        if (scheduled != null) { apply(Detail(scheduled, emptyList())); return }
+        work(seriesDetailRequest(series), apply, {
             if (scheduled != null) apply(Detail(scheduled, emptyList()))
             else if (phoneLayout() && screen == "detail" && phoneTab == "detail") {
                 pendingDetail = previous.series

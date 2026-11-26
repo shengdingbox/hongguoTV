@@ -380,7 +380,7 @@ object PortraitUi {
     private fun favoriteMenu(activity: MainActivity, anchor: View, series: Series, changed: () -> Unit) {
         val menu = PopupMenu(PortraitStyle.popupContext(activity), anchor)
         menu.menu.add(0, 0, 0, activity.phoneLibrary.favoriteMenuLabel(series))
-        if (series.release == null) menu.menu.add(0, 1, 1, "离线缓存")
+        if (!series.upcoming) menu.menu.add(0, 1, 1, "离线缓存")
         menu.setOnMenuItemClickListener { item ->
             if (item.itemId == 1) { PhoneOfflineLibrary.pick(activity, series); return@setOnMenuItemClickListener true }
             activity.phoneFavoriteMonitor.stop()

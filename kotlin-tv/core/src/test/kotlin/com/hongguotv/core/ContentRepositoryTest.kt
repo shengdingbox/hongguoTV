@@ -1070,6 +1070,43 @@ class ContentRepositoryTest {
         assertEquals(albumId,bodies[0].getString("album_id"))
     }
 
+    @Test fun albumDetailBatchesLargeDirectoriesAndKeepsTheirEpisodeOrder() {
+        val albumId="7706480483017690137"
+        val seriesIds=(0 until 51).map { (7706480472527752216L+it).toString() }
+        val requestedBatches=mutableListOf<List<String>>()
+        fun videoDetails(ids: List<String>)=JSONObject().apply {
+            // 故意颠倒响应顺序，确认最终分集沿用合集目录顺序。
+            ids.reversed().forEach { id -> put(id,JSONObject().put("video_data",JSONObject()
+                .put("series_id",id).put("video_list",JSONArray().put(JSONObject().put("vid",id))))) }
+        }
+        val repo=repository { request ->
+            when(request.url.encodedPath) {
+                detailPath -> """{"code":0,"data":{"$albumId":{"video_data":{"series_id":"$albumId","content_type":1003}}}}"""
+                "/novel/player/album_detail/v1/" -> {
+                    val body=albumBody(request)
+                    val data=JSONObject()
+                    val requested=body.optJSONArray("series_ids")
+                    if(requested==null) {
+                        data.put("album_data",JSONObject().put("album_id_str",albumId).put("title","测试大合集")
+                            .put("video_detail_list",JSONArray(seriesIds.map { JSONObject().put("series_id_str",it) })))
+                            .put("video_detail_data",videoDetails(seriesIds.take(1)))
+                    } else {
+                        val batch=(0 until requested.length()).map { requested.getLong(it).toString() }
+                        requestedBatches+=batch
+                        // 复现真实接口行为：过大的批次返回成功，但没有子作品详情。
+                        if(batch.size<=20) data.put("video_detail_data",videoDetails(batch))
+                    }
+                    JSONObject().put("code",0).put("data",data).toString()
+                }
+                else -> emptyPlan()
+            }
+        }
+        val detail=repo.seriesDetail(albumId)
+        assertEquals(seriesIds,detail.episodes)
+        assertEquals(listOf(20,20,10),requestedBatches.map { it.size })
+        assertEquals(seriesIds.drop(1),requestedBatches.flatten())
+    }
+
     private fun selector(slug: String,name: String,vararg ids: String)=JSONObject().put("selector_item_id",slug).put("show_name",name)
         .put("category_json_ids",JSONArray().apply { ids.forEach { put(it) } })
 

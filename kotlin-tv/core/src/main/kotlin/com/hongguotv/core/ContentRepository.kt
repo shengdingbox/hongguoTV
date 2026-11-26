@@ -934,13 +934,14 @@ open class ContentRepository(
         val details = data.optJSONObject("video_detail_data") ?: JSONObject()
         // 不传 series_ids 时接口只回第一个子作品的详情，其余目录项的 vid 为空。
         val missing = seriesIds.filter { details.optJSONObject(it)?.optJSONObject("video_data") == null }
-        if (missing.isNotEmpty()) {
-            body.put("series_ids", JSONArray(missing.map { it.toLong() }))
+        // 子作品过多时接口仍返回成功，却不附带详情；按每批 20 个补取，分集顺序仍以目录为准。
+        for (batch in missing.chunked(20)) {
+            body.put("series_ids", JSONArray(batch.map { it.toLong() }))
             val extra = signedJson("$API/novel/player/album_detail/v1/", emptyMap(),
                 body.toString().toByteArray(Charsets.UTF_8), detailHttp)
                 .optJSONObject("data")?.optJSONObject("video_detail_data")
                 ?: throw IOException("合集分集暂不可用")
-            for (seriesId in missing) details.put(seriesId, extra.optJSONObject(seriesId))
+            for (seriesId in batch) details.put(seriesId, extra.optJSONObject(seriesId))
         }
         val episodes = seriesIds.flatMap { seriesId ->
             val video = details.optJSONObject(seriesId)?.optJSONObject("video_data")

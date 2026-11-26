@@ -404,6 +404,11 @@ class PortraitPages(
         tabColumn.addView(indicatorHost, lp(-1, dp(4)))
         tabHost.addView(tabColumn, lp())
         body.addView(tabHost, lp())
+        val updateStatus = text("", 12f, PortraitStyle.muted).apply {
+            setPadding(edge, 0, edge, dp(12))
+            setOnClickListener { activity.phoneFavoriteMonitor.check(force = true) }
+        }
+        body.addView(updateStatus, lp())
         val emptyFavorites = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
         body.addView(emptyFavorites, lp())
         val emptyReservations = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有预约", "在未上线的剧集页点「预约」，上线后在这里查看。")
@@ -439,6 +444,8 @@ class PortraitPages(
             val selectedTab = contentTabs.indexOf(activity.mineContentTab).coerceAtLeast(0)
             val offlineSelected = selectedTab == 2
             val reservationsSelected = selectedTab == 1
+            updateStatus.text = activity.phoneFavoriteMonitor.status
+            updateStatus.visibility = if (!offlineSelected && activity.phoneLibrary.favorites().isNotEmpty()) View.VISIBLE else View.GONE
             tabButtons.forEachIndexed { index, button ->
                 val selected = index == selectedTab
                 button.isSelected = selected

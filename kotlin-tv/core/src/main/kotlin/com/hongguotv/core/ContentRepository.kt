@@ -481,15 +481,15 @@ open class ContentRepository(
         val lastPage=section.optJSONObject("pagination")?.optInt("totalPages",100) ?: 100
         return CatalogPage(items,items.isNotEmpty() && page<minOf(lastPage,100))
     }
-    fun search(keyword: String, page: Int = 1, type: ContentType = ContentType.COMIC): CatalogPage {
+    fun search(keyword: String, page: Int = 1, type: ContentType = ContentType.COMIC, refresh: Boolean = false): CatalogPage {
         val query=keyword.trim()
         require(query.isNotBlank() && query.length<=80 && page in 1..100)
-        if(type==ContentType.AI) return search(query,page,ContentType.COMIC)
+        if(type==ContentType.AI) return search(query,page,ContentType.COMIC,refresh)
         val key=Triple(type,query,page)
         val previous=synchronized(searchPages) {
             val now=clock()
             searchPages.entries.removeAll { now-it.value.at !in 0..300_000L }
-            searchPages[key]?.takeIf { page>1 || now-it.at<60_000 }?.let { return it.page }
+            searchPages[key]?.takeIf { page>1 || !refresh && now-it.at<60_000 }?.let { return it.page }
             if(page==1) {
                 searchPages.keys.removeAll { it.first==type && it.second==query }
                 null
@@ -504,7 +504,7 @@ open class ContentRepository(
             var failure: Exception?=null
             for(route in routes) {
                 ensureSearchActive()
-                if(cursor==null && route!=SearchRoute.WEBSITE && synchronized(searchRetryAt) { clock()<(searchRetryAt[route] ?: 0L) }) continue
+                if(!refresh && cursor==null && route!=SearchRoute.WEBSITE && synchronized(searchRetryAt) { clock()<(searchRetryAt[route] ?: 0L) }) continue
                 try {
                     val result=if(route==SearchRoute.WEBSITE) {
                         val result=webSearch(query,page,null,retry=false,transport=searchHttp)
@@ -726,6 +726,37 @@ open class ContentRepository(
                 detailCache[id]=DetailCache(clock(),it)
                 while(detailCache.size>30) detailCache.remove(detailCache.keys.first())
             }
+        }
+    }
+
+    /** 预告 ID 上线后可能失效或继续返回空目录，需关联同名同季的正式剧集。 */
+    fun reservationDetail(series: Series): Detail {
+        val original = runCatching { detail(series.id, refreshMain = true) }
+        original.getOrNull()?.takeIf { it.episodes.isNotEmpty() }?.let { return it }
+        RequestScope.current()?.ensureActive()
+        if (Thread.currentThread().isInterrupted) throw IOException("请求已取消")
+        val scope = RequestScope.current()?.child(15_000) ?: RequestScope(15_000)
+        try {
+            return scope.run {
+                val attempted = mutableSetOf(series.id)
+                var resolutionFailure: Throwable? = null
+                fun resolve(candidates: List<Series>): Detail? {
+                    val candidate = ReservationMatch.select(series, candidates.filter { it.id !in attempted }) ?: return null
+                    attempted += candidate.id
+                    val found = runCatching { seriesDetail(candidate.id, refresh = true) }
+                        .onFailure { resolutionFailure = it }.getOrNull()
+                    scope.ensureActive()
+                    return found?.takeIf { it.episodes.isNotEmpty() && ReservationMatch.matches(series, it.series) }
+                }
+                val seasons = original.getOrNull()?.sameName.orEmpty()
+                resolve(seasons)?.let { return@run it }
+                val results = search(series.title, refresh = true).items
+                resolve(seasons + results)?.let { return@run it }
+                resolutionFailure?.let { throw IOException("预约剧集详情暂不可用，请稍后重试", it) }
+                original.getOrThrow()
+            }
+        } finally {
+            scope.cancel()
         }
     }
 

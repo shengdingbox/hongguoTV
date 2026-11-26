@@ -2695,12 +2695,14 @@ class MainActivity: Activity() {
         favoriteMonitor.lastChangedId?.let { id ->
             if(tab==3 && collection==null) {
                 val latest=library.favorites().firstOrNull { it.id==id }
+                val originalId=favoriteMonitor.lastOriginalId ?: id
                 val adapter=catalogAdapter
                 if(latest!=null && adapter!=null) {
-                    val rows=adapter.displayed.map { if(it.id==id) latest else it }
+                    val rows=adapter.displayed.map { if(it.id==id || it.id==originalId) latest else it }.distinctBy { it.id }
                     if(rows!=adapter.displayed) {
-                        catalog=catalog.map { if(it.id==id) latest else it }
+                        catalog=catalog.map { if(it.id==id || it.id==originalId) latest else it }.distinctBy { it.id }
                         adapter.replaceItems(rows,adapter.footer)
+                        if(catalogFocus==originalId) catalogFocus=id
                         if(catalogFocus==id) selectionPreview?.show(latest,selectionStatus(latest))
                     }
                 }
@@ -3602,6 +3604,13 @@ class MainActivity: Activity() {
     private fun cachedSeriesDetail(series: Series): Detail? = if(library.favorite(series.id) || series.release!=null) null
         else repository.cachedDetail(series.id)?.takeIf { it.episodes.isNotEmpty() }
 
+    /** 在主线程固定预约状态，后台请求可将预告 ID 解析成正式剧集 ID。 */
+    private fun seriesDetailRequest(series: Series): () -> Detail {
+        val saved=library.favorites().firstOrNull { it.id==series.id } ?: series
+        val reservation=library.reserved(series.id) || saved.release!=null
+        return { if(reservation) repository.reservationDetail(saved) else repository.seriesDetail(saved.id,refresh=true) }
+    }
+
     /** 日历排期随 Series 存入收藏与导航现场，重开详情时也能展示。 */
     private fun scheduledSeries(series: Series): Series? {
         val saved=library.favorites().firstOrNull { it.id==series.id }
@@ -3648,20 +3657,21 @@ class MainActivity: Activity() {
         val scheduled=scheduledSeries(series)
         val apply:(Detail)->Unit=loaded@{ loaded ->
             val result=withCachedSeasons(withReleaseSchedule(loaded,scheduled))
-            library.observeFavoriteDetail(result,acknowledge=true)
+            library.observeFavoriteDetail(result,acknowledge=true,originalId=series.id)
+            pendingDetail=result.series
             detail=result
             if(result.episodes.isEmpty()) {
                 pendingCloudResume=null; episodeIndex=0; group=0; directPlayback=false
                 showDetail(false)
                 return@loaded
             }
-            val cloudResume=pendingCloudResume.takeIf { it?.series?.id==series.id }; pendingCloudResume=null
+            val cloudResume=pendingCloudResume.takeIf { it?.series?.id==result.series.id }; pendingCloudResume=null
             val target=if(cloudResume!=null) {
                 // 云端进度续播：episodeId 对不上（换源/集数更新）时退回云端记录的集号；不写本机记录，起播后自然落本机
                 val index=result.episodes.indexOf(cloudResume.episodeId).takeIf { it>=0 } ?: cloudResume.episodeIndex.coerceIn(0,result.episodes.lastIndex)
                 ResumeTarget(index,cloudResume.position.coerceAtLeast(0))
             } else {
-                val progress=library.progress(series.id)
+                val progress=library.progress(result.series.id)
                 ResumePlayback.target(result.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true)
             }
             episodeIndex=target.index; group=episodeIndex/20
@@ -3686,7 +3696,7 @@ class MainActivity: Activity() {
         if(preloaded!=null) apply(preloaded)
         else if(cached?.episodes?.isNotEmpty()==true) apply(cached)
         else if(cached!=null) apply(cached)
-        else work({ repository.seriesDetail(series.id,refresh=true) }, apply, { problem ->
+        else work(seriesDetailRequest(series), apply, { problem ->
             if(scheduled!=null) apply(Detail(scheduled,emptyList()))
             else error(body,problem) { openDetail(series,resume,detailAutoplay,cloud) }
         })
@@ -4133,22 +4143,23 @@ class MainActivity: Activity() {
             val apply: (Detail)->Unit=apply@{ loaded ->
                 if(generation!=ticket || screen!="detail" || body.parent!==root) return@apply
                 val result=withCachedSeasons(withReleaseSchedule(loaded,scheduled))
-                library.observeFavoriteDetail(result,acknowledge=true)
+                library.observeFavoriteDetail(result,acknowledge=true,originalId=series.id)
+                pendingDetail=result.series
                 val previousCover=data.series.cover
                 val oldScrollY=scroll.scrollY
                 val oldSeasonTop=seasonHost.top
                 data=result; detail=result
-                playbackAlgorithms.beginPlayback(series.id)
+                playbackAlgorithms.beginPlayback(result.series.id)
                 hasEpisodes=result.episodes.isNotEmpty()
                 if(hasEpisodes) {
-                    val saved=library.progress(series.id)
+                    val saved=library.progress(result.series.id)
                     episodeIndex=ResumePlayback.target(result.episodes,saved?.episodeId,saved?.position ?: 0,saved?.completed==true).index
                 } else episodeIndex=0
                 group=episodeIndex/20; detailEpisodePage=episodeIndex/pageSize
-                progress=library.progress(series.id)
+                progress=library.progress(result.series.id)
                 resumeIndex=progress?.let { result.episodes.indexOf(it.episodeId).takeIf { n -> n>=0 } } ?: 0
                 resumePosition=progress?.takeIf { !it.completed && resumeIndex==it.episodeIndex }?.position ?: 0
-                watched=library.watched(series.id)
+                watched=library.watched(result.series.id)
                 heroTitle.text=result.series.title
                 metadataView.text=metadata(result)
                 synopsis.text=result.series.description.ifBlank { if(hasEpisodes) "选择剧集开始观看" else "暂无简介" }
@@ -4179,7 +4190,7 @@ class MainActivity: Activity() {
             val cached=cachedSeriesDetail(series)
             if(cached?.episodes?.isNotEmpty()==true) apply(cached)
             else if(cached!=null) apply(cached)
-            else work({ repository.seriesDetail(series.id,refresh=true) },apply,{
+            else work(seriesDetailRequest(series),apply,{
                 if(scheduled!=null) apply(Detail(scheduled,emptyList()))
                 else if(screen=="detail" && body.parent===root) {
                     pendingDetail=data.series
@@ -7309,7 +7320,8 @@ class MainActivity: Activity() {
         val scheduled=scheduledSeries(series)
         val apply: (Detail) -> Unit = { loaded ->
             val result=withCachedSeasons(withReleaseSchedule(loaded,scheduled))
-            library.observeFavoriteDetail(result,acknowledge=true)
+            library.observeFavoriteDetail(result,acknowledge=true,originalId=series.id)
+            pendingDetail=result.series
             // done lambda 同样是非内联的，不能 return：用 if/else 表达「已转回横屏就交给 TV 版」
             if(!phoneLayout()) {
                 openDetail(series,resume,preloaded=result)
@@ -7334,7 +7346,7 @@ class MainActivity: Activity() {
                     episodeIndex=0; group=0
                     renderPhoneDetail(result)
                 } else {
-                    val progress=library.progress(series.id)
+                    val progress=library.progress(result.series.id)
                     val target=ResumePlayback.target(result.episodes,progress?.episodeId,progress?.position ?: 0,progress?.completed==true)
                     episodeIndex=target.index; group=episodeIndex/20
                     if(resume) playEpisodePhone(target.index,target.position)
@@ -7348,7 +7360,7 @@ class MainActivity: Activity() {
         val cached=cachedSeriesDetail(series)
         if(cached?.episodes?.isNotEmpty()==true) { apply(cached); return }
         // 排期仅供展示和失败兜底，实际是否上线由最新分集决定。
-        cached?.let(apply) ?: work({ repository.seriesDetail(series.id,refresh=true) }, apply, { problem ->
+        cached?.let(apply) ?: work(seriesDetailRequest(series), apply, { problem ->
             if(scheduled!=null) apply(Detail(scheduled,emptyList()))
             else if(phoneLayout()) {
                 portraitDetail.renderState(root,problem.message ?: "加载失败",series=series,retry={ openDetailPhone(series,resume) })
@@ -7372,13 +7384,14 @@ class MainActivity: Activity() {
         val scheduled = scheduledSeries(series)
         val apply: (Detail) -> Unit = { loaded ->
             val result = withCachedSeasons(withReleaseSchedule(loaded, scheduled))
-            library.observeFavoriteDetail(result, acknowledge = true)
+            library.observeFavoriteDetail(result, acknowledge = true, originalId = series.id)
+            pendingDetail = result.series
             if (!phoneLayout()) {
                 openDetail(series, preloaded = result)
             } else if (screen == "detail" && phoneTab == "detail") {
                 detail = result
                 if (result.episodes.isNotEmpty()) {
-                    val progress = library.progress(series.id)
+                    val progress = library.progress(result.series.id)
                     val target = ResumePlayback.target(result.episodes, progress?.episodeId, progress?.position ?: 0, progress?.completed == true)
                     episodeIndex = target.index
                 } else episodeIndex = 0
@@ -7389,7 +7402,7 @@ class MainActivity: Activity() {
         }
         val cached = cachedSeriesDetail(series)
         if (cached?.episodes?.isNotEmpty() == true) { apply(cached); return }
-        cached?.let(apply) ?: work({ repository.seriesDetail(series.id,refresh=true) }, apply, {
+        cached?.let(apply) ?: work(seriesDetailRequest(series), apply, {
             if (scheduled != null) apply(Detail(scheduled, emptyList()))
             else if (phoneLayout() && screen == "detail" && phoneTab == "detail") {
                 pendingDetail = previous.series

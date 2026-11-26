@@ -111,11 +111,33 @@ class LibraryIndex(data: LibraryData, updates: Map<String, FavoriteUpdate> = emp
         return true
     }
     /** 同步最新元数据；只有详情实际展示了分集，才将预约转成收藏。 */
-    fun observeFavoriteDetail(detail: Detail, now: Long, acknowledge: Boolean = false): Boolean {
+    fun observeFavoriteDetail(detail: Detail, now: Long, acknowledge: Boolean = false, originalId: String = detail.series.id): Boolean {
         val id = detail.series.id
-        val previous = favoriteRows.firstOrNull { it.id == id } ?: return false
-        if (now < (updateRows[id]?.checkedAt ?: 0L)) return false
         val count = detail.episodes.size
+        var sourceId = originalId
+        // 从搜索直接打开正式作品时，也应关联此前保存的同名同季预约。
+        if (sourceId == id && acknowledge && count > 0) {
+            ReservationMatch.select(detail.series, reservedFavorites().filter { it.id != id })?.let { sourceId = it.id }
+        }
+        var migrated = false
+        if (sourceId != id && favorite(sourceId) && count > 0) {
+            val source = favoriteRows.first { it.id == sourceId }
+            if (!reserved(sourceId) || !ReservationMatch.matches(source, detail.series) ||
+                now < maxOf(updateRows[sourceId]?.checkedAt ?: 0L, updateRows[id]?.checkedAt ?: 0L)) return false
+            val update = listOfNotNull(updateRows[sourceId], updateRows[id]).maxByOrNull { it.checkedAt }
+            val group = groupById[id] ?: groupById[sourceId]
+            favoriteRows = favoriteRows.map { if (it.id == sourceId) it.copy(id = id) else it }.distinctBy { it.id }
+            favoriteIds = favoriteRows.map { it.id }.toSet()
+            reservationIds = (reservationIds - sourceId + id).intersect(favoriteIds)
+            updateRows = updateRows - sourceId
+            if (update != null) updateRows = updateRows + (id to update)
+            updateCount = updateRows.values.count { it.hasUpdate }
+            groupById = groupById - sourceId
+            if (group != null) groupById = groupById + (id to group)
+            migrated = true
+        }
+        val previous = favoriteRows.firstOrNull { it.id == id } ?: return false
+        if (now < (updateRows[id]?.checkedAt ?: 0L)) return migrated
         // 已确认上线的作品，不能因接口临时缺分集或旧排期兜底而退回待上线。
         if (count == 0 && previous.release == null && (updateRows[id]?.total ?: 0) > 0) return false
         val schedule = if (count > 0) null else detail.series.release ?: previous.release
@@ -137,7 +159,7 @@ class LibraryIndex(data: LibraryData, updates: Map<String, FavoriteUpdate> = emp
         reservationIds = nextReservations
         val updateChanged = observeFavorite(id, count, now, acknowledge,
             detail.newerSeasons.lastOrNull { it.release == null })
-        return metadataChanged || updateChanged
+        return migrated || metadataChanged || updateChanged
     }
     fun snapshot() = LibraryData(favoriteRows, historyRows, watchedIds, searchRows, settings, laterRows, hiddenIds, groupById, reservationIds)
 }

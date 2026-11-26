@@ -283,8 +283,8 @@ class Library(context: Context) {
     fun observeFavorite(id: String, count: Int, now: Long, acknowledge: Boolean = false, newSeason: Series? = null) {
         if (state().observeFavorite(id, count, now, acknowledge, newSeason)) persist("favoriteUpdates")
     }
-    fun observeFavoriteDetail(detail: Detail, now: Long = System.currentTimeMillis(), acknowledge: Boolean = false) {
-        if (state().observeFavoriteDetail(detail, now, acknowledge)) persist("favorites", "favoriteUpdates", "reservations")
+    fun observeFavoriteDetail(detail: Detail, now: Long = System.currentTimeMillis(), acknowledge: Boolean = false, originalId: String = detail.series.id) {
+        if (state().observeFavoriteDetail(detail, now, acknowledge, originalId)) persist("favorites", "favoriteUpdates", "favoriteGroups", "reservations")
     }
     fun cachedHome(type: ContentType): CatalogPage? {
         state()

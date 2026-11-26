@@ -24,16 +24,21 @@ class FavoriteMonitor(private val library: Library, source: ContentRepository, p
     var running = false; private set
     var status = "进入收藏可手动检查更新"; private set
     var lastChangedId: String? = null; private set
+    var lastOriginalId: String? = null; private set
 
     fun check(force: Boolean = false) {
-        if (running || destroyed || !library.isLoaded) return
+        if (destroyed || !library.isLoaded) return
+        if (running) {
+            if (!force) return
+            stop()
+        }
         val now = System.currentTimeMillis()
         val favorites = library.favorites()
         // 根据片单大小限制自动检查频率，避免集中请求。
         val windowHours = favorites.size / 40 + 1
         val items = favorites.filter { force || checkedAt[it.id]?.let { now - it !in 0 until windowHours * 3_600_000L } != false }
             .sortedByDescending { library.reserved(it.id) }
-        lastChangedId = null
+        lastChangedId = null; lastOriginalId = null
         if (items.isEmpty()) {
             status = if (favorites.isEmpty()) "收藏后可检查新集" else "最近 $windowHours 小时内已检查，可手动刷新"
             changed(); return
@@ -54,17 +59,22 @@ class FavoriteMonitor(private val library: Library, source: ContentRepository, p
             val started = System.currentTimeMillis()
             status = "检查更新 ${completed + 1}/${items.size}…"
             changed()
-            lastChangedId = null
+            lastChangedId = null; lastOriginalId = null
+            val reservation = library.reserved(item.id)
             job = worker.submit {
                 if (ticket != epoch) return@submit
-                val result = runCatching { owned.run { repository.detail(item.id, refreshMain = true) } }
+                val result = runCatching { owned.run {
+                    if (reservation) repository.reservationDetail(item) else repository.detail(item.id, refreshMain = true)
+                } }
                 main.post {
                     if (ticket != epoch) return@post
                     job = null
                     result.onSuccess { detail ->
-                        library.observeFavoriteDetail(detail, started)
+                        library.observeFavoriteDetail(detail, started, originalId = item.id)
                         checkedAt[item.id] = started
-                        lastChangedId = item.id
+                        checkedAt[detail.series.id] = started
+                        lastOriginalId = item.id
+                        lastChangedId = detail.series.id
                         consecutiveFailures = 0
                     }.onFailure { failures++; consecutiveFailures++ }
                     completed++

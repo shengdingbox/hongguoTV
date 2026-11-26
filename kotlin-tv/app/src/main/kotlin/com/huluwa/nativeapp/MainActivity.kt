@@ -3949,6 +3949,7 @@ class MainActivity: Activity() {
             if(current.seasonsLoaded) knownSeasons.clear()
             (listOf(current.series)+current.sameName).forEach { knownSeasons[it.id]=it }
             val seasons=SeasonSnapshot.ordered(knownSeasons.values)
+            val labels=seasonLabels(seasons)
             val ids=seasons.map { it.id }
             if(renderedSeasonIds!=ids) {
                 val focusedId=seasonButtons.firstOrNull { it.hasFocus() }?.tag as? String
@@ -3967,6 +3968,7 @@ class MainActivity: Activity() {
                             }
                         }.apply {
                             tag=season.id
+                            maxLines=1; maxWidth=dp(180); ellipsize=TextUtils.TruncateAt.END
                             setOnFocusChangeListener { _,focused -> background=TvVisual.card(this@MainActivity,focused,isSelected) }
                         }
                     }
@@ -3983,9 +3985,7 @@ class MainActivity: Activity() {
             }
             seasonButtons.forEach { view ->
                 val season=knownSeasons[view.tag as? String ?: return@forEach] ?: return@forEach
-                val number=seriesSeasonNumber(season)
-                val seen=library.progress(season.id)?.let { " · 看到${it.episodeIndex+1}集" }.orEmpty()
-                view.text=(if(number==Int.MAX_VALUE) season.title.take(12) else "第 ${number} 季")+seen
+                view.text=labels.getValue(season.id)
                 view.contentDescription=listOf(season.title,season.release?.label.orEmpty()).filter { it.isNotBlank() }.joinToString("，")
             }
             updateSeasonSelection()

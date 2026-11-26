@@ -28,7 +28,7 @@ import android.widget.TextView
 import com.hongguotv.core.Detail
 import com.hongguotv.core.Series
 import com.hongguotv.core.SeasonSnapshot
-import com.hongguotv.core.seriesSeasonNumber
+import com.hongguotv.core.seasonLabels
 import java.util.Locale
 
 /** 竖屏详情：渐变海报区、续播与收藏、季导航和六列选集。 */
@@ -391,15 +391,17 @@ class PortraitDetail(
             val seasons = SeasonSnapshot.ordered(knownSeasons.values)
             seasonHost.visibility = if (seasons.size > 1) View.VISIBLE else View.GONE
             if (seasons.size <= 1) return
+            val labels = seasonLabels(seasons)
             if (seasonButtons.keys.toList() != seasons.map { it.id }) {
                 val oldScrollX = seasonStrip.scrollX
                 seasonLine.removeAllViews()
                 seasonButtons.clear()
                 seasons.forEach { season ->
-                    val number = seriesSeasonNumber(season)
-                    val label = if (number == Int.MAX_VALUE) season.title else "第 $number 季"
-                    val button = text(label, 13f).apply {
+                    val button = text(labels.getValue(season.id), 13f).apply {
                         gravity = Gravity.CENTER
+                        maxLines = 1
+                        maxWidth = dp(168)
+                        ellipsize = TextUtils.TruncateAt.END
                         setPadding(dp(13), dp(7), dp(13), dp(7))
                         background = PortraitStyle.selectable(activity, PortraitStyle.raised, radius = 20)
                         setOnClickListener {
@@ -417,9 +419,8 @@ class PortraitDetail(
                 }
             }
             seasons.forEach { season ->
-                val number = seriesSeasonNumber(season)
                 seasonButtons[season.id]?.apply {
-                    text = if (number == Int.MAX_VALUE) season.title else "第 $number 季"
+                    text = labels.getValue(season.id)
                     contentDescription = listOf(season.title, season.release?.label.orEmpty()).filter { it.isNotBlank() }.joinToString("，")
                 }
             }

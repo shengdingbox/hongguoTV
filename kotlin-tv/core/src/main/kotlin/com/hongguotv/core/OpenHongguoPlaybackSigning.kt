@@ -30,9 +30,10 @@ internal object OpenHongguoPlaybackSigning {
     )
 
     /** 与 SDK PlaybackBody 一致；按 Go JSON 的键顺序生成后，原字节同时用于签名和发送。 */
-    fun body(id: String): ByteArray {
+    fun body(id: String, videoIdType: Int = 0): ByteArray {
         require(id.matches(Regex("[0-9]{1,30}")))
-        return """{"biz_param":{"need_all_video_definition":true,"video_id_type":0,"video_platform":3},"video_id":"$id"}"""
+        require(videoIdType == 0 || videoIdType == 1)
+        return """{"biz_param":{"need_all_video_definition":true,"video_id_type":$videoIdType,"video_platform":3},"video_id":"$id"}"""
             .toByteArray(Charsets.UTF_8)
     }
 

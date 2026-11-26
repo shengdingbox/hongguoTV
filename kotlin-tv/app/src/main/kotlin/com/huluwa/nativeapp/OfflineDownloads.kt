@@ -42,7 +42,7 @@ class OfflineDownloads private constructor(context: Context) {
         val attempted = mutableSetOf<String>()
         val failures = linkedMapOf<String, String>()
     }
-    private class Job(val key: Key, val run: Run, val number: Int) {
+    private class Job(val key: Key, val run: Run, val number: Int, val albumEpisode: Boolean) {
         val scope = RequestScope()
         @Volatile var video: OfflineVideo? = null
         fun cancel() { scope.cancel(); video?.close() }
@@ -198,7 +198,8 @@ class OfflineDownloads private constructor(context: Context) {
             val (id, run, episodeId) = next
             val item = records.getValue(id)
             val key = Key(id, episodeId)
-            val job = Job(key, run, item.episodeIds.indexOf(episodeId) + 1)
+            // 在调度线程固定类型，后台取址及重试不依赖详情仓库或可变下载记录。
+            val job = Job(key, run, item.episodeIds.indexOf(episodeId) + 1, item.series.isAlbum)
             run.attempted += episodeId
             runs.remove(id); runs[id] = run
             jobs[key] = job
@@ -256,7 +257,7 @@ class OfflineDownloads private constructor(context: Context) {
                 return job.scope.run {
                     val resolveStarted = System.nanoTime()
                     val activeRepo = repository()
-                    val info = activeRepo.stream(id, 1080, refreshModel = attempt > 0)
+                    val info = activeRepo.stream(id, 1080, refreshModel = attempt > 0, albumEpisode = job.albumEpisode)
                     RuntimeLog.add("Offline episode=$id sourceMs=${(System.nanoTime() - resolveStarted) / 1_000_000} attempt=${attempt + 1}")
                     OfflineVideo(activeRepo.http, info, onLog = { RuntimeLog.add("Offline episode=$id $it") }).use { video ->
                         job.video = video

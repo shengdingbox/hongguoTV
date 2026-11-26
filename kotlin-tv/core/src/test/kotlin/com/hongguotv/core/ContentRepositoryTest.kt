@@ -336,6 +336,57 @@ class ContentRepositoryTest {
         assertEquals(2, requests.size)
     }
 
+    @Test fun restoredAlbumRecordsResolveWithoutLoadingDetailsFirst() {
+        val records = listOf(
+            Series("888", "测试合集", contentType = 1003),
+            // 旧离线索引没有类型字段，只保存了详情页固定的合集标签。
+            Series("888", "测试合集", tags = "合集"),
+        )
+        for (record in records) {
+            val restored = Series.fromJson(record.toJson())
+            assertTrue(restored.isAlbum)
+            val requests = mutableListOf<Request>()
+            val repo = repository { request ->
+                requests += request
+                assertEquals(playerPath, request.url.encodedPath)
+                val body = albumBody(request)
+                assertEquals("123", body.getString("video_id"))
+                val biz = body.getJSONObject("biz_param")
+                assertEquals(setOf("need_all_video_definition", "video_id_type", "video_platform"), biz.keySet())
+                assertEquals(1, biz.getInt("video_id_type"))
+                playerModelResponse()
+            }
+            assertEquals("https://example.com/a.mp4", repo.stream("123", albumEpisode = restored.isAlbum).url)
+            assertEquals(1, requests.size)
+        }
+    }
+
+    @Test fun offlineAlbumHintSurvivesAlgorithmBindingAndModelRefresh() {
+        for (algorithm in listOf(PlaybackAlgorithm.LOCAL, PlaybackAlgorithm.FRIDA)) {
+            val policy = PlaybackAlgorithmPolicy(algorithm,
+                localFactory = { FakeSigner() },
+                fridaFactory = { object : FakeSigner() {
+                    override val usesLocalPlaybackAlgorithm get() = false
+                    override val prefersVideoTab get() = true
+                } })
+            val requests = mutableListOf<Request>()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                requests += request
+                assertEquals(playerPath, request.url.encodedPath)
+                assertEquals(1, albumBody(request).getJSONObject("biz_param").getInt("video_id_type"))
+                Response.Builder().request(request).protocol(Protocol.HTTP_1_1)
+                    .code(200).message("OK").body(playerModelResponse().toResponseBody()).build()
+            }.build()
+            val repo = ContentRepository(http = http, playbackAlgorithms = policy)
+            assertEquals("https://example.com/a.mp4", repo.stream("123", albumEpisode = true).url)
+            // 重取模型时沿用分集类型，算法绑定生成的新仓库也必须保留标记。
+            assertEquals("https://example.com/a.mp4", repo.stream("123", refreshModel = true).url)
+            assertEquals(2, requests.size)
+            assertEquals(algorithm, policy.algorithm)
+        }
+    }
+
     @Test fun rememberedLowQualityRouteCannotSkipPr25ForAnotherEpisode() {
         var fullModelAvailable = false
         val paths = mutableListOf<String>()
@@ -1064,6 +1115,8 @@ class ContentRepositoryTest {
         val detail=repo.detail(albumId)
         assertEquals(listOf(first,second),detail.episodes)
         assertEquals("我的妹妹不可爱",detail.series.title)
+        assertEquals(1003, detail.series.contentType)
+        assertTrue(Series.fromJson(detail.series.toJson()).isAlbum)
         assertEquals("更新至2集",detail.series.badge)
         // 第二次请求显式带上缺失的目录项。
         assertEquals(listOf(second.toLong()),bodies[1].getJSONArray("series_ids").let { list -> (0 until list.length()).map { list.getLong(it) } })

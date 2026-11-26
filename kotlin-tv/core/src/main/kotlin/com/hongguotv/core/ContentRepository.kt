@@ -24,6 +24,8 @@ internal fun JSONObject.str(key: String) = if (isNull(key)) "" else optString(ke
 internal fun cleanUrl(s: String) = s.replace("\\/","/").replace("\\u002F","/",ignoreCase=true).replace("\\u0026","&").replace("&amp;","&")
 data class Series(val id: String, val title: String, val cover: String = "", val description: String = "", val badge: String = "", val tags: String = "", val release: ReleaseSchedule? = null, val contentType: Int = 0, val seasonIndex: Int = 0) {
     val upcoming get() = release != null || contentType == 1002 || contentType == 1007
+    /** 旧版合集详情只保存固定标签，兼容其收藏与离线记录。 */
+    val isAlbum get() = contentType == 1003 || (contentType == 0 && tags == "合集")
     fun toJson() = JSONObject().put("id",id).put("title",title).put("cover",cover).put("description",description).put("badge",badge).put("tags",tags).put("release",release?.toJson()).put("contentType",contentType).put("seasonIndex",seasonIndex)
     companion object { fun fromJson(o: JSONObject) = Series(o.str("id"),seriesTitle(o.str("title")),o.str("cover"),o.str("description"),o.str("badge"),o.str("tags"),o.optJSONObject("release")?.let { ReleaseSchedule.fromJson(it) },o.optInt("contentType"),o.optInt("seasonIndex").coerceAtLeast(0)) }
 }
@@ -1049,7 +1051,7 @@ open class ContentRepository(
             while (albumEpisodes.size > ALBUM_EPISODE_LIMIT) albumEpisodes.remove(albumEpisodes.first())
         }
         val badge = album.optJSONArray("sub_title_list")?.optString(0).orEmpty().ifBlank { "更新至 ${episodes.size} 集" }
-        return SeriesPayload(Series(id, title, cleanUrl(album.str("cover")), album.str("intro"), badge, "合集"),
+        return SeriesPayload(Series(id, title, cleanUrl(album.str("cover")), album.str("intro"), badge, "合集", contentType = ALBUM_TYPE),
             episodes, detailSocial(album))
     }
 
@@ -1127,10 +1129,11 @@ open class ContentRepository(
     /** 重试、缓存过期或播放会话重建时，移除可能含有失效地址的旧模型。 */
     fun invalidatePlayback(id: String) { modelCache.evict(id) }
 
-    /** Fetch a direct MP4 URL for one episode.
+    /** 获取单集的 MP4 直链。
      *  播放接口只答注册过的匿名设备：设备档案与签名头统一取自 [RemoteSigner]，本机不再注册身份。
      *  [refreshModel] 为 true 时先丢弃缓存的播放模型再重取（地址即将过期时用）；
-     *  默认复用缓存，否则详情页/相邻集的预热会全部白做。 */
+     *  默认复用缓存，否则详情页/相邻集的预热会全部白做；
+     *  [albumEpisode] 由离线任务等独立入口传入，首次取址即使用合集语义。 */
     fun stream(
         id: String,
         maxQuality: Int = 1080,
@@ -1138,9 +1141,15 @@ open class ContentRepository(
         playback: Boolean = false,
         prefetch: Boolean = false,
         ahead: List<String> = emptyList(),
+        albumEpisode: Boolean = false,
     ): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
         RequestScope.ensureActive()
+        // 独立下载仓库没有详情页上下文，必须在算法绑定和恢复探测前补齐分集类型。
+        if (albumEpisode) synchronized(albumEpisodes) {
+            albumEpisodes += id
+            while (albumEpisodes.size > ALBUM_EPISODE_LIMIT) albumEpisodes.remove(albumEpisodes.first())
+        }
         val policy = playbackAlgorithms
         if (policy == null) {
             return withStreamBudget(if (playback) 8_000 else if (prefetch) 2_000 else 0) {
@@ -1691,14 +1700,14 @@ open class ContentRepository(
         val remembered = if (preferred != null && preferred.kind in defaults) {
             listOf(preferred.kind) + defaults.filter { it != preferred.kind }
         } else defaults
-        // 本地普通短剧先用 PR #25 的完整模型接口，避免新接口的 720P 结果提前结束取址。
-        // 旧的低清成功记忆也不能把它挤到后面；合集仍使用原有的 PUGC 请求。
-        val planned = if (usesLocal && !albumEpisode) {
+        // 本地取址先用 PR #25 的完整模型接口，合集也直接携带正确的 ID 类型。
+        // 旧 POST 的成功记忆不能让已失效的批量入口挤到当前接口前面。
+        val planned = if (usesLocal) {
             listOf(PlaybackRouteKind.PLAYER) + remembered.filter { it != PlaybackRouteKind.PLAYER }
         } else remembered
-        // 本地普通短剧精确对齐 SDK PlaybackBody；其余请求保留原有电视兼容参数。
-        val primaryPayload = if (usesLocal && !albumEpisode) {
-            OpenHongguoPlaybackSigning.body(id)
+        // 本地请求对齐 SDK PlaybackBody；合集使用类型 1，远程保留电视兼容参数。
+        val primaryPayload = if (usesLocal) {
+            OpenHongguoPlaybackSigning.body(id, idType)
         } else {
             """{"video_id":"$id","biz_param":{"detail_page_version":0,"device_level":$level,"disable_digg_stat":false,"disable_video_relate_book":false,"from_video_id":"","need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_id_type":$idType,"video_platform":3,"source":0}}""".toByteArray(Charsets.UTF_8)
         }

@@ -406,7 +406,7 @@ class PortraitPages(
         body.addView(tabHost, lp())
         val updateStatus = text("", 12f, PortraitStyle.muted).apply {
             setPadding(edge, 0, edge, dp(12))
-            setOnClickListener { activity.phoneFavoriteMonitor.check(force = true) }
+            setOnClickListener { activity.checkFavoriteUpdates(force = true) }
         }
         body.addView(updateStatus, lp())
         val emptyFavorites = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
@@ -444,8 +444,13 @@ class PortraitPages(
             val selectedTab = contentTabs.indexOf(activity.mineContentTab).coerceAtLeast(0)
             val offlineSelected = selectedTab == 2
             val reservationsSelected = selectedTab == 1
-            updateStatus.text = activity.phoneFavoriteMonitor.status
-            updateStatus.visibility = if (!offlineSelected && activity.phoneLibrary.favorites().isNotEmpty()) View.VISIBLE else View.GONE
+            val favorites = when {
+                offlineSelected -> emptyList()
+                reservationsSelected -> activity.phoneLibrary.reservations()
+                else -> activity.phoneLibrary.availableFavorites()
+            }
+            updateStatus.text = activity.phoneFavoriteUpdateStatus
+            updateStatus.visibility = if (favorites.isNotEmpty()) View.VISIBLE else View.GONE
             tabButtons.forEachIndexed { index, button ->
                 val selected = index == selectedTab
                 button.isSelected = selected
@@ -490,11 +495,6 @@ class PortraitPages(
                 }
             }
             offline.update(offlineSelected)
-            val favorites = when {
-                offlineSelected -> emptyList()
-                reservationsSelected -> activity.phoneLibrary.reservations()
-                else -> activity.phoneLibrary.availableFavorites()
-            }
             emptyFavorites.visibility = if (selectedTab == 0 && favorites.isEmpty()) View.VISIBLE else View.GONE
             emptyReservations.visibility = if (reservationsSelected && favorites.isEmpty()) View.VISIBLE else View.GONE
             if (shownFavorites != favorites) {

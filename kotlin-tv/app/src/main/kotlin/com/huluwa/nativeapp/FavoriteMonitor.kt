@@ -11,6 +11,8 @@ import java.util.concurrent.TimeUnit
 
 /** 串行检查收藏和预约更新，取消只影响本监视器自己的请求。 */
 class FavoriteMonitor(private val library: Library, source: ContentRepository, private val changed: () -> Unit) {
+    enum class Target { ALL, FAVORITES, RESERVATIONS }
+
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     @Volatile private var epoch = 0
@@ -22,18 +24,36 @@ class FavoriteMonitor(private val library: Library, source: ContentRepository, p
         .build()
     private val repository = source.childTransport(http)
     var running = false; private set
-    var status = "进入收藏可手动检查更新"; private set
+    private var activeTarget = Target.ALL
+    private val statuses = mutableMapOf<Target, String>()
+    val status get() = statusFor(Target.ALL)
     var lastChangedId: String? = null; private set
     var lastOriginalId: String? = null; private set
 
-    fun check(force: Boolean = false) {
+    fun statusFor(target: Target): String = statuses[target] ?: when (target) {
+        Target.ALL -> "进入收藏可手动检查更新"
+        Target.FAVORITES -> "点击检查收藏更新"
+        Target.RESERVATIONS -> "点击检查预约更新"
+    }
+
+    fun isRunning(target: Target) = running && activeTarget == target
+
+    private fun setStatus(value: String) { statuses[activeTarget] = value }
+
+    fun check(force: Boolean = false, target: Target = Target.ALL) {
         if (destroyed || !library.isLoaded) return
         if (running) {
-            if (!force) return
+            if (!force && activeTarget == target) return
             stop()
         }
+        activeTarget = target
         val now = System.currentTimeMillis()
-        val favorites = library.favorites()
+        // 预约在存储中属于收藏，检查时按当前标签拆分，避免进度混入另一类条目。
+        val favorites = when (target) {
+            Target.ALL -> library.favorites()
+            Target.FAVORITES -> library.availableFavorites()
+            Target.RESERVATIONS -> library.favorites().filter { library.reserved(it.id) }
+        }
         // 根据片单大小限制自动检查频率，避免集中请求。
         val windowHours = favorites.size / 40 + 1
         val items = favorites.filter { item ->
@@ -42,11 +62,15 @@ class FavoriteMonitor(private val library: Library, source: ContentRepository, p
         }.sortedByDescending { library.reserved(it.id) }
         lastChangedId = null; lastOriginalId = null
         if (items.isEmpty()) {
-            status = when {
-                favorites.isEmpty() -> "收藏或预约后可检查更新"
+            setStatus(when {
+                favorites.isEmpty() -> when (target) {
+                    Target.ALL -> "收藏或预约后可检查更新"
+                    Target.FAVORITES -> "收藏后可检查更新"
+                    Target.RESERVATIONS -> "预约后可检查更新"
+                }
                 favorites.any { library.reserved(it.id) } -> "最近已检查，预约每 5 分钟可重查，也可手动刷新"
                 else -> "最近 $windowHours 小时内已检查，可手动刷新"
-            }
+            })
             changed(); return
         }
         val ticket = ++epoch
@@ -58,12 +82,12 @@ class FavoriteMonitor(private val library: Library, source: ContentRepository, p
             if (ticket != epoch) return
             if (completed == items.size || consecutiveFailures >= 3) {
                 running = false
-                status = "已检查 $completed/${items.size} 部" + (if (failures > 0) " · $failures 部失败，稍后可重试" else " · 检查完成")
+                setStatus("已检查 $completed/${items.size} 部" + (if (failures > 0) " · $failures 部失败，稍后可重试" else " · 检查完成"))
                 changed(); return
             }
             val item = items[completed]
             val started = System.currentTimeMillis()
-            status = "检查更新 ${completed + 1}/${items.size}…"
+            setStatus("检查更新 ${completed + 1}/${items.size}…")
             changed()
             lastChangedId = null; lastOriginalId = null
             val reservation = library.reserved(item.id)
@@ -94,7 +118,7 @@ class FavoriteMonitor(private val library: Library, source: ContentRepository, p
     }
     fun stop() {
         epoch++
-        if (running) status = "更新检查已暂停，返回目录后继续"
+        if (running) setStatus("更新检查已暂停，返回目录后继续")
         running = false
         scope?.cancel(); scope = null
         job?.cancel(true); job = null

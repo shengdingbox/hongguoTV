@@ -126,7 +126,7 @@ class MainActivity: Activity() {
         if (tab !in listOf("favorites", "reservations", "offline")) return
         StartupSettings.set("mineContentTab", tab)
         renderPhoneTab()
-        if (tab != "offline") favoriteMonitor.check()
+        checkFavoriteUpdates()
     }
     fun showOfflineLibraryPhone() {
         StartupSettings.set("mineContentTab", "offline")
@@ -302,6 +302,17 @@ class MainActivity: Activity() {
     private var danmakuLoader: DanmakuLoader?=null
     private lateinit var favoriteMonitor: FavoriteMonitor
     val phoneFavoriteMonitor get() = favoriteMonitor
+    private val phoneFavoriteTarget get() = if(phoneTab=="mine" && mineContentTab=="reservations")
+        FavoriteMonitor.Target.RESERVATIONS else FavoriteMonitor.Target.FAVORITES
+    val phoneFavoriteUpdateStatus get() = favoriteMonitor.statusFor(phoneFavoriteTarget)
+
+    /** 手机收藏和预约分别检查，生命周期恢复和手动刷新使用相同范围。 */
+    fun checkFavoriteUpdates(force: Boolean = false) {
+        val phone=phoneLayout()
+        if(phone && phoneTab=="mine" && mineContentTab=="offline") { favoriteMonitor.stop(); return }
+        val target=if(phone && phoneTab in listOf("mine", "fav")) phoneFavoriteTarget else FavoriteMonitor.Target.ALL
+        favoriteMonitor.check(force=force,target=target)
+    }
     private val favoriteBadges=mutableMapOf<String,TextView>()
     private var favoriteStatus: TextView?=null
     private var favoriteCheck: TextView?=null
@@ -887,9 +898,9 @@ class MainActivity: Activity() {
             applyEpisodeCacheSetting()
             if(!isDestroyed && foreground) {
                 // 手机竖屏使用手机首页，电视与横屏使用电视目录。
-                if(pendingPhoneSettings && phoneLayout()) { pendingPhoneSettings=false; showPhoneSettings(); favoriteMonitor.check() }
-                else if(phoneLayout()) { showInitialPhonePage(); favoriteMonitor.check() }
-                else { showInitialTvPage(); favoriteMonitor.check() }
+                if(pendingPhoneSettings && phoneLayout()) { pendingPhoneSettings=false; showPhoneSettings(); checkFavoriteUpdates() }
+                else if(phoneLayout()) { showInitialPhonePage(); checkFavoriteUpdates() }
+                else { showInitialTvPage(); checkFavoriteUpdates() }
                 maybePromptCrash()
                 main.post { drainPendingUpdate() }
             }
@@ -1176,7 +1187,7 @@ class MainActivity: Activity() {
         }
         invalidatePage(); screen="catalog"; releaseCatalogViews(); val container=base()
         retainedTheme=TvStyle.theme; retainedWidthDp=widthDp().toInt()
-        if(foreground && library.isLoaded && !favoriteMonitor.running) main.post { if(foreground && screen=="catalog") favoriteMonitor.check() }
+        if(foreground && library.isLoaded && !favoriteMonitor.running) main.post { if(foreground && screen=="catalog") checkFavoriteUpdates() }
         // 页面就绪点：若更新检查结果先于首屏到达，在这里补弹（平时由发布即弹直接触发）。
         if(root.isAttachedToWindow && foreground) main.post { drainPendingUpdate() }
         // TV 与手机竖屏使用独立容器；这里只调整 TV 页面的间距和背景。
@@ -1496,7 +1507,7 @@ class MainActivity: Activity() {
                 favoriteCheck=addButton(heading,"检查更新") {
                     if(favoriteMonitor.running) Toast.makeText(this,"正在检查收藏更新…",Toast.LENGTH_SHORT).show()
                     else if(library.favorites().isEmpty()) Toast.makeText(this,"先收藏几部剧，再来检查更新",Toast.LENGTH_SHORT).show()
-                    else { favoriteMonitor.check(force=true); Toast.makeText(this,"开始检查收藏更新…",Toast.LENGTH_SHORT).show() }
+                    else { checkFavoriteUpdates(force=true); Toast.makeText(this,"开始检查收藏更新…",Toast.LENGTH_SHORT).show() }
                 }.apply { nextFocusUpId=nav[TvCatalogHeader.normalize(tab)].id }
                 favoriteManageButton=addButton(heading,"管理") {
                     favoriteManage=true; favoriteSelected.clear(); showCatalog()
@@ -2642,7 +2653,7 @@ class MainActivity: Activity() {
         tvTools.choose(series.title,labels,anchor,{ choice ->
             when(choice) {
                 0 -> openDetail(series,true)
-                1 -> { val reservation=series.release!=null || library.reserved(series.id); val added=library.toggle(series); Toast.makeText(this,if(reservation) if(added) "已预约" else "已取消预约" else if(added) "已收藏" else "已取消收藏",Toast.LENGTH_SHORT).show(); refreshLibraryCards(series.id,!added && (tab==3 || collection=="updates")); if(added) favoriteMonitor.check() }
+                1 -> { val reservation=series.release!=null || library.reserved(series.id); val added=library.toggle(series); Toast.makeText(this,if(reservation) if(added) "已预约" else "已取消预约" else if(added) "已收藏" else "已取消收藏",Toast.LENGTH_SHORT).show(); refreshLibraryCards(series.id,!added && (tab==3 || collection=="updates")); if(added) checkFavoriteUpdates() }
                 2 -> { val added=library.toggleLater(series); Toast.makeText(this,if(added) "已加入稍后看" else "已移出稍后看",Toast.LENGTH_SHORT).show(); refreshLibraryCards(series.id,!added && collection=="later") }
                 else -> {
                     val index=if(grouped) choice-1 else choice
@@ -6697,8 +6708,8 @@ class MainActivity: Activity() {
         "rank" -> phoneRankLoading
         "new" -> phoneNewReleaseLoading
         "search" -> phoneHotLoading || phoneSearching
-        "mine" -> mineContentTab!="offline" && favoriteMonitor.running
-        "fav" -> favoriteMonitor.running
+        "mine" -> mineContentTab!="offline" && favoriteMonitor.isRunning(phoneFavoriteTarget)
+        "fav" -> favoriteMonitor.isRunning(phoneFavoriteTarget)
         else -> false
     }
 
@@ -6859,7 +6870,7 @@ class MainActivity: Activity() {
         restoringPhoneDetail=null
         if(next==phoneTab && !phoneDetailCollection && !initialCatalogPending) {
             screen="catalog"
-            if(next=="mine" || next=="fav") favoriteMonitor.check()
+            if(next=="mine" || next=="fav") checkFavoriteUpdates()
             when {
                 next=="rank" && !phoneRankReady -> showPhoneRank()
                 next=="search" && phoneQuery.isNotBlank() && !phoneSearching &&
@@ -6874,7 +6885,7 @@ class MainActivity: Activity() {
         if(!phoneCatalogViewsValid()) retainedPhoneCatalogs.clear()
         val retained=retainedPhoneCatalogs[next]
         phoneTab=next; phoneScrollY=retained?.position ?: phoneSessionPositions[next] ?: 0; screen="catalog"
-        if(next=="mine" || next=="fav") favoriteMonitor.check()
+        if(next=="mine" || next=="fav") checkFavoriteUpdates()
         if(next=="rank") {
             prepareMobileRankCachePhone()
             phoneCatalogSource="rank"
@@ -7252,7 +7263,7 @@ class MainActivity: Activity() {
             "new" -> { prepareNewReleaseCalendarPhone(); loadNewReleasesPhone() }
             "search" -> if(phoneQuery.isNotBlank()) runPhoneSearch(phoneQuery) else loadHotSearchPhone()
             "mine", "fav" -> {
-                if(phoneTab=="fav" || mineContentTab!="offline") favoriteMonitor.check(force=true)
+                if(phoneTab=="fav" || mineContentTab!="offline") checkFavoriteUpdates(force=true)
                 renderPhone()
             }
             else -> renderPhone()
@@ -8257,7 +8268,7 @@ class MainActivity: Activity() {
             } else {
                 val waiting=deferredWork; deferredWork=null; waiting?.apply?.invoke()
             }
-            if(screen=="catalog") favoriteMonitor.check()
+            if(screen=="catalog") checkFavoriteUpdates()
             if(screen=="player") syncMediaSession()
         } else libraryLoadError?.let(::showLibraryError)
         // Glide 随 Activity 生命周期恢复弹框和列表中尚未完成的图片请求。

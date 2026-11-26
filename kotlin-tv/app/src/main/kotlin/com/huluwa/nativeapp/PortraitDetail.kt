@@ -27,6 +27,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.hongguotv.core.Detail
 import com.hongguotv.core.Series
+import com.hongguotv.core.SeasonSnapshot
 import com.hongguotv.core.seasonNumber
 import java.util.Locale
 
@@ -387,7 +388,7 @@ class PortraitDetail(
             // 缓存和联网结果都是完整列表；尚未取到分季时才沿用切季前的条目。
             if (current.seasonsLoaded) knownSeasons.clear()
             (listOf(current.series) + current.sameName).forEach { knownSeasons[it.id] = it }
-            val seasons = knownSeasons.values.sortedBy { seasonNumber(it.title).takeIf { number -> number != Int.MAX_VALUE } ?: 0 }
+            val seasons = SeasonSnapshot.ordered(knownSeasons.values)
             seasonHost.visibility = if (seasons.size > 1) View.VISIBLE else View.GONE
             if (seasons.size <= 1) return
             if (seasonButtons.keys.toList() != seasons.map { it.id }) {
@@ -411,8 +412,8 @@ class PortraitDetail(
                     seasonLine.addView(button, lp(-2, -2).apply { rightMargin = dp(6) })
                 }
                 seasonStrip.post {
-                    if (oldScrollX > 0) seasonStrip.scrollTo(oldScrollX, 0)
-                    else seasonButtons[data.series.id]?.let { seasonStrip.scrollTo(it.left, 0) }
+                    // 首次从第一季展示，后续重绘保持滚动位置，不把当前季移到最左侧。
+                    seasonStrip.scrollTo(oldScrollX, 0)
                 }
             }
             seasons.forEach { season ->

@@ -16,6 +16,11 @@ object SeasonSnapshot {
 
     fun validId(id: String) = idPattern.matches(id) && id != "0"
 
+    /** 未标季号沿用第一季口径，同季按 ID 排序，切季时不受当前条目插入位置影响。 */
+    fun ordered(items: Collection<Series>): List<Series> = items.distinctBy { it.id }.sortedWith(
+        compareBy<Series> { seasonNumber(it.title).let { number -> if (number == Int.MAX_VALUE) 1 else number } }
+            .thenBy { it.id })
+
     fun retain(items: List<Series>) = items.filter { validId(it.id) && it.title.isNotBlank() }
         .distinctBy { it.id }.take(MAX_ITEMS).map { item ->
             item.copy(title = item.title.take(200), cover = item.cover.take(2048), description = item.description.take(500),

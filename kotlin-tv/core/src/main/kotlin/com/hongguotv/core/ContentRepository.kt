@@ -787,8 +787,7 @@ open class ContentRepository(
             catch(_: TimeoutException) { null } catch(_: ExecutionException) { null } catch(_: InterruptedException) { Thread.currentThread().interrupt(); null }
             val related=getAux(relatedTask) ?: main.related
             val latestSeasons=getAux(seasonsTask)
-            val sameName=(latestSeasons?.filter { it.id!=id } ?: main.sameName).distinctBy { it.id }
-                .sortedBy { seasonNumber(it.title).let { n -> if(n==Int.MAX_VALUE) 1 else n } }
+            val sameName=SeasonSnapshot.ordered(latestSeasons?.filter { it.id!=id } ?: main.sameName)
             val rating=getAux(ratingTask)
             if(scope.isCancelled || Thread.currentThread().isInterrupted) throw IOException("请求已取消")
             val social=rating?.let { main.social.copy(rating=it.rating,ratingCount=it.ratingCount) } ?: main.social
@@ -1973,9 +1972,12 @@ class PlaybackModelCache(private val limit: Int = 120, private val ttlMillis: Lo
     }
 }
 
-internal val SeasonPattern=Regex("第([0-9零〇一二三四五六七八九十百千]+)(?:季|部)")
+// 带「第」的季号可出现在标题中；省略「第」时只识别结尾或括号说明前的季号。
+internal val SeasonPattern=Regex("""第\s*([0-9零〇一二三四五六七八九十百千]+)\s*(?:季|部)|([0-9零〇一二三四五六七八九十百千]+)\s*季(?=\s*(?:[（(【\[]|$))""")
 fun seasonNumber(title: String): Int {
-    val matched=SeasonPattern.find(title)?.groupValues?.get(1) ?: return Int.MAX_VALUE
+    val match=SeasonPattern.find(title) ?: return Int.MAX_VALUE
+    if(!match.value.startsWith("第") && match.range.first==0) return Int.MAX_VALUE
+    val matched=match.groupValues.drop(1).firstOrNull { it.isNotBlank() } ?: return Int.MAX_VALUE
     return chineseNumber(matched)
 }
 private fun chineseNumber(text: String): Int {

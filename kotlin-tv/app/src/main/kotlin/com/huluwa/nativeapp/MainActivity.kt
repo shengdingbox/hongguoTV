@@ -3919,7 +3919,7 @@ class MainActivity: Activity() {
             // 主详情未补齐分季时沿用已知季列表，避免季条消失或横向滚动复位。
             if(current.seasonsLoaded) knownSeasons.clear()
             (listOf(current.series)+current.sameName).forEach { knownSeasons[it.id]=it }
-            val seasons=knownSeasons.values.sortedBy { val number=seasonNumber(it.title); if(number==Int.MAX_VALUE) 0 else number }
+            val seasons=SeasonSnapshot.ordered(knownSeasons.values)
             val ids=seasons.map { it.id }
             if(renderedSeasonIds!=ids) {
                 val focusedId=seasonButtons.firstOrNull { it.hasFocus() }?.tag as? String

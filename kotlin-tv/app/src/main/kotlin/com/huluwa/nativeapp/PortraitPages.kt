@@ -450,7 +450,7 @@ class PortraitPages(
                 else -> activity.phoneLibrary.availableFavorites()
             }
             updateStatus.text = activity.phoneFavoriteUpdateStatus
-            updateStatus.visibility = if (favorites.isNotEmpty()) View.VISIBLE else View.GONE
+            updateStatus.visibility = if (reservationsSelected && favorites.isNotEmpty()) View.VISIBLE else View.GONE
             tabButtons.forEachIndexed { index, button ->
                 val selected = index == selectedTab
                 button.isSelected = selected

@@ -36,11 +36,17 @@ class FavoriteMonitor(private val library: Library, source: ContentRepository, p
         val favorites = library.favorites()
         // 根据片单大小限制自动检查频率，避免集中请求。
         val windowHours = favorites.size / 40 + 1
-        val items = favorites.filter { force || checkedAt[it.id]?.let { now - it !in 0 until windowHours * 3_600_000L } != false }
-            .sortedByDescending { library.reserved(it.id) }
+        val items = favorites.filter { item ->
+            val interval = if (library.reserved(item.id)) 5 * 60_000L else windowHours * 3_600_000L
+            force || checkedAt[item.id]?.let { now - it !in 0 until interval } != false
+        }.sortedByDescending { library.reserved(it.id) }
         lastChangedId = null; lastOriginalId = null
         if (items.isEmpty()) {
-            status = if (favorites.isEmpty()) "收藏后可检查新集" else "最近 $windowHours 小时内已检查，可手动刷新"
+            status = when {
+                favorites.isEmpty() -> "收藏或预约后可检查更新"
+                favorites.any { library.reserved(it.id) } -> "最近已检查，预约每 5 分钟可重查，也可手动刷新"
+                else -> "最近 $windowHours 小时内已检查，可手动刷新"
+            }
             changed(); return
         }
         val ticket = ++epoch
@@ -60,11 +66,11 @@ class FavoriteMonitor(private val library: Library, source: ContentRepository, p
             status = "检查更新 ${completed + 1}/${items.size}…"
             changed()
             lastChangedId = null; lastOriginalId = null
-            val reservation = item.upcoming
+            val reservation = library.reserved(item.id)
             job = worker.submit {
                 if (ticket != epoch) return@submit
                 val result = runCatching { owned.run {
-                    if (reservation) repository.reservationDetail(item, refresh = true) else repository.detail(item.id, refreshMain = true)
+                    if (reservation) repository.reservationUpdate(item) else repository.detail(item.id, refreshMain = true)
                 } }
                 main.post {
                     if (ticket != epoch) return@post

@@ -771,6 +771,45 @@ open class ContentRepository(
         }
     }
 
+    /** 本机预约只读查新：先查原编号，再从公开系列和搜索中关联正式作品。 */
+    fun reservationUpdate(series: Series): Detail {
+        require(SeasonSnapshot.validId(series.id))
+        val scope = RequestScope.current()?.child(25_000) ?: RequestScope(25_000)
+        try {
+            return scope.run {
+                var failure: IOException? = null
+                fun <T> read(action: () -> T): T? = try {
+                    scope.ensureActive()
+                    action().also { scope.ensureActive() }
+                } catch (problem: IOException) {
+                    scope.ensureActive()
+                    failure = problem
+                    null
+                }
+                // 查新不带预告类型，避免把已经上线的同一编号继续锁定在预告详情。
+                val original = read { seriesDetail(series.id, refresh = true) }
+                if (original?.episodes?.isNotEmpty() == true) return@run original
+                val attempted = mutableSetOf(series.id)
+                fun resolve(candidates: List<Series>): Detail? {
+                    val matching = candidates.filter { it.id !in attempted && !it.upcoming }
+                    val candidate = ReservationMatch.select(series, matching) ?: return null
+                    attempted += candidate.id
+                    return read { seriesDetail(candidate.id, refresh = true) }
+                        ?.takeIf { it.episodes.isNotEmpty() && ReservationMatch.matches(series, it.series) }
+                }
+                val seasons = read { planSeasons(series.id) }
+                resolve(seasons.orEmpty())?.let { return@run it }
+                val found = read { search(series.title, refresh = true).items }
+                resolve(seasons.orEmpty() + found.orEmpty())?.let { return@run it }
+                // 某条查询失败时保留失败状态，不能把未查完整的结果记作成功并长时间跳过。
+                failure?.let { throw IOException("预约更新未查完整，请稍后重试", it) }
+                original ?: throw IOException("预约更新暂不可用，请稍后重试")
+            }
+        } finally {
+            scope.cancel()
+        }
+    }
+
     /** 完整详情保留给补季、收藏更新等需要系列信息的调用方。 */
     fun detail(id: String, refreshSeasons: Boolean = false, onSeasons: ((List<Series>) -> Unit)? = null, refreshMain: Boolean = false): Detail {
         val main=seriesDetail(id, refresh=refreshMain)

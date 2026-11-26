@@ -8,6 +8,8 @@ import org.json.JSONObject
 class LibraryIndex(data: LibraryData, updates: Map<String, FavoriteUpdate> = emptyMap()) {
     private var favoriteRows = data.favorites.distinctBy { it.id }.take(500)
     private var favoriteIds = favoriteRows.map { it.id }.toSet()
+    // 旧收藏按排期迁入预约；上线状态与是否已查看分集分别保存。
+    private var reservationIds = (data.reservations + favoriteRows.filter { it.release != null }.map { it.id }).intersect(favoriteIds)
     private var laterRows = data.later.distinctBy { it.id }.take(100)
     private var laterIds = laterRows.map { it.id }.toSet()
     private var historyRows = data.history.sortedByDescending { it.updatedAt }.distinctBy { it.series.id }.take(200)
@@ -23,6 +25,10 @@ class LibraryIndex(data: LibraryData, updates: Map<String, FavoriteUpdate> = emp
 
     fun favorites() = favoriteRows
     fun favorite(id: String) = id in favoriteIds
+    fun reserved(id: String) = id in reservationIds
+    fun reservations() = reservationIds
+    fun availableFavorites() = favoriteRows.filterNot { reserved(it.id) }
+    fun reservedFavorites() = favoriteRows.filter { reserved(it.id) }
     fun later() = laterRows
     fun queued(id: String) = id in laterIds
     fun history() = historyRows
@@ -56,6 +62,7 @@ class LibraryIndex(data: LibraryData, updates: Map<String, FavoriteUpdate> = emp
         val added = !favorite(series.id)
         favoriteRows = (if (added) listOf(series) + favoriteRows else favoriteRows.filterNot { it.id == series.id }).take(500)
         favoriteIds = favoriteRows.map { it.id }.toSet()
+        reservationIds = (if (added && series.release != null) reservationIds + series.id else reservationIds - series.id).intersect(favoriteIds)
         updateRows = updateRows.filterKeys { it in favoriteIds }
         updateCount = updateRows.values.count { it.added > 0 }
         if (!added) groupById = groupById - series.id
@@ -103,7 +110,36 @@ class LibraryIndex(data: LibraryData, updates: Map<String, FavoriteUpdate> = emp
         updateCount += (if (next.hasUpdate) 1 else 0) - (if (previous?.hasUpdate == true) 1 else 0)
         return true
     }
-    fun snapshot() = LibraryData(favoriteRows, historyRows, watchedIds, searchRows, settings, laterRows, hiddenIds, groupById)
+    /** 同步最新元数据；只有详情实际展示了分集，才将预约转成收藏。 */
+    fun observeFavoriteDetail(detail: Detail, now: Long, acknowledge: Boolean = false): Boolean {
+        val id = detail.series.id
+        val previous = favoriteRows.firstOrNull { it.id == id } ?: return false
+        if (now < (updateRows[id]?.checkedAt ?: 0L)) return false
+        val count = detail.episodes.size
+        // 已确认上线的作品，不能因接口临时缺分集或旧排期兜底而退回待上线。
+        if (count == 0 && previous.release == null && (updateRows[id]?.total ?: 0) > 0) return false
+        val schedule = if (count > 0) null else detail.series.release ?: previous.release
+        val series = detail.series.copy(
+            title = detail.series.title.ifBlank { previous.title },
+            cover = detail.series.cover.ifBlank { previous.cover },
+            description = detail.series.description.ifBlank { previous.description },
+            tags = detail.series.tags.ifBlank { previous.tags },
+            badge = if (count > 0) "共 $count 集" else schedule?.label ?: detail.series.badge.ifBlank { previous.badge },
+            release = schedule,
+        )
+        val nextReservations = when {
+            count > 0 && acknowledge -> reservationIds - id
+            series.release != null -> reservationIds + id
+            else -> reservationIds
+        }
+        val metadataChanged = previous != series || nextReservations != reservationIds
+        if (previous != series) favoriteRows = favoriteRows.map { if (it.id == id) series else it }
+        reservationIds = nextReservations
+        val updateChanged = observeFavorite(id, count, now, acknowledge,
+            detail.newerSeasons.lastOrNull { it.release == null })
+        return metadataChanged || updateChanged
+    }
+    fun snapshot() = LibraryData(favoriteRows, historyRows, watchedIds, searchRows, settings, laterRows, hiddenIds, groupById, reservationIds)
 }
 
 /** Keeps the native-library-v1 disk keys and rich local metadata compatible with older APKs. */
@@ -141,7 +177,7 @@ object LibraryDisk {
         val groupMap = runCatching { JSONObject(values["favoriteGroups"] as? String ?: "{}") }.getOrDefault(JSONObject())
             .let { o -> o.keys().asSequence().mapNotNull { k -> (o.opt(k) as? String)?.let { k to it } }.toMap() }
         return LibraryIndex(LibraryData(series("favorites"), history, ids("watched"),
-            SearchHistory.decode(values["searches"] as? String ?: "[]"), settings, series("later"), ids("hidden"), groupMap), updates)
+            SearchHistory.decode(values["searches"] as? String ?: "[]"), settings, series("later"), ids("hidden"), groupMap, ids("reservations")), updates)
     }
     fun series(rows: List<Series>) = JSONArray(rows.map { it.toJson() }).toString()
     fun history(rows: List<LibraryProgress>) = JSONArray(rows.map { p ->

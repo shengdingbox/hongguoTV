@@ -9,7 +9,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 
-/** Serial foreground checks; cancellation owns only calls made by this monitor. */
+/** 串行检查收藏和预约更新，取消只影响本监视器自己的请求。 */
 class FavoriteMonitor(private val library: Library, source: ContentRepository, private val changed: () -> Unit) {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -17,9 +17,10 @@ class FavoriteMonitor(private val library: Library, source: ContentRepository, p
     private var job: Future<*>? = null
     private var scope: RequestScope? = null
     private var destroyed = false
+    private val checkedAt = mutableMapOf<String, Long>()
     private val http = source.http.newBuilder().callTimeout(12, TimeUnit.SECONDS)
         .build()
-    private val repository = ContentRepository(http)
+    private val repository = source.childTransport(http)
     var running = false; private set
     var status = "进入收藏可手动检查更新"; private set
     var lastChangedId: String? = null; private set
@@ -28,9 +29,10 @@ class FavoriteMonitor(private val library: Library, source: ContentRepository, p
         if (running || destroyed || !library.isLoaded) return
         val now = System.currentTimeMillis()
         val favorites = library.favorites()
-        // Keep automatic checks under ~40 requests/hour no matter how large the library grows.
+        // 根据片单大小限制自动检查频率，避免集中请求。
         val windowHours = favorites.size / 40 + 1
-        val items = favorites.filter { force || library.favoriteUpdate(it.id)?.let { now - it.checkedAt !in 0 until windowHours * 3_600_000L } != false }
+        val items = favorites.filter { force || checkedAt[it.id]?.let { now - it !in 0 until windowHours * 3_600_000L } != false }
+            .sortedByDescending { library.reserved(it.id) }
         lastChangedId = null
         if (items.isEmpty()) {
             status = if (favorites.isEmpty()) "收藏后可检查新集" else "最近 $windowHours 小时内已检查，可手动刷新"
@@ -55,18 +57,19 @@ class FavoriteMonitor(private val library: Library, source: ContentRepository, p
             lastChangedId = null
             job = worker.submit {
                 if (ticket != epoch) return@submit
-                val result = runCatching { owned.run { repository.detail(item.id) } }
+                val result = runCatching { owned.run { repository.detail(item.id, refreshMain = true) } }
                 main.post {
                     if (ticket != epoch) return@post
                     job = null
                     result.onSuccess { detail ->
-                        library.observeFavorite(item.id, detail.episodes.size, started,
-                            newSeason = detail.newerSeasons.lastOrNull())
+                        library.observeFavoriteDetail(detail, started)
+                        checkedAt[item.id] = started
                         lastChangedId = item.id
                         consecutiveFailures = 0
                     }.onFailure { failures++; consecutiveFailures++ }
                     completed++
-                    // Pace serial requests so a large library does not burst against the site.
+                    changed()
+                    // 串行请求间留出间隔，避免大片单对接口造成突发压力。
                     main.postDelayed({ next() }, 1_500L)
                 }
             }

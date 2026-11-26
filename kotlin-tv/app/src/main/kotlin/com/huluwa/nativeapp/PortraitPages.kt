@@ -384,13 +384,14 @@ class PortraitPages(
             background = PortraitStyle.shape(activity, PortraitStyle.accent, radius = 2)
         }
         val indicatorHost = FrameLayout(activity)
-        val tabButtons = listOf("收藏", "离线缓存").mapIndexed { index, label ->
+        val contentTabs = listOf("favorites", "reservations", "offline")
+        val tabButtons = listOf("收藏", "预约", "离线缓存").mapIndexed { index, label ->
             text(label, 15f).apply {
                 gravity = Gravity.CENTER
                 minHeight = dp(44)
                 setPadding(dp(2), dp(10), dp(2), dp(11))
                 isFocusable = true
-                setOnClickListener { activity.selectMineOfflineTab(index == 1) }
+                setOnClickListener { activity.selectMineContentTab(contentTabs[index]) }
                 tabRow.addView(this, lp(-2, -2).apply { if (index > 0) leftMargin = dp(22) })
             }
         }
@@ -405,6 +406,8 @@ class PortraitPages(
         body.addView(tabHost, lp())
         val emptyFavorites = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有收藏", "在剧集页点「收藏」，或者长按海报，想看的就存下来。")
         body.addView(emptyFavorites, lp())
+        val emptyReservations = PortraitUi.emptyState(activity, R.drawable.ic_phone_star, "还没有预约", "在未上线的剧集页点「预约」，上线后在这里查看。")
+        body.addView(emptyReservations, lp())
         val favoritesAdapter = PortraitUi.PosterGrid(activity, loadCover, { series, cover -> activity.openDetailPhone(series, cover = cover) }, null)
         page.addGrid(favoritesAdapter)
         val offline = PhoneOfflineLibrary(activity, page, loadCover)
@@ -433,9 +436,11 @@ class PortraitPages(
                 recent.visibility = if (history.isEmpty()) View.GONE else View.VISIBLE
                 shownHistory = history
             }
-            val offlineSelected = activity.mineOfflineSelected
+            val selectedTab = contentTabs.indexOf(activity.mineContentTab).coerceAtLeast(0)
+            val offlineSelected = selectedTab == 2
+            val reservationsSelected = selectedTab == 1
             tabButtons.forEachIndexed { index, button ->
-                val selected = (index == 1) == offlineSelected
+                val selected = index == selectedTab
                 button.isSelected = selected
                 if (button.tag != selected) {
                     button.tag = selected
@@ -446,7 +451,7 @@ class PortraitPages(
                 button.contentDescription = "${button.text}，${if (selected) "已选中" else "未选中"}"
             }
             // 下划线跟随选中项的实际位置与文字宽度。
-            val selectedButton = tabButtons.getOrNull(if (offlineSelected) 1 else 0)
+            val selectedButton = tabButtons.getOrNull(selectedTab)
             val target = selectedButton?.let { "${it.left}:${it.width}" } ?: "0:0"
             if (indicator.tag != target) {
                 indicator.tag = target
@@ -478,8 +483,13 @@ class PortraitPages(
                 }
             }
             offline.update(offlineSelected)
-            val favorites = if (offlineSelected) emptyList() else activity.phoneLibrary.favorites()
-            emptyFavorites.visibility = if (!offlineSelected && favorites.isEmpty()) View.VISIBLE else View.GONE
+            val favorites = when {
+                offlineSelected -> emptyList()
+                reservationsSelected -> activity.phoneLibrary.reservations()
+                else -> activity.phoneLibrary.availableFavorites()
+            }
+            emptyFavorites.visibility = if (selectedTab == 0 && favorites.isEmpty()) View.VISIBLE else View.GONE
+            emptyReservations.visibility = if (reservationsSelected && favorites.isEmpty()) View.VISIBLE else View.GONE
             if (shownFavorites != favorites) {
                 favoritesAdapter.submitItems(favorites, false)
                 shownFavorites = favorites
@@ -542,7 +552,7 @@ class PortraitPages(
         val adapter=PortraitUi.PosterGrid(activity,loadCover,{ series, cover -> activity.openDetailPhone(series, cover = cover) },null)
         page.addGrid(adapter)
         return { _ ->
-            val items=activity.phoneLibrary.favorites()
+            val items=activity.phoneLibrary.availableFavorites()
             empty.visibility=if(items.isEmpty()) View.VISIBLE else View.GONE
             adapter.submitItems(items,false)
         }

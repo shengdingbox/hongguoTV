@@ -304,6 +304,7 @@ object PortraitUi {
             card.badge.maxLines = if (item.release != null) 2 else 1
             card.contentDescription = listOf(item.title, item.release?.label.orEmpty()).filter { it.isNotBlank() }.joinToString("，")
             card.saved.visibility = if (cell.favorite) View.VISIBLE else View.GONE
+            card.saved.contentDescription = if (activity.phoneLibrary.reserved(item.id)) "已预约" else "已收藏"
             card.rank.visibility = if (ranked) View.VISIBLE else View.GONE
             if (ranked) {
                 card.rank.text = "${cell.rank}"
@@ -378,8 +379,8 @@ object PortraitUi {
 
     private fun favoriteMenu(activity: MainActivity, anchor: View, series: Series, changed: () -> Unit) {
         val menu = PopupMenu(PortraitStyle.popupContext(activity), anchor)
-        menu.menu.add(0, 0, 0, if (activity.phoneLibrary.favorite(series.id)) "取消收藏" else "收藏")
-        menu.menu.add(0, 1, 1, "离线缓存")
+        menu.menu.add(0, 0, 0, activity.phoneLibrary.favoriteMenuLabel(series))
+        if (series.release == null) menu.menu.add(0, 1, 1, "离线缓存")
         menu.setOnMenuItemClickListener { item ->
             if (item.itemId == 1) { PhoneOfflineLibrary.pick(activity, series); return@setOnMenuItemClickListener true }
             activity.phoneFavoriteMonitor.stop()

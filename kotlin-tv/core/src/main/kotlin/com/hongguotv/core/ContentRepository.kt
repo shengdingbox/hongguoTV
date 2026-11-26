@@ -716,13 +716,13 @@ open class ContentRepository(
     private fun isAlbumEpisode(id: String): Boolean = synchronized(albumEpisodes) { id in albumEpisodes }
 
     /** 仅请求一次主接口；推荐、系列剧由页面展示后再补齐。 */
-    fun seriesDetail(id: String): Detail {
+    fun seriesDetail(id: String, refresh: Boolean = false): Detail {
         require(id.matches(Regex("[0-9]{1,30}")))
-        cachedDetail(id)?.let { return it }
+        if (!refresh) cachedDetail(id)?.let { return it }
         val main=fetchSeriesDetail(id)
         val result=Detail(main.series,main.episodes,social=main.social)
         return synchronized(detailCache) {
-            detailCache[id]?.takeIf { clock()-it.at<DETAIL_CACHE_TTL }?.detail ?: result.also {
+            detailCache[id]?.takeIf { !refresh && clock()-it.at<DETAIL_CACHE_TTL }?.detail ?: result.also {
                 detailCache[id]=DetailCache(clock(),it)
                 while(detailCache.size>30) detailCache.remove(detailCache.keys.first())
             }
@@ -730,8 +730,8 @@ open class ContentRepository(
     }
 
     /** 完整详情保留给补季、收藏更新等需要系列信息的调用方。 */
-    fun detail(id: String, refreshSeasons: Boolean = false, onSeasons: ((List<Series>) -> Unit)? = null): Detail {
-        val main=seriesDetail(id)
+    fun detail(id: String, refreshSeasons: Boolean = false, onSeasons: ((List<Series>) -> Unit)? = null, refreshMain: Boolean = false): Detail {
+        val main=seriesDetail(id, refresh=refreshMain)
         val needsExtras=needsDetailExtras(id)
         if(!needsExtras && !refreshSeasons) return cachedDetail(id) ?: main
         val fetchExtras=needsExtras && main.episodes.isNotEmpty()
@@ -838,8 +838,12 @@ open class ContentRepository(
             }
             if (reserved?.isSpecified == true) schedule = reserved
         }
-        return SeriesPayload(if (schedule != null) series.copy(badge = schedule.label, release = schedule) else series,
-            episodes, detailSocial(v))
+        val current = when {
+            episodes.isNotEmpty() && series.release != null -> series.copy(badge = "共 ${episodes.size} 集", release = null)
+            schedule != null -> series.copy(badge = schedule.label, release = schedule)
+            else -> series
+        }
+        return SeriesPayload(current, episodes, detailSocial(v))
     }
 
     /**

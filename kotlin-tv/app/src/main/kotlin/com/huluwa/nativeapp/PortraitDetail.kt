@@ -339,7 +339,7 @@ class PortraitDetail(
             setColorFilter(PortraitStyle.text)
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        val favoriteLabel = text(if (library.favorite(data.series.id)) "已收藏" else "收藏", 15f)
+        val favoriteLabel = text(library.favoriteActionLabel(data.series), 15f)
         val favorite = PortraitUi.row(activity).apply {
             gravity = Gravity.CENTER
             background = PortraitStyle.selectable(activity, PortraitStyle.subtleButton, radius = 28)
@@ -349,9 +349,9 @@ class PortraitDetail(
                 activity.phoneFavoriteMonitor.stop()
                 val saved = library.toggle(data.series)
                 if (saved && data.episodes.isNotEmpty()) {
-                    library.observeFavorite(data.series.id, data.episodes.size, System.currentTimeMillis(), acknowledge = true)
+                    library.observeFavoriteDetail(data, acknowledge = true)
                 }
-                favoriteLabel.text = if (saved) "已收藏" else "收藏"
+                favoriteLabel.text = library.favoriteActionLabel(data.series)
                 favoriteIcon.alpha = if (saved) 1f else .45f
                 isSelected = saved
                 contentDescription = favoriteLabel.text
@@ -476,7 +476,7 @@ class PortraitDetail(
             episodeHost.addView(pager, lp())
             if (data.episodes.isEmpty()) {
                 episodeHost.addView(PortraitUi.emptyHint(activity,
-                    if (data.series.release != null) "上线后即可观看，可先收藏" else "暂时没有可看的剧集"), lp())
+                    if (data.series.release != null) "上线后即可观看，可先预约" else "暂时没有可看的剧集"), lp())
                 return
             }
             val pageStart = episodePage * pageSize
@@ -554,7 +554,7 @@ class PortraitDetail(
             playText.text = playback.label
             play.contentDescription = playback.label
             val saved = library.favorite(next.series.id)
-            favoriteLabel.text = if (saved) "已收藏" else "收藏"
+            favoriteLabel.text = library.favoriteActionLabel(data.series)
             favoriteIcon.alpha = if (saved) 1f else .45f
             favorite.isSelected = saved
             favorite.contentDescription = favoriteLabel.text

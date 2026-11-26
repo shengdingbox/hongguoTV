@@ -228,6 +228,7 @@ class Library(context: Context) {
                 "progress" -> state.history().let { rows -> { LibraryDisk.history(rows) } }
                 "favoriteUpdates" -> state.updates().let { rows -> { LibraryDisk.updates(rows) } }
                 "favoriteGroups" -> state.groupsSnapshot().let { rows -> { LibraryDisk.groups(rows) } }
+                "reservations" -> state.reservations().let { ids -> { ids } }
                 "searches" -> state.searches().let { rows -> { SearchHistory.encode(rows) } }
                 "watched" -> state.watched().let { ids -> { ids } }
                 "hidden" -> state.hidden().let { ids -> { ids } }
@@ -238,6 +239,18 @@ class Library(context: Context) {
     }
     fun favorites() = state().favorites()
     fun favorite(id: String) = state().favorite(id)
+    fun reserved(id: String) = state().reserved(id)
+    fun availableFavorites() = state().availableFavorites()
+    fun reservations() = state().reservedFavorites().map { series ->
+        if (series.release == null) series.copy(badge = "已上线 · ${series.badge}") else series
+    }
+    private fun reservationAction(series: Series) = if (favorite(series.id)) reserved(series.id) else series.release != null
+    fun favoriteActionLabel(series: Series): String = if (reservationAction(series)) {
+        if (favorite(series.id)) "已预约" else "预约"
+    } else if (favorite(series.id)) "已收藏" else "收藏"
+    fun favoriteMenuLabel(series: Series): String = if (reservationAction(series)) {
+        if (favorite(series.id)) "取消预约" else "预约"
+    } else if (favorite(series.id)) "取消收藏" else "收藏"
     fun later() = state().later()
     fun queued(id: String) = state().queued(id)
     fun history(): List<WatchProgress> = state().history()
@@ -257,7 +270,7 @@ class Library(context: Context) {
         val episodes = if (it.added > 0) "新增 ${it.added} 集 · 更新至 ${it.total} 集" else "更新至 ${it.total} 集"
         listOf(season, episodes).filter { it.isNotEmpty() }.joinToString(" · ")
     } ?: "尚未检查更新"
-    fun toggle(series: Series) = state().toggle(series).also { persist("favorites", "favoriteUpdates") }
+    fun toggle(series: Series) = state().toggle(series).also { persist("favorites", "favoriteUpdates", "favoriteGroups", "reservations") }
     fun toggleLater(series: Series) = state().toggleLater(series).also { persist("later") }
     fun save(progress: WatchProgress) { if (state().save(progress)) persist("progress") }
     fun setWatched(id: String, value: Boolean) { if (state().setWatched(id, value)) persist("watched") }
@@ -269,6 +282,9 @@ class Library(context: Context) {
     fun clearHistory() { state().clearHistory(); persist("progress", "watched") }
     fun observeFavorite(id: String, count: Int, now: Long, acknowledge: Boolean = false, newSeason: Series? = null) {
         if (state().observeFavorite(id, count, now, acknowledge, newSeason)) persist("favoriteUpdates")
+    }
+    fun observeFavoriteDetail(detail: Detail, now: Long = System.currentTimeMillis(), acknowledge: Boolean = false) {
+        if (state().observeFavoriteDetail(detail, now, acknowledge)) persist("favorites", "favoriteUpdates", "reservations")
     }
     fun cachedHome(type: ContentType): CatalogPage? {
         state()
